@@ -154,6 +154,45 @@ prepared-array workflow. `sampling_unit_kinds` optionally supplies one
 identity metadata reserves individual-based use without implementing or asserting
 statistical validity for individual-relatedness models.
 
+## Shared encoders across regions
+
+`fit` accepts aligned sequences or mappings keyed by the exact declared region
+names for both regions and observations. The simplest single-region call stays
+the same. Run `python examples/shared_regions.py` for a synthetic U-Net example
+with different regional raster extents.
+
+```python
+result = fit(
+    {"headwaters": upstream_region, "lowlands": downstream_region},
+    {"headwaters": upstream_observations, "lowlands": downstream_observations},
+    config=FitConfig(epochs=30),
+)
+upstream_prediction = result.predictor.predict(upstream_region)
+downstream_prediction = result.predictor.predict(downstream_region)
+```
+
+Different training or validation regions must declare identical `feature_names`,
+preserving channel meanings and order, and compatible target metadata. Equal channel counts alone
+are insufficient. Mapping keys must match region names exactly; duplicate names
+are rejected. Optional `partition` and `validation_partition` take aligned
+sequences or mappings in the same form; use `None` entries to select all observed
+pairs for a particular region. Validation takes `(regions, observations)` and may
+cover fewer regions. It must preserve the training feature and target contracts.
+
+Each regional contribution is its mean over selected observed pairs. The shared
+objective is the equal-weight mean of those regional contributions. A region
+with more observed pairs therefore does not automatically receive more weight.
+Training finishes each regional backward pass before starting the next, retaining
+only the accumulated parameter gradients, then applies one shared Adam update.
+Model encoders remain stateless apart from their learned Equinox parameters.
+
+Region names are sorted before assigning training random keys. Reordering input
+mappings or aligned sequences leaves the stochastic training trajectory unchanged.
+Validation uses inference mode, consumes no training random keys, and selects the
+encoder without altering optimization. `result.region_names` records training
+region identities; each epoch exposes `training_by_region` and
+`validation_by_region` alongside the equal-region aggregate objectives.
+
 
 ## Regional MLPE calibration
 

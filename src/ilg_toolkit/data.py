@@ -76,8 +76,8 @@ class PreparedRegion:
         features = np.array(self.features, dtype=np.float32, copy=True)
         ids = tuple(self.sampling_unit_ids)
         positions = np.asarray(self.grid_positions)
-        if not self.name:
-            raise ValueError("Region name must be nonempty")
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("Region name must be a nonempty string")
         if features.ndim != 3 or min(features.shape) < 1 or not np.isfinite(features).all():
             raise ValueError("features must be a finite nonempty HWC array")
         if (
