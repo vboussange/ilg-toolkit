@@ -15,10 +15,14 @@ from .mlpe import (
     condition_on_support,
     predict_known_effects,
 )
+from .persistence import ArtifactError, load_predictor, save_predictor
 from .predictor import Prediction, Predictor
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
+    "ArtifactError",
+    "load_predictor",
+    "save_predictor",
     "MLPEConfig",
     "MLPEConditionalPrediction",
     "MLPEError",
