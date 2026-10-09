@@ -12,6 +12,7 @@ dependencies = [
   "jaxscape==0.0.10",
   "lineax>=0.1.0,<0.2",
   "numpy>=2.2.6,<3",
+  "scipy>=1.15,<2",
   "optax>=0.2.8,<0.3",
 ]
 

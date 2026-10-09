@@ -14,6 +14,7 @@ def synthetic_problem():
         features=features,
         sampling_unit_ids=("north", "east", "south", "west"),
         grid_positions=np.array([[0, 0], [0, 3], [3, 0], [3, 3]]),
+        feature_names=("gradient", "texture"),
     )
     # Independent simple dissimilarity with known units; no paper assets.
     targets = np.array(

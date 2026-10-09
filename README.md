@@ -16,7 +16,8 @@ pip install .
 # Tests and formatting: pip install '.[dev]'
 ```
 
-The minimal workflow uses NumPy, JAX, Equinox, Optax, Lineax, and JAXScape. It has no paper-data,
+The minimal workflow uses NumPy, SciPy, JAX, Equinox, Optax, Lineax, and JAXScape.
+It has no paper-data,
 benchmark, geospatial acquisition, or research-checkout dependency.
 
 ## Synthetic quickstart
@@ -152,3 +153,79 @@ prepared-array workflow. `sampling_unit_kinds` optionally supplies one
 `"population"` or `"individual"` entry per label (default: population). This
 identity metadata reserves individual-based use without implementing or asserting
 statistical validity for individual-relatedness models.
+
+## Shared encoders across regions
+
+`fit` accepts aligned sequences or mappings keyed by the exact declared region
+names for both regions and observations. The simplest single-region call stays
+the same. Run `python examples/shared_regions.py` for a synthetic U-Net example
+with different regional raster extents.
+
+```python
+result = fit(
+    {"headwaters": upstream_region, "lowlands": downstream_region},
+    {"headwaters": upstream_observations, "lowlands": downstream_observations},
+    config=FitConfig(epochs=30),
+)
+upstream_prediction = result.predictor.predict(upstream_region)
+downstream_prediction = result.predictor.predict(downstream_region)
+```
+
+Different training or validation regions must declare identical `feature_names`,
+preserving channel meanings and order, and compatible target metadata. Equal channel counts alone
+are insufficient. Mapping keys must match region names exactly; duplicate names
+are rejected. Optional `partition` and `validation_partition` take aligned
+sequences or mappings in the same form; use `None` entries to select all observed
+pairs for a particular region. Validation takes `(regions, observations)` and may
+cover fewer regions. It must preserve the training feature and target contracts.
+
+Each regional contribution is its mean over selected observed pairs. The shared
+objective is the equal-weight mean of those regional contributions. A region
+with more observed pairs therefore does not automatically receive more weight.
+Training finishes each regional backward pass before starting the next, retaining
+only the accumulated parameter gradients, then applies one shared Adam update.
+Model encoders remain stateless apart from their learned Equinox parameters.
+
+Region names are sorted before assigning training random keys. Reordering input
+mappings or aligned sequences leaves the stochastic training trajectory unchanged.
+Validation uses inference mode, consumes no training random keys, and selects the
+encoder without altering optimization. `result.region_names` records training
+region identities; each epoch exposes `training_by_region` and
+`validation_by_region` alongside the equal-region aggregate objectives.
+
+
+## Regional MLPE calibration
+
+`python examples/mlpe_calibration.py` demonstrates a frozen encoder's landscape
+scores and a separate full-Gaussian-ML genetic calibration:
+
+```python
+from ilg_toolkit import calibrate_mlpe
+
+# One finite score per observations.observed_pairs, in that documented order.
+head = calibrate_mlpe(scores, observations, region_name="my-catchment")
+predictions = head.predict_marginal(query_scores, query_pairs)
+```
+
+The head profiles a signed intercept and slope by GLS, standardizes training
+scores with sample SD (`ddof=1`), and fits positive population-effect and residual
+variance components. `MLPEConfig` makes variance floor, score-scale threshold,
+explicit jitter, and optimizer budget configurable. Calibration uses float64;
+JAX likelihood kernels follow input precision without changing global settings.
+Constant scores, unidentified variance components, and failed optimization are
+reported explicitly. Relatedness and similarity require a dedicated observation
+model and are rejected by this population MLPE boundary.
+
+Scores align with the observations' deterministic `observed_pairs` order, even
+when pair input was supplied in another order. An optional `ObservationPartition`
+selects declared training, validation, or calibration observations; their pair
+identities and roles are retained on the head. Missing pairs are absent from the
+likelihood. Query and support partitions cannot calibrate the head.
+
+Marginal prediction uses zero-mean population effects, including for unseen
+populations. It accepts labelled query pairs and scores, without query targets.
+`predictions.values` reports original target units; `model_values` retains the
+fitted transformed scale. With a nonlinear target transform, inverse-transforming
+the fitted mean is not a distributional mean correction. Negative signed
+predictions are retained without clipping. Explicit jitter is consistently added
+to residual variance in both likelihood and the stored effect posterior.
