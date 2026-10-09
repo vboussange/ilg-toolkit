@@ -1,8 +1,11 @@
 # Experimental Wishart diagnostic contract
 
-Status on 2026-10-09: **no-go for experimental training**. This is an implementation
-assessment with reference evidence, awaiting independent scientific review. It is
-not a reviewed go decision. The diagnostic is available under
+Status on 2026-10-09: **reviewed no-go for experimental training**. The coordinating
+agent independently reviewed this contract, the implementation and its tests,
+and checked the primary SciPy Wishart/matrix-normal densities and EEMS source.
+That implementation review supports the strict synthetic diagnostic and confirms
+the conservative no-go for joint training. It does **not** endorse empirical
+genotype validity and is not a reviewed go decision. The diagnostic is available under
 `ilg_toolkit.experimental`; no Wishart optimizer or stable objective is enabled.
 Ticket #17 remains blocked while the requirements below are unresolved. Stable
 direct regression and MLPE delivery are independent of this decision.
@@ -172,8 +175,8 @@ Changing held-out marker observations leaves the training marginal unchanged.
 Invalid matrices, unsupported interpretations, missing scaling, invalid marker
 counts, and inappropriate holdout declarations fail explicitly.
 
-The implementation assessment remains **no-go for #17**, despite the coherent
-strict synthetic reference, because:
+The independently reviewed implementation assessment remains **no-go for #17**,
+despite the coherent strict synthetic reference, because:
 
 - No empirical target adapter establishes Gaussian marker contrast validity,
   independent/effective marker counts, or validity for FST or relatedness.
@@ -184,5 +187,6 @@ strict synthetic reference, because:
   declaration. Differentiable fitting and scientific validation are unimplemented.
 
 These requirements can be resolved by evidence and an independently reviewed
-contract; this document imposes no human-only approval mechanism. The current
-reference evidence is not itself that review or a switch enabling training.
+go contract; this document imposes no human-only approval mechanism. The recorded
+no-go review supports the present diagnostic boundary, does not resolve those
+requirements, and does not enable training.

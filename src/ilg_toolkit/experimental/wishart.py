@@ -387,6 +387,7 @@ def diagnose_wishart(
             "normalization or fixed scale.",
             "Empirical marker validity and effective counts for "
             "dependent/non-Gaussian markers are unresolved.",
-            "The experimental training and provenance contract still requires independent review.",
+            "A reviewed go contract for experimental training and provenance "
+            "has not been established.",
         ),
     )
