@@ -371,6 +371,28 @@ def fit(
             first_region.features.shape[-1],
             feature_names=first_region.feature_names,
             solver_config=config.solver,
+            training_pairs={
+                batch.region.name: tuple(
+                    tuple(
+                        sorted(
+                            (batch.region.sampling_unit_ids[i], batch.region.sampling_unit_ids[j])
+                        )
+                    )
+                    for i, j in zip(*batch.data[2], strict=True)
+                )
+                for batch in training_batches
+            },
+            validation_pairs={
+                batch.region.name: tuple(
+                    tuple(
+                        sorted(
+                            (batch.region.sampling_unit_ids[i], batch.region.sampling_unit_ids[j])
+                        )
+                    )
+                    for i, j in zip(*batch.data[2], strict=True)
+                )
+                for batch in validation_batches
+            },
         ),
         tuple(history),
         selected_epoch,

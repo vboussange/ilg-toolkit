@@ -1,5 +1,6 @@
 """Independent inverse landscape genetics toolkit."""
 
+from .calibration import recalibrate
 from .config import FitConfig, SolverConfig
 from .data import ObservationPartition, PairwiseObservations, PreparedRegion, TargetSpec
 from .mlpe import (
@@ -39,4 +40,5 @@ __all__ = [
     "SolverConfig",
     "TargetSpec",
     "fit",
+    "recalibrate",
 ]
