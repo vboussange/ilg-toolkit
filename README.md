@@ -280,3 +280,63 @@ region with no recorded encoder-training pairs requires an explicit selection.
 Existing head numerical settings are retained unless a replacement `MLPEConfig`
 is supplied. The original predictor, other regional heads, and prior fit history
 remain unchanged; new development-data use does not rewrite earlier validation.
+
+## Joint MLPE training
+
+Select `FitConfig(objective="mlpe")` to train an embedding or conductance encoder
+with full Gaussian maximum likelihood. Enable JAX float64 explicitly:
+
+```python
+import jax
+from ilg_toolkit import FitConfig, fit
+
+with jax.enable_x64():
+    result = fit(
+        region, observations, model=model,
+        config=FitConfig(objective="mlpe", epochs=30, learning_rate=.01),
+    )
+    genetic_prediction = result.predictor.predict(region)
+    landscape_scores = result.predictor.landscape_scores(region)
+```
+
+The same call accepts regional sequences or mappings, with one shared encoder
+and separate population and residual variances per region. Each Adam update
+averages per-pair regional likelihood gradients. Intercept and slope are signed
+GLS profiles; both variance parameters use the same learning rate as the encoder.
+There is no converged inner variance fit at each update. Initial variances can be
+declared as `mlpe_initial_variances=(population_variance, residual_variance)`;
+otherwise each region starts from its training target's sample variance (one
+quarter and one half, respectively). `mlpe_variance_floor` and `mlpe_jitter` are
+explicit, with no automatic jitter increase.
+
+After every update, training observations refresh the score mean, sample SD,
+GLS coefficients and population-effect posterior. Validation uses those frozen
+training quantities and can contain one observed pair. It requires a training
+calibration for the same region and cannot overlap training pairs. Validation
+selects the returned predictor without changing the fixed epoch budget or
+learning rate. A trained head reports `converged=False`: the budget does not
+claim a fully converged variance optimum. Constant scores, unidentifiable pair
+sets, nonfinite gradients or posteriors, and unsupported variance conditioning
+stop fitting with the region and epoch in the diagnostic. MLPE training currently
+supports population dissimilarities.
+
+`result.state` retains the latest encoder, regional raw variances, Adam state,
+random key, history, selection and fixed learning-rate/stopping policy.
+`result.latest_predictor` can differ from the validation-selected
+`result.predictor`. In-memory continuation preserves that trajectory:
+
+```python
+from dataclasses import replace
+
+with jax.enable_x64():
+    continued = fit(
+        region, observations, state=result.state,
+        config=replace(result.state.config, epochs=60),
+    )
+```
+
+Continuation requires identical selected observations, landscapes, target and
+feature declarations, validation inputs and configuration; only the total epoch
+budget may increase. Include the same partitions and validation arguments when
+resuming. The state uses a legacy uint32 JAX random key for later serialization;
+solver contexts are rebuilt from the declared solver settings.

@@ -16,7 +16,7 @@ from .mlpe import (
     predict_known_effects,
 )
 from .predictor import Prediction, Predictor
-from .training import EpochRecord, FitResult, fit
+from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
     "MLPEConfig",
@@ -32,6 +32,7 @@ __all__ = [
     "EpochRecord",
     "FitConfig",
     "FitResult",
+    "TrainingState",
     "PairwiseObservations",
     "ObservationPartition",
     "Prediction",
