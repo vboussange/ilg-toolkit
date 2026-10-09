@@ -1,0 +1,12 @@
+ILG Toolkit
+
+The embedding-distance abstraction, raster/patch utilities, and U-Net model were
+extracted and adapted from deepilg, the cleaned NeurIPS research implementation
+by Vincent Boussange and contributors, licensed under Apache License 2.0:
+https://github.com/vboussange/differentiable-distances-on-graphs
+(publications/neurips_paper/code/src/deepilg/models/{base,common,unet}.py).
+
+Modifications separate the reusable encoder from research configurations and
+paper data, and add independent prepared-data, training, and prediction APIs.
+The original license is included in LICENSE. No runtime dependency on either
+research checkout is retained.
