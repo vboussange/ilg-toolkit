@@ -5,7 +5,7 @@ from .config import FitConfig, SolverConfig
 from .data import ObservationPartition, PairwiseObservations, PreparedRegion, TargetSpec
 from .mlpe import MLPEConfig, MLPEError, MLPEHead, MLPEPrediction, calibrate_mlpe
 from .predictor import Prediction, Predictor
-from .training import EpochRecord, FitResult, fit
+from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
     "MLPEConfig",
@@ -16,6 +16,7 @@ __all__ = [
     "EpochRecord",
     "FitConfig",
     "FitResult",
+    "TrainingState",
     "PairwiseObservations",
     "ObservationPartition",
     "Prediction",
