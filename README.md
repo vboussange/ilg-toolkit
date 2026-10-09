@@ -338,5 +338,6 @@ with jax.enable_x64():
 Continuation requires identical selected observations, landscapes, target and
 feature declarations, validation inputs and configuration; only the total epoch
 budget may increase. Include the same partitions and validation arguments when
-resuming. The state uses a legacy uint32 JAX random key for later serialization;
-solver contexts are rebuilt from the declared solver settings.
+resuming. The state uses a legacy uint32 JAX random key; solver contexts are
+rebuilt from the declared solver settings. [Training checkpoints](docs/checkpoints.md)
+describe atomic disk save/load, per-epoch checkpoint callbacks, and compatibility.
