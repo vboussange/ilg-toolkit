@@ -18,6 +18,16 @@ from .ensemble import (
     fit_ensemble_member,
     generate_population_folds,
 )
+from .evaluation import (
+    EvaluationAccess,
+    EvaluationRegime,
+    EvaluationSupport,
+    OOFEvaluation,
+    OOFPrediction,
+    evaluate_ensemble,
+    predict_out_of_fold,
+    score_out_of_fold,
+)
 from .mlpe import (
     MLPEConditionalPrediction,
     MLPEConfig,
@@ -35,6 +45,14 @@ from .predictor import Prediction, Predictor
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
+    "EvaluationAccess",
+    "EvaluationRegime",
+    "EvaluationSupport",
+    "OOFEvaluation",
+    "OOFPrediction",
+    "evaluate_ensemble",
+    "predict_out_of_fold",
+    "score_out_of_fold",
     "Ensemble",
     "EnsembleMember",
     "EnsemblePrediction",
