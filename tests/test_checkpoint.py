@@ -83,6 +83,10 @@ def test_direct_disk_resume_matches_uninterrupted_dropout_training(tmp_path):
     assert epochs == [0, 1]
     restored = load_checkpoint(path)
     assert restored.epoch == 1
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="epoch budget"):
+        fit(region, observations, state=restored, config=replace(config, epochs=2))
     resumed = fit(region, observations, state=restored, config=config)
     assert_same_state(resumed.state, uninterrupted.state)
     np.testing.assert_array_equal(

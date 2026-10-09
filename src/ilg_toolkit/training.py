@@ -386,7 +386,7 @@ def fit(
         old, new = asdict(state.config), asdict(config)
         old.pop("epochs")
         new.pop("epochs")
-        if old != new or config.epochs < state.epoch:
+        if old != new or config.epochs < state.config.epochs:
             raise ValueError(
                 "Continuation requires identical configuration except an increased epoch budget"
             )

@@ -23,7 +23,8 @@ continued = fit(
 ```
 
 Supply the same training/validation inputs and partitions when resuming. Only
-the total epoch budget may change; it cannot precede the completed epoch. Changed
+the total epoch budget may increase or stay equal; reducing a saved requested
+budget is rejected, including for an intermediate callback checkpoint. Changed
 landscapes, selected measurements, target metadata, feature meaning/order,
 sampling-unit identities/locations/kinds, partitions, model overrides, and
 relevant optimization/solver configuration are rejected. Reordering equivalent

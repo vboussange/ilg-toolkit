@@ -168,7 +168,7 @@ def load_checkpoint(path) -> TrainingState:
 
     Continuation requires the recorded numerical library versions, device kind,
     backend, and explicit JAX x64 setting. Identical data/configuration is checked
-    by fit; only its total epoch budget may change.
+    by fit; only an equal or increased total epoch budget is accepted.
     """
     try:
         with read_archive(path, expected_kind="training_checkpoint") as archive:

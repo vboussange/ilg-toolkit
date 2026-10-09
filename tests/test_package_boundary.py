@@ -18,6 +18,7 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
         PreparedRegion,
         TargetSpec,
         fit,
+        save_checkpoint,
         save_predictor,
     )
     from ilg_toolkit.models import UNetEmbeddingDistance
@@ -42,6 +43,18 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
     inference_artifact = tmp_path / "saved-predictor.ilg"
     save_predictor(inference_artifact, source_predictor)
     expected_inference = source_predictor.predict(inference_region).values.tolist()
+    checkpoint_artifact = tmp_path / "saved-checkpoint.ilg"
+    completed = []
+    with jax.enable_x64():
+        continued_source = fit(
+            inference_region,
+            inference_observations,
+            model=source_predictor.encoder,
+            config=FitConfig(epochs=1),
+            on_epoch=completed.append,
+        )
+        save_checkpoint(checkpoint_artifact, completed[0])
+        expected_continued = continued_source.predictor.predict(inference_region).values.tolist()
     root = Path(__file__).resolve().parents[1]
     wheels = tmp_path / "wheels"
     wheels.mkdir()
@@ -83,6 +96,11 @@ np.testing.assert_allclose(reloaded.predict(region).values, {expected_inference!
     rtol=1e-6, atol=1e-7)
 obs = ilg.PairwiseObservations.from_matrix(('a','b'), [[0,.3],[.3,0]],
     target=ilg.TargetSpec('synthetic', units='index'))
+state = ilg.load_checkpoint({str(checkpoint_artifact)!r})
+continued = ilg.fit(region, obs, state=state)
+assert continued.state.epoch == 1
+np.testing.assert_allclose(continued.predictor.predict(region).values, {expected_continued!r},
+    rtol=1e-6, atol=1e-7)
 result = ilg.fit(region, obs, config=ilg.FitConfig(epochs=0))
 assert np.isfinite(result.predictor.predict(region).values).all()
 assert result.predictor.predict(region).target.units == 'index'
