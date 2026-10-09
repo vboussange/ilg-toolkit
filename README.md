@@ -229,3 +229,54 @@ fitted transformed scale. With a nonlinear target transform, inverse-transformin
 the fitted mean is not a distributional mean correction. Negative signed
 predictions are retained without clipping. Explicit jitter is consistently added
 to residual variance in both likelihood and the stored effect posterior.
+
+## Frozen encoder recalibration and regional transfer
+
+Run `python examples/region_transfer.py` for a synthetic U-Net transfer example.
+Recalibration is an explicit operation returning a new predictor:
+
+```python
+from ilg_toolkit import recalibrate
+
+# Default selection uses only the encoder's recorded training pairs.
+calibrated = recalibrate(result.predictor, region, observations)
+
+# Deliberately add validation measurements as development data.
+developed = calibrated.recalibrate(
+    region, observations, partitions=(training_partition, validation_partition),
+)
+```
+
+A direct predictor continues to predict without any MLPE head. Explicit
+recalibration converts the returned predictor to MLPE mode, freezing the exact
+encoder object. Each MLPE region then requires its own head. `landscape_scores`
+works in an unseen region with only prepared features and locations;
+`predict` there raises until explicit regional calibration is supplied:
+
+```python
+development = ObservationPartition(
+    new_region.name, new_observations.observed_pairs, role="calibration",
+)
+transferred = calibrated.recalibrate(
+    new_region, new_observations, partitions=development,
+)
+new_predictions = transferred.predict(new_region)
+```
+
+New-region transfer requires declared matching feature meanings and ordering and
+compatible target meaning, units, and transform. Population MLPE calibration and
+prediction reject individual-kind sampling units; generic landscape scoring is
+still available. MLPE prediction is marginal by default, including for unseen
+populations in a calibrated region. It returns original-scale marginal predictions without clipping, with a
+structural zero diagonal in the matrix interface. Nonlinear inverse transforms
+retain the fitted-mean interpretation described above.
+
+Explicit selections may declare training, validation, or calibration roles.
+Query and support roles cannot recalibrate a head; overlapping selections are
+rejected. Every head records selected pair identities and per-pair data roles.
+`Predictor.training_pairs` and `validation_pairs` independently retain encoder
+training and selection access, including after subsequent recalibration. A new
+region with no recorded encoder-training pairs requires an explicit selection.
+Existing head numerical settings are retained unless a replacement `MLPEConfig`
+is supplied. The original predictor, other regional heads, and prior fit history
+remain unchanged; new development-data use does not rewrite earlier validation.
