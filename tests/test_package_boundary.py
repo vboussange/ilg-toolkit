@@ -9,6 +9,39 @@ from pathlib import Path
 
 
 def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
+    import jax
+    import numpy as np
+
+    from ilg_toolkit import (
+        FitConfig,
+        PairwiseObservations,
+        PreparedRegion,
+        TargetSpec,
+        fit,
+        save_predictor,
+    )
+    from ilg_toolkit.models import UNetEmbeddingDistance
+
+    inference_region = PreparedRegion(
+        "independent",
+        np.arange(32).reshape(4, 4, 2) / 32,
+        ("a", "b"),
+        np.array([[0, 0], [3, 3]]),
+    )
+    inference_observations = PairwiseObservations.from_matrix(
+        ("a", "b"), [[0, 0.3], [0.3, 0]], target=TargetSpec("synthetic", units="index")
+    )
+    source_predictor = fit(
+        inference_region,
+        inference_observations,
+        model=UNetEmbeddingDistance(
+            2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0.2, key=jax.random.key(1)
+        ),
+        config=FitConfig(epochs=0),
+    ).predictor
+    inference_artifact = tmp_path / "saved-predictor.ilg"
+    save_predictor(inference_artifact, source_predictor)
+    expected_inference = source_predictor.predict(inference_region).values.tolist()
     root = Path(__file__).resolve().parents[1]
     wheels = tmp_path / "wheels"
     wheels.mkdir()
@@ -45,6 +78,9 @@ assert importlib.metadata.version('ilg-toolkit') == '0.1.0'
 assert not any(name == 'deepilg' or name.startswith('deepilg.') for name in sys.modules)
 region = ilg.PreparedRegion('independent', np.arange(32).reshape(4,4,2)/32,
     ('a','b'), np.array([[0,0],[3,3]]))
+reloaded = ilg.load_predictor({str(inference_artifact)!r})
+np.testing.assert_allclose(reloaded.predict(region).values, {expected_inference!r},
+    rtol=1e-6, atol=1e-7)
 obs = ilg.PairwiseObservations.from_matrix(('a','b'), [[0,.3],[.3,0]],
     target=ilg.TargetSpec('synthetic', units='index'))
 result = ilg.fit(region, obs, config=ilg.FitConfig(epochs=0))
