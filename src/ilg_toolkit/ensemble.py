@@ -461,31 +461,19 @@ def fit_ensemble_member(
     return EnsembleMember(identity, fold, "completed", result.predictor, result)
 
 
-def fit_ensemble(
+def _prepare_ensemble(
     region,
     observations,
     *,
-    folds: Sequence[PopulationFold] | None = None,
-    n_folds: int | None = None,
-    holdout_size: int | Mapping[str, int] | None = None,
-    fold_seed: int = 0,
-    query_regime: str = "both_unseen",
-    initialization_seeds: Sequence[int] | None = None,
-    config: FitConfig | None = None,
-    model_factory: Callable[[jax.Array], ConductanceModel | EmbeddingDistanceModel] | None = None,
-    member_states: Mapping[str, TrainingState] | None = None,
-    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
-    on_member: Callable[[EnsembleMember], None] | None = None,
-) -> Ensemble:
-    """Sequential independent fits from explicit or reproducibly generated folds.
-
-    Default generated holdouts are query-only. Explicit validation uses its
-    targets for encoder selection and is recorded. All requested outcomes are
-    returned, including failures; prediction refuses to drop failed members.
-    Per-member continuation and epoch/member callbacks support external durable
-    orchestration without making persistence mandatory.
-    """
-    config = config or FitConfig()
+    config,
+    folds,
+    n_folds,
+    holdout_size,
+    fold_seed,
+    query_regime,
+    initialization_seeds,
+):
+    """Validate composition without initializing or fitting any member."""
     if folds is None:
         if n_folds is None or holdout_size is None:
             raise ValueError("Supply explicit folds or both n_folds and holdout_size")
@@ -514,6 +502,45 @@ def fit_ensemble(
     identities = [ensemble_member_identity(fold.fold_id, seed) for fold in folds for seed in seeds]
     if len({identity.effective_seed for identity in identities}) != len(identities):
         raise ValueError("Initialization seed collision; use different fold identifiers or seeds")
+    return folds, seeds, identities
+
+
+def fit_ensemble(
+    region,
+    observations,
+    *,
+    folds: Sequence[PopulationFold] | None = None,
+    n_folds: int | None = None,
+    holdout_size: int | Mapping[str, int] | None = None,
+    fold_seed: int = 0,
+    query_regime: str = "both_unseen",
+    initialization_seeds: Sequence[int] | None = None,
+    config: FitConfig | None = None,
+    model_factory: Callable[[jax.Array], ConductanceModel | EmbeddingDistanceModel] | None = None,
+    member_states: Mapping[str, TrainingState] | None = None,
+    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
+    on_member: Callable[[EnsembleMember], None] | None = None,
+) -> Ensemble:
+    """Sequential independent fits from explicit or reproducibly generated folds.
+
+    Default generated holdouts are query-only. Explicit validation uses its
+    targets for encoder selection and is recorded. All requested outcomes are
+    returned, including failures; prediction refuses to drop failed members.
+    Per-member continuation and epoch/member callbacks support external durable
+    orchestration without making persistence mandatory.
+    """
+    config = config or FitConfig()
+    folds, seeds, identities = _prepare_ensemble(
+        region,
+        observations,
+        config=config,
+        folds=folds,
+        n_folds=n_folds,
+        holdout_size=holdout_size,
+        fold_seed=fold_seed,
+        query_regime=query_regime,
+        initialization_seeds=initialization_seeds,
+    )
     states = {} if member_states is None else dict(member_states)
     if not set(states).issubset(identity.member_id for identity in identities):
         raise ValueError(

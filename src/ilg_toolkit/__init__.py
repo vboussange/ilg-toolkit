@@ -18,6 +18,7 @@ from .ensemble import (
     fit_ensemble_member,
     generate_population_folds,
 )
+from .ensemble_persistence import fit_ensemble_run, load_ensemble, save_ensemble
 from .evaluation import (
     EvaluationAccess,
     EvaluationRegime,
@@ -45,6 +46,9 @@ from .predictor import Prediction, Predictor
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
+    "fit_ensemble_run",
+    "load_ensemble",
+    "save_ensemble",
     "EvaluationAccess",
     "EvaluationRegime",
     "EvaluationSupport",

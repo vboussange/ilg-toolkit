@@ -421,9 +421,18 @@ For external durable orchestration, `fit_ensemble_member` fits or continues one
 member using `state=TrainingState`. `fit_ensemble(member_states={member_id: state})`
 continues specified members in memory. `on_epoch(identity, state)` receives each
 complete member epoch and can save that member's checkpoint; callback failures
-interrupt execution. The checkpoint/manifest layer must validate and skip
-compatible completed members separately. Solver contexts and differentiation
-graphs are never retained across independent member fits.
+interrupt execution. Solver contexts and differentiation graphs are never
+retained across independent member fits.
+
+`save_ensemble(path, ensemble)` and `load_ensemble(path)` preserve every member
+and its deployment predictor in one portable inference artifact.
+`fit_ensemble_run(directory, region, observations, ...)` saves independent
+member checkpoints and an atomic run manifest. Resume with the same inputs and
+`resume=True` to skip compatible completed members and continue unfinished
+ones. An explicit larger total epoch budget continues completed members from
+their saved state. Missing, corrupt, incompatible or failed members remain
+explicit. See [ensemble persistence](docs/ensemble-persistence.md) for usage,
+compatibility, callbacks and artifact composition.
 
 ## Out-of-fold evaluation
 
