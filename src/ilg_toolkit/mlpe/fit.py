@@ -4,10 +4,10 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.linalg import cho_solve
 from scipy.optimize import minimize
 
 from ..data import ObservationPartition, PairwiseObservations, TargetSpec
+from .numpy_system import NumpyPopulationSystem, endpoint_gram
 
 
 class MLPEError(ValueError):
@@ -79,6 +79,41 @@ class MLPEHead:
     optimizer_message: str
     converged: bool = True
 
+    def __post_init__(self):
+        scalars = (
+            self.score_center,
+            self.score_scale,
+            self.intercept,
+            self.slope,
+            self.unit_variance,
+            self.residual_variance,
+            self.ml_log_likelihood,
+        )
+        if not all(math.isfinite(value) for value in scalars):
+            raise MLPEError("MLPE head cannot retain nonfinite numerical kernel diagnostics")
+        if self.score_scale <= self.config.min_score_scale or min(
+            self.unit_variance, self.residual_variance
+        ) < self.config.variance_floor * (1 - 8 * np.finfo(float).eps):
+            raise MLPEError("MLPE head requires valid score scale and positive bounded variances")
+        n = len(self.population_ids)
+        mean, covariance = np.asarray(self.effect_mean), np.asarray(self.effect_covariance)
+        factor = np.asarray(self.effect_precision_cholesky)
+        if (
+            mean.shape != (n,)
+            or covariance.shape != (n, n)
+            or factor.shape != (n, n)
+            or not np.isfinite(mean).all()
+            or not np.isfinite(covariance).all()
+            or not np.isfinite(factor).all()
+        ):
+            raise MLPEError("MLPE head population-effect posterior must be finite and aligned")
+        if (
+            not self.region_name
+            or len(set(self.population_ids)) != n
+            or len(self.calibration_pairs) != len(self.calibration_roles)
+        ):
+            raise MLPEError("MLPE head region, sampling-unit identities and provenance must align")
+
     def predict_marginal(self, scores, pairs) -> MLPEPrediction:
         """Predict labelled query pairs without targets; new effects have mean zero."""
         scores = np.asarray(scores, dtype=np.float64)
@@ -98,18 +133,16 @@ class MLPEHead:
         )
 
 
-def _profile(design, targets, incidence, variances, jitter):
-    covariance = variances[0] * (incidence @ incidence.T)
-    covariance += (variances[1] + jitter) * np.eye(len(targets))
-    factor = np.linalg.cholesky(covariance)
-    vinv_design = cho_solve((factor, True), design)
-    beta = np.linalg.solve(design.T @ vinv_design, design.T @ cho_solve((factor, True), targets))
-    residual = targets - design @ beta
-    nll = 0.5 * (
-        len(targets) * math.log(2 * math.pi)
-        + 2 * np.log(np.diag(factor)).sum()
-        + residual @ cho_solve((factor, True), residual)
+def _profile(design, targets, system):
+    inner, remaining, effects = system.inner_products(np.column_stack((design, targets)))
+    beta = np.linalg.solve(inner[:2, :2], inner[:2, 2])
+    residual_remaining = remaining[:, 2] - remaining[:, :2] @ beta
+    residual_effects = effects[:, 2] - effects[:, :2] @ beta
+    quadratic = (
+        residual_remaining @ residual_remaining / system.residual
+        + residual_effects @ residual_effects / system.unit
     )
+    nll = 0.5 * (len(targets) * math.log(2 * math.pi) + system.logdet + quadratic)
     return float(nll), beta
 
 
@@ -163,10 +196,10 @@ def calibrate_mlpe(
     observed = {endpoint for pair in pairs for endpoint in pair}
     population_ids = tuple(label for label in observations.sampling_unit_ids if label in observed)
     lookup = {label: index for index, label in enumerate(population_ids)}
-    incidence = np.zeros((len(pairs), len(population_ids)))
-    for row, pair in enumerate(pairs):
-        incidence[row, [lookup[pair[0]], lookup[pair[1]]]] = 1
-    if np.max(incidence.sum(axis=0)) <= 1:
+    left = np.asarray([lookup[a] for a, b in pairs], dtype=np.int32)
+    right = np.asarray([lookup[b] for a, b in pairs], dtype=np.int32)
+    gram = endpoint_gram(left, right, len(population_ids))
+    if np.diag(gram).max() <= 1:
         raise MLPEError("MLPE variances are unidentifiable: observed pairs share no endpoints")
     ols_beta = np.linalg.lstsq(design, targets, rcond=None)[0]
     response_variance = max(
@@ -174,11 +207,19 @@ def calibrate_mlpe(
     )
     bounds = [(math.log(config.variance_floor), math.log(max(response_variance * 1e6, 1e4)))] * 2
 
+    numerical_failure = None
+
     def objective(log_variances):
+        nonlocal numerical_failure
         try:
-            nll, beta = _profile(design, targets, incidence, np.exp(log_variances), config.jitter)
+            variances = np.exp(log_variances)
+            system = NumpyPopulationSystem(
+                left, right, gram, variances[0], variances[1] + config.jitter
+            )
+            nll, beta = _profile(design, targets, system)
             return nll if math.isfinite(nll) and np.isfinite(beta).all() else float("inf")
-        except np.linalg.LinAlgError:
+        except (np.linalg.LinAlgError, ValueError) as error:
+            numerical_failure = str(error)
             return float("inf")
 
     candidates = []
@@ -189,27 +230,32 @@ def calibrate_mlpe(
                 max(response_variance * (1 - fraction), config.variance_floor * 10),
             ]
         )
-        result = minimize(
-            objective,
-            start,
-            method="L-BFGS-B",
-            bounds=bounds,
-            options={"maxiter": config.max_iterations, "ftol": 1e-12, "gtol": 1e-9},
-        )
+        # Rejected covariance points return infinity intentionally. SciPy's
+        # finite-difference proposals can subtract infinities; failure status is
+        # retained and inspected rather than emitting a redundant NumPy warning.
+        with np.errstate(invalid="ignore"):
+            result = minimize(
+                objective,
+                start,
+                method="L-BFGS-B",
+                bounds=bounds,
+                options={"maxiter": config.max_iterations, "ftol": 1e-12, "gtol": 1e-9},
+            )
         if result.success and math.isfinite(result.fun):
             candidates.append(result)
     if not candidates:
-        raise MLPEError("No deterministic MLPE optimization start converged to a finite likelihood")
+        raise MLPEError(
+            "No deterministic MLPE optimization start converged to a finite likelihood"
+            + (f"; numerical failure: {numerical_failure}" if numerical_failure else "")
+        )
     result = min(candidates, key=lambda candidate: candidate.fun)
     variances = np.exp(result.x)
-    nll, beta = _profile(design, targets, incidence, variances, config.jitter)
-    residual = targets - design @ beta
-    precision = np.eye(len(population_ids)) / variances[0]
-    precision += (incidence.T @ incidence) / (variances[1] + config.jitter)
     try:
-        factor = np.linalg.cholesky(precision)
-        covariance = cho_solve((factor, True), np.eye(len(population_ids)))
-        mean = covariance @ (incidence.T @ residual) / (variances[1] + config.jitter)
+        system = NumpyPopulationSystem(
+            left, right, gram, variances[0], variances[1] + config.jitter
+        )
+        nll, beta = _profile(design, targets, system)
+        mean, covariance, factor = system.posterior(targets - design @ beta)
     except (np.linalg.LinAlgError, ValueError) as error:
         raise MLPEError("Fitted population-effect posterior factorization failed") from error
     if not (np.isfinite(mean).all() and np.isfinite(covariance).all()):
