@@ -9,7 +9,7 @@ import numpy as np
 import optax
 
 from .config import FitConfig
-from .data import PairwiseObservations, PreparedRegion
+from .data import ObservationPartition, PairwiseObservations, PreparedRegion
 from .models import EmbeddingDistanceModel, UNetEmbeddingDistance
 from .predictor import Predictor
 
@@ -33,18 +33,19 @@ class FitResult:
     selection: str
 
 
-def _prepared(region, observations):
-    if observations.target.kind != "dissimilarity" or np.any(observations.values < 0):
+def _prepared(region, observations, partition=None, *, role="training"):
+    if partition is not None and partition.role != role:
+        raise ValueError(f"Expected a {role} partition, got {partition.role}")
+    pairs, values = observations.aligned_pairs(region, partition)
+    if observations.target.kind != "dissimilarity" or np.any(values < 0):
         raise ValueError(
             "direct_log1p requires nonnegative dissimilarities; relatedness is unsupported"
         )
-    values = observations.aligned_values(region)
-    pairs = np.triu_indices(len(region.sampling_unit_ids), 1)
     return (
         jnp.asarray(region.features),
         jnp.asarray(region.pixel_nodes),
         pairs,
-        jnp.asarray(values[pairs]),
+        jnp.asarray(observations.target.forward(values)),
     )
 
 
@@ -55,6 +56,8 @@ def fit(
     model: EmbeddingDistanceModel | None = None,
     config: FitConfig | None = None,
     validation: tuple[PreparedRegion, PairwiseObservations] | None = None,
+    partition: ObservationPartition | None = None,
+    validation_partition: ObservationPartition | None = None,
 ) -> FitResult:
     """Fit nonnegative dissimilarities with direct log1p-MSE.
 
@@ -64,7 +67,9 @@ def fit(
     on the original declared scale, without clipping targets or an MLPE head.
     """
     config = config or FitConfig()
-    training_data = _prepared(region, observations)
+    training_data = _prepared(region, observations, partition)
+    if validation is None and validation_partition is not None:
+        raise ValueError("validation_partition requires validation observations")
     validation_data = None
     if validation is not None:
         validation_region, validation_observations = validation
@@ -72,7 +77,29 @@ def fit(
             raise ValueError("Training and validation target scales must match")
         if validation_region.features.shape[-1] != region.features.shape[-1]:
             raise ValueError("Training and validation feature channels must match")
-        validation_data = _prepared(validation_region, validation_observations)
+        if validation_region.feature_names != region.feature_names:
+            raise ValueError(
+                "Training and validation feature contracts must match meanings and order"
+            )
+        validation_data = _prepared(
+            validation_region, validation_observations, validation_partition, role="validation"
+        )
+        if region.name == validation_region.name:
+
+            def labelled_pairs(prepared_region, data):
+                return {
+                    frozenset(
+                        (prepared_region.sampling_unit_ids[i], prepared_region.sampling_unit_ids[j])
+                    )
+                    for i, j in zip(*data[2], strict=True)
+                }
+
+            if labelled_pairs(region, training_data) & labelled_pairs(
+                validation_region, validation_data
+            ):
+                raise ValueError(
+                    "Training and validation observations overlap within the same region"
+                )
     init_key, random_key = jax.random.split(jax.random.key(config.seed))
     model = (
         model
@@ -129,7 +156,12 @@ def fit(
             selected_epoch = epoch
             best_loss = training_loss if validation_loss is None else validation_loss
     return FitResult(
-        Predictor(selected, observations.target, region.features.shape[-1]),
+        Predictor(
+            selected,
+            observations.target,
+            region.features.shape[-1],
+            feature_names=region.feature_names,
+        ),
         tuple(history),
         selected_epoch,
         "final" if validation is None else "validation",
