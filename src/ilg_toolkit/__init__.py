@@ -3,16 +3,32 @@
 from .calibration import recalibrate
 from .config import FitConfig, SolverConfig
 from .data import ObservationPartition, PairwiseObservations, PreparedRegion, TargetSpec
-from .mlpe import MLPEConfig, MLPEError, MLPEHead, MLPEPrediction, calibrate_mlpe
+from .mlpe import (
+    MLPEConditionalPrediction,
+    MLPEConfig,
+    MLPEError,
+    MLPEHead,
+    MLPEPrediction,
+    MLPEPredictionProvenance,
+    MLPESupportConditioner,
+    calibrate_mlpe,
+    condition_on_support,
+    predict_known_effects,
+)
 from .predictor import Prediction, Predictor
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
     "MLPEConfig",
+    "MLPEConditionalPrediction",
     "MLPEError",
     "MLPEHead",
     "MLPEPrediction",
+    "MLPEPredictionProvenance",
+    "MLPESupportConditioner",
     "calibrate_mlpe",
+    "condition_on_support",
+    "predict_known_effects",
     "EpochRecord",
     "FitConfig",
     "FitResult",
