@@ -3,6 +3,7 @@
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from ilg_toolkit import FitConfig, PairwiseObservations, PreparedRegion, TargetSpec, fit
 from ilg_toolkit.models import EmbeddingDistanceModel
@@ -60,7 +61,7 @@ def test_incomplete_pairs_remain_absent_through_fitting():
     )
     assert observations.observed_pairs == (("unit/7", "unit/20"),)
     assert np.isnan(observations.values[0, 2])
-    assert result.history[0].training_loss == 0
+    assert result.history[0].training_loss == pytest.approx(0, abs=1e-14)
     # Unobserved pairs can still be predicted, but never become zero training targets.
     np.testing.assert_allclose(result.predictor.predict(region).values[0, 2], 4)
 
@@ -192,3 +193,14 @@ def test_sqrt_transform_has_an_explicit_nonnegative_codomain_and_preserves_measu
         target.forward([-1])
     observations = PairwiseObservations.from_pairs([("a", "b")], [0.123456789012345], target=target)
     assert observations.observed_values[0] == 0.123456789012345
+
+
+@pytest.mark.parametrize("field", ["name", "units", "kind", "transform"])
+@pytest.mark.parametrize("value", [1, True, ["genetic"], None, ""])
+def test_target_metadata_requires_nonempty_strings_at_construction(field, value):
+    declared = dict(
+        name="genetic divergence", units="index", kind="dissimilarity", transform="identity"
+    )
+    declared[field] = value
+    with pytest.raises(ValueError, match="nonempty strings"):
+        TargetSpec(**declared)

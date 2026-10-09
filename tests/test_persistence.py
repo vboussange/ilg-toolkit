@@ -226,3 +226,111 @@ def test_model_precision_is_preserved_and_never_silently_truncated(tmp_path):
         )
     with jax.enable_x64(False), pytest.raises(ArtifactError, match="JAX_ENABLE_X64"):
         load_predictor(path)
+
+
+@pytest.mark.parametrize("shared_training", [False, True])
+def test_partial_regional_calibration_roundtrip_retains_available_predictions(
+    tmp_path, shared_training
+):
+    from ilg_toolkit import ObservationPartition, load_predictor, save_predictor
+
+    original, observations, _, _ = problem("encoder-training")
+    other = replace(original, name="second-region")
+    model = UNetEmbeddingDistance(
+        2,
+        patch_size=1,
+        base_channels=2,
+        embedding_dim=3,
+        dropout=0.2,
+        key=jax.random.key(3),
+    )
+    if shared_training:
+        fitted = fit(
+            (original, other), (observations, observations), model=model, config=FitConfig(epochs=0)
+        )
+    else:
+        fitted = fit(original, observations, model=model, config=FitConfig(epochs=0))
+    declared = ObservationPartition(other.name, observations.observed_pairs, role="calibration")
+    partial = fitted.predictor.recalibrate(other, observations, partitions=declared)
+    assert set(partial.calibrations) == {other.name}
+    before = partial.predict(other)
+    path = tmp_path / "partial-calibration.ilg"
+    save_predictor(path, partial)
+    restored = load_predictor(path)
+    assert restored.calibrations == partial.calibrations
+    assert restored.training_pairs == fitted.predictor.training_pairs
+    np.testing.assert_array_equal(restored.predict(other).values, before.values)
+    np.testing.assert_array_equal(
+        restored.landscape_scores(original), partial.landscape_scores(original)
+    )
+    with pytest.raises(ValueError, match="no MLPE calibration"):
+        restored.predict(original)
+
+
+def test_numpy_numeric_config_values_survive_inference_and_checkpoint_reload(tmp_path):
+    from ilg_toolkit import (
+        MLPEConfig,
+        SolverConfig,
+        load_checkpoint,
+        load_predictor,
+        save_checkpoint,
+        save_predictor,
+    )
+
+    region, observations, _, _ = problem("numeric-config")
+    config = FitConfig(
+        epochs=0,
+        learning_rate=np.float32(0.01),
+        solver=SolverConfig(rtol=np.float32(1e-6), atol=np.float32(1e-7), max_steps=np.int64(200)),
+        mlpe_variance_floor=np.float32(1e-10),
+        mlpe_jitter=np.float32(1e-8),
+        mlpe_initial_variances=(np.float32(0.05), np.float32(0.1)),
+    )
+    model = UNetEmbeddingDistance(
+        2, patch_size=1, base_channels=2, embedding_dim=3, key=jax.random.key(3)
+    )
+    fitted = fit(region, observations, model=model, config=config)
+    inference = tmp_path / "numpy-config-predictor.ilg"
+    save_predictor(inference, fitted.predictor)
+    restored = load_predictor(inference)
+    assert restored.solver_config == config.solver
+    np.testing.assert_array_equal(
+        restored.predict(region).values, fitted.predictor.predict(region).values
+    )
+    checkpoint = tmp_path / "numpy-config-checkpoint.ilg"
+    save_checkpoint(checkpoint, fitted.state)
+    state = load_checkpoint(checkpoint)
+    assert state.config == config
+    assert state.config.learning_rate == float(np.float32(0.01))
+    assert state.config.solver.rtol == float(np.float32(1e-6))
+    calibrated = fitted.predictor.recalibrate(
+        region,
+        observations,
+        config=MLPEConfig(
+            variance_floor=np.float32(1e-10),
+            min_score_scale=np.float32(1e-12),
+            jitter=np.float32(1e-8),
+        ),
+    )
+    calibration = tmp_path / "numpy-config-calibration.ilg"
+    save_predictor(calibration, calibrated)
+    reloaded = load_predictor(calibration)
+    assert reloaded.calibrations == calibrated.calibrations
+    np.testing.assert_array_equal(
+        reloaded.predict(region).values, calibrated.predict(region).values
+    )
+
+
+@pytest.mark.parametrize("setting", ["learning_rate", "rtol", "variance_floor", "jitter"])
+@pytest.mark.parametrize("value", [np.array(0.01), np.array([0.01]), object(), np.nan, np.inf])
+def test_numeric_config_scalars_reject_arrays_objects_and_nonfinite_values(setting, value):
+    from ilg_toolkit import MLPEConfig, SolverConfig
+
+    config_type = {
+        "learning_rate": FitConfig,
+        "rtol": SolverConfig,
+        "variance_floor": MLPEConfig,
+        "jitter": MLPEConfig,
+    }[setting]
+    with pytest.raises(ValueError):
+        config_type(**{setting: value})

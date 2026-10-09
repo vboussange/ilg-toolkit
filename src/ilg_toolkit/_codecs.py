@@ -238,7 +238,7 @@ def decode_predictor(record, archive):
     heads = {name: decode_head(head, archive) for name, head in record["calibrations"].items()}
     training = _access(record["training_pairs"])
     validation = _access(record["validation_pairs"])
-    if record["objective"] == "mlpe" and (not heads or not set(training).issubset(heads)):
+    if record["objective"] == "mlpe" and not heads:
         raise ArtifactError("MLPE predictor is missing required regional calibration")
     return Predictor(
         encoder=model,

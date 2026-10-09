@@ -34,6 +34,7 @@ class SolverConfig:
                 or value < 0
             ):
                 raise ValueError(f"solver {name} must be finite and nonnegative")
+            object.__setattr__(self, name, float(value))
         if self.rtol == 0 and self.atol == 0:
             raise ValueError("At least one solver tolerance must be positive")
         if (
@@ -44,6 +45,7 @@ class SolverConfig:
             raise ValueError("solver max_steps must be a positive integer")
         if not isinstance(self.use_amg, bool):
             raise ValueError("solver use_amg must be a boolean")
+        object.__setattr__(self, "max_steps", int(self.max_steps))
 
 
 @dataclass(frozen=True)
@@ -96,7 +98,7 @@ class FitConfig:
                 raise ValueError(
                     "mlpe_initial_variances must be two finite variances above the floor"
                 )
-            object.__setattr__(self, "mlpe_initial_variances", values)
+            object.__setattr__(self, "mlpe_initial_variances", tuple(float(v) for v in values))
         if not isinstance(self.jit, bool):
             raise ValueError("jit must be a boolean")
         if (
@@ -107,5 +109,12 @@ class FitConfig:
             raise ValueError("seed must be an integer in [0, 2**32)")
         if isinstance(self.epochs, bool) or not isinstance(self.epochs, int) or self.epochs < 0:
             raise ValueError("epochs must be a nonnegative integer")
-        if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
+        if (
+            isinstance(self.learning_rate, bool)
+            or not isinstance(self.learning_rate, Real)
+            or not math.isfinite(self.learning_rate)
+            or self.learning_rate <= 0
+        ):
             raise ValueError("learning_rate must be finite and positive")
+        for name in ("learning_rate", "mlpe_variance_floor", "mlpe_jitter"):
+            object.__setattr__(self, name, float(getattr(self, name)))

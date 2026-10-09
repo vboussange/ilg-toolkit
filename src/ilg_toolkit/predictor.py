@@ -22,6 +22,17 @@ class Prediction:
 
 
 @dataclass(frozen=True)
+class PairPrediction:
+    """Marginal predictions for explicit labelled pairs in the requested order."""
+
+    values: np.ndarray
+    pairs: tuple[tuple[str, str], ...]
+    target: TargetSpec
+    region_name: str
+    scale: str = "original"
+
+
+@dataclass(frozen=True)
 class Predictor:
     """Frozen landscape encoder with explicit direct or regional MLPE prediction.
 
@@ -119,22 +130,44 @@ class Predictor:
         No query targets are accepted. An unseen MLPE region requires explicit
         calibration even though its landscape scores can already be computed.
         """
-        self._validate_region(region)
-        if self.objective == "direct_log1p":
-            values = self.target.inverse(self.landscape_scores(region))
-        else:
-            head = self._regional_head(region)
-            scores = self.landscape_scores(region)
-            left, right = np.triu_indices(len(region.sampling_unit_ids), 1)
-            pairs = tuple(
-                (region.sampling_unit_ids[i], region.sampling_unit_ids[j])
-                for i, j in zip(left, right, strict=True)
-            )
-            marginal = head.predict_marginal(scores[left, right], pairs)
-            values = np.zeros_like(scores, dtype=np.float64)
-            values[left, right] = marginal.values
-            values[right, left] = marginal.values
+        count = len(region.sampling_unit_ids)
+        left, right = np.triu_indices(count, 1)
+        pairs = tuple(
+            (region.sampling_unit_ids[i], region.sampling_unit_ids[j])
+            for i, j in zip(left, right, strict=True)
+        )
+        marginal = self.predict_pairs(region, pairs)
+        values = np.zeros((count, count), dtype=marginal.values.dtype)
+        values[left, right] = marginal.values
+        values[right, left] = marginal.values
         return Prediction(values, region.sampling_unit_ids, self.target)
+
+    def predict_pairs(self, region: PreparedRegion, pairs) -> PairPrediction:
+        """Predict a nonempty selection of unique pairs without query targets.
+
+        Preserve the requested order and orientation. Select landscape scores
+        before regional calibration or target inversion, so unrequested pairs
+        cannot cause an inverse-transform failure. MLPE predictions are marginal.
+        """
+        self._validate_region(region)
+        try:
+            raw_pairs = tuple(pairs)
+            if any(isinstance(pair, str) for pair in raw_pairs):
+                raise ValueError("Each pair requires two labels")
+            pairs = tuple(tuple(pair) for pair in raw_pairs)
+            ObservationPartition(region.name, pairs, role="query")
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Pairs require distinct labels and unique unordered identities"
+            ) from error
+        head = self._regional_head(region) if self.objective == "mlpe" else None
+        scores = _scores_for_pairs(self.landscape_scores(region), region, pairs)
+        values = (
+            self.target.inverse(scores)
+            if head is None
+            else head.predict_marginal(scores, pairs).values
+        )
+        return PairPrediction(values, pairs, self.target, region.name)
 
     def recalibrate(self, region: PreparedRegion, observations, *, partitions=None, config=None):
         """Return a new MLPE predictor while retaining this frozen encoder."""
@@ -175,7 +208,7 @@ class Predictor:
 def _scores_for_pairs(scores, region, pairs):
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
     try:
-        return np.array([scores[lookup[a], lookup[b]] for a, b in pairs], dtype=np.float64)
+        return np.array([scores[lookup[a], lookup[b]] for a, b in pairs])
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError(
             "Pairs must contain two sampling-unit labels with locations in the query region"

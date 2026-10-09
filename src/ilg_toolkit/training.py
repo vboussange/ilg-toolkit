@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -103,6 +104,15 @@ class TrainingState:
     stopping_state: dict = field(default_factory=dict)
 
 
+class _TrainingPayload(NamedTuple):
+    """Named numerical inputs passed intact through JAX objective kernels."""
+
+    features: jax.Array
+    nodes: jax.Array
+    pairs: tuple[np.ndarray, np.ndarray]
+    targets: jax.Array
+
+
 @dataclass(frozen=True)
 class _RegionalBatch:
     """Keep each region's observations and solver state separate from its shared encoder."""
@@ -110,7 +120,7 @@ class _RegionalBatch:
     region: PreparedRegion
     observations: PairwiseObservations
     partition: ObservationPartition | None
-    data: tuple
+    payload: _TrainingPayload
     context: SolverContext | None = None
 
 
@@ -135,11 +145,11 @@ def _prepared(region, observations, partition=None, *, role="training", objectiv
             degree = np.bincount(np.concatenate(pairs), minlength=len(region.sampling_unit_ids))
             if degree.max() <= 1:
                 raise ValueError("MLPE variances are unidentifiable: pairs share no endpoints")
-    return (
-        jnp.asarray(region.features),
-        jnp.asarray(region.pixel_nodes),
-        pairs,
-        jnp.asarray(
+    return _TrainingPayload(
+        features=jnp.asarray(region.features),
+        nodes=jnp.asarray(region.pixel_nodes),
+        pairs=pairs,
+        targets=jnp.asarray(
             observations.target.forward(values), dtype=jnp.float64 if objective == "mlpe" else None
         ),
     )
@@ -195,35 +205,30 @@ def _normalize_inputs(regions, observations, partitions):
     )
 
 
-def _regional_loss(encoder, data, *, context=None, inference=True, key=None):
-    features, nodes, pairs, target = data
+def _regional_loss(encoder, payload, *, context=None, inference=True, key=None):
+    predictions = _selected_scores(encoder, payload, context=context, inference=inference, key=key)
+    return jnp.mean(jnp.square(jnp.log1p(predictions) - jnp.log1p(payload.targets)))
+
+
+def _selected_scores(encoder, payload, *, context=None, inference=True, key=None):
     options = dict(inference=inference, key=key)
     if isinstance(encoder, ConductanceModel):
         options["context"] = context
-    predictions = encoder.predict_distances(features, nodes, **options)[pairs]
-    return jnp.mean(jnp.square(jnp.log1p(predictions) - jnp.log1p(target)))
+    return encoder.predict_distances(payload.features, payload.nodes, **options)[payload.pairs]
 
 
-def _selected_scores(encoder, data, *, context=None, inference=True, key=None):
-    features, nodes, pairs, _ = data
-    options = dict(inference=inference, key=key)
-    if isinstance(encoder, ConductanceModel):
-        options["context"] = context
-    return encoder.predict_distances(features, nodes, **options)[pairs]
-
-
-def _joint_loss(parameters, data, *, objective, region_index, config, context=None, key=None):
+def _joint_loss(parameters, payload, *, objective, region_index, config, context=None, key=None):
     encoder, raw_variances = parameters
     if objective == "direct_log1p":
-        return _regional_loss(encoder, data, context=context, inference=False, key=key)
-    scores = _selected_scores(encoder, data, context=context, inference=False, key=key).astype(
+        return _regional_loss(encoder, payload, context=context, inference=False, key=key)
+    scores = _selected_scores(encoder, payload, context=context, inference=False, key=key).astype(
         jnp.float64
     )
     nll, _ = profiled_mlpe_ml_fit(
         scores,
-        data[3],
-        *data[2],
-        n_populations=len(data[1]),
+        payload.targets,
+        *payload.pairs,
+        n_populations=len(payload.nodes),
         raw_variances=raw_variances[region_index],
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
@@ -231,8 +236,8 @@ def _joint_loss(parameters, data, *, objective, region_index, config, context=No
     return nll / len(scores)
 
 
-def _joint_value_and_grad(parameters, data, **kwargs):
-    value, gradient = eqx.filter_value_and_grad(_joint_loss)(parameters, data, **kwargs)
+def _joint_value_and_grad(parameters, payload, **kwargs):
+    value, gradient = eqx.filter_value_and_grad(_joint_loss)(parameters, payload, **kwargs)
     bad = ~jnp.isfinite(value)
     for leaf in jax.tree.leaves(gradient):
         if eqx.is_inexact_array(leaf):
@@ -245,31 +250,33 @@ def _joint_value_and_grad(parameters, data, **kwargs):
     )
 
 
-def _refresh_mlpe(encoder, raw, data, *, config, context=None):
-    scores = _selected_scores(encoder, data, context=context).astype(jnp.float64)
+def _refresh_mlpe(encoder, raw, payload, *, config, context=None):
+    scores = _selected_scores(encoder, payload, context=context).astype(jnp.float64)
     _, center, scale = sample_standardize_scores(scores)
     options = dict(
-        n_populations=len(data[1]),
+        n_populations=len(payload.nodes),
         raw_variances=raw,
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
         score_center=center,
         score_scale=scale,
     )
-    nll, beta = profiled_mlpe_ml_fit(scores, data[3], *data[2], **options)
-    posterior = mlpe_effect_posterior(scores, data[3], *data[2], fixed_effects=beta, **options)
+    nll, beta = profiled_mlpe_ml_fit(scores, payload.targets, *payload.pairs, **options)
+    posterior = mlpe_effect_posterior(
+        scores, payload.targets, *payload.pairs, fixed_effects=beta, **options
+    )
     variances = jnp.stack(decode_mlpe_variances(raw, variance_floor=config.mlpe_variance_floor))
     return nll, beta, center, scale, variances, posterior
 
 
-def _frozen_validation_loss(encoder, raw, moments, data, *, config, context=None):
-    scores = _selected_scores(encoder, data, context=context).astype(jnp.float64)
+def _frozen_validation_loss(encoder, raw, moments, payload, *, config, context=None):
+    scores = _selected_scores(encoder, payload, context=context).astype(jnp.float64)
     center, scale, beta = moments
     nll = mlpe_ml_negative_log_likelihood(
         scores,
-        data[3],
-        *data[2],
-        n_populations=len(data[1]),
+        payload.targets,
+        *payload.pairs,
+        n_populations=len(payload.nodes),
         fixed_effects=beta,
         raw_variances=raw,
         score_center=center,
@@ -289,7 +296,7 @@ _compiled_validation = eqx.filter_jit(_frozen_validation_loss)
 def _labelled_pairs(batch):
     return tuple(
         tuple(sorted((batch.region.sampling_unit_ids[i], batch.region.sampling_unit_ids[j])))
-        for i, j in zip(*batch.data[2], strict=True)
+        for i, j in zip(*batch.payload.pairs, strict=True)
     )
 
 
@@ -330,7 +337,8 @@ def _initial_raw_variances(batches, config):
     for batch in batches:
         if config.mlpe_initial_variances is None:
             variance = max(
-                float(np.var(np.asarray(batch.data[3]), ddof=1)), config.mlpe_variance_floor * 100
+                float(np.var(np.asarray(batch.payload.targets), ddof=1)),
+                config.mlpe_variance_floor * 100,
             )
             pair = (
                 max(variance / 4, config.mlpe_variance_floor * 10),
@@ -437,7 +445,7 @@ def fit(
 
     def make_batch(inputs, role):
         prepared_region, regional_observations, selected_partition = inputs
-        data = _prepared(
+        payload = _prepared(
             prepared_region,
             regional_observations,
             selected_partition,
@@ -454,7 +462,7 @@ def fit(
                 contexts[shape] = build_solver_context(shape, config.solver)
             context = contexts[shape]
         return _RegionalBatch(
-            prepared_region, regional_observations, selected_partition, data, context
+            prepared_region, regional_observations, selected_partition, payload, context
         )
 
     training_batches = tuple(make_batch(inputs, "training") for inputs in training_inputs)
@@ -544,7 +552,7 @@ def fit(
                     parameters[0],
                     parameters[1][region_indices[batch.region.name]],
                     moments,
-                    batch.data,
+                    batch.payload,
                     config=config,
                     context=batch.context,
                     batch=batch,
@@ -554,7 +562,7 @@ def fit(
                 value = checked_call(
                     evaluate,
                     parameters[0],
-                    batch.data,
+                    batch.payload,
                     context=batch.context,
                     batch=batch,
                     epoch=epoch,
@@ -625,7 +633,7 @@ def fit(
                 _, gradient = checked_call(
                     gradient_function,
                     parameters,
-                    batch.data,
+                    batch.payload,
                     objective=config.objective,
                     region_index=i,
                     config=config,
@@ -659,7 +667,7 @@ def fit(
                     refresh,
                     parameters[0],
                     parameters[1][i],
-                    batch.data,
+                    batch.payload,
                     config=config,
                     context=batch.context,
                     batch=batch,
@@ -686,7 +694,7 @@ def fit(
                     effect_covariance=tuple(map(tuple, covariance.tolist())),
                     effect_precision_cholesky=tuple(map(tuple, factor.tolist())),
                     calibration_pairs=training_pairs[batch.region.name],
-                    calibration_roles=("training",) * len(batch.data[3]),
+                    calibration_roles=("training",) * len(batch.payload.targets),
                     ml_log_likelihood=-float(nll),
                     config=MLPEConfig(
                         variance_floor=config.mlpe_variance_floor, jitter=config.mlpe_jitter
@@ -696,7 +704,7 @@ def fit(
                     converged=False,
                 )
                 heads[batch.region.name] = head
-                regional_training[batch.region.name] = float(nll) / len(batch.data[3])
+                regional_training[batch.region.name] = float(nll) / len(batch.payload.targets)
             training_loss = float(np.mean(list(regional_training.values())))
         else:
             training_loss, regional_training = evaluate_regions(training_batches, epoch, heads)
