@@ -9,7 +9,54 @@ from abc import abstractmethod
 import equinox as eqx
 import jax
 
+from ..solver import SolverContext, effective_resistance
 from .common import pixel_to_patch_nodes, squared_embedding_distances
+
+
+class ConductanceModel(eqx.Module):
+    """Encode positive patch conductance and measure graph resistance.
+
+    Initial encoders use stateless GroupNorm; their entire Equinox model is
+    retained by training and prediction. ``inference`` and ``key`` provide the
+    common distance model signature and are unused by this deterministic family.
+    """
+
+    patch_size: eqx.AbstractVar[int]
+
+    @abstractmethod
+    def conductance(self, features, *, patch_batch_size=None):
+        """Return a positive 2D patch-grid surface for one HWC feature raster."""
+
+    def resistance_and_conductance(
+        self,
+        features,
+        pixel_nodes,
+        *,
+        context: SolverContext | None = None,
+        patch_batch_size=None,
+    ):
+        """Return landscape scores and the conductance surface that induced them."""
+        surface = self.conductance(features, patch_batch_size=patch_batch_size)
+        nodes = pixel_to_patch_nodes(
+            pixel_nodes, raster_shape=features.shape[:2], patch_size=self.patch_size
+        )
+        return effective_resistance(surface, nodes, context=context), surface
+
+    def predict_distances(
+        self,
+        features,
+        pixel_nodes,
+        *,
+        context: SolverContext | None = None,
+        inference=True,
+        key=None,
+        patch_batch_size=None,
+    ):
+        """Return all pairwise resistance scores independently of genetic labels."""
+        scores, _ = self.resistance_and_conductance(
+            features, pixel_nodes, context=context, patch_batch_size=patch_batch_size
+        )
+        return scores
 
 
 class EmbeddingDistanceModel(eqx.Module):

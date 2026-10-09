@@ -51,11 +51,14 @@ result = ilg.fit(region, obs, config=ilg.FitConfig(epochs=0))
 assert np.isfinite(result.predictor.predict(region).values).all()
 assert result.predictor.predict(region).target.units == 'index'
 assert ilg.__file__.startswith({str(installation)!r})
+import runpy
+runpy.run_path({str(root / "examples" / "conductance.py")!r}, run_name='__main__')
 print(ilg.__file__)
 """
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment["JAX_PLATFORMS"] = "cpu"
+    environment["JAX_ENABLE_X64"] = "true"
     result = subprocess.run(
         [sys.executable, "-I", "-c", script],
         cwd=tmp_path,
