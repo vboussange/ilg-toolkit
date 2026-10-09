@@ -17,6 +17,7 @@ class Prediction:
     values: np.ndarray
     sampling_unit_ids: tuple[str, ...]
     target: TargetSpec
+    scale: str = "original"
 
 
 @dataclass(frozen=True)
@@ -26,12 +27,20 @@ class Predictor:
     encoder: ConductanceModel | EmbeddingDistanceModel
     target: TargetSpec
     feature_count: int
+    feature_names: tuple[str, ...] | None = None
     solver_config: SolverConfig = field(default_factory=SolverConfig)
+
+    def _validate_region(self, region: PreparedRegion):
+        if region.features.shape[-1] != self.feature_count:
+            raise ValueError(f"Expected {self.feature_count} feature channels")
+        if region.feature_names != self.feature_names:
+            raise ValueError(
+                "Query feature contract must match training feature meanings and order"
+            )
 
     def landscape_scores(self, region: PreparedRegion) -> np.ndarray:
         """Predict scores for prepared query locations without genetic observations."""
-        if region.features.shape[-1] != self.feature_count:
-            raise ValueError(f"Expected {self.feature_count} feature channels")
+        self._validate_region(region)
         options = {}
         if isinstance(self.encoder, ConductanceModel):
             height, width = region.features.shape[:2]
@@ -52,8 +61,7 @@ class Predictor:
         """Expose a fitted conductance surface separately from genetic predictions."""
         if not isinstance(self.encoder, ConductanceModel):
             raise TypeError("This encoder does not produce a conductance surface")
-        if region.features.shape[-1] != self.feature_count:
-            raise ValueError(f"Expected {self.feature_count} feature channels")
+        self._validate_region(region)
         surface = np.asarray(self.encoder.conductance(region.features))
         if not np.all(np.isfinite(surface) & (surface > 0)):
             raise FloatingPointError("Encoder produced nonfinite or nonpositive conductance")
@@ -61,4 +69,8 @@ class Predictor:
 
     def predict(self, region: PreparedRegion) -> Prediction:
         """Return direct predictions on the declared genetic measurement scale."""
-        return Prediction(self.landscape_scores(region), region.sampling_unit_ids, self.target)
+        return Prediction(
+            self.target.inverse(self.landscape_scores(region)),
+            region.sampling_unit_ids,
+            self.target,
+        )

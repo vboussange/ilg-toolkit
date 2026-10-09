@@ -106,3 +106,49 @@ ruff check .
 Tests exercise public fit/predict behavior on synthetic arrays and build a wheel
 to run outside the source tree. Extracted components and their license are listed
 in `NOTICE`; study-specific code remains in its original repositories.
+
+## Labelled pairs, transformations, and partitions
+
+Incomplete observations need no invented genetic targets:
+
+```python
+from ilg_toolkit import ObservationPartition
+
+observations = PairwiseObservations.from_pairs(
+    [("a", "b"), ("a", "d")], [.2, .6],
+    target=TargetSpec("genetic dissimilarity", units="index", transform="log1p"),
+)
+training = ObservationPartition(region.name, (("a", "b"),), role="training")
+validation = ObservationPartition(region.name, (("a", "d"),), role="validation")
+result = fit(
+    region, observations, partition=training,
+    validation=(region, observations), validation_partition=validation,
+    config=FitConfig(epochs=10),
+)
+```
+
+Explicit pair inputs require finite values and distinct, known endpoints; reversed
+pairs represent the same observation and cannot be duplicated. A matrix may use
+symmetric off-diagonal `NaN` entries for absent pairs. `observed_pairs` and
+`observed_values` expose measured observations only. Their original measurement
+precision is retained. Partition selections must be nonempty, refer to observed
+pairs, and match their region and requested role. Training and validation pairs
+in the same declared region must be disjoint, with or without partition arguments.
+
+The default target transform is `identity`. Explicit `log1p` and `sqrt` transforms
+require nonnegative observations. They map measurements into the encoder's
+regression scale; `predict()` applies their inverse and reports `scale="original"`
+with the original `TargetSpec.units`. `landscape_scores()` exposes encoder scores
+before this inverse operation. A square-root inverse rejects negative transformed
+predictions rather than silently squaring them. No FST linearization or target
+clipping is automatic. Target kinds distinguish dissimilarity, similarity, and
+relatedness; direct regression accepts nonnegative dissimilarity only.
+
+Declare `PreparedRegion(feature_names=("elevation", "canopy"), ...)` to record
+feature meanings and channel order. Prediction and validation require that same
+contract; equal channel counts alone do not validate declared feature meanings.
+An unnamed feature contract remains available for the simplest single-region
+prepared-array workflow. `sampling_unit_kinds` optionally supplies one
+`"population"` or `"individual"` entry per label (default: population). This
+identity metadata reserves individual-based use without implementing or asserting
+statistical validity for individual-relatedness models.

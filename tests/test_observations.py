@@ -1,0 +1,194 @@
+"""Public prepared-input and fit/predict contracts from the approved spec seam."""
+
+import equinox as eqx
+import jax.numpy as jnp
+import numpy as np
+
+from ilg_toolkit import FitConfig, PairwiseObservations, PreparedRegion, TargetSpec, fit
+from ilg_toolkit.models import EmbeddingDistanceModel
+
+
+class LinearEmbedding(EmbeddingDistanceModel):
+    """Small real distance encoder using the documented model extension boundary."""
+
+    weight: jnp.ndarray
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
+        return features[..., :1] * self.weight
+
+
+def problem():
+    region = PreparedRegion(
+        "anywhere",
+        np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]),
+        ("unit/7", "unit/20", "unit/99"),
+        np.array([[0, 0], [0, 1], [0, 2]]),
+    )
+    target = TargetSpec("pair dissimilarity", units="index")
+    return region, target, LinearEmbedding(jnp.asarray(0.7))
+
+
+def test_equivalent_matrix_and_pair_inputs_train_equivalent_predictors():
+    region, target, model = problem()
+    matrix = PairwiseObservations.from_matrix(
+        region.sampling_unit_ids, [[0, 1, 4], [1, 0, 1], [4, 1, 0]], target=target
+    )
+    pairs = PairwiseObservations.from_pairs(
+        [("unit/99", "unit/7"), ("unit/20", "unit/99"), ("unit/7", "unit/20")],
+        [4, 1, 1],
+        target=target,
+    )
+    left = fit(region, matrix, model=model, config=FitConfig(epochs=2))
+    right = fit(region, pairs, model=model, config=FitConfig(epochs=2))
+    np.testing.assert_allclose(
+        left.predictor.predict(region).values, right.predictor.predict(region).values, rtol=1e-6
+    )
+    assert left.history[-1].training_loss == right.history[-1].training_loss
+
+
+def test_incomplete_pairs_remain_absent_through_fitting():
+    region, target, _ = problem()
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20")],
+        [1],
+        target=target,
+        sampling_unit_ids=region.sampling_unit_ids,
+    )
+    result = fit(
+        region, observations, model=LinearEmbedding(jnp.asarray(1.0)), config=FitConfig(epochs=0)
+    )
+    assert observations.observed_pairs == (("unit/7", "unit/20"),)
+    assert np.isnan(observations.values[0, 2])
+    assert result.history[0].training_loss == 0
+    # Unobserved pairs can still be predicted, but never become zero training targets.
+    np.testing.assert_allclose(result.predictor.predict(region).values[0, 2], 4)
+
+
+def test_explicit_transform_returns_original_units_and_separate_landscape_scores():
+    region, _, _ = problem()
+    target = TargetSpec("explicitly transformed divergence", units="index", transform="log1p")
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20")], [np.e - 1], target=target
+    )
+    result = fit(
+        region, observations, model=LinearEmbedding(jnp.asarray(1.0)), config=FitConfig(epochs=0)
+    )
+    prediction = result.predictor.predict(region)
+    assert result.history[0].training_loss < 1e-12
+    assert prediction.scale == "original"
+    assert prediction.target.transform == "log1p"
+    assert prediction.target.units == "index"
+    np.testing.assert_allclose(prediction.values[0, 1], np.e - 1, rtol=1e-6)
+    np.testing.assert_allclose(result.predictor.landscape_scores(region)[0, 1], 1)
+
+
+def test_supplied_partitions_select_observations_and_reject_invalid_membership():
+    import pytest
+
+    from ilg_toolkit import ObservationPartition
+
+    region, target, model = problem()
+    observations = PairwiseObservations.from_matrix(
+        region.sampling_unit_ids, [[0, 1, 4], [1, 0, 1], [4, 1, 0]], target=target
+    )
+    training = ObservationPartition(region.name, (("unit/7", "unit/20"),), role="training")
+    validation = ObservationPartition(region.name, (("unit/7", "unit/99"),), role="validation")
+    result = fit(
+        region,
+        observations,
+        model=model,
+        config=FitConfig(epochs=0),
+        partition=training,
+        validation=(region, observations),
+        validation_partition=validation,
+    )
+    assert result.history[0].validation_loss is not None
+    with pytest.raises(ValueError, match="overlap"):
+        fit(
+            region,
+            observations,
+            model=model,
+            config=FitConfig(epochs=0),
+            validation=(region, observations),
+        )
+    wrong_region = ObservationPartition("somewhere-else", training.pairs)
+    with pytest.raises(ValueError, match="region"):
+        fit(region, observations, model=model, partition=wrong_region)
+    incomplete = PairwiseObservations.from_pairs(training.pairs, [1], target=target)
+    absent = ObservationPartition(region.name, (("unit/7", "unit/99"),))
+    with pytest.raises(ValueError, match="unobserved"):
+        fit(region, incomplete, model=model, partition=absent)
+
+
+def test_feature_order_and_sampling_unit_kinds_are_explicit():
+    from dataclasses import replace
+
+    import pytest
+
+    region, target, model = problem()
+    region = replace(
+        region,
+        feature_names=("elevation", "canopy"),
+        sampling_unit_kinds=("individual", "population", "individual"),
+    )
+    observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
+    result = fit(region, observations, model=model, config=FitConfig(epochs=0))
+    assert region.sampling_unit_kinds == ("individual", "population", "individual")
+    assert result.predictor.feature_names == ("elevation", "canopy")
+    swapped = replace(region, feature_names=("canopy", "elevation"))
+    with pytest.raises(ValueError, match="feature.*order|feature.*contract"):
+        result.predictor.predict(swapped)
+    relatedness = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20")], [-0.2], target=TargetSpec("relatedness", kind="relatedness")
+    )
+    with pytest.raises(ValueError, match="nonnegative dissimilarities"):
+        fit(region, relatedness, model=model)
+
+
+def test_invalid_observations_and_partitions_fail_at_the_public_boundary():
+    import pytest
+
+    from ilg_toolkit import ObservationPartition
+
+    region, target, model = problem()
+    for pairs, values, labels, message in [
+        ([("a", "b")], [np.nan], None, "finite"),
+        ([("a", "b")], [np.inf], None, "finite"),
+        ([("a", "a")], [1], None, "distinct"),
+        ([("a", "b"), ("b", "a")], [1, 1], None, "unique"),
+        ([("a", "b")], [1], ("a", "c"), "endpoint"),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            PairwiseObservations.from_pairs(pairs, values, target=target, sampling_unit_ids=labels)
+    unknown = PairwiseObservations.from_pairs([("unit/7", "missing")], [1], target=target)
+    with pytest.raises(ValueError, match="outside region"):
+        fit(region, unknown, model=model)
+    observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
+    for partition, message in [
+        (ObservationPartition(region.name, (("unit/7", "missing"),)), "endpoints"),
+        (
+            ObservationPartition(region.name, observations.observed_pairs, role="validation"),
+            "training",
+        ),
+    ]:
+        with pytest.raises(ValueError, match=message):
+            fit(region, observations, model=model, partition=partition)
+    with pytest.raises(ValueError, match="nonempty"):
+        ObservationPartition(region.name, ())
+    with pytest.raises(ValueError, match="unique"):
+        ObservationPartition(region.name, (("a", "b"), ("b", "a")))
+
+
+def test_sqrt_transform_has_an_explicit_nonnegative_codomain_and_preserves_measurements():
+    import pytest
+
+    target = TargetSpec("divergence", units="index", transform="sqrt")
+    np.testing.assert_allclose(target.forward([0, 4, 9]), [0, 2, 3])
+    np.testing.assert_allclose(target.inverse([0, 2, 3]), [0, 4, 9])
+    with pytest.raises(ValueError, match="nonnegative transformed"):
+        target.inverse([-1])
+    with pytest.raises(ValueError, match="nonnegative values"):
+        target.forward([-1])
+    observations = PairwiseObservations.from_pairs([("a", "b")], [0.123456789012345], target=target)
+    assert observations.observed_values[0] == 0.123456789012345
