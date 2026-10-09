@@ -15,7 +15,7 @@ pip install .
 # Tests and formatting: pip install '.[dev]'
 ```
 
-The minimal workflow uses NumPy, JAX, Equinox, and Optax. It has no paper-data,
+The minimal workflow uses NumPy, SciPy, JAX, Equinox, and Optax. It has no paper-data,
 benchmark, geospatial acquisition, or research-checkout dependency.
 
 ## Synthetic quickstart
@@ -126,3 +126,40 @@ prepared-array workflow. `sampling_unit_kinds` optionally supplies one
 `"population"` or `"individual"` entry per label (default: population). This
 identity metadata reserves individual-based use without implementing or asserting
 statistical validity for individual-relatedness models.
+
+
+## Regional MLPE calibration
+
+`python examples/mlpe_calibration.py` demonstrates a frozen encoder's landscape
+scores and a separate full-Gaussian-ML genetic calibration:
+
+```python
+from ilg_toolkit import calibrate_mlpe
+
+# One finite score per observations.observed_pairs, in that documented order.
+head = calibrate_mlpe(scores, observations, region_name="my-catchment")
+predictions = head.predict_marginal(query_scores, query_pairs)
+```
+
+The head profiles a signed intercept and slope by GLS, standardizes training
+scores with sample SD (`ddof=1`), and fits positive population-effect and residual
+variance components. `MLPEConfig` makes variance floor, score-scale threshold,
+explicit jitter, and optimizer budget configurable. Calibration uses float64;
+JAX likelihood kernels follow input precision without changing global settings.
+Constant scores, unidentified variance components, and failed optimization are
+reported explicitly. Relatedness and similarity require a dedicated observation
+model and are rejected by this population MLPE boundary.
+
+Scores align with the observations' deterministic `observed_pairs` order, even
+when pair input was supplied in another order. An optional `ObservationPartition`
+selects declared training, validation, or calibration observations; their pair
+identities and roles are retained on the head. Missing pairs are absent from the
+likelihood. Query and support partitions cannot calibrate the head.
+
+Marginal prediction uses zero-mean population effects, including for unseen
+populations. It accepts labelled query pairs and scores, without query targets.
+`predictions.values` reports original target units; `model_values` retains the
+fitted transformed scale. With a nonlinear target transform, inverse-transforming
+the fitted mean is not a distributional mean correction. Negative signed
+predictions are retained without clipping. Explicit jitter is consistently added
+to residual variance in both likelihood and the stored effect posterior.

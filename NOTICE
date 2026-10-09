@@ -10,3 +10,8 @@ Modifications separate the reusable encoder from research configurations and
 paper data, and add independent prepared-data, training, and prediction APIs.
 The original license is included in LICENSE. No runtime dependency on either
 research checkout is retained.
+
+The regional full-ML calibration procedure, differentiable likelihood formulas,
+and frozen R/lme4 numerical fixtures were adapted from the same repository's
+src/mlpe/{fit,likelihood,prediction}.py and test/test_mlpe.py. Toolkit adaptation
+adds regional observation provenance and consistent explicit-jitter handling.
