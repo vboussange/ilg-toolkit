@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .config import SolverConfig
-from .data import PreparedRegion, TargetSpec
-from .mlpe import MLPEHead
+from .data import ObservationPartition, PairwiseObservations, PreparedRegion, TargetSpec
+from .mlpe import MLPEConditionalPrediction, MLPEHead
 from .models import ConductanceModel, EmbeddingDistanceModel
 from .solver import build_solver_context
 
@@ -141,3 +141,42 @@ class Predictor:
         from .calibration import recalibrate
 
         return recalibrate(self, region, observations, partitions=partitions, config=config)
+
+    def predict_known_effects(self, region: PreparedRegion, pairs) -> MLPEConditionalPrediction:
+        """Predict explicit labelled pairs using stored regional population effects."""
+        head = self._regional_head(region)
+        pairs = tuple(pairs)
+        scores = _scores_for_pairs(self.landscape_scores(region), region, pairs)
+        return head.predict_known_effects(scores, pairs)
+
+    def predict_with_support(
+        self,
+        region: PreparedRegion,
+        pairs,
+        support_observations: PairwiseObservations,
+        *,
+        support_partition: ObservationPartition,
+    ) -> MLPEConditionalPrediction:
+        """Predict disjoint queries using only declared support genetic observations.
+
+        The prepared region supplies locations for every support and query endpoint.
+        This operation leaves the encoder and stored regional calibration unchanged.
+        """
+        head = self._regional_head(region)
+        pairs = tuple(pairs)
+        scores = self.landscape_scores(region)
+        support_scores = _scores_for_pairs(scores, region, support_observations.observed_pairs)
+        conditioned = head.condition_on_support(
+            support_scores, support_observations, partition=support_partition
+        )
+        return conditioned.predict(_scores_for_pairs(scores, region, pairs), pairs)
+
+
+def _scores_for_pairs(scores, region, pairs):
+    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
+    try:
+        return np.array([scores[lookup[a], lookup[b]] for a, b in pairs], dtype=np.float64)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            "Pairs must contain two sampling-unit labels with locations in the query region"
+        ) from error

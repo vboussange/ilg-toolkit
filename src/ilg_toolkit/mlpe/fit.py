@@ -116,21 +116,25 @@ class MLPEHead:
 
     def predict_marginal(self, scores, pairs) -> MLPEPrediction:
         """Predict labelled query pairs without targets; new effects have mean zero."""
-        scores = np.asarray(scores, dtype=np.float64)
-        pairs = tuple(tuple(pair) for pair in pairs)
-        if scores.ndim != 1 or not np.isfinite(scores).all() or len(scores) != len(pairs):
-            raise MLPEError("Query scores must be finite and aligned with labelled pairs")
-        if any(
-            len(pair) != 2
-            or any(not isinstance(label, str) or not label for label in pair)
-            or pair[0] == pair[1]
-            for pair in pairs
-        ):
-            raise MLPEError("Query pairs require distinct nonempty sampling-unit labels")
+        from .prediction import _query
+
+        scores, pairs, _ = _query(scores, pairs)
         model_values = self.intercept + self.slope * (scores - self.score_center) / self.score_scale
         return MLPEPrediction(
             self.target.inverse(model_values), model_values, pairs, self.target, self.region_name
         )
+
+    def predict_known_effects(self, scores, pairs):
+        """Explicit posterior-effect prediction, with independent priors for unseen units."""
+        from .prediction import predict_known_effects
+
+        return predict_known_effects(self, scores, pairs)
+
+    def condition_on_support(self, support_scores, support_observations, *, partition):
+        """Update effects using only an explicit support-role partition."""
+        from .prediction import condition_on_support
+
+        return condition_on_support(self, support_scores, support_observations, partition=partition)
 
 
 def _profile(design, targets, system):
