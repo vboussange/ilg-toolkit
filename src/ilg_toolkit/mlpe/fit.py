@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass
+from numbers import Real
 
 import numpy as np
 from scipy.optimize import minimize
@@ -29,13 +30,23 @@ class MLPEConfig:
     max_iterations: int = 2000
 
     def __post_init__(self):
+        for name in ("variance_floor", "min_score_scale", "jitter", "max_iterations"):
+            if isinstance(getattr(self, name), (bool, np.bool_)):
+                raise MLPEError(f"{name} cannot be boolean")
         for name in ("variance_floor", "min_score_scale"):
-            if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
+            value = getattr(self, name)
+            if not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
                 raise MLPEError(f"{name} must be finite and positive")
-        if not math.isfinite(self.jitter) or not 0 <= self.jitter <= 1e-6:
+            object.__setattr__(self, name, float(value))
+        if (
+            not isinstance(self.jitter, Real)
+            or not math.isfinite(self.jitter)
+            or not 0 <= self.jitter <= 1e-6
+        ):
             raise MLPEError("jitter must be finite and in [0, 1e-6]; no automatic increases")
         if not isinstance(self.max_iterations, int) or self.max_iterations < 1:
             raise MLPEError("max_iterations must be a positive integer")
+        object.__setattr__(self, "jitter", float(self.jitter))
 
 
 @dataclass(frozen=True)

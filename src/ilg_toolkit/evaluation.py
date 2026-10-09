@@ -264,13 +264,7 @@ def _member_predict(predictor, region, pairs, regime, support, access):
     provenance = None
     variances = None
     if regime.prediction_mode == "marginal":
-        scores = predictor.landscape_scores(region)
-        lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-        selected = np.array([scores[lookup[a], lookup[b]] for a, b in pairs])
-        if predictor.objective == "mlpe":
-            values = predictor._regional_head(region).predict_marginal(selected, pairs).values
-        else:
-            values = predictor.target.inverse(selected)
+        values = predictor.predict_pairs(region, pairs).values
     else:
         if regime.prediction_mode == "known_effects":
             result = predictor.predict_known_effects(region, pairs)

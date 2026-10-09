@@ -42,7 +42,7 @@ from .mlpe import (
     predict_known_effects,
 )
 from .persistence import ArtifactError, load_predictor, save_predictor
-from .predictor import Prediction, Predictor
+from .predictor import PairPrediction, Prediction, Predictor
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
@@ -89,6 +89,7 @@ __all__ = [
     "PairwiseObservations",
     "ObservationPartition",
     "Prediction",
+    "PairPrediction",
     "Predictor",
     "PreparedRegion",
     "SolverConfig",

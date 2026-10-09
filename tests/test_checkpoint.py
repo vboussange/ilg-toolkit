@@ -343,3 +343,25 @@ def test_checkpoint_load_refuses_incomplete_schema_runtime_and_progress(tmp_path
     corrupt("progress.ilg", lambda m: m["payload"].update(step=1), "progress")
     corrupt("history.ilg", lambda m: m["payload"].update(history=[]), "history")
     corrupt("kind.ilg", lambda m: m.update(kind="predictor"), "training_checkpoint")
+
+
+def test_checkpoint_requires_calibration_for_every_training_region(tmp_path):
+    from dataclasses import replace
+
+    from ilg_toolkit import ArtifactError
+
+    region, observations = checkpoint_problem()
+    other = replace(region, name="second-region")
+    with jax.enable_x64():
+        result = fit(
+            (region, other),
+            (observations, observations),
+            model=checkpoint_model(),
+            config=FitConfig(epochs=0, objective="mlpe"),
+        )
+        partial = replace(
+            result.predictor, calibrations={region.name: result.predictor.calibrations[region.name]}
+        )
+        state = replace(result.state, latest_predictor=partial, best_predictor=partial)
+        with pytest.raises(ArtifactError, match="missing regional MLPE calibration"):
+            save_checkpoint(tmp_path / "incomplete-calibration.ilg", state)

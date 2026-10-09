@@ -22,6 +22,11 @@ operations described in [MLPE conditioning](mlpe-conditioning.md). Calibration i
 never recomputed during loading. Joint Adam heads retain their fixed-budget
 `converged=False` diagnostic rather than becoming standalone converged fits.
 
+An inference artifact can retain calibration for only selected regions,
+including a newly calibrated transfer region. Label-free landscape scoring still
+works in other compatible regions; target prediction there requires an explicit
+regional head. Training checkpoints require calibration for every training region.
+
 The current codecs support the exact shipped `UNetEmbeddingDistance` and
 `ResNet9Conductance` classes. Both use stateless GroupNorm; that absence of mutable
 model state is recorded explicitly. Unsupported custom architectures, static

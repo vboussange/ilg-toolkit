@@ -46,6 +46,14 @@ print(prediction.values, prediction.target)
 scores = result.predictor.landscape_scores(region)
 ```
 
+`predict()` returns a symmetric matrix in the region's sampling-unit order. For
+selected pairs, use `result.predictor.predict_pairs(region, [("a", "d")])`.
+Its `PairPrediction` contains a vector of `values`, the requested `pairs` in their
+original order/orientation, `target`, `region_name`, and `scale="original"`.
+Pairs must be nonempty, distinct and unique as unordered identities. Both direct
+and MLPE predictors select scores before target inversion; unrequested pairs do
+not trigger inverse-transform failures. MLPE pair predictions are marginal.
+
 Features have shape `(rows, columns, channels)` and must already be prepared;
 locations are explicit integer `(row, column)` positions. Labels declare the
 matrix row/column identity and are aligned to the region before training.

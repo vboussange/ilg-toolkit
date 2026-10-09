@@ -171,3 +171,12 @@ def test_explicit_numerical_constraints_and_optimization_failure_are_visible():
             region_name="alpine",
             config=MLPEConfig(max_iterations=1),
         )
+
+
+@pytest.mark.parametrize("field", ["variance_floor", "min_score_scale", "jitter", "max_iterations"])
+@pytest.mark.parametrize("value", [False, True, np.bool_(False), np.bool_(True)])
+def test_mlpe_config_rejects_booleans_at_construction(field, value):
+    from ilg_toolkit import MLPEConfig, MLPEError
+
+    with pytest.raises(MLPEError, match="boolean"):
+        MLPEConfig(**{field: value})

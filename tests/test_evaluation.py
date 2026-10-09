@@ -490,9 +490,15 @@ def test_only_eligible_pairs_are_inverse_transformed():
         assert ensemble.members[0].status == "completed"
         with pytest.raises(ValueError, match="sqrt inverse"):
             ensemble.predict(region)  # unrelated (a,e) has score16 and fitted mean-4
+        marginal = ensemble.members[0].predictor.predict_pairs(region, [("d", "e")])
+        assert marginal.pairs == (("d", "e"),)
+        assert marginal.target == target
+        assert marginal.region_name == region.name
+        assert marginal.scale == "original"
         selected = predict_out_of_fold(ensemble, region, [("d", "e")])
     assert selected.coverage == 1
     np.testing.assert_allclose(selected.values, [12.25], atol=1e-12)
+    np.testing.assert_array_equal(selected.values, marginal.values)
     assert selected.prediction_failures == {}
 
 
@@ -544,3 +550,46 @@ def test_reused_calibration_support_cannot_contribute_and_target_scales_must_mat
         evaluate_ensemble(
             ensemble, region, observations, partitions=member.fold.training[region.name]
         )
+
+
+def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_overflow():
+    from dataclasses import replace
+
+    import pytest
+
+    from ilg_toolkit import PairPrediction
+
+    region, ensemble, _ = known_ensemble()
+    region = replace(region, features=np.array([0, 100, 1, 2]).reshape(1, 4, 1))
+    target = TargetSpec("divergence", units="index", transform="log1p")
+    members = tuple(
+        replace(member, predictor=replace(member.predictor, target=target))
+        for member in ensemble.members
+    )
+    ensemble = Ensemble(members)
+    expected = [np.expm1(1), np.expm1(4)]
+    for member, value in zip(members, expected, strict=True):
+        predictor = member.predictor
+        with pytest.raises(FloatingPointError, match="inverse transformation"):
+            predictor.predict(region)
+        selected = predictor.predict_pairs(region, [("d", "c")])
+        assert isinstance(selected, PairPrediction)
+        assert selected.pairs == (("d", "c"),)
+        assert selected.target == target
+        assert selected.region_name == region.name
+        assert selected.scale == "original"
+        np.testing.assert_allclose(selected.values, [value], rtol=1e-7)
+    out_of_fold = predict_out_of_fold(ensemble, region, [("a", "b"), ("c", "d")])
+    np.testing.assert_array_equal(out_of_fold.eligible_counts, [0, 2])
+    np.testing.assert_allclose(out_of_fold.values[1], np.mean(expected), rtol=1e-7)
+    assert out_of_fold.prediction_failures == {}
+
+
+def test_pair_queries_require_unique_distinct_labels_with_query_locations():
+    import pytest
+
+    region, ensemble, _ = known_ensemble()
+    predictor = ensemble.members[0].predictor
+    for pairs in ([], [("a", "a")], [("a", "b"), ("b", "a")], [("a",)], ["ab"], [("a", "unknown")]):
+        with pytest.raises(ValueError):
+            predictor.predict_pairs(region, pairs)

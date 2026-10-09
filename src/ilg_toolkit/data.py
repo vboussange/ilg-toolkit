@@ -22,8 +22,11 @@ class TargetSpec:
     transform: str = "identity"
 
     def __post_init__(self):
-        if not self.name or not self.units:
-            raise ValueError("Target name and units must be declared")
+        if any(
+            not isinstance(value, str) or not value
+            for value in (self.name, self.units, self.kind, self.transform)
+        ):
+            raise ValueError("Target name, units, kind and transform must be nonempty strings")
         if self.kind not in {"dissimilarity", "relatedness", "similarity"}:
             raise ValueError("Target kind must be dissimilarity, relatedness, or similarity")
         if self.transform not in {"identity", "log1p", "sqrt"}:
