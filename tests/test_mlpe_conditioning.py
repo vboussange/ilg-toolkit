@@ -189,3 +189,85 @@ def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibr
         )
     with pytest.raises(MLPEError, match="finite.*aligned"):
         head.condition_on_support([np.nan, 0.3], support, partition=partition)
+
+
+def test_predictor_conditions_real_landscape_scores_without_updating_encoder():
+    import itertools
+
+    import jax.numpy as jnp
+    from test_recalibration import ScalarEmbedding, problem
+
+    from ilg_toolkit import (
+        FitConfig,
+        ObservationPartition,
+        PairwiseObservations,
+        fit,
+        recalibrate,
+    )
+
+    region, observations, _, _ = problem("conditioned-landscape")
+    calibration_pairs = tuple(itertools.combinations(region.sampling_unit_ids[:4], 2))
+    training = ObservationPartition(region.name, calibration_pairs, role="training")
+    direct = fit(
+        region,
+        observations,
+        model=ScalarEmbedding(jnp.asarray(1.0)),
+        config=FitConfig(epochs=0),
+        partition=training,
+    ).predictor
+    predictor = recalibrate(direct, region, observations)
+    head = predictor.calibrations[region.name]
+    pairs = (("population-4", "population-2"), ("population-5", "population-3"))
+    known = predictor.predict_known_effects(region, pairs)
+    scores = predictor.landscape_scores(region)
+    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
+
+    def selected_scores(selected):
+        return np.array([scores[lookup[a], lookup[b]] for a, b in selected])
+
+    expected_mean, expected_variance = joint_gaussian_reference(
+        head,
+        calibration_pairs,
+        selected_scores(calibration_pairs),
+        observations.aligned_values(region)[
+            [lookup[a] for a, _ in calibration_pairs], [lookup[b] for _, b in calibration_pairs]
+        ],
+        pairs,
+        selected_scores(pairs),
+    )
+    np.testing.assert_allclose(known.model_values, expected_mean, atol=1e-10)
+    np.testing.assert_allclose(known.model_variance, expected_variance, atol=1e-10)
+    support = PairwiseObservations.from_pairs(
+        [("population-4", "population-0"), ("population-4", "population-1")],
+        [2.0, 2.5],
+        target=head.target,
+    )
+    result = predictor.predict_with_support(
+        region,
+        pairs,
+        support,
+        support_partition=ObservationPartition(region.name, support.observed_pairs, role="support"),
+    )
+    expected_mean, expected_variance = joint_gaussian_reference(
+        head,
+        calibration_pairs + support.observed_pairs,
+        np.r_[selected_scores(calibration_pairs), selected_scores(support.observed_pairs)],
+        np.r_[
+            observations.aligned_values(region)[
+                [lookup[a] for a, _ in calibration_pairs], [lookup[b] for _, b in calibration_pairs]
+            ],
+            support.observed_values,
+        ],
+        pairs,
+        selected_scores(pairs),
+    )
+    np.testing.assert_allclose(result.model_values, expected_mean, atol=1e-10)
+    np.testing.assert_allclose(result.model_variance, expected_variance, atol=1e-10)
+    assert predictor.encoder is direct.encoder
+    assert result.provenance.support_pairs == tuple(
+        tuple(sorted(pair)) for pair in support.observed_pairs
+    )
+    with pytest.raises(ValueError, match="MLPE"):
+        direct.predict_known_effects(region, pairs)
+    with pytest.raises(ValueError, match="sampling-unit.*region"):
+        predictor.predict_known_effects(region, [("missing-location", "population-0")])

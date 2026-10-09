@@ -31,6 +31,14 @@ expose the same operations. Support observations must contain exactly the declar
 partition: extra genetic targets are refused. The region and target metadata must
 match the calibration. Missing observations remain absent.
 
+The frozen predictor provides `predictor.predict_known_effects(region, pairs)`
+and `predictor.predict_with_support(region, pairs, support_observations,
+support_partition=declared)`. Both return labelled pair vectors with the same
+variance and provenance metadata. The prepared region supplies locations for all
+support and query endpoints; its feature contract must match training. Ordinary
+`predictor.predict(region)` continues to use marginal prediction. An unseen region
+needs its own explicit calibration before any target-scale MLPE operation.
+
 Unordered endpoint labels are observation identities. Reversing endpoints or
 reordering input rows cannot bypass the guards. Reusing a calibration pair as
 support would count the same genetic target twice and is refused. A query cannot
