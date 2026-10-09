@@ -1,6 +1,6 @@
 """Independent inverse landscape genetics toolkit."""
 
-from .config import FitConfig
+from .config import FitConfig, SolverConfig
 from .data import ObservationPartition, PairwiseObservations, PreparedRegion, TargetSpec
 from .mlpe import MLPEConfig, MLPEError, MLPEHead, MLPEPrediction, calibrate_mlpe
 from .predictor import Prediction, Predictor
@@ -20,6 +20,7 @@ __all__ = [
     "Prediction",
     "Predictor",
     "PreparedRegion",
+    "SolverConfig",
     "TargetSpec",
     "fit",
 ]

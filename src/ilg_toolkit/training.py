@@ -10,8 +10,9 @@ import optax
 
 from .config import FitConfig
 from .data import ObservationPartition, PairwiseObservations, PreparedRegion
-from .models import EmbeddingDistanceModel, UNetEmbeddingDistance
+from .models import ConductanceModel, EmbeddingDistanceModel, UNetEmbeddingDistance
 from .predictor import Predictor
+from .solver import build_solver_context
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ def fit(
     region: PreparedRegion,
     observations: PairwiseObservations,
     *,
-    model: EmbeddingDistanceModel | None = None,
+    model: ConductanceModel | EmbeddingDistanceModel | None = None,
     config: FitConfig | None = None,
     validation: tuple[PreparedRegion, PairwiseObservations] | None = None,
     partition: ObservationPartition | None = None,
@@ -116,17 +117,39 @@ def fit(
     optimizer = optax.adam(config.learning_rate)
     optimizer_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
-    def loss(encoder, data, *, inference=True, key=None):
+    context = None
+    validation_context = None
+    if isinstance(model, ConductanceModel):
+
+        def regional_context(prepared_region):
+            height, width = prepared_region.features.shape[:2]
+            if height % model.patch_size or width % model.patch_size:
+                raise ValueError("Raster dimensions must be divisible by model patch_size")
+            return build_solver_context(
+                (height // model.patch_size, width // model.patch_size), config.solver
+            )
+
+        context = regional_context(region)
+        if validation is not None:
+            validation_context = regional_context(validation[0])
+
+    def loss(encoder, data, *, context=None, inference=True, key=None):
         features, nodes, pairs, target = data
-        predictions = encoder.predict_distances(features, nodes, inference=inference, key=key)[
-            pairs
-        ]
+        options = dict(inference=inference, key=key)
+        if isinstance(encoder, ConductanceModel):
+            options["context"] = context
+        predictions = encoder.predict_distances(features, nodes, **options)[pairs]
         return jnp.mean(jnp.square(jnp.log1p(predictions) - jnp.log1p(target)))
 
     def step(encoder, state, key):
         objective, gradients = eqx.filter_value_and_grad(loss)(
-            encoder, training_data, inference=False, key=key
+            encoder, training_data, context=context, inference=False, key=key
         )
+        bad_gradient = jnp.array(False)
+        for leaf in jax.tree.leaves(gradients):
+            if eqx.is_inexact_array(leaf):
+                bad_gradient = bad_gradient | jnp.any(~jnp.isfinite(leaf))
+        gradients = eqx.error_if(gradients, bad_gradient, "Nonfinite encoder gradient")
         updates, state = optimizer.update(gradients, state, encoder)
         return eqx.apply_updates(encoder, updates), state, objective
 
@@ -136,15 +159,49 @@ def fit(
     selected = model
     selected_epoch = 0
     best_loss = float("inf")
+
+    def checked_call(function, *args, regional_name, epoch, **kwargs):
+        try:
+            return jax.block_until_ready(function(*args, **kwargs))
+        except RuntimeError as error:
+            if not isinstance(model, ConductanceModel):
+                raise
+            raise RuntimeError(
+                f"{regional_name}: resistance calculation failed at epoch {epoch}; "
+                f"solver={config.solver}"
+            ) from error
+
     for epoch in range(config.epochs + 1):
         if epoch:
             random_key, update_key = jax.random.split(random_key)
-            model, optimizer_state, objective = update(model, optimizer_state, update_key)
+            model, optimizer_state, objective = checked_call(
+                update, model, optimizer_state, update_key, regional_name=region.name, epoch=epoch
+            )
             if not np.isfinite(float(objective)):
                 raise FloatingPointError(f"Nonfinite training objective at epoch {epoch}")
-        training_loss = float(evaluate(model, training_data))
+        training_loss = float(
+            checked_call(
+                evaluate,
+                model,
+                training_data,
+                context=context,
+                regional_name=region.name,
+                epoch=epoch,
+            )
+        )
         validation_loss = (
-            None if validation_data is None else float(evaluate(model, validation_data))
+            None
+            if validation_data is None
+            else float(
+                checked_call(
+                    evaluate,
+                    model,
+                    validation_data,
+                    context=validation_context,
+                    regional_name=validation[0].name,
+                    epoch=epoch,
+                )
+            )
         )
         if not np.isfinite(training_loss) or (
             validation_loss is not None and not np.isfinite(validation_loss)
@@ -161,6 +218,7 @@ def fit(
             observations.target,
             region.features.shape[-1],
             feature_names=region.feature_names,
+            solver_config=config.solver,
         ),
         tuple(history),
         selected_epoch,

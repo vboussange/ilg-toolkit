@@ -11,11 +11,13 @@ Python 3.12 or newer is required. From this checkout:
 ```bash
 pip install .
 # Optional geospatial preparation libraries: pip install '.[geo]'
+# Optional AMG preconditioning: pip install '.[amg]'
 # Optional CUDA JAX wheels: pip install '.[gpu]'
 # Tests and formatting: pip install '.[dev]'
 ```
 
-The minimal workflow uses NumPy, SciPy, JAX, Equinox, and Optax. It has no paper-data,
+The minimal workflow uses NumPy, SciPy, JAX, Equinox, Optax, Lineax, and JAXScape.
+It has no paper-data,
 benchmark, geospatial acquisition, or research-checkout dependency.
 
 ## Synthetic quickstart
@@ -69,6 +71,31 @@ targets never enter optimization, and test data is not required. The result
 records every epoch's inference-mode training/validation objective and the
 selected epoch. The optimizer uses fixed-rate Adam; no validation-dependent
 schedule or early stopping is implicit.
+
+## Conductance and resistance
+
+Run `JAX_ENABLE_X64=true python examples/conductance.py` for a synthetic ResNet9
+fit through the real graph solver. Pass a configured
+`ilg_toolkit.models.ResNet9Conductance(in_channels=..., patch_size=4, key=...)`
+to `fit`. The raster must be divisible into patches, and its patch grid must
+contain at least two vertices. Sampling units within one patch have zero
+resistance to each other. Feature counts are supplied explicitly.
+
+The encoder uses the cleaned ResNet9 architecture with stateless GroupNorm and
+an explicit `min_conductance` floor (default `1e-6`) after a stable softplus head.
+It imposes no upper conductance bound. `predictor.conductance_surface(region)`
+returns the fitted patch surface; `landscape_scores(region)` returns effective
+resistance on a four-neighbour graph with mean endpoint conductances.
+`predict(region)` returns direct-regression predictions on the declared target
+scale. These are distinct outputs; accurate target predictions alone do not
+establish that a unique biological conductance surface has been recovered.
+
+Graph solves require JAX float64 to be enabled explicitly before Python starts;
+CNN parameters and outputs remain float32. Configure `FitConfig(solver=SolverConfig(
+rtol=1e-6, atol=1e-6, max_steps=1000, use_amg=False))` to choose convergence
+settings. AMG is optional and builds a reusable hierarchy outside differentiation.
+Failure to converge raises with the region and epoch; the toolkit does not
+silently change solver settings. Prediction retains the fitted solver configuration.
 
 ## Development
 
