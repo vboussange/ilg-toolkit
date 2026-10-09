@@ -3,6 +3,20 @@
 from .calibration import recalibrate
 from .config import FitConfig, SolverConfig
 from .data import ObservationPartition, PairwiseObservations, PreparedRegion, TargetSpec
+from .ensemble import (
+    Ensemble,
+    EnsembleMember,
+    EnsemblePrediction,
+    EnsembleSurface,
+    MemberFailure,
+    MemberIdentity,
+    PopulationFold,
+    aggregate_predictions,
+    ensemble_member_identity,
+    fit_ensemble,
+    fit_ensemble_member,
+    generate_population_folds,
+)
 from .mlpe import (
     MLPEConditionalPrediction,
     MLPEConfig,
@@ -19,6 +33,18 @@ from .predictor import Prediction, Predictor
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
+    "Ensemble",
+    "EnsembleMember",
+    "EnsemblePrediction",
+    "EnsembleSurface",
+    "MemberFailure",
+    "MemberIdentity",
+    "PopulationFold",
+    "aggregate_predictions",
+    "ensemble_member_identity",
+    "fit_ensemble",
+    "fit_ensemble_member",
+    "generate_population_folds",
     "MLPEConfig",
     "MLPEConditionalPrediction",
     "MLPEError",

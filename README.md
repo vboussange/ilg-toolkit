@@ -340,3 +340,71 @@ feature declarations, validation inputs and configuration; only the total epoch
 budget may increase. Include the same partitions and validation arguments when
 resuming. The state uses a legacy uint32 JAX random key for later serialization;
 solver contexts are rebuilt from the declared solver settings.
+
+## Independent fold ensembles
+
+Run `python examples/ensemble.py` for actual independent U-Net/MLPE fits and
+`python examples/ensemble_averages.py` for known-output transform and graph checks.
+
+```python
+from ilg_toolkit import fit_ensemble
+
+with jax.enable_x64():
+    ensemble = fit_ensemble(
+        region, observations, n_folds=2, holdout_size=2, fold_seed=47,
+        initialization_seeds=(13, 29), model_factory=model_factory,
+        config=FitConfig(objective="mlpe", epochs=30),
+    )
+    prediction = ensemble.predict(region)
+```
+
+`model_factory(key)` constructs a fresh encoder for each member; omitting it uses
+the default U-Net. Every fold/seed member has its own initialized parameters,
+Adam state, calibration and history, and members train sequentially. Member
+identities and effective uint32 initialization seeds are stable across input
+ordering. The effective seed derives from SHA256 of the fold ID and declared
+initialization seed; `ensemble_member_identity` exposes this mapping. If seeds
+are omitted, the one declared initialization seed is `config.seed`.
+
+`generate_population_folds` draws reproducible repeated population holdouts
+independently per region; folds can overlap. `holdout_size` accepts an integer or
+a mapping by region. Training uses measured pairs with neither endpoint held
+out. Default query pairs have both endpoints held out; declare
+`query_regime="at_least_one_unseen"` for pairs with at least one held-out endpoint.
+No held-out targets select a model by default. Empty measured training/query
+partitions fail clearly, rather than filling missing observations or retrying a
+different split. MLPE still requires at least three informative training pairs.
+
+For a supplied design, pass `folds=[PopulationFold(...), ...]` with named regional
+`held_out_units`, `training`, `query` and optional `validation` partitions.
+Validation can explicitly reuse query pairs for model selection; the predictor
+records that target access. A nominal holdout assignment then does not establish
+out-of-fold eligibility. `ensemble.predict` is deployment prediction and uses
+all members; eligibility-aware evaluation is a separate operation.
+
+The aggregate averages each member's original-target-scale marginal prediction
+**after** its own genetic calibration and inverse transformation.
+`prediction.member_values`, `.member_ids`, and `.member_spread` retain individual
+outputs and descriptive population SD (`ddof=0`). This spread is not a confidence
+interval or MLPE predictive variance. Targets, units, transforms, sampling-unit
+ordering and feature contracts must agree. `ensemble.landscape_scores(region)`
+returns raw scores separately by member. `ensemble.conductance_surfaces(region)`
+returns descriptive mean/spread for conductance families; genetic predictions do
+not solve resistance on that mean surface. Conductance 1 and 4 give resistances
+1 and .25 on a single edge: mean resistance .625 differs from resistance .4 on
+the mean surface 2.5.
+
+`ensemble.members` includes every requested outcome and its identity/fold,
+`predictor`, `fit_result` or explicit `failure`. `.failures` reports failed members;
+prediction refuses to drop failed, pending or missing members. Initialization or
+numerical fit failures are recorded and remaining requested members still run.
+`on_member(member)` observes each sequential outcome. Its exceptions propagate
+so an interrupted save does not masquerade as a successful reduced ensemble.
+
+For external durable orchestration, `fit_ensemble_member` fits or continues one
+member using `state=TrainingState`. `fit_ensemble(member_states={member_id: state})`
+continues specified members in memory. `on_epoch(identity, state)` receives each
+complete member epoch and can save that member's checkpoint; callback failures
+interrupt execution. The checkpoint/manifest layer must validate and skip
+compatible completed members separately. Solver contexts and differentiation
+graphs are never retained across independent member fits.
