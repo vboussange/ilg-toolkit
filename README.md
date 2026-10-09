@@ -341,6 +341,21 @@ budget may increase. Include the same partitions and validation arguments when
 resuming. The state uses a legacy uint32 JAX random key for later serialization;
 solver contexts are rebuilt from the declared solver settings.
 
+Save a complete fitted predictor for inference in another process:
+
+```python
+from ilg_toolkit import load_predictor, save_predictor
+
+save_predictor("fitted.ilg", result.predictor)
+predictor = load_predictor("fitted.ilg")
+prediction = predictor.predict(prepared_query_region)
+```
+
+The artifact retains feature and target contracts, solver settings, regional
+calibrations, population-effect posteriors and observation-use provenance.
+It supports the shipped U-Net and ResNet9 encoders and is separate from a
+resumable training checkpoint. See [the inference artifact contract](docs/inference-artifacts.md).
+
 ## Independent fold ensembles
 
 Run `python examples/ensemble.py` for actual independent U-Net/MLPE fits and
