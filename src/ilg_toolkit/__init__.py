@@ -19,6 +19,16 @@ from .ensemble import (
     generate_population_folds,
 )
 from .ensemble_persistence import fit_ensemble_run, load_ensemble, save_ensemble
+from .evaluation import (
+    EvaluationAccess,
+    EvaluationRegime,
+    EvaluationSupport,
+    OOFEvaluation,
+    OOFPrediction,
+    evaluate_ensemble,
+    predict_out_of_fold,
+    score_out_of_fold,
+)
 from .mlpe import (
     MLPEConditionalPrediction,
     MLPEConfig,
@@ -39,6 +49,14 @@ __all__ = [
     "fit_ensemble_run",
     "load_ensemble",
     "save_ensemble",
+    "EvaluationAccess",
+    "EvaluationRegime",
+    "EvaluationSupport",
+    "OOFEvaluation",
+    "OOFPrediction",
+    "evaluate_ensemble",
+    "predict_out_of_fold",
+    "score_out_of_fold",
     "Ensemble",
     "EnsembleMember",
     "EnsemblePrediction",

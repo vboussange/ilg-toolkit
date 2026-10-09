@@ -433,3 +433,15 @@ ones. An explicit larger total epoch budget continues completed members from
 their saved state. Missing, corrupt, incompatible or failed members remain
 explicit. See [ensemble persistence](docs/ensemble-persistence.md) for usage,
 compatibility, callbacks and artifact composition.
+
+## Out-of-fold evaluation
+
+Use `predict_out_of_fold` for label-free eligible predictions,
+`score_out_of_fold` to read query targets afterward, or `evaluate_ensemble` for
+both steps. Eligibility follows nominal endpoint holdouts and recorded encoder
+training, validation selection, calibration and declared support access. Eligible
+members are averaged before each unique region/pair contributes once to metrics.
+Coverage, member failures and exclusions remain explicit. Default prediction is
+marginal with both endpoints untouched; known effects and support conditioning
+require explicit regimes. See [the evaluation contract](docs/evaluation.md) and
+run `python examples/evaluation.py` for a synthetic fitted example.
