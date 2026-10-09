@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 
 import equinox as eqx
@@ -355,6 +355,7 @@ def fit(
     partition: PartitionCollection = None,
     validation_partition: PartitionCollection = None,
     state: TrainingState | None = None,
+    on_epoch: Callable[[TrainingState], None] | None = None,
 ) -> FitResult:
     """Fit a shared encoder with direct log1p-MSE or full-ML regional MLPE.
 
@@ -369,17 +370,23 @@ def fit(
     Only the total epoch budget may increase. The returned selected predictor
     and latest continuation state are separate when validation selects an earlier
     epoch. Validation never consumes training random keys.
+
+    ``on_epoch`` receives complete latest/best state after initialization and each
+    completed update. It may save a checkpoint; exceptions propagate. A resumed
+    fit with no additional updates does not invoke a synthetic epoch callback.
     """
     if state is not None and not isinstance(state, TrainingState):
         raise ValueError("state must be a TrainingState returned by fit")
     if state is not None and model is not None:
         raise ValueError("A continuation state already contains its encoder; omit model")
+    if on_epoch is not None and not callable(on_epoch):
+        raise ValueError("on_epoch must be callable or None")
     config = config or (state.config if state is not None else FitConfig())
     if state is not None:
         old, new = asdict(state.config), asdict(config)
         old.pop("epochs")
         new.pop("epochs")
-        if old != new or config.epochs < state.epoch:
+        if old != new or config.epochs < state.config.epochs:
             raise ValueError(
                 "Continuation requires identical configuration except an increased epoch budget"
             )
@@ -582,6 +589,31 @@ def fit(
     latest = state.latest_predictor if state is not None else None
     selected_epoch = state.selected_epoch if state is not None else 0
     best_loss = state.best_loss if state is not None else float("inf")
+    names = tuple(batch.region.name for batch in training_batches)
+    selection = "final" if validation is None else "validation"
+
+    def continuation_at(epoch):
+        return TrainingState(
+            encoder=parameters[0],
+            raw_variances=parameters[1],
+            optimizer_state=optimizer_state,
+            rng_key=random_key,
+            epoch=epoch,
+            step=epoch,
+            config=config,
+            region_names=names,
+            data_identity=identity,
+            history=tuple(history),
+            latest_predictor=latest,
+            best_predictor=selected,
+            selected_epoch=selected_epoch,
+            best_loss=best_loss,
+            selection=selection,
+            model_state=None,
+            schedule_state={"kind": "fixed", "learning_rate": config.learning_rate},
+            stopping_state={"kind": "fixed_budget", "epochs": config.epochs},
+        )
+
     start_epoch = state.epoch + 1 if state is not None else 0
     for epoch in range(start_epoch, config.epochs + 1):
         if epoch:
@@ -682,26 +714,7 @@ def fit(
         if validation_loss is None or validation_loss < best_loss:
             selected, selected_epoch = latest, epoch
             best_loss = training_loss if validation_loss is None else validation_loss
-    names = tuple(batch.region.name for batch in training_batches)
-    selection = "final" if validation is None else "validation"
-    continuation = TrainingState(
-        encoder=parameters[0],
-        raw_variances=parameters[1],
-        optimizer_state=optimizer_state,
-        rng_key=random_key,
-        epoch=config.epochs,
-        step=config.epochs,
-        config=config,
-        region_names=names,
-        data_identity=identity,
-        history=tuple(history),
-        latest_predictor=latest,
-        best_predictor=selected,
-        selected_epoch=selected_epoch,
-        best_loss=best_loss,
-        selection=selection,
-        model_state=None,
-        schedule_state={"kind": "fixed", "learning_rate": config.learning_rate},
-        stopping_state={"kind": "fixed_budget", "epochs": config.epochs},
-    )
+        if on_epoch is not None:
+            on_epoch(continuation_at(epoch))
+    continuation = continuation_at(config.epochs)
     return FitResult(selected, tuple(history), selected_epoch, selection, names, continuation)
