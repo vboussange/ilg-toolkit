@@ -53,12 +53,15 @@ def test_validation_selects_predictor_without_refitting_on_validation_targets():
     validation = PairwiseObservations.from_matrix(
         region.sampling_unit_ids, initial, target=observations.target
     )
+    from dataclasses import replace
+
+    validation_region = replace(region, name="independent-validation-region")
     result = fit(
         region,
         observations,
         model=model,
         config=FitConfig(epochs=3, learning_rate=0.01),
-        validation=(region, validation),
+        validation=(validation_region, validation),
     )
     assert result.selection == "validation"
     assert result.selected_epoch == 0

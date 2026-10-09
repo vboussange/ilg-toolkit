@@ -15,6 +15,7 @@ class Prediction:
     values: np.ndarray
     sampling_unit_ids: tuple[str, ...]
     target: TargetSpec
+    scale: str = "original"
 
 
 @dataclass(frozen=True)
@@ -24,11 +25,16 @@ class Predictor:
     encoder: EmbeddingDistanceModel
     target: TargetSpec
     feature_count: int
+    feature_names: tuple[str, ...] | None = None
 
     def landscape_scores(self, region: PreparedRegion) -> np.ndarray:
         """Predict scores for prepared query locations without genetic observations."""
         if region.features.shape[-1] != self.feature_count:
             raise ValueError(f"Expected {self.feature_count} feature channels")
+        if region.feature_names != self.feature_names:
+            raise ValueError(
+                "Query feature contract must match training feature meanings and order"
+            )
         values = np.asarray(self.encoder.predict_distances(region.features, region.pixel_nodes))
         if not np.isfinite(values).all() or (values < 0).any():
             raise FloatingPointError("Encoder produced nonfinite or negative distances")
@@ -36,4 +42,8 @@ class Predictor:
 
     def predict(self, region: PreparedRegion) -> Prediction:
         """Return direct predictions on the declared genetic measurement scale."""
-        return Prediction(self.landscape_scores(region), region.sampling_unit_ids, self.target)
+        return Prediction(
+            self.target.inverse(self.landscape_scores(region)),
+            region.sampling_unit_ids,
+            self.target,
+        )
