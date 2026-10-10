@@ -1,14 +1,15 @@
-# Experimental Wishart diagnostic contract
+# Wishart assumptions and conditional scoring
 
-Status on 2026-10-09: **reviewed no-go for experimental training**. The coordinating
-agent independently reviewed this contract, the implementation and its tests,
-and checked the primary SciPy Wishart/matrix-normal densities and EEMS source.
-That implementation review supports the strict synthetic diagnostic and confirms
-the conservative no-go for joint training. It does **not** endorse empirical
-genotype validity and is not a reviewed go decision. The diagnostic is available under
-`ilg_toolkit.experimental`; no Wishart optimizer or stable objective is enabled.
-Ticket #17 remains blocked while the requirements below are unresolved. Stable
-direct regression and MLPE delivery are independent of this decision.
+The source-checkout experiment `experiments.wishart` evaluates a strict
+Gaussian-marker reference with fixed model parameters. Its density, covariance
+and held-out scoring assumptions are defined below. These diagnostics are
+excluded from the installed toolkit.
+
+Experimental fitting and fitted MLPE-versus-Wishart comparisons are deferred to
+[#17](https://github.com/vboussange/ilg-toolkit/issues/17), which requires evidence
+and an independently reviewed GO decision on the unresolved requirements below.
+Synthetic density agreement does not establish validity for empirical genotypes
+or enable a Wishart training objective.
 
 ## Supported observations
 
@@ -159,12 +160,13 @@ across different units, marker scalings, or population dimensions requires an
 explicit evaluation design. Predictions cannot condition on the held-out targets;
 scoring necessarily observes them after parameters are frozen.
 
-## Reproducible evidence and remaining gate
+## Running the reference
 
-Run the synthetic reference workflow after installing the toolkit:
+Install the toolkit, then run from the repository root:
 
 ```bash
-JAX_ENABLE_X64=true python -m ilg_toolkit.experimental
+JAX_ENABLE_X64=true python -m experiments.wishart
+JAX_ENABLE_X64=true pytest tests/test_experimental_wishart.py
 ```
 
 It uses a two-feature ResNet9 encoder, an actual small resistance graph, simulated
@@ -175,18 +177,19 @@ Changing held-out marker observations leaves the training marginal unchanged.
 Invalid matrices, unsupported interpretations, missing scaling, invalid marker
 counts, and inappropriate holdout declarations fail explicitly.
 
-The independently reviewed implementation assessment remains **no-go for #17**,
-despite the coherent strict synthetic reference, because:
+## Prerequisites for experimental fitting
 
-- No empirical target adapter establishes Gaussian marker contrast validity,
-  independent/effective marker counts, or validity for FST or relatedness.
+Fitting and fitted MLPE-versus-Wishart comparisons require resolution of:
+
+- An empirical target adapter must establish Gaussian marker contrast validity,
+  independent/effective marker counts, and the validity of any FST or relatedness
+  approximation.
 - Joint encoder/regional-scale normalization, nuisance estimation, and behavior
-  near scale/nugget confounding have not been specified and independently reviewed.
-- The future fitter must enforce training-only provenance, fixed marker sets,
-  population holdout, and target access instead of trusting a reference caller's
-  declaration. Differentiable fitting and scientific validation are unimplemented.
+  near scale/nugget confounding must be specified and independently reviewed.
+- A fitter must enforce training-only provenance, fixed marker sets, population
+  holdout, and target access instead of trusting a reference caller's declaration.
+  Differentiable fitting requires independent scientific validation.
 
-These requirements can be resolved by evidence and an independently reviewed
-go contract; this document imposes no human-only approval mechanism. The recorded
-no-go review supports the present diagnostic boundary, does not resolve those
-requirements, and does not enable training.
+The source experiment retains the `no_go` training gate until evidence and an
+independently reviewed GO contract resolve these requirements. It does not fit
+the encoder, scale or nugget.

@@ -59,6 +59,7 @@ def _components(
     raw_variances,
     score_center,
     score_scale,
+    min_score_scale,
     variance_floor,
     jitter,
     pair_mask,
@@ -99,17 +100,17 @@ def _components(
     valid = (
         system.valid
         & jnp.isfinite(scale)
-        & (scale > DEFAULT_MIN_SCORE_SCALE)
+        & (scale > min_score_scale)
         & jnp.isfinite(design).all()
         & jnp.isfinite(targets).all()
-        & (system.count >= 1)
+        & (system.pair_count >= 1)
     )
     return targets, design, system, valid
 
 
 def _nll(system, remaining, effects):
     quadratic = jnp.sum(remaining**2) / system.residual + jnp.sum(effects**2) / system.unit
-    return 0.5 * (system.count * math.log(2 * math.pi) + system.logdet + quadratic)
+    return 0.5 * (system.pair_count * math.log(2 * math.pi) + system.logdet + quadratic)
 
 
 def profiled_mlpe_ml_fit(
@@ -122,6 +123,7 @@ def profiled_mlpe_ml_fit(
     raw_variances,
     score_center=None,
     score_scale=None,
+    min_score_scale=DEFAULT_MIN_SCORE_SCALE,
     variance_floor=DEFAULT_VARIANCE_FLOOR,
     jitter=0.0,
     pair_mask=None,
@@ -142,6 +144,7 @@ def profiled_mlpe_ml_fit(
         raw_variances=raw_variances,
         score_center=score_center,
         score_scale=score_scale,
+        min_score_scale=min_score_scale,
         variance_floor=variance_floor,
         jitter=jitter,
         pair_mask=pair_mask,
@@ -156,7 +159,7 @@ def profiled_mlpe_ml_fit(
     valid = (
         valid
         & system.identifiable
-        & (system.count >= 3)
+        & (system.pair_count >= 3)
         & jnp.isfinite(beta).all()
         & jnp.isfinite(nll)
     )
@@ -179,6 +182,7 @@ def mlpe_ml_negative_log_likelihood(
     raw_variances,
     score_center=None,
     score_scale=None,
+    min_score_scale=DEFAULT_MIN_SCORE_SCALE,
     variance_floor=DEFAULT_VARIANCE_FLOOR,
     jitter=0.0,
     pair_mask=None,
@@ -193,6 +197,7 @@ def mlpe_ml_negative_log_likelihood(
         raw_variances=raw_variances,
         score_center=score_center,
         score_scale=score_scale,
+        min_score_scale=min_score_scale,
         variance_floor=variance_floor,
         jitter=jitter,
         pair_mask=pair_mask,
@@ -214,6 +219,7 @@ def mlpe_effect_posterior(
     raw_variances,
     score_center,
     score_scale,
+    min_score_scale=DEFAULT_MIN_SCORE_SCALE,
     variance_floor=DEFAULT_VARIANCE_FLOOR,
     jitter=0.0,
     pair_mask=None,
@@ -232,6 +238,7 @@ def mlpe_effect_posterior(
         raw_variances=raw_variances,
         score_center=score_center,
         score_scale=score_scale,
+        min_score_scale=min_score_scale,
         variance_floor=variance_floor,
         jitter=jitter,
         pair_mask=pair_mask,

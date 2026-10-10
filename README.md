@@ -137,6 +137,14 @@ Tests exercise public fit/predict behavior on synthetic arrays and build a wheel
 to run outside the source tree. Extracted components and their license are listed
 in `NOTICE`; study-specific code remains in its original repositories.
 
+Research diagnostics run from the source checkout and are excluded from the
+installed package. Run `JAX_ENABLE_X64=true python -m experiments.wishart` for
+the fixed-parameter Gaussian-marker reference. See
+[Wishart assumptions and conditional scoring](docs/statistics/wishart.md) for
+its scientific contract and the prerequisites in
+[#17](https://github.com/vboussange/ilg-toolkit/issues/17) before experimental
+fitting or fitted MLPE-versus-Wishart comparisons.
+
 ## Labelled pairs, transformations, and partitions
 
 Incomplete observations need no invented genetic targets:
@@ -224,6 +232,9 @@ region identities; each epoch exposes `training_by_region` and
 
 
 ## Regional MLPE calibration
+
+The [statistical guide](docs/statistics.md) explains direct log1p-MSE, MLPE
+shared-endpoint covariance, GLS profiling, likelihood and prediction information.
 
 `python examples/mlpe_calibration.py` demonstrates a frozen encoder's landscape
 scores and a separate full-Gaussian-ML genetic calibration:

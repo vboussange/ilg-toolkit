@@ -92,7 +92,7 @@ _R_BLUPS = np.array(
 )
 
 
-def dense_profile(scores, targets, left, right, n_populations, variances, *, jitter=0):
+def dense_profile(scores, targets, left, right, n_populations, variances, *, jitter: float = 0):
     """Independent dense full-covariance oracle retained for acceleration checks."""
     scores = np.asarray(scores, dtype=np.float64)
     z = np.zeros((len(scores), n_populations))
@@ -142,13 +142,17 @@ def decimal_dense_profile_and_gradients(scores, targets, left, right, raw_varian
     positive-bilinear implementation. It is intentionally tiny test machinery.
     """
     import math
+    from collections.abc import Iterable
     from decimal import Decimal, localcontext
 
     with localcontext() as context:
         context.prec = 60
 
-        def d(value):
+        def d(value) -> Decimal:
             return Decimal(str(float(value)))
+
+        def decimal_sum(values: Iterable[Decimal]) -> Decimal:
+            return sum(values, Decimal(0))
 
         size = len(scores)
         s, y = list(map(d, scores)), list(map(d, targets))
@@ -178,40 +182,51 @@ def decimal_dense_profile_and_gradients(scores, targets, left, right, raw_varian
                     coefficient = a[j][i]
                     a[j] = [v - coefficient * b for v, b in zip(a[j], a[i], strict=True)]
         inverse = [row[size:] for row in a]
-        center = sum(s) / size
-        scale = (sum((value - center) ** 2 for value in s) / (size - 1)).sqrt()
+        center = decimal_sum(s) / size
+        scale = (decimal_sum((value - center) ** 2 for value in s) / (size - 1)).sqrt()
         z = [(value - center) / scale for value in s]
         x = [[Decimal(1), value] for value in z]
-        vinv_y = [sum(v * value for v, value in zip(row, y, strict=True)) for row in inverse]
+        vinv_y = [
+            decimal_sum(v * value for v, value in zip(row, y, strict=True)) for row in inverse
+        ]
         vinv_x = [
-            [sum(inverse[i][j] * x[j][k] for j in range(size)) for k in range(2)]
+            [decimal_sum(inverse[i][j] * x[j][k] for j in range(size)) for k in range(2)]
             for i in range(size)
         ]
         normal = [
-            [sum(x[i][j] * vinv_x[i][k] for i in range(size)) for k in range(2)] for j in range(2)
+            [decimal_sum(x[i][j] * vinv_x[i][k] for i in range(size)) for k in range(2)]
+            for j in range(2)
         ]
-        rhs = [sum(x[i][j] * vinv_y[i] for i in range(size)) for j in range(2)]
+        rhs = [decimal_sum(x[i][j] * vinv_y[i] for i in range(size)) for j in range(2)]
         denominator = normal[0][0] * normal[1][1] - normal[0][1] * normal[1][0]
         beta = [
             (rhs[0] * normal[1][1] - rhs[1] * normal[0][1]) / denominator,
             (rhs[1] * normal[0][0] - rhs[0] * normal[1][0]) / denominator,
         ]
         residual = [y[i] - beta[0] - beta[1] * z[i] for i in range(size)]
-        w = [sum(v * value for v, value in zip(row, residual, strict=True)) for row in inverse]
+        w = [
+            decimal_sum(v * value for v, value in zip(row, residual, strict=True))
+            for row in inverse
+        ]
         nll = (
             size * d(math.log(2 * math.pi))
             + determinant.ln()
-            + sum(a * b for a, b in zip(residual, w, strict=True))
+            + decimal_sum(a * b for a, b in zip(residual, w, strict=True))
         ) / 2
-        wz = sum(a * b for a, b in zip(w, z, strict=True))
+        wz = decimal_sum(a * b for a, b in zip(w, z, strict=True))
         score_gradient = [
-            -beta[1] * (w[i] - sum(w) / size - z[i] * wz / (size - 1)) / scale for i in range(size)
+            -beta[1] * (w[i] - decimal_sum(w) / size - z[i] * wz / (size - 1)) / scale
+            for i in range(size)
         ]
-        trace_unit = sum(inverse[i][j] * overlap[i][j] for i in range(size) for j in range(size))
-        quadratic_unit = sum(w[i] * w[j] * overlap[i][j] for i in range(size) for j in range(size))
+        trace_unit = decimal_sum(
+            inverse[i][j] * overlap[i][j] for i in range(size) for j in range(size)
+        )
+        quadratic_unit = decimal_sum(
+            w[i] * w[j] * overlap[i][j] for i in range(size) for j in range(size)
+        )
         variance_gradient = [
             (trace_unit - quadratic_unit) / (2 * (1 + (-raw[0]).exp())),
-            (sum(inverse[i][i] for i in range(size)) - sum(value**2 for value in w))
+            (decimal_sum(inverse[i][i] for i in range(size)) - decimal_sum(value**2 for value in w))
             / (2 * (1 + (-raw[1]).exp())),
         ]
         return (

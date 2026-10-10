@@ -1,14 +1,11 @@
-"""Compare exact host calibration kernels in isolated CPU processes.
+"""Measure the maintained JAX endpoint likelihood on CPU with float64 inputs.
 
-Run after installing the package, or with PYTHONPATH=src from the repository:
-  python benchmarks/benchmark_mlpe.py --sizes 12 24 48 72 --repeats 5 \
-      --output /tmp/mlpe-scaling.json
+Run PYTHONPATH=src python benchmarks/benchmark_mlpe.py --sizes 12 24 48 \\
+    --output benchmarks/results/mlpe.json
 
-Both implementations use float64 Cholesky and precompute their covariance
-crossproduct once, outside timings. This measures host numerical work, including
-factorization and signed GLS; it excludes encoder/solver time and optimization
-iterations. ru_maxrss is whole-process CPU peak RSS, including imports, native
-BLAS workspace, and allocator effects. It is not GPU/device peak memory.
+Compilation and one warm call precede synchronized timings. Each size runs in a
+fresh process. Whole-process peak RSS includes imports, compilation and allocator
+workspace; it does not measure individual buffers or accelerator memory.
 """
 
 import argparse
@@ -22,94 +19,66 @@ import time
 from pathlib import Path
 
 
-def _worker(backend, n_populations, repeats):
+def _worker(n_populations, repeats):
     import resource
 
+    import jax
+    import jax.numpy as jnp
     import numpy as np
-    import scipy
-    from scipy.linalg import cho_solve
 
-    from ilg_toolkit.mlpe.fit import _profile
-    from ilg_toolkit.mlpe.numpy_system import NumpyPopulationSystem, endpoint_gram
+    from ilg_toolkit.mlpe import profiled_mlpe_ml_fit
 
-    rss_divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
-    baseline_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / rss_divisor
-    left, right = np.triu_indices(n_populations, 1)
-    rng = np.random.default_rng(37)
-    scores = rng.normal(size=len(left))
-    targets = 0.4 - 0.2 * scores + rng.normal(scale=0.3, size=len(left))
-    design = np.column_stack((np.ones(len(left)), (scores - scores.mean()) / scores.std(ddof=1)))
-    unit, residual = 0.5, 0.2
-    if backend == "dense":
-        incidence = np.zeros((len(left), n_populations))
-        incidence[np.arange(len(left)), left] = incidence[np.arange(len(left)), right] = 1
-        crossproduct = incidence @ incidence.T
-        del incidence
+    with jax.enable_x64():
+        left, right = np.triu_indices(n_populations, 1)
+        rng = np.random.default_rng(37)
+        scores = jnp.asarray(rng.normal(size=len(left)))
+        targets = 0.4 - 0.2 * scores + jnp.asarray(rng.normal(scale=0.3, size=len(left)))
+        raw = jnp.log(jnp.expm1(jnp.asarray([0.5, 0.2]) - 1e-10))
 
-        def evaluate():
-            covariance = unit * crossproduct + residual * np.eye(len(left))
-            factor = np.linalg.cholesky(covariance)
-            vinv_x = cho_solve((factor, True), design)
-            beta = np.linalg.solve(design.T @ vinv_x, design.T @ cho_solve((factor, True), targets))
-            r = targets - design @ beta
-            nll = 0.5 * (
-                len(left) * np.log(2 * np.pi)
-                + 2 * np.log(np.diag(factor)).sum()
-                + r @ cho_solve((factor, True), r)
+        @jax.jit
+        def evaluate(scores, targets, raw):
+            return profiled_mlpe_ml_fit(
+                scores, targets, left, right, n_populations=n_populations, raw_variances=raw
             )
-            return nll, beta
-    else:
-        gram = endpoint_gram(left, right, n_populations)
 
-        def evaluate():
-            system = NumpyPopulationSystem(left, right, gram, unit, residual)
-            return _profile(design, targets, system)
-
-    nll, beta = evaluate()  # Warm native-library setup and allocator reuse.
-    samples = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        evaluate()  # NumPy/SciPy host operations are synchronous.
-        samples.append(time.perf_counter() - start)
-    peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / rss_divisor
+        started = time.perf_counter()
+        nll, beta = jax.block_until_ready(evaluate(scores, targets, raw))
+        compile_and_first_call = time.perf_counter() - started
+        jax.block_until_ready(evaluate(scores, targets, raw))
+        samples = []
+        for _ in range(repeats):
+            started = time.perf_counter()
+            jax.block_until_ready(evaluate(scores, targets, raw))
+            samples.append(time.perf_counter() - started)
+    rss_divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
     return dict(
-        backend=backend,
+        backend=jax.default_backend(),
         populations=n_populations,
         pairs=len(left),
-        dtype="float64",
+        dtype=str(scores.dtype),
+        compile_and_first_call_seconds=compile_and_first_call,
+        warm_calls=1,
         median_seconds=statistics.median(samples),
         samples_seconds=samples,
-        baseline_peak_rss_mib=baseline_rss,
-        process_peak_rss_mib=peak_rss,
-        increase_peak_rss_mib=max(0, peak_rss - baseline_rss),
+        process_peak_rss_mib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / rss_divisor,
         nll=float(nll),
         beta=beta.tolist(),
+        jax=jax.__version__,
         numpy=np.__version__,
-        scipy=scipy.__version__,
     )
-
-
-def _cpu_name():
-    try:
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
-            if line.startswith("model name"):
-                return line.split(":", 1)[1].strip()
-    except OSError:
-        pass
-    return platform.processor()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sizes", nargs="+", type=int, default=[12, 24, 48, 72])
+    parser.add_argument("--sizes", nargs="+", type=int, default=[12, 24, 48])
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--worker", choices=["dense", "endpoint"], help=argparse.SUPPRESS)
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.repeats < 1 or min(args.sizes) < 3:
         parser.error("sizes must be >=3 and repeats positive")
     if args.worker:
-        print(json.dumps(_worker(args.worker, args.sizes[0], args.repeats)))
+        print(json.dumps(_worker(args.sizes[0], args.repeats)))
         return
     environment = os.environ.copy()
     environment.update(
@@ -117,28 +86,25 @@ def main():
     )
     results = []
     for size in args.sizes:
-        for backend in ("dense", "endpoint"):
-            command = [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--worker",
-                backend,
-                "--sizes",
-                str(size),
-                "--repeats",
-                str(args.repeats),
-            ]
-            result = subprocess.run(
-                command, env=environment, check=True, text=True, capture_output=True
-            )
-            results.append(json.loads(result.stdout))
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--worker",
+            "--sizes",
+            str(size),
+            "--repeats",
+            str(args.repeats),
+        ]
+        result = subprocess.run(
+            command, env=environment, check=True, text=True, capture_output=True
+        )
+        results.append(json.loads(result.stdout))
     report = dict(
         platform=platform.platform(),
-        processor=_cpu_name(),
         python=platform.python_version(),
-        scope="host CPU calibration numerical kernel; whole-process ru_maxrss; no device memory",
+        scope="JAX endpoint likelihood and signed GLS; synchronized CPU; whole-process peak RSS",
         repeats=args.repeats,
-        native_threads=1,
+        requested_native_threads=1,
         results=results,
     )
     serialized = json.dumps(report, indent=2) + "\n"

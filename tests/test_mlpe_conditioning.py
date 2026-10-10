@@ -34,6 +34,8 @@ def joint_gaussian_reference(head, observed_pairs, observed_scores, targets, que
 
 
 def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
+    import jax
+
     from ilg_toolkit.mlpe import predict_known_effects
 
     head, observations = calibrated
@@ -43,6 +45,15 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
         head, observations.observed_pairs, _R_SCORES, observations.observed_values, pairs, scores
     )
     result = predict_known_effects(head, scores, pairs)
+    assert all(
+        isinstance(value, jax.Array) and value.dtype == np.float64
+        for value in (
+            result.values,
+            result.model_values,
+            result.model_variance,
+            result.effect_variance,
+        )
+    )
     np.testing.assert_allclose(result.model_values, expected_mean, atol=2e-11)
     np.testing.assert_allclose(result.model_variance, expected_variance, atol=2e-11)
     marginal = head.predict_marginal(scores, pairs)
@@ -53,6 +64,8 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
 
 
 def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated):
+    import jax
+
     from ilg_toolkit import ObservationPartition, PairwiseObservations
     from ilg_toolkit.mlpe import condition_on_support
 
@@ -68,6 +81,15 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated)
     pairs = (("new", "p05"), ("second-new", "new"), ("third-new", "p01"))
     scores = np.array([0.1, 0.6, 1.2])
     result = conditioned.predict(scores, pairs)
+    assert all(
+        isinstance(value, jax.Array) and value.dtype == np.float64
+        for value in (
+            result.values,
+            result.model_values,
+            result.model_variance,
+            result.effect_variance,
+        )
+    )
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration.observed_pairs + support.observed_pairs,
@@ -86,6 +108,8 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated)
 
 
 def test_support_cannot_reuse_calibration_or_query_pairs_even_when_reversed(calibrated):
+    from operator import methodcaller
+
     from ilg_toolkit import (
         MLPEError,
         ObservationPartition,
@@ -95,21 +119,23 @@ def test_support_cannot_reuse_calibration_or_query_pairs_even_when_reversed(cali
 
     head, _ = calibrated
     reused = PairwiseObservations.from_pairs([("p02", "p01")], [1.0], target=head.target)
-    partition = ObservationPartition("alpine", [("p01", "p02")], role="support")
+    partition = ObservationPartition("alpine", (("p01", "p02"),), role="support")
     with pytest.raises(MLPEError, match="calibration.*twice|reuses.*calibration"):
         condition_on_support(head, [0.3], reused, partition=partition)
 
     support = PairwiseObservations.from_pairs([("new", "p01")], [1.0], target=head.target)
-    partition = ObservationPartition("alpine", [("new", "p01")], role="support")
+    partition = ObservationPartition("alpine", (("new", "p01"),), role="support")
     conditioned = condition_on_support(head, [0.3], support, partition=partition)
     with pytest.raises(MLPEError, match="Support/query overlap"):
         conditioned.predict([0.3], [("p01", "new")])
     with pytest.raises(MLPEError, match="duplicate unordered"):
         conditioned.predict([0.2, 0.2], [("p02", "new"), ("new", "p02")])
     with pytest.raises(TypeError):
-        conditioned.predict([0.3], [("p02", "new")], query_targets=[7.0])
+        methodcaller("predict", [0.3], [("p02", "new")], query_targets=[7.0])(conditioned)
     with pytest.raises(TypeError):
-        condition_on_support(head, [0.3], support, partition=partition, query_targets=[7.0])
+        methodcaller(
+            "condition_on_support", [0.3], support, partition=partition, query_targets=[7.0]
+        )(head)
 
 
 def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale():
@@ -198,9 +224,9 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
     from test_recalibration import ScalarEmbedding, problem
 
     from ilg_toolkit import (
-        TrainingConfig,
         ObservationPartition,
         PairwiseObservations,
+        TrainingConfig,
         fit,
         recalibrate,
     )
@@ -211,7 +237,7 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
     direct = fit(
         region,
         observations,
-        model=ScalarEmbedding(jnp.asarray(1.0)),
+        model=ScalarEmbedding(weight=jnp.asarray(1.0)),
         config=TrainingConfig(epochs=0),
         partition=training,
     ).model

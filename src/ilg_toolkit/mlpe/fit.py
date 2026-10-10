@@ -2,22 +2,45 @@
 
 import math
 from dataclasses import dataclass
+from functools import partial
 from numbers import Real
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import minimize
 
 from ..data import ObservationPartition, PairwiseObservations, TargetSpec
-from .numpy_system import NumpyPopulationSystem, endpoint_gram
+from .likelihood import mlpe_effect_posterior, profiled_mlpe_ml_fit
 
 
 class MLPEError(ValueError):
     """Invalid or numerically unusable full-ML calibration."""
 
 
+def _raw_from_log_variances(log_variances):
+    variances = jnp.exp(log_variances)
+    return variances + jnp.log(-jnp.expm1(-variances))
+
+
+@partial(jax.jit, static_argnames=("n_populations",))
+def _optimizer_value_and_gradient(log_variances, scores, targets, left, right, **options):
+    def objective(parameters):
+        return profiled_mlpe_ml_fit(
+            scores,
+            targets,
+            left,
+            right,
+            raw_variances=_raw_from_log_variances(parameters),
+            **options,
+        )[0]
+
+    return jax.value_and_grad(objective)(log_variances)
+
+
 @dataclass(frozen=True)
 class MLPEConfig:
-    """Explicit constraints; fitting always uses NumPy float64.
+    """Explicit constraints; standalone fitting uses scoped JAX float64.
 
     Jitter is an explicitly declared addition to residual observation variance,
     consistently included in likelihood and population-effect posterior. It is
@@ -58,8 +81,8 @@ class MLPEPrediction:
     target; no distributional mean correction is implied.
     """
 
-    values: np.ndarray
-    model_values: np.ndarray
+    values: jax.Array
+    model_values: jax.Array
     pairs: tuple[tuple[str, str], ...]
     target: TargetSpec
     region_name: str
@@ -125,6 +148,7 @@ class MLPEHead:
         ):
             raise MLPEError("MLPE head region, sampling-unit identities and provenance must align")
 
+    @jax.enable_x64()
     def predict_marginal(self, scores, pairs) -> MLPEPrediction:
         """Predict labelled query pairs without targets; new effects have mean zero."""
         from .prediction import _query
@@ -132,7 +156,11 @@ class MLPEHead:
         scores, pairs, _ = _query(scores, pairs)
         model_values = self.intercept + self.slope * (scores - self.score_center) / self.score_scale
         return MLPEPrediction(
-            self.target.inverse(model_values), model_values, pairs, self.target, self.region_name
+            jnp.asarray(self.target.inverse(model_values)),
+            model_values,
+            pairs,
+            self.target,
+            self.region_name,
         )
 
     def predict_known_effects(self, scores, pairs):
@@ -148,19 +176,7 @@ class MLPEHead:
         return condition_on_support(self, support_scores, support_observations, partition=partition)
 
 
-def _profile(design, targets, system):
-    inner, remaining, effects = system.inner_products(np.column_stack((design, targets)))
-    beta = np.linalg.solve(inner[:2, :2], inner[:2, 2])
-    residual_remaining = remaining[:, 2] - remaining[:, :2] @ beta
-    residual_effects = effects[:, 2] - effects[:, :2] @ beta
-    quadratic = (
-        residual_remaining @ residual_remaining / system.residual
-        + residual_effects @ residual_effects / system.unit
-    )
-    nll = 0.5 * (len(targets) * math.log(2 * math.pi) + system.logdet + quadratic)
-    return float(nll), beta
-
-
+@jax.enable_x64()
 def calibrate_mlpe(
     scores,
     observations: PairwiseObservations,
@@ -213,8 +229,7 @@ def calibrate_mlpe(
     lookup = {label: index for index, label in enumerate(population_ids)}
     left = np.asarray([lookup[a] for a, b in pairs], dtype=np.int32)
     right = np.asarray([lookup[b] for a, b in pairs], dtype=np.int32)
-    gram = endpoint_gram(left, right, len(population_ids))
-    if np.diag(gram).max() <= 1:
+    if np.bincount(np.r_[left, right], minlength=len(population_ids)).max() <= 1:
         raise MLPEError("MLPE variances are unidentifiable: observed pairs share no endpoints")
     ols_beta = np.linalg.lstsq(design, targets, rcond=None)[0]
     response_variance = max(
@@ -222,20 +237,33 @@ def calibrate_mlpe(
     )
     bounds = [(math.log(config.variance_floor), math.log(max(response_variance * 1e6, 1e4)))] * 2
 
-    numerical_failure = None
+    # Bounds enforce the standalone variance floor. Decode these bounded log
+    # variances through the common softplus interface with no additional floor;
+    # this preserves the exact lower bound without subtracting nearly equal
+    # values or changing the joint trainer's raw-parameter policy.
+    kernel_inputs = tuple(jnp.asarray(value) for value in (scores, targets, left, right))
+    kernel_options = dict(
+        n_populations=len(population_ids),
+        score_center=center,
+        score_scale=scale,
+        min_score_scale=config.min_score_scale,
+        variance_floor=0.0,
+        jitter=config.jitter,
+    )
+
+    def profile(log_variances):
+        return profiled_mlpe_ml_fit(
+            *kernel_inputs, raw_variances=_raw_from_log_variances(log_variances), **kernel_options
+        )
 
     def objective(log_variances):
-        nonlocal numerical_failure
-        try:
-            variances = np.exp(log_variances)
-            system = NumpyPopulationSystem(
-                left, right, gram, variances[0], variances[1] + config.jitter
-            )
-            nll, beta = _profile(design, targets, system)
-            return nll if math.isfinite(nll) and np.isfinite(beta).all() else float("inf")
-        except (np.linalg.LinAlgError, ValueError) as error:
-            numerical_failure = str(error)
-            return float("inf")
+        value, gradient = _optimizer_value_and_gradient(
+            jnp.asarray(log_variances), *kernel_inputs, **kernel_options
+        )
+        value, gradient = float(value), np.asarray(gradient)
+        if not math.isfinite(value) or not np.isfinite(gradient).all():
+            return float("inf"), np.zeros_like(log_variances)
+        return value, gradient
 
     candidates = []
     for fraction in (0.01, 0.1, 0.25, 0.5, 0.8):
@@ -245,35 +273,30 @@ def calibrate_mlpe(
                 max(response_variance * (1 - fraction), config.variance_floor * 10),
             ]
         )
-        # Rejected covariance points return infinity intentionally. SciPy's
-        # finite-difference proposals can subtract infinities; failure status is
-        # retained and inspected rather than emitting a redundant NumPy warning.
-        with np.errstate(invalid="ignore"):
-            result = minimize(
-                objective,
-                start,
-                method="L-BFGS-B",
-                bounds=bounds,
-                options={"maxiter": config.max_iterations, "ftol": 1e-12, "gtol": 1e-9},
-            )
+        result = minimize(
+            objective,
+            start,
+            jac=True,
+            method="L-BFGS-B",
+            bounds=bounds,
+            options={"maxiter": config.max_iterations, "ftol": 1e-12, "gtol": 1e-9},
+        )
         if result.success and math.isfinite(result.fun):
             candidates.append(result)
     if not candidates:
         raise MLPEError(
             "No deterministic MLPE optimization start converged to a finite likelihood"
-            + (f"; numerical failure: {numerical_failure}" if numerical_failure else "")
+            "; check score variation and variance conditioning "
+            "(eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= 0.01)"
         )
     result = min(candidates, key=lambda candidate: candidate.fun)
     variances = np.exp(result.x)
-    try:
-        system = NumpyPopulationSystem(
-            left, right, gram, variances[0], variances[1] + config.jitter
-        )
-        nll, beta = _profile(design, targets, system)
-        mean, covariance, factor = system.posterior(targets - design @ beta)
-    except (np.linalg.LinAlgError, ValueError) as error:
-        raise MLPEError("Fitted population-effect posterior factorization failed") from error
-    if not (np.isfinite(mean).all() and np.isfinite(covariance).all()):
+    raw = _raw_from_log_variances(jnp.asarray(result.x))
+    nll, beta = profile(jnp.asarray(result.x))
+    mean, covariance, factor = mlpe_effect_posterior(
+        *kernel_inputs, fixed_effects=beta, raw_variances=raw, **kernel_options
+    )
+    if not all(np.isfinite(value).all() for value in (nll, beta, mean, covariance, factor)):
         raise MLPEError("Fitted population-effect posterior is nonfinite")
     return MLPEHead(
         region_name,
@@ -285,12 +308,12 @@ def calibrate_mlpe(
         float(beta[1]),
         float(variances[0]),
         float(variances[1]),
-        tuple(mean),
-        tuple(map(tuple, (covariance + covariance.T) / 2)),
-        tuple(map(tuple, factor)),
+        tuple(map(float, mean)),
+        tuple(map(tuple, np.asarray(covariance))),
+        tuple(map(tuple, np.asarray(factor))),
         pairs,
         (role,) * len(pairs),
-        -nll,
+        -float(nll),
         config,
         int(result.nit),
         str(result.message),
