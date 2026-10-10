@@ -22,7 +22,7 @@ benchmark, geospatial acquisition, or research-checkout dependency.
 
 ## Synthetic quickstart
 
-Run `python examples/quickstart.py` after installing. The complete in-memory
+Run `JAX_ENABLE_X64=true python examples/quickstart.py` after installing. The complete in-memory
 workflow is:
 
 ```python
@@ -65,6 +65,16 @@ locations are explicit integer `(row, column)` positions. Labels declare the
 matrix row/column identity and are aligned to the region before training.
 Fitting performs no coordinate conversion, normalization, FST conversion, or
 observation clipping. Query regions contain features and locations only.
+
+`RegionBatch.features` is a JAX-backed Coordax field with named `row`, `column`,
+and `feature` axes; `feature_array` exposes its canonical HWC device array.
+Pass a labelled Coordax field in any named-axis order to retain its declared
+coordinates. Feature labels must match `feature_names` in meaning and order;
+conflicting declarations raise. Plain prepared arrays remain accepted.
+Numerical model outputs and target transformations are JAX arrays. Original
+observations retain float64 precision on the host; fitting or transforming
+float64 targets requires explicit `JAX_ENABLE_X64=true`. Input construction
+does not change the global JAX precision setting.
 
 The initial model is the cleaned architecture's U-Net embedding-distance family.
 Its landscape scores are squared Euclidean distances between learned patch
@@ -126,6 +136,14 @@ ruff check .
 Tests exercise public fit/predict behavior on synthetic arrays and build a wheel
 to run outside the source tree. Extracted components and their license are listed
 in `NOTICE`; study-specific code remains in its original repositories.
+
+Research diagnostics run from the source checkout and are excluded from the
+installed package. Run `JAX_ENABLE_X64=true python -m experiments.wishart` for
+the fixed-parameter Gaussian-marker reference. See
+[Wishart assumptions and conditional scoring](docs/statistics/wishart.md) for
+its scientific contract and the prerequisites in
+[#17](https://github.com/vboussange/ilg-toolkit/issues/17) before experimental
+fitting or fitted MLPE-versus-Wishart comparisons.
 
 ## Labelled pairs, transformations, and partitions
 

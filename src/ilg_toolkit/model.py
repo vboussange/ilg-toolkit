@@ -1,7 +1,10 @@
 """Label-free landscape scoring and explicit target-scale predictions."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 from .config import ResistanceSolverConfig
@@ -15,7 +18,7 @@ from .resistance import build_resistance_context
 class Prediction:
     """Pairwise predictions with their sampling-unit order and declared scale."""
 
-    values: np.ndarray
+    values: jax.Array
     sampling_unit_ids: tuple[str, ...]
     target: TargetSpec
     scale: str = "original"
@@ -25,7 +28,7 @@ class Prediction:
 class PairPrediction:
     """Marginal predictions for explicit labelled pairs in the requested order."""
 
-    values: np.ndarray
+    values: jax.Array
     pairs: tuple[tuple[str, str], ...]
     target: TargetSpec
     region_name: str
@@ -63,9 +66,7 @@ class CalibratedModel:
         if any(
             name != head.region_name or head.target != self.target for name, head in heads.items()
         ):
-            raise ValueError(
-                "Regional calibration names and target contracts must match the model"
-            )
+            raise ValueError("Regional calibration names and target contracts must match the model")
         object.__setattr__(self, "calibrations", heads)
         for name in ("training_pairs", "validation_pairs"):
             access = {
@@ -82,32 +83,33 @@ class CalibratedModel:
                 "Query feature contract must match training feature meanings and order"
             )
 
-    def landscape_scores(self, region: RegionBatch) -> np.ndarray:
+    def landscape_scores(self, region: RegionBatch) -> jax.Array:
         """Predict scores for prepared query locations without genetic observations."""
         self._validate_region(region)
-        options = {}
         if isinstance(self.encoder, ConductanceModel):
             height, width = region.feature_array.shape[:2]
             if height % self.encoder.patch_size or width % self.encoder.patch_size:
                 raise ValueError("Raster dimensions must be divisible by model patch_size")
-            options["context"] = build_resistance_context(
+            context = build_resistance_context(
                 (height // self.encoder.patch_size, width // self.encoder.patch_size),
                 self.solver_config,
             )
-        values = np.asarray(
-            self.encoder.predict_distances(region.feature_array, region.pixel_nodes, **options)
-        )
-        if not np.isfinite(values).all() or (values < 0).any():
+            values = self.encoder.predict_distances(
+                region.feature_array, region.pixel_nodes, context=context
+            )
+        else:
+            values = self.encoder.predict_distances(region.feature_array, region.pixel_nodes)
+        if not bool(jnp.isfinite(values).all()) or bool((values < 0).any()):
             raise FloatingPointError("Encoder produced nonfinite or negative distances")
         return values
 
-    def conductance_surface(self, region: RegionBatch) -> np.ndarray:
+    def conductance_surface(self, region: RegionBatch) -> jax.Array:
         """Expose a fitted conductance surface separately from genetic predictions."""
         if not isinstance(self.encoder, ConductanceModel):
             raise TypeError("This encoder does not produce a conductance surface")
         self._validate_region(region)
-        surface = np.asarray(self.encoder.conductance(region.feature_array))
-        if not np.all(np.isfinite(surface) & (surface > 0)):
+        surface = self.encoder.conductance(region.feature_array)
+        if not bool(jnp.all(jnp.isfinite(surface) & (surface > 0))):
             raise FloatingPointError("Encoder produced nonfinite or nonpositive conductance")
         return surface
 
@@ -120,7 +122,9 @@ class CalibratedModel:
             raise ValueError(
                 f"Region {region.name!r} has no MLPE calibration; calibrate it explicitly"
             )
-        if any(kind != "population" for kind in region.sampling_unit_kinds):
+        kinds = region.sampling_unit_kinds
+        assert kinds is not None
+        if any(kind != "population" for kind in kinds):
             raise ValueError("Population MLPE prediction requires population sampling units")
         return head
 
@@ -137,9 +141,9 @@ class CalibratedModel:
             for i, j in zip(left, right, strict=True)
         )
         marginal = self.predict_pairs(region, pairs)
-        values = np.zeros((count, count), dtype=marginal.values.dtype)
-        values[left, right] = marginal.values
-        values[right, left] = marginal.values
+        values = jnp.zeros((count, count), dtype=marginal.values.dtype)
+        values = values.at[left, right].set(marginal.values)
+        values = values.at[right, left].set(marginal.values)
         return Prediction(values, region.sampling_unit_ids, self.target)
 
     def predict_pairs(self, region: RegionBatch, pairs) -> PairPrediction:
@@ -167,7 +171,7 @@ class CalibratedModel:
             if head is None
             else head.predict_marginal(scores, pairs).values
         )
-        return PairPrediction(values, pairs, self.target, region.name)
+        return PairPrediction(jnp.asarray(values), pairs, self.target, region.name)
 
     def recalibrate(self, region: RegionBatch, observations, *, partitions=None, config=None):
         """Return a new MLPE model while retaining this frozen encoder."""
@@ -205,11 +209,16 @@ class CalibratedModel:
         return conditioned.predict(_scores_for_pairs(scores, region, pairs), pairs)
 
 
-def _scores_for_pairs(scores, region, pairs):
+def _scores_for_pairs(
+    scores: jax.Array, region: RegionBatch, pairs: Sequence[tuple[str, str]]
+) -> jax.Array:
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
     try:
-        return np.array([scores[lookup[a], lookup[b]] for a, b in pairs])
+        if not pairs:
+            raise ValueError("At least one pair is required")
+        indices = jnp.asarray([(lookup[a], lookup[b]) for a, b in pairs], dtype=jnp.int32)
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError(
             "Pairs must contain two sampling-unit labels with locations in the query region"
         ) from error
+    return scores[indices[:, 0], indices[:, 1]]

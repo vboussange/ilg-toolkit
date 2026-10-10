@@ -13,10 +13,10 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
     import numpy as np
 
     from ilg_toolkit import (
-        TrainingConfig,
         PairwiseObservations,
         RegionBatch,
         TargetSpec,
+        TrainingConfig,
         fit,
         save_checkpoint,
         save_model,
@@ -71,6 +71,10 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
     assert built.returncode == 0, built.stderr
     installation = tmp_path / "installed"
     with zipfile.ZipFile(next(wheels.glob("*.whl"))) as archive:
+        assert not any(
+            name.startswith(("experiments/", "ilg_toolkit/experimental/"))
+            for name in archive.namelist()
+        ), "Research diagnostics must not be installed with the toolkit"
         archive.extractall(installation)
     # Retain only installed third-party libraries from this interpreter. The
     # subprocess is isolated, runs elsewhere, and receives the built package.
@@ -82,12 +86,14 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
     script = f"""
 import sys
 sys.path[:0] = {json.dumps(library_paths)}
-import importlib, importlib.metadata, pkgutil
+import importlib, importlib.metadata, importlib.util, pkgutil
 import numpy as np
 import ilg_toolkit as ilg
 for module in pkgutil.walk_packages(ilg.__path__, ilg.__name__ + '.'):
     importlib.import_module(module.name)
 assert importlib.metadata.version('ilg-toolkit') == '0.1.0'
+assert importlib.util.find_spec('ilg_toolkit.experimental') is None
+assert not hasattr(ilg, 'diagnose_wishart')
 assert not any(name == 'deepilg' or name.startswith('deepilg.') for name in sys.modules)
 region = ilg.RegionBatch('independent', np.arange(32).reshape(4,4,2)/32,
     ('a','b'), np.array([[0,0],[3,3]]))

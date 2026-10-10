@@ -8,6 +8,18 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def _target_array(values) -> jax.Array:
+    """Retain supplied precision when moving target arithmetic to the device."""
+    source = values if isinstance(values, jax.Array) else np.asarray(values)
+    dtype = np.dtype(source.dtype)
+    needs_x64 = (dtype.kind == "f" and dtype.itemsize > 4) or (
+        dtype.kind == "c" and dtype.itemsize > 8
+    )
+    if needs_x64 and not jax.config.read("jax_enable_x64"):
+        raise RuntimeError("Target values require float64: set JAX_ENABLE_X64=true before Python")
+    return jnp.asarray(source)
+
+
 @dataclass(frozen=True)
 class TargetSpec:
     """Meaning and returned scale of genetic observations.
@@ -35,30 +47,29 @@ class TargetSpec:
         if self.transform not in {"identity", "log1p", "sqrt"}:
             raise ValueError("Target transform must be identity, log1p, or sqrt")
 
-    def forward(self, values) -> np.ndarray:
+    def forward(self, values) -> jax.Array:
         """Transform finite original observations, without automatic clipping."""
-        values = np.asarray(values)
-        if not np.isfinite(values).all():
+        values = _target_array(values)
+        if not bool(jnp.isfinite(values).all()):
             raise ValueError("Observed target values must be finite")
         if self.transform != "identity" and (values < 0).any():
             raise ValueError(f"Target transform {self.transform} requires nonnegative values")
         if self.transform == "log1p":
-            return np.log1p(values)
+            return jnp.log1p(values)
         if self.transform == "sqrt":
-            return np.sqrt(values)
+            return jnp.sqrt(values)
         return values
 
-    def inverse(self, values) -> np.ndarray:
+    def inverse(self, values) -> jax.Array:
         """Return predictions on original measurement units."""
-        values = np.asarray(values)
+        values = _target_array(values)
         if self.transform == "sqrt" and (values < 0).any():
             raise ValueError("sqrt inverse requires nonnegative transformed predictions")
-        with np.errstate(over="ignore", invalid="ignore"):
-            if self.transform == "log1p":
-                values = np.expm1(values)
-            elif self.transform == "sqrt":
-                values = np.square(values)
-        if not np.isfinite(values).all():
+        if self.transform == "log1p":
+            values = jnp.expm1(values)
+        elif self.transform == "sqrt":
+            values = jnp.square(values)
+        if not bool(jnp.isfinite(values).all()):
             raise FloatingPointError("Target inverse transformation produced nonfinite predictions")
         return values
 
@@ -80,13 +91,21 @@ class RegionBatch:
 
     def __post_init__(self):
         names = None if self.feature_names is None else tuple(self.feature_names)
+        axes = {}
         if isinstance(self.features, cx.Field):
+            if self.features.ndim != 3 or set(self.features.dims) != {"row", "column", "feature"}:
+                raise ValueError("Labelled features require named axes row, column, feature")
             field = self.features.order_as("row", "column", "feature")
+            axes = dict(field.axes)
             coordinate = field.axes.get("feature")
             if isinstance(coordinate, cx.LabeledAxis):
-                labels = tuple(str(value) for value in coordinate.ticks)
+                labels = tuple(coordinate.ticks.tolist())
+                if any(not isinstance(label, str) or not label for label in labels):
+                    raise ValueError("feature coordinates require nonempty string labels")
                 if names is not None and names != labels:
-                    raise ValueError("Feature coordinates must match feature_names meanings and order")
+                    raise ValueError(
+                        "Feature coordinates must match feature_names meanings and order"
+                    )
                 names = labels
             raw_features = field.data
         else:
@@ -96,7 +115,7 @@ class RegionBatch:
         positions = np.asarray(self.grid_positions)
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("Region name must be a nonempty string")
-        if features.ndim != 3 or min(features.shape) < 1 or not np.isfinite(features).all():
+        if features.ndim != 3 or min(features.shape) < 1 or not bool(jnp.isfinite(features).all()):
             raise ValueError("features must be a finite nonempty HWC array")
         if (
             len(ids) < 2
@@ -129,8 +148,11 @@ class RegionBatch:
             )
         object.__setattr__(self, "feature_names", names)
         object.__setattr__(self, "sampling_unit_kinds", kinds)
-        feature_axis = "feature" if names is None else cx.LabeledAxis("feature", np.asarray(names))
-        object.__setattr__(self, "features", cx.field(features, "row", "column", feature_axis))
+        if names is not None:
+            axes["feature"] = cx.LabeledAxis("feature", np.asarray(names))
+        object.__setattr__(
+            self, "features", cx.Field(features, dims=("row", "column", "feature"), axes=axes)
+        )
         object.__setattr__(self, "sampling_unit_ids", ids)
         object.__setattr__(self, "grid_positions", jnp.asarray(positions, dtype=jnp.int32))
 
@@ -138,12 +160,15 @@ class RegionBatch:
     def feature_array(self) -> jax.Array:
         """Canonical HWC device array for encoder kernels."""
         assert isinstance(self.features, cx.Field)
-        return self.features.data
+        values = self.features.data
+        assert isinstance(values, jax.Array)
+        return values
 
     @property
     def pixel_nodes(self) -> jax.Array:
         """Return labelled locations as row-major native-resolution pixel indices."""
-        return self.grid_positions[:, 0] * self.features.shape[1] + self.grid_positions[:, 1]
+        positions = jnp.asarray(self.grid_positions)
+        return positions[:, 0] * self.features.shape[1] + positions[:, 1]
 
 
 @dataclass(frozen=True)

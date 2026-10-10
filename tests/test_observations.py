@@ -2,7 +2,9 @@
 
 from typing import final
 
+import coordax as cx
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -31,6 +33,103 @@ def problem():
     )
     target = TargetSpec("pair dissimilarity", units="index")
     return region, target, LinearEmbedding(jnp.asarray(0.7))
+
+
+def test_labelled_raster_axes_normalize_without_changing_feature_meaning():
+    """A named-axis permutation describes the same prepared raster and locations."""
+    from dataclasses import replace
+
+    region, target, model = problem()
+    names = ("elevation", "canopy")
+    plain = replace(region, features=region.feature_array, feature_names=names)
+    field = cx.field(
+        plain.feature_array,
+        cx.LabeledAxis("row", np.array([100])),
+        cx.LabeledAxis("column", np.array([10, 20, 30])),
+        cx.LabeledAxis("feature", np.array(names)),
+    ).order_as("feature", "column", "row")
+    labelled = replace(plain, features=field)
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20"), ("unit/20", "unit/99")], [0.4, 0.6], target=target
+    )
+    expected = fit(plain, observations, model=model, config=TrainingConfig(epochs=1)).model
+    actual = fit(labelled, observations, model=model, config=TrainingConfig(epochs=1)).model
+    assert isinstance(labelled.features, cx.Field)
+    assert labelled.features.dims == ("row", "column", "feature")
+    row_axis = labelled.features.axes["row"]
+    column_axis = labelled.features.axes["column"]
+    assert isinstance(row_axis, cx.LabeledAxis)
+    assert isinstance(column_axis, cx.LabeledAxis)
+    np.testing.assert_array_equal(row_axis.ticks, [100])
+    np.testing.assert_array_equal(column_axis.ticks, [10, 20, 30])
+    assert labelled.feature_names == names
+    np.testing.assert_array_equal(actual.predict(labelled).values, expected.predict(plain).values)
+
+
+def test_public_landscape_and_target_predictions_return_jax_values():
+    region, _, model = problem()
+    target = TargetSpec("divergence", units="index", transform="log1p")
+    observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [0.5], target=target)
+    fitted = fit(region, observations, model=model, config=TrainingConfig(epochs=0)).model
+    scores = fitted.landscape_scores(region)
+    prediction = fitted.predict(region)
+    selected = fitted.predict_pairs(region, [("unit/20", "unit/7")])
+    assert isinstance(scores, jax.Array)
+    assert isinstance(prediction.values, jax.Array)
+    assert isinstance(selected.values, jax.Array)
+    assert isinstance(target.forward(jnp.array([0.5])), jax.Array)
+    assert isinstance(target.inverse(jnp.array([0.5])), jax.Array)
+    np.testing.assert_allclose(scores[0, 1], 0.49, rtol=1e-6)
+    np.testing.assert_allclose(selected.values, [np.expm1(0.49)], rtol=1e-6)
+    np.testing.assert_array_equal(np.diag(prediction.values), 0)
+
+
+def test_precise_observations_require_explicit_device_precision_without_toggling_it():
+    precise = 0.123456789012345
+    with jax.enable_x64(False):
+        region, target, model = problem()
+        assert isinstance(region.feature_array, jax.Array)
+        assert isinstance(region.grid_positions, jax.Array)
+        observations = PairwiseObservations.from_pairs(
+            [("unit/7", "unit/20")], [precise], target=target
+        )
+        assert observations.observed_values[0] == precise
+        assert jax.config.read("jax_enable_x64") is False
+        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
+            target.forward(observations.observed_values)
+        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
+            target.inverse(np.array([precise]))
+        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
+            fit(region, observations, model=model, config=TrainingConfig(epochs=0))
+        assert jax.config.read("jax_enable_x64") is False
+    with jax.enable_x64():
+        transformed = target.forward(observations.observed_values)
+        assert isinstance(transformed, jax.Array)
+        assert transformed.dtype == jnp.float64
+        assert float(transformed[0]) == precise
+
+
+def test_coordinate_declarations_reject_unknown_axes_and_conflicting_feature_labels():
+    from dataclasses import replace
+
+    region, _, _ = problem()
+    with pytest.raises(ValueError, match="row, column, feature"):
+        replace(region, features=cx.field(region.feature_array, "row", "column", "channel"))
+    field = cx.field(
+        region.feature_array,
+        "row",
+        "column",
+        cx.LabeledAxis("feature", np.array(["elevation", "canopy"])),
+    )
+    with pytest.raises(ValueError, match="meanings and order"):
+        replace(region, features=field, feature_names=("canopy", "elevation"))
+    with pytest.raises(ValueError, match="feature.*string"):
+        replace(
+            region,
+            features=cx.field(
+                region.feature_array, "row", "column", cx.LabeledAxis("feature", np.array([1, 2]))
+            ),
+        )
 
 
 def test_equivalent_matrix_and_pair_inputs_train_equivalent_models():
@@ -146,7 +245,7 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit():
     result = fit(region, observations, model=model, config=TrainingConfig(epochs=0))
     assert region.sampling_unit_kinds == ("individual", "population", "individual")
     assert result.model.feature_names == ("elevation", "canopy")
-    swapped = replace(region, feature_names=("canopy", "elevation"))
+    swapped = replace(region, features=region.feature_array, feature_names=("canopy", "elevation"))
     with pytest.raises(ValueError, match="feature.*order|feature.*contract"):
         result.model.predict(swapped)
     relatedness = PairwiseObservations.from_pairs(
