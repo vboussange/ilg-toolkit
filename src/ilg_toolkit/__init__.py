@@ -2,8 +2,8 @@
 
 from .calibration import recalibrate
 from .checkpoint import load_checkpoint, save_checkpoint
-from .config import FitConfig, SolverConfig
-from .data import ObservationPartition, PairwiseObservations, PreparedRegion, TargetSpec
+from .config import TrainingConfig, ResistanceSolverConfig
+from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
 from .ensemble import (
     Ensemble,
     EnsembleMember,
@@ -18,7 +18,7 @@ from .ensemble import (
     fit_ensemble_member,
     generate_population_folds,
 )
-from .ensemble_persistence import fit_ensemble_run, load_ensemble, save_ensemble
+from .ensemble import fit_ensemble_run, load_ensemble, save_ensemble
 from .evaluation import (
     EvaluationAccess,
     EvaluationRegime,
@@ -41,8 +41,8 @@ from .mlpe import (
     condition_on_support,
     predict_known_effects,
 )
-from .persistence import ArtifactError, load_predictor, save_predictor
-from .predictor import PairPrediction, Prediction, Predictor
+from .persistence import ArtifactError, load_model, save_model
+from .model import PairPrediction, Prediction, CalibratedModel
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
@@ -70,8 +70,8 @@ __all__ = [
     "fit_ensemble_member",
     "generate_population_folds",
     "ArtifactError",
-    "load_predictor",
-    "save_predictor",
+    "load_model",
+    "save_model",
     "MLPEConfig",
     "MLPEConditionalPrediction",
     "MLPEError",
@@ -83,16 +83,16 @@ __all__ = [
     "condition_on_support",
     "predict_known_effects",
     "EpochRecord",
-    "FitConfig",
+    "TrainingConfig",
     "FitResult",
     "TrainingState",
     "PairwiseObservations",
     "ObservationPartition",
     "Prediction",
     "PairPrediction",
-    "Predictor",
-    "PreparedRegion",
-    "SolverConfig",
+    "CalibratedModel",
+    "RegionBatch",
+    "ResistanceSolverConfig",
     "TargetSpec",
     "fit",
     "recalibrate",

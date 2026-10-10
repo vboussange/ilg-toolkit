@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 from test_mlpe_training import embedding_problem
 
-from ilg_toolkit import FitConfig, fit_ensemble, generate_population_folds
+from ilg_toolkit import TrainingConfig, fit_ensemble, generate_population_folds
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
 
 
@@ -31,12 +31,12 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
             observations,
             folds=folds,
             initialization_seeds=(13, 29),
-            config=FitConfig(objective="mlpe", epochs=3, learning_rate=0.03),
+            config=TrainingConfig(objective="mlpe", epochs=3, learning_rate=0.03),
             model_factory=model_factory,
         )
         prediction = result.predict(region)
         member_values = np.stack(
-            [member.predictor.predict(region).values for member in result.members]
+            [member.model.predict(region).values for member in result.members]
         )
     assert len(result.members) == 4
     assert all(member.status == "completed" for member in result.members)
@@ -44,7 +44,7 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
     assert len({member.identity.effective_seed for member in result.members}) == 4
     assert len({id(member.fit_result.state.optimizer_state) for member in result.members}) == 4
     assert (
-        len({tuple(np.asarray(member.predictor.encoder.log_weights)) for member in result.members})
+        len({tuple(np.asarray(member.model.encoder.log_weights)) for member in result.members})
         == 4
     )
     np.testing.assert_allclose(prediction.values, member_values.mean(axis=0), atol=1e-12)
@@ -55,11 +55,11 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
         assert (
             member.fit_result.history[-1].training_loss < member.fit_result.history[0].training_loss
         )
-        head = member.predictor.calibrations[region.name]
+        head = member.model.calibrations[region.name]
         heldout = set(member.fold.held_out_units[region.name])
         assert not any(heldout & set(pair) for pair in head.calibration_pairs)
-        assert member.predictor.validation_pairs == {}
-        assert not any(heldout & set(pair) for pair in member.predictor.training_pairs[region.name])
+        assert member.model.validation_pairs == {}
+        assert not any(heldout & set(pair) for pair in member.model.training_pairs[region.name])
 
 
 def test_generated_folds_are_identity_stable_and_query_values_cannot_change_members():
@@ -96,7 +96,7 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
             target=observations.target,
             sampling_unit_ids=region.sampling_unit_ids,
         )
-        config = FitConfig(objective="mlpe", epochs=2)
+        config = TrainingConfig(objective="mlpe", epochs=2)
         baseline = fit_ensemble(
             region, observations, folds=[fold], config=config, model_factory=model_factory
         )
@@ -107,7 +107,7 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
             baseline.predict(region).values, perturbed.predict(region).values
         )
     assert baseline.members[0].fit_result.history == perturbed.members[0].fit_result.history
-    assert baseline.members[0].predictor.calibrations == perturbed.members[0].predictor.calibrations
+    assert baseline.members[0].model.calibrations == perturbed.members[0].model.calibrations
 
 
 def test_original_scale_known_outputs_are_averaged_after_inverse_transformation():
@@ -152,7 +152,7 @@ def test_failed_members_and_missing_composition_cannot_be_silently_dropped():
         holdout_size=2,
         fold_seed=47,
         initialization_seeds=(1, 2, 3),
-        config=FitConfig(epochs=0),
+        config=TrainingConfig(epochs=0),
         model_factory=partly_broken_factory,
         on_member=outcomes.append,
     )
@@ -191,14 +191,14 @@ def test_explicit_validation_retains_selection_target_access_on_every_member():
             region,
             observations,
             folds=[fold],
-            config=FitConfig(objective="mlpe", epochs=2),
+            config=TrainingConfig(objective="mlpe", epochs=2),
             model_factory=model_factory,
         )
     member = result.members[0]
     assert member.status == "completed"
-    assert member.predictor.validation_pairs[region.name] == validation[region.name].pairs
+    assert member.model.validation_pairs[region.name] == validation[region.name].pairs
     assert member.fit_result.selection == "validation"
-    assert len(member.predictor.calibrations[region.name].calibration_pairs) == 6
+    assert len(member.model.calibrations[region.name].calibration_pairs) == 6
 
 
 def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitialize():
@@ -211,7 +211,7 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
         fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)[
             0
         ]
-        config = FitConfig(objective="mlpe", epochs=4)
+        config = TrainingConfig(objective="mlpe", epochs=4)
         complete = fit_ensemble_member(
             region,
             observations,
@@ -243,7 +243,7 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
         )
         assert resumed.status == complete.status == "completed"
         np.testing.assert_array_equal(
-            resumed.predictor.predict(region).values, complete.predictor.predict(region).values
+            resumed.model.predict(region).values, complete.model.predict(region).values
         )
     assert resumed.fit_result.history == complete.fit_result.history
     np.testing.assert_array_equal(
@@ -299,18 +299,18 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
             n_folds=1,
             holdout_size=2,
             fold_seed=47,
-            config=FitConfig(objective="mlpe", epochs=2),
+            config=TrainingConfig(objective="mlpe", epochs=2),
             model_factory=model_factory,
         )
     member = result.members[0]
     assert member.status == "completed"
     assert member.fit_result.region_names == ("alpine", "valley")
-    assert set(member.predictor.calibrations) == {"alpine", "valley"}
+    assert set(member.model.calibrations) == {"alpine", "valley"}
     assert member.fit_result.state.raw_variances.shape == (2, 2)
     assert member.fit_result.history[-1].training_loss < member.fit_result.history[0].training_loss
     assert (
-        member.predictor.calibrations["valley"].intercept
-        - member.predictor.calibrations["alpine"].intercept
+        member.model.calibrations["valley"].intercept
+        - member.model.calibrations["alpine"].intercept
         > 2
     )
 
@@ -329,14 +329,14 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
         EnsembleMember,
         ObservationPartition,
         PopulationFold,
-        Predictor,
-        PreparedRegion,
+        CalibratedModel,
+        RegionBatch,
         TargetSpec,
         ensemble_member_identity,
     )
 
     with jax.enable_x64():
-        region = PreparedRegion(
+        region = RegionBatch(
             "graph",
             np.ones((1, 4, 1)),
             ("a", "b", "c", "d"),
@@ -350,21 +350,21 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
                 {"graph": ObservationPartition("graph", (("a", "b"),), "training")},
                 {"graph": ObservationPartition("graph", (("c", "d"),), "query")},
             )
-            predictor = Predictor(
+            model = CalibratedModel(
                 ConstantConductance(jnp.asarray(level)), TargetSpec("divergence"), 1
             )
             members.append(
                 EnsembleMember(
-                    ensemble_member_identity(fold.fold_id, 0), fold, "completed", predictor
+                    ensemble_member_identity(fold.fold_id, 0), fold, "completed", model
                 )
             )
         ensemble = Ensemble(tuple(members))
         prediction = ensemble.predict(region)
         summary = ensemble.conductance_surfaces(region)
-        averaged_surface_predictor = Predictor(
+        averaged_surface_model = CalibratedModel(
             ConstantConductance(jnp.asarray(2.5)), TargetSpec("divergence"), 1
         )
-        surface_prediction = averaged_surface_predictor.predict(region)
+        surface_prediction = averaged_surface_model.predict(region)
     np.testing.assert_allclose(prediction.values[0, 1], 0.625, atol=1e-7)
     np.testing.assert_allclose(summary.values, 2.5, atol=1e-12)
     np.testing.assert_allclose(summary.member_spread, 1.5, atol=1e-12)
@@ -394,7 +394,7 @@ def test_member_callback_failure_interrupts_before_starting_another_member():
             holdout_size=2,
             fold_seed=47,
             initialization_seeds=(1, 2),
-            config=FitConfig(epochs=0),
+            config=TrainingConfig(epochs=0),
             model_factory=tracked_factory,
             on_member=interrupted_save,
         )
@@ -407,7 +407,7 @@ def test_epoch_hook_interrupts_and_member_states_continue_the_exact_ensemble():
     with jax.enable_x64():
         region, observations = embedding_problem()
         folds = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)
-        config = FitConfig(objective="mlpe", epochs=3)
+        config = TrainingConfig(objective="mlpe", epochs=3)
         complete = fit_ensemble(
             region,
             observations,

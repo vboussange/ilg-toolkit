@@ -4,9 +4,9 @@ import jax
 import numpy as np
 
 from ilg_toolkit import (
-    FitConfig,
+    TrainingConfig,
     PairwiseObservations,
-    PreparedRegion,
+    RegionBatch,
     TargetSpec,
     evaluate_ensemble,
     fit_ensemble,
@@ -25,7 +25,7 @@ with jax.enable_x64():
     features = rng.normal(size=(4, 4, 2)).astype(np.float32)
     positions = np.array([[0, 0], [0, 3], [1, 1], [2, 2], [3, 0], [3, 3]])
     labels = tuple(f"population-{i}" for i in range(len(positions)))
-    region = PreparedRegion(
+    region = RegionBatch(
         "synthetic", features, labels, positions, feature_names=("elevation", "habitat")
     )
     embedding = features[tuple(positions.T)] * np.array([0.3, 1.5])
@@ -44,7 +44,7 @@ with jax.enable_x64():
         holdout_size=2,
         fold_seed=47,
         initialization_seeds=(13, 29),
-        config=FitConfig(objective="mlpe", epochs=1),
+        config=TrainingConfig(objective="mlpe", epochs=1),
         model_factory=model_factory,
     )
     result = evaluate_ensemble(ensemble, region, observed)

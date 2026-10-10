@@ -8,10 +8,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._archive import ArtifactError, require_fields
-from .config import SolverConfig
+from .config import ResistanceSolverConfig
 from .data import TargetSpec
 from .models import ResNet9Conductance, UNetEmbeddingDistance
-from .predictor import Predictor
+from .model import CalibratedModel
 
 
 def _arraylike(value):
@@ -92,7 +92,7 @@ def _template(record):
     return eqx.filter_eval_shape(lambda: cls(**options, key=jax.random.PRNGKey(0)))
 
 
-def encode_model(model, arrays):
+def encode_encoder(model, arrays):
     if type(model) is UNetEmbeddingDistance:
         area = model.patch_size**2
         if model.patch_embedding.in_features % area:
@@ -122,7 +122,7 @@ def encode_model(model, arrays):
     return record
 
 
-def decode_model(record, archive):
+def decode_encoder(record, archive):
     model = decode_tree_leaves(_template(record), record["leaves"], archive)
     if type(model) is UNetEmbeddingDistance:
         for block in (
@@ -177,26 +177,26 @@ _PREPARATION = {
 }
 
 
-def encode_predictor(predictor, arrays):
+def encode_model(model, arrays):
     return {
-        "encoder": encode_model(predictor.encoder, arrays),
+        "encoder": encode_encoder(model.encoder, arrays),
         "model_state": None,
-        "target": asdict(predictor.target),
-        "objective": predictor.objective,
-        "feature_count": predictor.feature_count,
-        "feature_names": predictor.feature_names,
+        "target": asdict(model.target),
+        "objective": model.objective,
+        "feature_count": model.feature_count,
+        "feature_names": model.feature_names,
         "preparation": _PREPARATION,
         "prediction_scale": "original",
-        "solver": asdict(predictor.solver_config),
+        "solver": asdict(model.solver_config),
         "calibrations": {
-            name: encode_head(head, arrays) for name, head in predictor.calibrations.items()
+            name: encode_head(head, arrays) for name, head in model.calibrations.items()
         },
-        "training_pairs": predictor.training_pairs,
-        "validation_pairs": predictor.validation_pairs,
+        "training_pairs": model.training_pairs,
+        "validation_pairs": model.validation_pairs,
     }
 
 
-def decode_predictor(record, archive):
+def decode_model(record, archive):
     require_fields(
         record,
         {
@@ -213,7 +213,7 @@ def decode_predictor(record, archive):
             "training_pairs",
             "validation_pairs",
         },
-        "Predictor",
+        "CalibratedModel",
     )
     if record["model_state"] is not None or record["preparation"] != _PREPARATION:
         raise ArtifactError("Unsupported model state or prepared-feature contract")
@@ -221,17 +221,17 @@ def decode_predictor(record, archive):
         raise ArtifactError("Unsupported prediction target scale")
     count, names = record["feature_count"], record["feature_names"]
     if type(count) is not int or count < 1:
-        raise ArtifactError("Predictor feature_count must be a positive integer")
+        raise ArtifactError("CalibratedModel feature_count must be a positive integer")
     if names is not None and (
         not isinstance(names, (list, tuple))
         or len(names) != count
         or any(not isinstance(name, str) or not name for name in names)
         or len(set(names)) != count
     ):
-        raise ArtifactError("Predictor feature names must declare each channel uniquely")
-    model = decode_model(record["encoder"], archive)
+        raise ArtifactError("CalibratedModel feature names must declare each channel uniquely")
+    model = decode_encoder(record["encoder"], archive)
     if record["encoder"]["constructor"]["in_channels"] != count:
-        raise ArtifactError("Encoder input channels do not match predictor feature_count")
+        raise ArtifactError("Encoder input channels do not match model feature_count")
     require_fields(record["solver"], {"rtol", "atol", "max_steps", "use_amg"}, "Solver config")
     if not isinstance(record["calibrations"], dict):
         raise ArtifactError("Regional calibrations must be a mapping")
@@ -239,13 +239,13 @@ def decode_predictor(record, archive):
     training = _access(record["training_pairs"])
     validation = _access(record["validation_pairs"])
     if record["objective"] == "mlpe" and not heads:
-        raise ArtifactError("MLPE predictor is missing required regional calibration")
-    return Predictor(
+        raise ArtifactError("MLPE model is missing required regional calibration")
+    return CalibratedModel(
         encoder=model,
         target=_target(record["target"]),
         feature_count=count,
         feature_names=None if names is None else tuple(names),
-        solver_config=SolverConfig(**record["solver"]),
+        solver_config=ResistanceSolverConfig(**record["solver"]),
         objective=record["objective"],
         calibrations=heads,
         training_pairs=training,

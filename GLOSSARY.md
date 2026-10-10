@@ -4,6 +4,18 @@ Inverse landscape genetics: learning relationships between landscapes and pairwi
 
 ## Language
 
+**Region batch**:
+The prepared landscape features and sampling-unit locations for one region, independent of genetic observations.
+_Avoid_: Prepared region, when naming this input boundary.
+
+**Calibrated model**:
+A fitted landscape encoder together with the target-scale relationship and regional calibration needed for genetic prediction. Direct regression uses its declared target transform; MLPE uses explicit regional genetic calibration.
+_Avoid_: CalibratedModel.
+
+**Isolation by distance (IBD)**:
+A reference relationship between geographic separation and genetic dissimilarity, independent of landscape resistance.
+_Avoid_: IBR, when referring to the geographic-distance baseline.
+
 **Fold ensemble**:
 A collection of fitted models trained using different sampling-unit partitions of the same dataset.
 _Avoid_: Fold-averaged model, when referring to the collection rather than an aggregate prediction.

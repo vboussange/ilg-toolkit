@@ -1,11 +1,11 @@
-# Saving a fitted predictor
+# Saving a fitted model
 
 ```python
-from ilg_toolkit import load_predictor, save_predictor
+from ilg_toolkit import load_model, save_model
 
-save_predictor("fitted.ilg", result.predictor)
-predictor = load_predictor("fitted.ilg")
-prediction = predictor.predict(prepared_query_region)
+save_model("fitted.ilg", result.model)
+model = load_model("fitted.ilg")
+prediction = model.predict(prepared_query_region)
 ```
 
 Loading requires no training data, query genetic observations or caller model
@@ -17,7 +17,7 @@ caller's preparation step. Predictions retain declared target units and transfor
 The artifact preserves the shipped encoder architecture, parameters and dynamic
 scalar settings, solver options, regional MLPE calibrations and population-effect
 posteriors, and encoder training/validation and calibration target-access identities.
-Reloaded MLPE predictors support the same explicit known-effect and supplied-support
+Reloaded MLPE models support the same explicit known-effect and supplied-support
 operations described in [MLPE conditioning](mlpe-conditioning.md). Calibration is
 never recomputed during loading. Joint Adam heads retain their fixed-budget
 `converged=False` diagnostic rather than becoming standalone converged fits.
@@ -35,7 +35,7 @@ No arbitrary class imports or pickle fallback are used.
 
 Format version 1 is one ZIP archive with a standard finite-JSON `manifest.json`
 and numeric NPY entries under `arrays/`. The manifest identifies the artifact kind,
-schema, runtime versions, architecture codec versions, complete predictor metadata
+schema, runtime versions, architecture codec versions, complete model metadata
 and every array's shape, dtype and SHA256 digest. Numeric loading disables pickle.
 Unknown schemas, model codecs, missing/extra entries, duplicate identities and
 invalid metadata fail with `ArtifactError`. This format is an inference artifact;

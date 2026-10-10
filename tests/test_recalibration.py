@@ -1,4 +1,4 @@
-"""Frozen predictor recalibration and regional transfer at the public seam."""
+"""Frozen model recalibration and regional transfer at the public seam."""
 
 from dataclasses import replace
 
@@ -8,10 +8,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from ilg_toolkit import (
-    FitConfig,
+    TrainingConfig,
     ObservationPartition,
     PairwiseObservations,
-    PreparedRegion,
+    RegionBatch,
     TargetSpec,
     fit,
 )
@@ -30,7 +30,7 @@ def problem(name="original"):
     coordinates = np.array([0, 0.2, 0.8, 1.1, 1.9, 2.8])
     features = np.stack((coordinates, coordinates * 0.1 + 1), axis=-1).reshape(2, 3, 2)
     ids = tuple(f"population-{index}" for index in range(6))
-    region = PreparedRegion(
+    region = RegionBatch(
         name,
         features,
         ids,
@@ -60,7 +60,7 @@ def test_explicit_development_recalibration_keeps_encoder_and_prior_history_froz
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=FitConfig(epochs=0),
+        config=TrainingConfig(epochs=0),
         partition=training,
         validation=(region, observations),
         validation_partition=validation,
@@ -68,17 +68,17 @@ def test_explicit_development_recalibration_keeps_encoder_and_prior_history_froz
     history = result.history
     from ilg_toolkit import MLPEConfig
 
-    calibrated = recalibrate(result.predictor, region, observations, config=MLPEConfig(jitter=1e-7))
+    calibrated = recalibrate(result.model, region, observations, config=MLPEConfig(jitter=1e-7))
     assert calibrated.objective == "mlpe"
-    assert calibrated.encoder is result.predictor.encoder
+    assert calibrated.encoder is result.model.encoder
     assert calibrated.calibrations[region.name].calibration_pairs == training.pairs
     assert set(calibrated.calibrations[region.name].calibration_roles) == {"training"}
     developed = recalibrate(calibrated, region, observations, partitions=(training, validation))
     assert developed.encoder is calibrated.encoder
     assert developed.calibrations[region.name].config is calibrated.calibrations[region.name].config
     assert result.history is history
-    assert result.predictor.objective == "direct_log1p"
-    assert not result.predictor.calibrations
+    assert result.model.objective == "direct_log1p"
+    assert not result.model.calibrations
     assert len(developed.calibrations[region.name].calibration_pairs) == 15
     assert set(developed.calibrations[region.name].calibration_roles) == {"training", "validation"}
     assert not np.allclose(calibrated.predict(region).values, developed.predict(region).values)
@@ -97,9 +97,9 @@ def test_transfer_scores_are_label_free_and_each_region_requires_its_own_head():
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=FitConfig(epochs=0),
+        config=TrainingConfig(epochs=0),
         partition=training,
-    ).predictor
+    ).model
     calibrated = recalibrate(original, region, observations)
     new_region = replace(region, name="unseen-catchment")
     scores = calibrated.landscape_scores(new_region)
@@ -131,17 +131,17 @@ def test_default_recalibration_ignores_validation_targets_and_records_encoder_ac
     from ilg_toolkit import recalibrate
 
     region, observations, training, validation = problem()
-    predictor = fit(
+    model = fit(
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=FitConfig(epochs=0),
+        config=TrainingConfig(epochs=0),
         partition=training,
         validation=(region, observations),
         validation_partition=validation,
-    ).predictor
-    assert predictor.training_pairs[region.name] == training.pairs
-    assert predictor.validation_pairs[region.name] == validation.pairs
+    ).model
+    assert model.training_pairs[region.name] == training.pairs
+    assert model.validation_pairs[region.name] == validation.pairs
     altered = np.array(observations.values)
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
     for a, b in validation.pairs:
@@ -149,8 +149,8 @@ def test_default_recalibration_ignores_validation_targets_and_records_encoder_ac
     altered = PairwiseObservations.from_matrix(
         region.sampling_unit_ids, altered, target=observations.target
     )
-    original = recalibrate(predictor, region, observations)
-    changed = recalibrate(predictor, region, altered)
+    original = recalibrate(model, region, observations)
+    changed = recalibrate(model, region, altered)
     np.testing.assert_array_equal(original.predict(region).values, changed.predict(region).values)
 
 
@@ -160,16 +160,16 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
     from ilg_toolkit import recalibrate
 
     region, observations, training, _ = problem()
-    predictor = fit(
+    model = fit(
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=FitConfig(epochs=0),
+        config=TrainingConfig(epochs=0),
         partition=training,
-    ).predictor
+    ).model
     with pytest.raises(ValueError, match="feature contract"):
         recalibrate(
-            predictor,
+            model,
             replace(region, feature_names=tuple(reversed(region.feature_names))),
             observations,
         )
@@ -179,21 +179,21 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
         target=TargetSpec("another target", units="fraction"),
     )
     with pytest.raises(ValueError, match="target meaning"):
-        recalibrate(predictor, region, incompatible)
+        recalibrate(model, region, incompatible)
     for role in ("query", "support"):
         with pytest.raises(ValueError, match="query or support"):
             recalibrate(
-                predictor,
+                model,
                 region,
                 observations,
                 partitions=ObservationPartition(region.name, training.pairs, role=role),
             )
     with pytest.raises(ValueError, match="overlap"):
-        recalibrate(predictor, region, observations, partitions=(training, training))
+        recalibrate(model, region, observations, partitions=(training, training))
     individuals = replace(region, sampling_unit_kinds=("individual",) + ("population",) * 5)
     with pytest.raises(ValueError, match="population sampling units"):
-        recalibrate(predictor, individuals, observations)
-    calibrated = recalibrate(predictor, region, observations)
+        recalibrate(model, individuals, observations)
+    calibrated = recalibrate(model, region, observations)
     assert np.isfinite(calibrated.landscape_scores(individuals)).all()
     with pytest.raises(ValueError, match="population sampling units"):
         calibrated.predict(individuals)

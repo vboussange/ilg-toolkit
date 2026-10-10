@@ -11,8 +11,8 @@ from ilg_toolkit import (
     ObservationPartition,
     PairwiseObservations,
     PopulationFold,
-    Predictor,
-    PreparedRegion,
+    CalibratedModel,
+    RegionBatch,
     TargetSpec,
     ensemble_member_identity,
     evaluate_ensemble,
@@ -31,7 +31,7 @@ class ScalarEmbedding(EmbeddingDistanceModel):
 
 
 def known_ensemble():
-    region = PreparedRegion(
+    region = RegionBatch(
         "alpine",
         np.arange(4).reshape(1, 4, 1),
         ("a", "b", "c", "d"),
@@ -46,14 +46,14 @@ def known_ensemble():
             {"alpine": ObservationPartition("alpine", (("a", "b"),), "training")},
             {"alpine": ObservationPartition("alpine", (("c", "d"),), "query")},
         )
-        predictor = Predictor(
+        model = CalibratedModel(
             ScalarEmbedding(jnp.asarray(weight)),
             target,
             1,
             training_pairs={"alpine": (("a", "b"),)},
         )
         members.append(
-            EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", predictor)
+            EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
         )
     return region, Ensemble(tuple(members)), target
 
@@ -84,7 +84,7 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
     from test_ensemble import model_factory
     from test_mlpe_training import embedding_problem
 
-    from ilg_toolkit import FitConfig, fit_ensemble, generate_population_folds
+    from ilg_toolkit import TrainingConfig, fit_ensemble, generate_population_folds
 
     with jax.enable_x64():
         region, observations = embedding_problem()
@@ -94,7 +94,7 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
             observations,
             folds=folds,
             initialization_seeds=(13, 29),
-            config=FitConfig(objective="mlpe", epochs=2),
+            config=TrainingConfig(objective="mlpe", epochs=2),
             model_factory=model_factory,
         )
         query = folds[0].query[region.name]
@@ -112,7 +112,7 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
     np.testing.assert_array_equal(first.predictions.values, perturbed.predictions.values)
     assert first.mse != perturbed.mse
     for member in ensemble.members:
-        head = member.predictor.calibrations[region.name]
+        head = member.model.calibrations[region.name]
         assert set(folds[0].held_out_units[region.name]).issubset(head.population_ids)
         assert not any(
             set(pair) & set(folds[0].held_out_units[region.name]) for pair in head.calibration_pairs
@@ -131,8 +131,8 @@ def test_validation_selection_and_own_query_target_access_preclude_scoring():
     region, ensemble, target = known_ensemble()
     contaminated = []
     for member in ensemble.members:
-        predictor = replace(member.predictor, validation_pairs={region.name: (("d", "c"),)})
-        contaminated.append(replace(member, predictor=predictor))
+        model = replace(member.model, validation_pairs={region.name: (("d", "c"),)})
+        contaminated.append(replace(member, model=model))
     contaminated = Ensemble(tuple(contaminated))
     observed = PairwiseObservations.from_pairs([("c", "d")], [3], target=target)
     result = evaluate_ensemble(
@@ -162,12 +162,12 @@ def test_at_least_one_requires_the_same_endpoint_to_be_heldout_and_still_unseen(
     # would wrongly admit (b,c).
     members = []
     for member in ensemble.members:
-        predictor = replace(
-            member.predictor,
+        model = replace(
+            member.model,
             training_pairs={region.name: ()},
             validation_pairs={region.name: (("a", "c"),)},
         )
-        members.append(replace(member, predictor=predictor))
+        members.append(replace(member, model=model))
     result = predict_out_of_fold(
         Ensemble(tuple(members)),
         region,
@@ -191,7 +191,7 @@ def test_failed_pending_and_unknown_access_members_are_explicit_in_coverage():
     failed = replace(
         second,
         status="failed",
-        predictor=None,
+        model=None,
         failure=MemberFailure("fit", "RuntimeError", "failed fit"),
     )
     result = predict_out_of_fold(Ensemble((first, failed)), region, [("c", "d")])
@@ -202,14 +202,14 @@ def test_failed_pending_and_unknown_access_members_are_explicit_in_coverage():
     unavailable = predict_out_of_fold(Ensemble((pending,)), region, [("c", "d")], target=target)
     assert unavailable.coverage == 0
     assert unavailable.member_statuses[pending.identity.member_id] == "pending"
-    unknown = replace(first, predictor=replace(first.predictor, training_pairs={}))
+    unknown = replace(first, model=replace(first.model, training_pairs={}))
     unknown_result = predict_out_of_fold(Ensemble((unknown,)), region, [("c", "d")])
     assert unknown_result.coverage == 0
     assert unknown_result.exclusion_reasons[unknown.identity.member_id] == (
         "unknown_encoder_access",
     )
     declared = replace(
-        unknown, predictor=replace(unknown.predictor, training_pairs={region.name: ()})
+        unknown, model=replace(unknown.model, training_pairs={region.name: ()})
     )
     declared_result = predict_out_of_fold(Ensemble((declared,)), region, [("c", "d")])
     assert declared_result.coverage == 1
@@ -219,7 +219,7 @@ def fitted_member_problem():
     from test_ensemble import model_factory
     from test_mlpe_training import embedding_problem
 
-    from ilg_toolkit import FitConfig, fit_ensemble, generate_population_folds
+    from ilg_toolkit import TrainingConfig, fit_ensemble, generate_population_folds
 
     region, observations = embedding_problem()
     fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)[0]
@@ -228,7 +228,7 @@ def fitted_member_problem():
         observations,
         folds=[fold],
         initialization_seeds=(13,),
-        config=FitConfig(objective="mlpe", epochs=1),
+        config=TrainingConfig(objective="mlpe", epochs=1),
         model_factory=model_factory,
     )
     assert ensemble.members[0].status == "completed"
@@ -247,25 +247,25 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
         old = next(label for label in region.sampling_unit_ids if label not in held)
         cross = ObservationPartition(region.name, ((held[0], old),), "calibration")
         training = member.fold.training[region.name]
-        recalibrated = member.predictor.recalibrate(
+        recalibrated = member.model.recalibrate(
             region, observations, partitions=(training, cross)
         )
-        changed = Ensemble((replace(member, predictor=recalibrated),))
+        changed = Ensemble((replace(member, model=recalibrated),))
         strict = predict_out_of_fold(changed, region, [held])
         partial = predict_out_of_fold(
             changed, region, [held], regime=EvaluationRegime(endpoint_regime="at_least_one_unseen")
         )
         own = ObservationPartition(region.name, (held,), "calibration")
-        contaminated = member.predictor.recalibrate(
+        contaminated = member.model.recalibrate(
             region, observations, partitions=(training, own)
         )
         forbidden = predict_out_of_fold(
-            Ensemble((replace(member, predictor=contaminated),)),
+            Ensemble((replace(member, model=contaminated),)),
             region,
             [held],
             regime=EvaluationRegime(endpoint_regime="at_least_one_unseen"),
         )
-    assert recalibrated.encoder is member.predictor.encoder
+    assert recalibrated.encoder is member.model.encoder
     assert strict.coverage == 0
     assert partial.coverage == 1
     assert forbidden.coverage == 0
@@ -278,7 +278,7 @@ def test_recalibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_tr
     from test_ensemble import model_factory
     from test_mlpe_training import embedding_problem
 
-    from ilg_toolkit import EvaluationRegime, FitConfig, fit_ensemble
+    from ilg_toolkit import EvaluationRegime, TrainingConfig, fit_ensemble
 
     with jax.enable_x64():
         region, full_observations = embedding_problem()
@@ -312,11 +312,11 @@ def test_recalibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_tr
             observed,
             folds=[fold],
             model_factory=model_factory,
-            config=FitConfig(objective="mlpe", epochs=0),
+            config=TrainingConfig(objective="mlpe", epochs=0),
         )
         member = ensemble.members[0]
         assert member.status == "completed"
-        recalibrated = member.predictor.recalibrate(
+        recalibrated = member.model.recalibrate(
             region,
             observed,
             partitions=(
@@ -325,7 +325,7 @@ def test_recalibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_tr
             ),
         )
         result = predict_out_of_fold(
-            Ensemble((replace(member, predictor=recalibrated),)),
+            Ensemble((replace(member, model=recalibrated),)),
             region,
             [query],
             regime=EvaluationRegime(endpoint_regime="at_least_one_unseen"),
@@ -355,7 +355,7 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
                 endpoint_regime="at_least_one_unseen", prediction_mode="known_effects"
             ),
         )
-        expected_known = member.predictor.predict_known_effects(region, [tuple(sorted(known_pair))])
+        expected_known = member.model.predict_known_effects(region, [tuple(sorted(known_pair))])
         np.testing.assert_allclose(known.values, expected_known.values, atol=1e-12)
         np.testing.assert_allclose(
             known.member_model_variances[0], expected_known.model_variance, atol=1e-12
@@ -394,7 +394,7 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
         conditional = predict_out_of_fold(
             ensemble, region, [held], support=support, regime=permitted
         )
-        expected = member.predictor.predict_with_support(
+        expected = member.model.predict_with_support(
             region, [held], support_observed, support_partition=support.partition
         )
         np.testing.assert_allclose(conditional.values, expected.values, atol=1e-12)
@@ -436,18 +436,18 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
                 for name in ("alpine", "valley")
             },
         )
-        predictor = replace(
-            member.predictor, training_pairs={"alpine": (("c", "d"),), "valley": (("a", "b"),)}
+        model = replace(
+            member.model, training_pairs={"alpine": (("c", "d"),), "valley": (("a", "b"),)}
         )
-        members.append(replace(member, fold=fold, predictor=predictor))
+        members.append(replace(member, fold=fold, model=model))
     regional = predict_out_of_fold(
         Ensemble(tuple(members)), [region, valley], {"alpine": [("c", "d")], "valley": [("c", "d")]}
     )
     np.testing.assert_array_equal(regional.eligible_counts, [0, 2])
     broken = replace(
         ensemble.members[0],
-        predictor=replace(
-            ensemble.members[0].predictor, encoder=ScalarEmbedding(jnp.asarray(np.nan))
+        model=replace(
+            ensemble.members[0].model, encoder=ScalarEmbedding(jnp.asarray(np.nan))
         ),
     )
     partial = predict_out_of_fold(Ensemble((broken, ensemble.members[1])), region, [("c", "d")])
@@ -462,11 +462,11 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
 def test_only_eligible_pairs_are_inverse_transformed():
     import pytest
 
-    from ilg_toolkit import FitConfig, fit_ensemble
+    from ilg_toolkit import TrainingConfig, fit_ensemble
 
     with jax.enable_x64():
         ids = ("a", "b", "c", "d", "e")
-        region = PreparedRegion(
+        region = RegionBatch(
             "alpine", np.arange(5).reshape(1, 5, 1), ids, np.array([[0, i] for i in range(5)])
         )
         target = TargetSpec("divergence", units="index", transform="sqrt")
@@ -484,13 +484,13 @@ def test_only_eligible_pairs_are_inverse_transformed():
             region,
             observed,
             folds=[fold],
-            config=FitConfig(objective="mlpe", epochs=0),
+            config=TrainingConfig(objective="mlpe", epochs=0),
             model_factory=lambda key: ScalarEmbedding(jnp.asarray(1.0)),
         )
         assert ensemble.members[0].status == "completed"
         with pytest.raises(ValueError, match="sqrt inverse"):
             ensemble.predict(region)  # unrelated (a,e) has score16 and fitted mean-4
-        marginal = ensemble.members[0].predictor.predict_pairs(region, [("d", "e")])
+        marginal = ensemble.members[0].model.predict_pairs(region, [("d", "e")])
         assert marginal.pairs == (("d", "e"),)
         assert marginal.target == target
         assert marginal.region_name == region.name
@@ -513,7 +513,7 @@ def test_reused_calibration_support_cannot_contribute_and_target_scales_must_mat
         region, observations, ensemble = fitted_member_problem()
         member = ensemble.members[0]
         held = member.fold.held_out_units[region.name]
-        reused = member.predictor.calibrations[region.name].calibration_pairs[0]
+        reused = member.model.calibrations[region.name].calibration_pairs[0]
         values = {
             tuple(sorted(pair)): value
             for pair, value in zip(
@@ -563,16 +563,16 @@ def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_o
     region = replace(region, features=np.array([0, 100, 1, 2]).reshape(1, 4, 1))
     target = TargetSpec("divergence", units="index", transform="log1p")
     members = tuple(
-        replace(member, predictor=replace(member.predictor, target=target))
+        replace(member, model=replace(member.model, target=target))
         for member in ensemble.members
     )
     ensemble = Ensemble(members)
     expected = [np.expm1(1), np.expm1(4)]
     for member, value in zip(members, expected, strict=True):
-        predictor = member.predictor
+        model = member.model
         with pytest.raises(FloatingPointError, match="inverse transformation"):
-            predictor.predict(region)
-        selected = predictor.predict_pairs(region, [("d", "c")])
+            model.predict(region)
+        selected = model.predict_pairs(region, [("d", "c")])
         assert isinstance(selected, PairPrediction)
         assert selected.pairs == (("d", "c"),)
         assert selected.target == target
@@ -589,7 +589,7 @@ def test_pair_queries_require_unique_distinct_labels_with_query_locations():
     import pytest
 
     region, ensemble, _ = known_ensemble()
-    predictor = ensemble.members[0].predictor
+    model = ensemble.members[0].model
     for pairs in ([], [("a", "a")], [("a", "b"), ("b", "a")], [("a",)], ["ab"], [("a", "unknown")]):
         with pytest.raises(ValueError):
-            predictor.predict_pairs(region, pairs)
+            model.predict_pairs(region, pairs)

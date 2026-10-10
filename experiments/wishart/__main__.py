@@ -3,22 +3,22 @@
 import jax
 import numpy as np
 
-from ..data import PreparedRegion
-from ..models import ResNet9Conductance
-from .wishart import GaussianMarkerDistances, _helmert, diagnose_wishart
+from ilg_toolkit.data import RegionBatch
+from ilg_toolkit.models import ResNet9Conductance
+from .diagnostic import GaussianMarkerDistances, _helmert, diagnose_wishart
 
 
 def main():
     """Demonstrate known-parameter Gaussian-marker diagnostics through a real graph."""
     labels = ("west", "east", "north", "south")
-    region = PreparedRegion(
+    region = RegionBatch(
         "synthetic-valley",
         np.random.default_rng(4).normal(size=(8, 8, 2)),
         labels,
         np.array([[0, 0], [0, 7], [7, 0], [7, 7]]),
     )
     encoder = ResNet9Conductance(2, patch_size=4, key=jax.random.key(6))
-    scores = np.asarray(encoder.predict_distances(region.features, region.pixel_nodes))
+    scores = np.asarray(encoder.predict_distances(region.feature_array, region.pixel_nodes))
     basis = _helmert(len(labels))
     scale, nugget, marker_count = 1.3, 0.2, 20
     covariance = -0.5 * scale * basis @ scores @ basis.T + nugget * np.eye(3)

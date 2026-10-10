@@ -76,8 +76,8 @@ being listed there does not establish observed-target access. Explicit
 recalibration can make a formerly eligible member ineligible. Nominal query
 partitions alone never establish eligibility after additional target access.
 
-Fitted predictors record their access automatically. A manually constructed
-predictor with empty `training_pairs={}` has unknown encoder access and is
+Fitted models record their access automatically. A manually constructed
+model with empty `training_pairs={}` has unknown encoder access and is
 excluded conservatively. A genuinely untrained encoder can explicitly declare
 `training_pairs={region.name: ()}`. This is a declaration of no target access,
 not a way to erase a fitted model's history. Validation and calibration access

@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ilg_toolkit import FitConfig, PairwiseObservations, PreparedRegion, TargetSpec, fit
+from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
 
 
@@ -19,14 +19,14 @@ class ScalarEmbedding(EmbeddingDistanceModel):
 
 def regions_and_observations():
     regions = [
-        PreparedRegion(
+        RegionBatch(
             "wide",
             np.array([[[0.0], [1.0], [2.0]]]),
             ("a", "b", "c"),
             np.array([[0, 0], [0, 1], [0, 2]]),
             feature_names=("elevation",),
         ),
-        PreparedRegion(
+        RegionBatch(
             "short",
             np.array([[[0.0], [2.0]]]),
             ("x", "y"),
@@ -68,15 +68,15 @@ def test_shared_embedding_update_matches_independent_equal_region_objective():
             regions,
             observations,
             model=ScalarEmbedding(jnp.asarray(initial, dtype=jnp.float64)),
-            config=FitConfig(epochs=1, learning_rate=0.01),
+            config=TrainingConfig(epochs=1, learning_rate=0.01),
         )
-        np.testing.assert_allclose(result.predictor.encoder.weight, expected, rtol=1e-8)
+        np.testing.assert_allclose(result.model.encoder.weight, expected, rtol=1e-8)
         np.testing.assert_allclose(
             result.history[0].training_loss, independent_objective(initial), rtol=1e-8
         )
         assert result.region_names == ("short", "wide")
         for region in regions:
-            assert np.isfinite(result.predictor.predict(region).values).all()
+            assert np.isfinite(result.model.predict(region).values).all()
 
 
 class ScaledConductance(ConductanceModel):
@@ -109,14 +109,14 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
     with jax.enable_x64():
         target = TargetSpec("synthetic graph divergence", units="index")
         regions = [
-            PreparedRegion(
+            RegionBatch(
                 "large",
                 np.array([[[1.0], [2.0], [3.0]]]),
                 ("a", "b", "c"),
                 np.array([[0, 0], [0, 1], [0, 2]]),
                 feature_names=("covariate",),
             ),
-            PreparedRegion(
+            RegionBatch(
                 "small",
                 np.array([[[1.0], [3.0]]]),
                 ("x", "y"),
@@ -134,7 +134,7 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
         def independent_objective(log_scale):
             losses = []
             for region, observations_for_region in zip(regions, observations, strict=True):
-                surface = np.exp(log_scale) * region.features[..., 0].astype(np.float64)
+                surface = np.exp(log_scale) * region.feature_array[..., 0].astype(np.float64)
                 scores = dense_graph_scores(surface, region.pixel_nodes)
                 pairs = np.triu_indices(len(region.sampling_unit_ids), 1)
                 losses.append(
@@ -154,16 +154,16 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
             regions,
             observations,
             model=ScaledConductance(jnp.asarray(initial, dtype=jnp.float64)),
-            config=FitConfig(epochs=1, learning_rate=0.01),
+            config=TrainingConfig(epochs=1, learning_rate=0.01),
         )
-        np.testing.assert_allclose(result.predictor.encoder.log_scale, expected, rtol=1e-8)
+        np.testing.assert_allclose(result.model.encoder.log_scale, expected, rtol=1e-8)
         np.testing.assert_allclose(
             result.history[0].training_loss, independent_objective(initial), rtol=1e-8
         )
         for region in regions:
-            surface = result.predictor.conductance_surface(region)
+            surface = result.model.conductance_surface(region)
             np.testing.assert_allclose(
-                result.predictor.predict(region).values,
+                result.model.predict(region).values,
                 dense_graph_scores(surface, region.pixel_nodes),
                 rtol=1e-7,
             )
@@ -181,7 +181,7 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory():
     from dataclasses import replace
 
     regions, observations = regions_and_observations()
-    config = FitConfig(epochs=3, seed=7)
+    config = TrainingConfig(epochs=3, seed=7)
     model = StochasticEmbedding(jnp.asarray(1.0, dtype=jnp.float32))
     baseline = fit(regions, observations, model=model, config=config)
     reversed_regions = {region.name: region for region in reversed(regions)}
@@ -202,7 +202,7 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory():
     ]
     reordered = fit(reversed_regions, reversed_observations, model=model, config=config)
     np.testing.assert_array_equal(
-        baseline.predictor.encoder.weight, reordered.predictor.encoder.weight
+        baseline.model.encoder.weight, reordered.model.encoder.weight
     )
 
 
@@ -257,5 +257,5 @@ def test_validation_on_another_region_requires_declared_feature_meanings():
             observations[0],
             model=ScalarEmbedding(jnp.asarray(1.0)),
             validation=(regions[1], observations[1]),
-            config=FitConfig(epochs=0),
+            config=TrainingConfig(epochs=0),
         )

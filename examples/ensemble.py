@@ -3,7 +3,7 @@
 import jax
 import numpy as np
 
-from ilg_toolkit import FitConfig, PairwiseObservations, PreparedRegion, TargetSpec, fit_ensemble
+from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit_ensemble
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 
@@ -19,7 +19,7 @@ with jax.enable_x64():
     features = rng.normal(size=(4, 4, 2)).astype(np.float32)
     positions = np.array([[0, 0], [0, 3], [1, 1], [2, 2], [3, 0], [3, 3]])
     labels = tuple(f"population-{i}" for i in range(len(positions)))
-    region = PreparedRegion(
+    region = RegionBatch(
         "synthetic", features, labels, positions, feature_names=("elevation", "habitat")
     )
     embeddings = features[tuple(positions.T)] * np.array([0.3, 1.5])
@@ -40,7 +40,7 @@ with jax.enable_x64():
         fold_seed=47,
         initialization_seeds=(13, 29),
         model_factory=model_factory,
-        config=FitConfig(objective="mlpe", epochs=2, learning_rate=0.001),
+        config=TrainingConfig(objective="mlpe", epochs=2, learning_rate=0.001),
     )
     if ensemble.failures:
         raise RuntimeError(ensemble.failures)

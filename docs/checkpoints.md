@@ -31,10 +31,10 @@ relevant optimization/solver configuration are rejected. Reordering equivalent
 region mappings preserves identity. The default budget is the saved configuration.
 
 The callback runs after initialization (epoch zero) and after every complete
-update, evaluation and predictor selection. It receives an internally consistent
+update, evaluation and model selection. It receives an internally consistent
 `TrainingState`; exceptions propagate and stop fitting. A zero-budget fresh fit
 therefore invokes it once. A continuation requesting no further updates invokes
-it zero times and retains the selected predictor. Saving only at the end is also
+it zero times and retains the selected model. Saving only at the end is also
 supported: `save_checkpoint(path, result.state)`.
 
 MLPE fitting and checkpoint loading require the same explicit JAX float64
@@ -46,7 +46,7 @@ silently changing the trajectory. Solver contexts are rebuilt from configuration
 
 The checkpoint and inference-artifact loaders accept distinct artifact kinds.
 A checkpoint includes the latest optimization state even when validation selected
-an earlier predictor; inference export alone cannot resume training. Current
+an earlier model; inference export alone cannot resume training. Current
 checkpoints support the shipped stateless U-Net and ResNet encoders. Unknown
 custom architectures and mutable model state require explicit future codecs.
 

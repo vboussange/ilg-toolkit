@@ -3,11 +3,11 @@
 import jax
 import numpy as np
 
-from ilg_toolkit import PairwiseObservations, PreparedRegion, TargetSpec, calibrate_mlpe
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, calibrate_mlpe
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 rng = np.random.default_rng(5)
-region = PreparedRegion(
+region = RegionBatch(
     "synthetic-valley",
     rng.normal(size=(4, 4, 2)),
     tuple(f"population-{i}" for i in range(8)),
@@ -21,7 +21,7 @@ encoder = UNetEmbeddingDistance(
     dropout=0,
     key=jax.random.key(3),
 )
-raw_matrix = np.asarray(encoder.predict_distances(region.features, region.pixel_nodes))
+raw_matrix = np.asarray(encoder.predict_distances(region.feature_array, region.pixel_nodes))
 left, right = np.triu_indices(len(region.sampling_unit_ids), 1)
 raw_scores = np.asarray(raw_matrix[left, right], dtype=np.float64)
 effects = rng.normal(scale=0.04, size=8)

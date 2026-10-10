@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .data import ObservationPartition, PairwiseObservations, PreparedRegion, TargetSpec
+from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
 from .ensemble import Ensemble, MemberFailure, _summarize_members
 from .training import _normalize_inputs
 
@@ -162,17 +162,17 @@ def _canonical_pairs(pairs, universe=None):
 
 
 def _query_inputs(region, pairs):
-    if isinstance(region, PreparedRegion):
+    if isinstance(region, RegionBatch):
         regions = {region.name: region}
     elif isinstance(region, Mapping):
         regions = dict(region)
         if any(
-            not isinstance(value, PreparedRegion) or name != value.name
+            not isinstance(value, RegionBatch) or name != value.name
             for name, value in regions.items()
         ):
             raise ValueError("Prepared region mapping keys must match region names")
     elif isinstance(region, Sequence) and not isinstance(region, (str, bytes)):
-        if any(not isinstance(value, PreparedRegion) for value in region):
+        if any(not isinstance(value, RegionBatch) for value in region):
             raise ValueError("Provide prepared query regions")
         regions = {value.name: value for value in region}
         if len(regions) != len(region):
@@ -223,20 +223,20 @@ def _support_inputs(support, regions, queries, target, regime):
     return support
 
 
-def _access(predictor, name, support, regime):
-    head = predictor.calibrations.get(name)
+def _access(model, name, support, regime):
+    head = model.calibrations.get(name)
     calibration = (
         () if head is None else tuple(tuple(sorted(pair)) for pair in head.calibration_pairs)
     )
     return EvaluationAccess(
         name,
-        _canonical_pairs(predictor.training_pairs.get(name, ())),
-        _canonical_pairs(predictor.validation_pairs.get(name, ())),
+        _canonical_pairs(model.training_pairs.get(name, ())),
+        _canonical_pairs(model.validation_pairs.get(name, ())),
         calibration,
         () if head is None else head.calibration_roles,
         () if support is None else support.partition.pairs,
         regime.prediction_mode,
-        bool(predictor.training_pairs),
+        bool(model.training_pairs),
     )
 
 
@@ -260,22 +260,22 @@ def _exclusion(pair, held_out, access, regime):
     return None
 
 
-def _member_predict(predictor, region, pairs, regime, support, access):
+def _member_predict(model, region, pairs, regime, support, access):
     provenance = None
     variances = None
     if regime.prediction_mode == "marginal":
-        values = predictor.predict_pairs(region, pairs).values
+        values = model.predict_pairs(region, pairs).values
     else:
         if regime.prediction_mode == "known_effects":
-            result = predictor.predict_known_effects(region, pairs)
+            result = model.predict_known_effects(region, pairs)
         else:
-            result = predictor.predict_with_support(
+            result = model.predict_with_support(
                 region, pairs, support.observations, support_partition=support.partition
             )
         provenance = result.provenance
         if (
             result.scale != "original"
-            or result.target != predictor.target
+            or result.target != model.target
             or result.region_name != region.name
             or tuple(tuple(sorted(pair)) for pair in result.pairs) != pairs
             or result.variance_scale != "model"
@@ -325,7 +325,7 @@ def predict_out_of_fold(
         raise ValueError("regime must be an EvaluationRegime")
     completed = [member for member in ensemble.members if member.status == "completed"]
     if completed:
-        inferred = completed[0].predictor.target
+        inferred = completed[0].model.target
         if target is not None and target != inferred:
             raise ValueError("Declared evaluation target scale must match ensemble members")
         target = inferred
@@ -354,7 +354,7 @@ def predict_out_of_fold(
         for name, prepared in regions.items():
             columns = [index for index, (region_name, _) in enumerate(keys) if region_name == name]
             try:
-                access = _access(member.predictor, name, supports.get(name), regime)
+                access = _access(member.model, name, supports.get(name), regime)
                 access_records[member_id][name] = access
                 eligible = []
                 for column in columns:
@@ -367,7 +367,7 @@ def predict_out_of_fold(
                 if not eligible:
                     continue
                 predicted, model_variance, provenance = _member_predict(
-                    member.predictor,
+                    member.model,
                     prepared,
                     tuple(keys[column][1] for column in eligible),
                     regime,

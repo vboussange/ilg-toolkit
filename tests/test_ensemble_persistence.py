@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from test_checkpoint import assert_same_state, checkpoint_problem
 
-from ilg_toolkit import ArtifactError, FitConfig, fit_ensemble, generate_population_folds
+from ilg_toolkit import ArtifactError, TrainingConfig, fit_ensemble, generate_population_folds
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 
@@ -55,7 +55,7 @@ def saved_run(tmp_path_factory):
             observations,
             folds=folds,
             initialization_seeds=(13,),
-            config=FitConfig(objective="mlpe", epochs=0),
+            config=TrainingConfig(objective="mlpe", epochs=0),
             model_factory=factory,
         )
     return directory, region, observations, folds, ensemble
@@ -73,7 +73,7 @@ def test_portable_ensemble_preserves_calibrated_members_and_descriptive_spread(t
             holdout_size=2,
             fold_seed=47,
             initialization_seeds=(13, 29),
-            config=FitConfig(objective="mlpe", epochs=0),
+            config=TrainingConfig(objective="mlpe", epochs=0),
             model_factory=factory,
         )
         path = tmp_path / "portable.ilg"
@@ -87,8 +87,8 @@ def test_portable_ensemble_preserves_calibrated_members_and_descriptive_spread(t
         for original, restored in zip(ensemble.members, loaded.members, strict=True):
             assert restored.identity == original.identity
             assert restored.fold == original.fold
-            assert restored.predictor.calibrations == original.predictor.calibrations
-            assert restored.predictor.training_pairs == original.predictor.training_pairs
+            assert restored.model.calibrations == original.model.calibrations
+            assert restored.model.training_pairs == original.model.training_pairs
             assert restored.fit_result is None
 
 
@@ -97,7 +97,7 @@ def test_real_interruption_skips_complete_and_resumes_unfinished_members(tmp_pat
 
     region, observations = checkpoint_problem()
     folds = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)
-    config = FitConfig(objective="mlpe", epochs=2, learning_rate=0.002)
+    config = TrainingConfig(objective="mlpe", epochs=2, learning_rate=0.002)
     arguments = dict(folds=folds, initialization_seeds=(13, 29), config=config)
     initialized, completed = [], []
 
@@ -164,7 +164,7 @@ def test_larger_budget_continues_previously_completed_members(tmp_path):
 
     region, observations = checkpoint_problem()
     folds = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)
-    config = FitConfig(objective="mlpe", epochs=1, learning_rate=0.002)
+    config = TrainingConfig(objective="mlpe", epochs=1, learning_rate=0.002)
     arguments = dict(folds=folds, initialization_seeds=(13, 29))
     with jax.enable_x64():
         fit_ensemble_run(
@@ -204,7 +204,7 @@ def test_resume_checks_accessed_data_config_folds_and_composition_before_work(sa
     values[indices[0], indices[1]] += 0.1
     values[indices[1], indices[0]] += 0.1
     changed_observations = replace(observations, values=values)
-    changed_region = replace(region, features=region.features + 0.1)
+    changed_region = replace(region, features=region.feature_array + 0.1)
     alternatives = [
         (region, changed_observations, {}),
         (changed_region, observations, {}),
@@ -213,7 +213,7 @@ def test_resume_checks_accessed_data_config_folds_and_composition_before_work(sa
         (
             region,
             observations,
-            {"config": FitConfig(objective="mlpe", epochs=0, learning_rate=0.1)},
+            {"config": TrainingConfig(objective="mlpe", epochs=0, learning_rate=0.1)},
         ),
     ]
     before = (directory / "run.ilg").read_bytes()
@@ -292,7 +292,7 @@ def test_failed_members_remain_explicit_in_run_and_portable_artifact(tmp_path):
         n_folds=1,
         holdout_size=2,
         initialization_seeds=(13, 29),
-        config=FitConfig(epochs=0),
+        config=TrainingConfig(epochs=0),
         model_factory=fail,
     )
     resumed = fit_ensemble_run(
@@ -384,7 +384,7 @@ def test_pending_member_cannot_change_saved_encoder_architecture(tmp_path):
                 n_folds=1,
                 holdout_size=2,
                 initialization_seeds=(13, 29),
-                config=FitConfig(objective="mlpe", epochs=0),
+                config=TrainingConfig(objective="mlpe", epochs=0),
                 model_factory=factory,
                 on_member=stop_after_first,
             )
@@ -408,6 +408,6 @@ def test_portable_artifact_rejects_missing_or_incompatible_member(saved_run, tmp
         if damage == "missing":
             alter_manifest(path, lambda payload: payload.update(members=[]))
         else:
-            alter_manifest(path, lambda payload: payload["members"][0].update(predictor=None))
-        with jax.enable_x64(), pytest.raises(ArtifactError, match="composition|predictor"):
+            alter_manifest(path, lambda payload: payload["members"][0].update(model=None))
+        with jax.enable_x64(), pytest.raises(ArtifactError, match="composition|model"):
             load_ensemble(path)

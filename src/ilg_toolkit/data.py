@@ -2,6 +2,9 @@
 
 from dataclasses import dataclass
 
+import coordax as cx
+import jax
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -61,7 +64,7 @@ class TargetSpec:
 
 
 @dataclass(frozen=True)
-class PreparedRegion:
+class RegionBatch:
     """HWC features and labelled sampling-unit locations in row/column grid coordinates.
 
     Features are already prepared. This boundary performs no raster alignment,
@@ -69,14 +72,26 @@ class PreparedRegion:
     """
 
     name: str
-    features: np.ndarray
+    features: cx.Field | jax.Array | np.ndarray
     sampling_unit_ids: tuple[str, ...]
-    grid_positions: np.ndarray
+    grid_positions: jax.Array | np.ndarray
     feature_names: tuple[str, ...] | None = None
     sampling_unit_kinds: tuple[str, ...] | None = None
 
     def __post_init__(self):
-        features = np.array(self.features, dtype=np.float32, copy=True)
+        names = None if self.feature_names is None else tuple(self.feature_names)
+        if isinstance(self.features, cx.Field):
+            field = self.features.order_as("row", "column", "feature")
+            coordinate = field.axes.get("feature")
+            if isinstance(coordinate, cx.LabeledAxis):
+                labels = tuple(str(value) for value in coordinate.ticks)
+                if names is not None and names != labels:
+                    raise ValueError("Feature coordinates must match feature_names meanings and order")
+                names = labels
+            raw_features = field.data
+        else:
+            raw_features = self.features
+        features = jnp.asarray(raw_features, dtype=jnp.float32)
         ids = tuple(self.sampling_unit_ids)
         positions = np.asarray(self.grid_positions)
         if not isinstance(self.name, str) or not self.name:
@@ -95,7 +110,6 @@ class PreparedRegion:
             )
         if (positions < 0).any() or (positions >= np.asarray(features.shape[:2])).any():
             raise ValueError("grid_positions fall outside the raster")
-        names = None if self.feature_names is None else tuple(self.feature_names)
         if names is not None and (
             len(names) != features.shape[-1]
             or any(not isinstance(name, str) or not name for name in names)
@@ -115,15 +129,19 @@ class PreparedRegion:
             )
         object.__setattr__(self, "feature_names", names)
         object.__setattr__(self, "sampling_unit_kinds", kinds)
-        features.setflags(write=False)
-        positions = np.array(positions, dtype=np.int32, copy=True)
-        positions.setflags(write=False)
-        object.__setattr__(self, "features", features)
+        feature_axis = "feature" if names is None else cx.LabeledAxis("feature", np.asarray(names))
+        object.__setattr__(self, "features", cx.field(features, "row", "column", feature_axis))
         object.__setattr__(self, "sampling_unit_ids", ids)
-        object.__setattr__(self, "grid_positions", positions)
+        object.__setattr__(self, "grid_positions", jnp.asarray(positions, dtype=jnp.int32))
 
     @property
-    def pixel_nodes(self) -> np.ndarray:
+    def feature_array(self) -> jax.Array:
+        """Canonical HWC device array for encoder kernels."""
+        assert isinstance(self.features, cx.Field)
+        return self.features.data
+
+    @property
+    def pixel_nodes(self) -> jax.Array:
         """Return labelled locations as row-major native-resolution pixel indices."""
         return self.grid_positions[:, 0] * self.features.shape[1] + self.grid_positions[:, 1]
 
@@ -256,7 +274,7 @@ class PairwiseObservations:
         upper = self.values[np.triu_indices(len(self.sampling_unit_ids), 1)]
         return upper[np.isfinite(upper)]
 
-    def aligned_values(self, region: PreparedRegion) -> np.ndarray:
+    def aligned_values(self, region: RegionBatch) -> np.ndarray:
         """Align known observation labels to a region, retaining NaNs for absent pairs."""
         if not set(self.sampling_unit_ids).issubset(region.sampling_unit_ids):
             raise ValueError(
@@ -271,7 +289,7 @@ class PairwiseObservations:
         matrix[np.ix_(order, order)] = self.values
         return matrix
 
-    def aligned_pairs(self, region: PreparedRegion, partition: ObservationPartition | None = None):
+    def aligned_pairs(self, region: RegionBatch, partition: ObservationPartition | None = None):
         """Return observed index pairs and measurements in the prepared unit order."""
         values = self.aligned_values(region)
         left, right = np.triu_indices(len(region.sampling_unit_ids), 1)

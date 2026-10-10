@@ -191,14 +191,14 @@ def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibr
         head.condition_on_support([np.nan, 0.3], support, partition=partition)
 
 
-def test_predictor_conditions_real_landscape_scores_without_updating_encoder():
+def test_model_conditions_real_landscape_scores_without_updating_encoder():
     import itertools
 
     import jax.numpy as jnp
     from test_recalibration import ScalarEmbedding, problem
 
     from ilg_toolkit import (
-        FitConfig,
+        TrainingConfig,
         ObservationPartition,
         PairwiseObservations,
         fit,
@@ -212,14 +212,14 @@ def test_predictor_conditions_real_landscape_scores_without_updating_encoder():
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=FitConfig(epochs=0),
+        config=TrainingConfig(epochs=0),
         partition=training,
-    ).predictor
-    predictor = recalibrate(direct, region, observations)
-    head = predictor.calibrations[region.name]
+    ).model
+    model = recalibrate(direct, region, observations)
+    head = model.calibrations[region.name]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
-    known = predictor.predict_known_effects(region, pairs)
-    scores = predictor.landscape_scores(region)
+    known = model.predict_known_effects(region, pairs)
+    scores = model.landscape_scores(region)
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
 
     def selected_scores(selected):
@@ -242,7 +242,7 @@ def test_predictor_conditions_real_landscape_scores_without_updating_encoder():
         [2.0, 2.5],
         target=head.target,
     )
-    result = predictor.predict_with_support(
+    result = model.predict_with_support(
         region,
         pairs,
         support,
@@ -263,11 +263,11 @@ def test_predictor_conditions_real_landscape_scores_without_updating_encoder():
     )
     np.testing.assert_allclose(result.model_values, expected_mean, atol=1e-10)
     np.testing.assert_allclose(result.model_variance, expected_variance, atol=1e-10)
-    assert predictor.encoder is direct.encoder
+    assert model.encoder is direct.encoder
     assert result.provenance.support_pairs == tuple(
         tuple(sorted(pair)) for pair in support.observed_pairs
     )
     with pytest.raises(ValueError, match="MLPE"):
         direct.predict_known_effects(region, pairs)
     with pytest.raises(ValueError, match="sampling-unit.*region"):
-        predictor.predict_known_effects(region, [("missing-location", "population-0")])
+        model.predict_known_effects(region, [("missing-location", "population-0")])

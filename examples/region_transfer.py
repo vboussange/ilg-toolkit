@@ -6,10 +6,10 @@ import jax
 import numpy as np
 
 from ilg_toolkit import (
-    FitConfig,
+    TrainingConfig,
     ObservationPartition,
     PairwiseObservations,
-    PreparedRegion,
+    RegionBatch,
     TargetSpec,
     fit,
     recalibrate,
@@ -17,7 +17,7 @@ from ilg_toolkit import (
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 rng = np.random.default_rng(4)
-region = PreparedRegion(
+region = RegionBatch(
     "original-catchment",
     rng.normal(size=(4, 4, 2)),
     tuple(f"population-{index}" for index in range(6)),
@@ -27,7 +27,7 @@ region = PreparedRegion(
 model = UNetEmbeddingDistance(
     2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4)
 )
-initial_scores = np.asarray(model.predict_distances(region.features, region.pixel_nodes))
+initial_scores = np.asarray(model.predict_distances(region.feature_array, region.pixel_nodes))
 effects = np.array([0.2, -0.1, 0.15, -0.2, 0.25, -0.05])
 noise = rng.normal(scale=0.08, size=(6, 6))
 targets = 2 + 0.5 * initial_scores + effects[:, None] + effects[None, :] + (noise + noise.T) / 2
@@ -36,10 +36,10 @@ observations = PairwiseObservations.from_matrix(
     region.sampling_unit_ids, targets, target=TargetSpec("synthetic divergence", units="index")
 )
 result = fit(
-    region, observations, model=model, config=FitConfig(epochs=3, learning_rate=0.0001, seed=4)
+    region, observations, model=model, config=TrainingConfig(epochs=3, learning_rate=0.0001, seed=4)
 )
-calibrated = recalibrate(result.predictor, region, observations)
-new_region = replace(region, name="new-catchment", features=region.features * 1.1)
+calibrated = recalibrate(result.model, region, observations)
+new_region = replace(region, name="new-catchment", features=region.feature_array * 1.1)
 print("Label-free scores in new region:\n", calibrated.landscape_scores(new_region))
 try:
     calibrated.predict(new_region)

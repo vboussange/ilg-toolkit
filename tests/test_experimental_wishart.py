@@ -8,8 +8,8 @@ import pytest
 from scipy.linalg import helmert
 from scipy.stats import matrix_normal, wishart
 
-from ilg_toolkit import PairwiseObservations, PreparedRegion, TargetSpec
-from ilg_toolkit.experimental import (
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec
+from experiments.wishart import (
     GaussianMarkerDistances,
     diagnose_wishart,
     heldout_log_likelihood,
@@ -140,7 +140,7 @@ class UniformConductance(ConductanceModel):
 
 def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
     labels = ("west", "east", "north", "south")
-    region = PreparedRegion(
+    region = RegionBatch(
         "valley", np.ones((2, 2, 1)), labels, np.array([[0, 0], [0, 1], [1, 0], [1, 1]])
     )
     resistance = np.array(
@@ -269,7 +269,7 @@ def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible
     observations = GaussianMarkerDistances(
         "coincident", labels, distances, raw.shape[1], "average", "squared_gaussian_marker_distance"
     )
-    region = PreparedRegion("coincident", np.ones((2, 2, 1)), labels, np.zeros((3, 2), dtype=int))
+    region = RegionBatch("coincident", np.ones((2, 2, 1)), labels, np.zeros((3, 2), dtype=int))
     options = dict(
         encoder=UniformConductance(jnp.array(1.0)),
         training_unit_ids=labels[:2],

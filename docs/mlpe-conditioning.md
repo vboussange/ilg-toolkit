@@ -31,12 +31,12 @@ expose the same operations. Support observations must contain exactly the declar
 partition: extra genetic targets are refused. The region and target metadata must
 match the calibration. Missing observations remain absent.
 
-The frozen predictor provides `predictor.predict_known_effects(region, pairs)`
-and `predictor.predict_with_support(region, pairs, support_observations,
+The frozen model provides `model.predict_known_effects(region, pairs)`
+and `model.predict_with_support(region, pairs, support_observations,
 support_partition=declared)`. Both return labelled pair vectors with the same
 variance and provenance metadata. The prepared region supplies locations for all
 support and query endpoints; its feature contract must match training. Ordinary
-`predictor.predict(region)` continues to use marginal prediction. An unseen region
+`model.predict(region)` continues to use marginal prediction. An unseen region
 needs its own explicit calibration before any target-scale MLPE operation.
 
 Unordered endpoint labels are observation identities. Reversing endpoints or
@@ -68,7 +68,7 @@ confidence interval, and predictions are neither clipped nor repaired.
 
 Prediction provenance records the region, prediction mode, canonical calibration
 pairs and their roles, supplied support pairs and their support roles, and the
-independent-prior unseen-effect policy. These identities complement the predictor's
+independent-prior unseen-effect policy. These identities complement the model's
 encoder-training and validation provenance when deciding evaluation eligibility.
 Known-effect prediction may predict a calibration pair for deployment; provenance
 must still exclude that target from a claim of held-out evaluation. Statistical

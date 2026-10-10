@@ -12,8 +12,8 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from .config import FitConfig
-from .data import ObservationPartition, PairwiseObservations, PreparedRegion
+from .config import TrainingConfig
+from .data import ObservationPartition, PairwiseObservations, RegionBatch
 from .mlpe import (
     MLPEConfig,
     MLPEHead,
@@ -24,10 +24,10 @@ from .mlpe import (
     sample_standardize_scores,
 )
 from .models import ConductanceModel, EmbeddingDistanceModel, UNetEmbeddingDistance
-from .predictor import Predictor
-from .solver import SolverContext, build_solver_context
+from .model import CalibratedModel
+from .resistance import ResistanceSolverContext, build_resistance_context
 
-RegionCollection = PreparedRegion | Sequence[PreparedRegion] | Mapping[str, PreparedRegion]
+RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
 ObservationCollection = (
     PairwiseObservations | Sequence[PairwiseObservations] | Mapping[str, PairwiseObservations]
 )
@@ -55,9 +55,9 @@ class EpochRecord:
 
 @dataclass(frozen=True)
 class FitResult:
-    """Selected shared predictor and regional optimization history."""
+    """Selected shared model and regional optimization history."""
 
-    predictor: Predictor
+    model: CalibratedModel
     history: tuple[EpochRecord, ...]
     selected_epoch: int
     selection: str
@@ -65,14 +65,14 @@ class FitResult:
     state: "TrainingState | None" = None
 
     @property
-    def latest_predictor(self):
-        """Predictor at the last update, including when validation chose an earlier one."""
-        return self.predictor if self.state is None else self.state.latest_predictor
+    def latest_model(self):
+        """CalibratedModel at the last update, including when validation chose an earlier one."""
+        return self.model if self.state is None else self.state.latest_model
 
     @property
-    def best_predictor(self):
-        """The predictor selected by the declared selection policy."""
-        return self.predictor
+    def best_model(self):
+        """The model selected by the declared selection policy."""
+        return self.model
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ class TrainingState:
     """Explicit in-memory continuation state; checkpoints add serialization separately.
 
     The encoder, variance parameters and Adam state describe the latest epoch.
-    ``best_predictor`` retains its own encoder and heads. RNG uses a serializable
+    ``best_model`` retains its own encoder and heads. RNG uses a serializable
     legacy uint32 key. The shipped encoders have no mutable model state.
     """
 
@@ -90,12 +90,12 @@ class TrainingState:
     rng_key: jax.Array
     epoch: int
     step: int
-    config: FitConfig
+    config: TrainingConfig
     region_names: tuple[str, ...]
     data_identity: str
     history: tuple[EpochRecord, ...]
-    latest_predictor: Predictor
-    best_predictor: Predictor
+    latest_model: CalibratedModel
+    best_model: CalibratedModel
     selected_epoch: int
     best_loss: float
     selection: str
@@ -117,11 +117,11 @@ class _TrainingPayload(NamedTuple):
 class _RegionalBatch:
     """Keep each region's observations and solver state separate from its shared encoder."""
 
-    region: PreparedRegion
+    region: RegionBatch
     observations: PairwiseObservations
     partition: ObservationPartition | None
     payload: _TrainingPayload
-    context: SolverContext | None = None
+    context: ResistanceSolverContext | None = None
 
 
 def _prepared(region, observations, partition=None, *, role="training", objective="direct_log1p"):
@@ -146,7 +146,7 @@ def _prepared(region, observations, partition=None, *, role="training", objectiv
             if degree.max() <= 1:
                 raise ValueError("MLPE variances are unidentifiable: pairs share no endpoints")
     return _TrainingPayload(
-        features=jnp.asarray(region.features),
+        features=jnp.asarray(region.feature_array),
         nodes=jnp.asarray(region.pixel_nodes),
         pairs=pairs,
         targets=jnp.asarray(
@@ -157,12 +157,12 @@ def _prepared(region, observations, partition=None, *, role="training", objectiv
 
 def _normalize_inputs(regions, observations, partitions):
     """Align explicit collections, then sort stable region identities for RNG order."""
-    if isinstance(regions, PreparedRegion):
+    if isinstance(regions, RegionBatch):
         ordered = [regions]
     elif isinstance(regions, Mapping):
         ordered = list(regions.values())
         if any(
-            not isinstance(value, PreparedRegion) or key != value.name
+            not isinstance(value, RegionBatch) or key != value.name
             for key, value in regions.items()
         ):
             raise ValueError("Region mapping keys must match each prepared region's name")
@@ -170,8 +170,8 @@ def _normalize_inputs(regions, observations, partitions):
         ordered = list(regions)
     else:
         raise ValueError("Provide a prepared region or a nonempty region sequence/mapping")
-    if not ordered or any(not isinstance(region, PreparedRegion) for region in ordered):
-        raise ValueError("Regions must be a nonempty collection of PreparedRegion inputs")
+    if not ordered or any(not isinstance(region, RegionBatch) for region in ordered):
+        raise ValueError("Regions must be a nonempty collection of RegionBatch inputs")
     names = [region.name for region in ordered]
     if len(set(names)) != len(names):
         raise ValueError("Region names must be unique; duplicate names cannot share a fit")
@@ -325,7 +325,7 @@ def _fit_data_identity(training_inputs, validation_inputs):
                     asdict(observations.target),
                 ]
             )
-            array(region.features)
+            array(region.feature_array)
             array(region.grid_positions)
             array(pairs)
             array(values)
@@ -358,7 +358,7 @@ def fit(
     observations: ObservationCollection,
     *,
     model: ConductanceModel | EmbeddingDistanceModel | None = None,
-    config: FitConfig | None = None,
+    config: TrainingConfig | None = None,
     validation: tuple[RegionCollection, ObservationCollection] | None = None,
     partition: PartitionCollection = None,
     validation_partition: PartitionCollection = None,
@@ -371,11 +371,11 @@ def fit(
     count. MLPE profiles signed GLS coefficients and updates the encoder and two
     regional variance parameters together. Updated training scores refresh the
     regional moments, coefficients and posterior before frozen-head validation.
-    Validation only selects a predictor; learning rate and stopping use a fixed
+    Validation only selects a model; learning rate and stopping use a fixed
     budget. MLPE explicitly requires enabled JAX float64.
 
     ``state`` continues the latest optimizer/RNG trajectory on identical inputs.
-    Only the total epoch budget may increase. The returned selected predictor
+    Only the total epoch budget may increase. The returned selected model
     and latest continuation state are separate when validation selects an earlier
     epoch. Validation never consumes training random keys.
 
@@ -389,7 +389,7 @@ def fit(
         raise ValueError("A continuation state already contains its encoder; omit model")
     if on_epoch is not None and not callable(on_epoch):
         raise ValueError("on_epoch must be callable or None")
-    config = config or (state.config if state is not None else FitConfig())
+    config = config or (state.config if state is not None else TrainingConfig())
     if state is not None:
         old, new = asdict(state.config), asdict(config)
         old.pop("epochs")
@@ -421,7 +421,7 @@ def fit(
     for prepared_region, regional_observations, _ in (*training_inputs, *validation_inputs):
         if regional_observations.target != first_observations.target:
             raise ValueError("Regional training and validation target scales must match")
-        if prepared_region.features.shape[-1] != first_region.features.shape[-1]:
+        if prepared_region.feature_array.shape[-1] != first_region.feature_array.shape[-1]:
             raise ValueError("Regional training and validation feature channels must match")
         if prepared_region.feature_names != first_region.feature_names:
             raise ValueError("Regional feature contracts must match meanings and order")
@@ -434,7 +434,7 @@ def fit(
         model, random_key = state.encoder, state.rng_key
     elif model is None:
         model = UNetEmbeddingDistance(
-            first_region.features.shape[-1],
+            first_region.feature_array.shape[-1],
             patch_size=1,
             base_channels=8,
             embedding_dim=4,
@@ -454,12 +454,12 @@ def fit(
         )
         context = None
         if isinstance(model, ConductanceModel):
-            height, width = prepared_region.features.shape[:2]
+            height, width = prepared_region.feature_array.shape[:2]
             if height % model.patch_size or width % model.patch_size:
                 raise ValueError("Raster dimensions must be divisible by model patch_size")
             shape = (height // model.patch_size, width // model.patch_size)
             if shape not in contexts:
-                contexts[shape] = build_solver_context(shape, config.solver)
+                contexts[shape] = build_resistance_context(shape, config.solver)
             context = contexts[shape]
         return _RegionalBatch(
             prepared_region, regional_observations, selected_partition, payload, context
@@ -478,7 +478,7 @@ def fit(
                 raise ValueError(
                     "Training and validation observations overlap within the same region"
                 )
-            if not np.array_equal(training_batch.region.features, batch.region.features):
+            if not np.array_equal(training_batch.region.feature_array, batch.region.feature_array):
                 raise ValueError(
                     "Training and validation inputs for the same region must share a landscape"
                 )
@@ -579,11 +579,11 @@ def fit(
     training_pairs = {batch.region.name: _labelled_pairs(batch) for batch in training_batches}
     validation_pairs = {batch.region.name: _labelled_pairs(batch) for batch in validation_batches}
 
-    def make_predictor(heads):
-        return Predictor(
+    def make_model(heads):
+        return CalibratedModel(
             parameters[0],
             first_observations.target,
-            first_region.features.shape[-1],
+            first_region.feature_array.shape[-1],
             feature_names=first_region.feature_names,
             solver_config=config.solver,
             objective=config.objective,
@@ -593,8 +593,8 @@ def fit(
         )
 
     history = list(state.history) if state is not None else []
-    selected = state.best_predictor if state is not None else None
-    latest = state.latest_predictor if state is not None else None
+    selected = state.best_model if state is not None else None
+    latest = state.latest_model if state is not None else None
     selected_epoch = state.selected_epoch if state is not None else 0
     best_loss = state.best_loss if state is not None else float("inf")
     names = tuple(batch.region.name for batch in training_batches)
@@ -612,8 +612,8 @@ def fit(
             region_names=names,
             data_identity=identity,
             history=tuple(history),
-            latest_predictor=latest,
-            best_predictor=selected,
+            latest_model=latest,
+            best_model=selected,
             selected_epoch=selected_epoch,
             best_loss=best_loss,
             selection=selection,
@@ -718,7 +718,7 @@ def fit(
                 epoch, training_loss, validation_loss, regional_training, regional_validation
             )
         )
-        latest = make_predictor(heads)
+        latest = make_model(heads)
         if validation_loss is None or validation_loss < best_loss:
             selected, selected_epoch = latest, epoch
             best_loss = training_loss if validation_loss is None else validation_loss

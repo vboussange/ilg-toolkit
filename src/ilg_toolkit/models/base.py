@@ -9,7 +9,7 @@ from abc import abstractmethod
 import equinox as eqx
 import jax
 
-from ..solver import SolverContext, effective_resistance
+from ..resistance import ResistanceSolverContext, effective_resistance
 from .common import pixel_to_patch_nodes, squared_embedding_distances
 
 
@@ -32,7 +32,7 @@ class ConductanceModel(eqx.Module):
         features,
         pixel_nodes,
         *,
-        context: SolverContext | None = None,
+        context: ResistanceSolverContext | None = None,
         patch_batch_size=None,
     ):
         """Return landscape scores and the conductance surface that induced them."""
@@ -47,7 +47,7 @@ class ConductanceModel(eqx.Module):
         features,
         pixel_nodes,
         *,
-        context: SolverContext | None = None,
+        context: ResistanceSolverContext | None = None,
         inference=True,
         key=None,
         patch_batch_size=None,

@@ -10,8 +10,8 @@ import numpy as np
 import optax
 
 from ._archive import ArrayWriter, ArtifactError, read_archive, runtime_versions, write_archive
-from ._codecs import decode_predictor, decode_tree_leaves, encode_predictor, encode_tree_leaves
-from .config import FitConfig, SolverConfig
+from ._codecs import decode_model, decode_tree_leaves, encode_model, encode_tree_leaves
+from .config import TrainingConfig, ResistanceSolverConfig
 from .training import EpochRecord, TrainingState
 
 
@@ -30,7 +30,7 @@ def _validate_state(state):
         raise ArtifactError("Checkpoint requires a TrainingState returned by fit")
     if state.model_state is not None:
         raise ArtifactError("Checkpoint supports the shipped stateless encoders only")
-    if not isinstance(state.config, FitConfig):
+    if not isinstance(state.config, TrainingConfig):
         raise ArtifactError("Checkpoint has invalid training configuration")
     if (
         type(state.epoch) is not int
@@ -59,23 +59,23 @@ def _validate_state(state):
         raise ArtifactError("Unsupported checkpoint learning-rate policy")
     if state.stopping_state != {"kind": "fixed_budget", "epochs": state.config.epochs}:
         raise ArtifactError("Unsupported checkpoint stopping policy")
-    latest, best = state.latest_predictor, state.best_predictor
+    latest, best = state.latest_model, state.best_model
     if not bool(eqx.tree_equal(state.encoder, latest.encoder)):
-        raise ArtifactError("Latest checkpoint encoder and predictor disagree")
-    for predictor in (latest, best):
+        raise ArtifactError("Latest checkpoint encoder and model disagree")
+    for model in (latest, best):
         if (
-            predictor.objective != state.config.objective
-            or predictor.solver_config != state.config.solver
-            or set(predictor.training_pairs) != set(names)
-            or predictor.target != latest.target
-            or predictor.feature_names != latest.feature_names
-            or predictor.feature_count != latest.feature_count
-            or predictor.training_pairs != latest.training_pairs
-            or predictor.validation_pairs != latest.validation_pairs
-            or type(predictor.encoder) is not type(latest.encoder)
+            model.objective != state.config.objective
+            or model.solver_config != state.config.solver
+            or set(model.training_pairs) != set(names)
+            or model.target != latest.target
+            or model.feature_names != latest.feature_names
+            or model.feature_count != latest.feature_count
+            or model.training_pairs != latest.training_pairs
+            or model.validation_pairs != latest.validation_pairs
+            or type(model.encoder) is not type(latest.encoder)
         ):
-            raise ArtifactError("Checkpoint predictors have incompatible training contracts")
-        if predictor.objective == "mlpe" and set(predictor.calibrations) != set(names):
+            raise ArtifactError("Checkpoint models have incompatible training contracts")
+        if model.objective == "mlpe" and set(model.calibrations) != set(names):
             raise ArtifactError("Checkpoint is missing regional MLPE calibration")
     validation_names = set(latest.validation_pairs)
     selection = "validation" if validation_names else "final"
@@ -142,8 +142,8 @@ def save_checkpoint(path, state: TrainingState) -> None:
             "region_names": list(state.region_names),
             "data_identity": state.data_identity,
             "history": [asdict(record) for record in state.history],
-            "latest_predictor": encode_predictor(state.latest_predictor, arrays),
-            "best_predictor": encode_predictor(state.best_predictor, arrays),
+            "latest_model": encode_model(state.latest_model, arrays),
+            "best_model": encode_model(state.best_model, arrays),
             "raw_variances": None
             if state.raw_variances is None
             else arrays.add(state.raw_variances),
@@ -182,8 +182,8 @@ def load_checkpoint(path) -> TrainingState:
                 "region_names",
                 "data_identity",
                 "history",
-                "latest_predictor",
-                "best_predictor",
+                "latest_model",
+                "best_model",
                 "raw_variances",
                 "optimizer_state",
                 "rng_key",
@@ -206,10 +206,10 @@ def load_checkpoint(path) -> TrainingState:
                     "versions, device/backend and JAX x64 setting"
                 )
             config_record = dict(record["config"])
-            config_record["solver"] = SolverConfig(**config_record["solver"])
-            config = FitConfig(**config_record)
-            latest = decode_predictor(record["latest_predictor"], archive)
-            best = decode_predictor(record["best_predictor"], archive)
+            config_record["solver"] = ResistanceSolverConfig(**config_record["solver"])
+            config = TrainingConfig(**config_record)
+            latest = decode_model(record["latest_model"], archive)
+            best = decode_model(record["best_model"], archive)
             raw = (
                 None
                 if record["raw_variances"] is None
@@ -240,8 +240,8 @@ def load_checkpoint(path) -> TrainingState:
                 region_names=tuple(record["region_names"]),
                 data_identity=record["data_identity"],
                 history=tuple(EpochRecord(**item) for item in record["history"]),
-                latest_predictor=latest,
-                best_predictor=best,
+                latest_model=latest,
+                best_model=best,
                 selected_epoch=record["selected_epoch"],
                 best_loss=record["best_loss"],
                 selection=record["selection"],

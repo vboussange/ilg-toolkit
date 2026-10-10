@@ -1,6 +1,6 @@
 """Explicitly experimental diagnostic references, separate from stable fitting."""
 
-from .wishart import (
+from .diagnostic import (
     GaussianMarkerDistances,
     HeldoutWishartScore,
     WishartDiagnostic,

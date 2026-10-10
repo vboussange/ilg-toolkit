@@ -27,9 +27,9 @@ workflow is:
 
 ```python
 import numpy as np
-from ilg_toolkit import FitConfig, PairwiseObservations, PreparedRegion, TargetSpec, fit
+from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
 
-region = PreparedRegion(
+region = RegionBatch(
     name="my-catchment",
     features=np.arange(32, dtype=np.float32).reshape(4, 4, 2) / 32,
     sampling_unit_ids=("a", "b", "c", "d"),
@@ -40,18 +40,18 @@ observations = PairwiseObservations.from_matrix(
     [[0, .2, .4, .6], [.2, 0, .2, .4], [.4, .2, 0, .2], [.6, .4, .2, 0]],
     target=TargetSpec("genetic dissimilarity", units="index"),
 )
-result = fit(region, observations, config=FitConfig(epochs=30, learning_rate=.01))
-prediction = result.predictor.predict(region)
+result = fit(region, observations, config=TrainingConfig(epochs=30, learning_rate=.01))
+prediction = result.model.predict(region)
 print(prediction.values, prediction.target)
-scores = result.predictor.landscape_scores(region)
+scores = result.model.landscape_scores(region)
 ```
 
 `predict()` returns a symmetric matrix in the region's sampling-unit order. For
-selected pairs, use `result.predictor.predict_pairs(region, [("a", "d")])`.
+selected pairs, use `result.model.predict_pairs(region, [("a", "d")])`.
 Its `PairPrediction` contains a vector of `values`, the requested `pairs` in their
 original order/orientation, `target`, `region_name`, and `scale="original"`.
 Pairs must be nonempty, distinct and unique as unordered identities. Both direct
-and MLPE predictors select scores before target inversion; unrequested pairs do
+and MLPE models select scores before target inversion; unrequested pairs do
 not trigger inverse-transform failures. MLPE pair predictions are marginal.
 
 Features have shape `(rows, columns, channels)` and must already be prepared;
@@ -91,7 +91,7 @@ resistance to each other. Feature counts are supplied explicitly.
 
 The encoder uses the cleaned ResNet9 architecture with stateless GroupNorm and
 an explicit `min_conductance` floor (default `1e-6`) after a stable softplus head.
-It imposes no upper conductance bound. `predictor.conductance_surface(region)`
+It imposes no upper conductance bound. `model.conductance_surface(region)`
 returns the fitted patch surface; `landscape_scores(region)` returns effective
 resistance on a four-neighbour graph with mean endpoint conductances.
 `predict(region)` returns direct-regression predictions on the declared target
@@ -99,7 +99,7 @@ scale. These are distinct outputs; accurate target predictions alone do not
 establish that a unique biological conductance surface has been recovered.
 
 Graph solves require JAX float64 to be enabled explicitly before Python starts;
-CNN parameters and outputs remain float32. Configure `FitConfig(solver=SolverConfig(
+CNN parameters and outputs remain float32. Configure `TrainingConfig(solver=ResistanceSolverConfig(
 rtol=1e-6, atol=1e-6, max_steps=1000, use_amg=False))` to choose convergence
 settings. AMG is optional and builds a reusable hierarchy outside differentiation.
 Failure to converge raises with the region and epoch; the toolkit does not
@@ -132,7 +132,7 @@ validation = ObservationPartition(region.name, (("a", "d"),), role="validation")
 result = fit(
     region, observations, partition=training,
     validation=(region, observations), validation_partition=validation,
-    config=FitConfig(epochs=10),
+    config=TrainingConfig(epochs=10),
 )
 ```
 
@@ -153,7 +153,7 @@ predictions rather than silently squaring them. No FST linearization or target
 clipping is automatic. Target kinds distinguish dissimilarity, similarity, and
 relatedness; direct regression accepts nonnegative dissimilarity only.
 
-Declare `PreparedRegion(feature_names=("elevation", "canopy"), ...)` to record
+Declare `RegionBatch(feature_names=("elevation", "canopy"), ...)` to record
 feature meanings and channel order. Prediction and validation require that same
 contract; equal channel counts alone do not validate declared feature meanings.
 An unnamed feature contract remains available for the simplest single-region
@@ -173,10 +173,10 @@ with different regional raster extents.
 result = fit(
     {"headwaters": upstream_region, "lowlands": downstream_region},
     {"headwaters": upstream_observations, "lowlands": downstream_observations},
-    config=FitConfig(epochs=30),
+    config=TrainingConfig(epochs=30),
 )
-upstream_prediction = result.predictor.predict(upstream_region)
-downstream_prediction = result.predictor.predict(downstream_region)
+upstream_prediction = result.model.predict(upstream_region)
+downstream_prediction = result.model.predict(downstream_region)
 ```
 
 Different training or validation regions must declare identical `feature_names`,
@@ -241,13 +241,13 @@ to residual variance in both likelihood and the stored effect posterior.
 ## Frozen encoder recalibration and regional transfer
 
 Run `python examples/region_transfer.py` for a synthetic U-Net transfer example.
-Recalibration is an explicit operation returning a new predictor:
+Recalibration is an explicit operation returning a new model:
 
 ```python
 from ilg_toolkit import recalibrate
 
 # Default selection uses only the encoder's recorded training pairs.
-calibrated = recalibrate(result.predictor, region, observations)
+calibrated = recalibrate(result.model, region, observations)
 
 # Deliberately add validation measurements as development data.
 developed = calibrated.recalibrate(
@@ -255,8 +255,8 @@ developed = calibrated.recalibrate(
 )
 ```
 
-A direct predictor continues to predict without any MLPE head. Explicit
-recalibration converts the returned predictor to MLPE mode, freezing the exact
+A direct model continues to predict without any MLPE head. Explicit
+recalibration converts the returned model to MLPE mode, freezing the exact
 encoder object. Each MLPE region then requires its own head. `landscape_scores`
 works in an unseen region with only prepared features and locations;
 `predict` there raises until explicit regional calibration is supplied:
@@ -282,29 +282,29 @@ retain the fitted-mean interpretation described above.
 Explicit selections may declare training, validation, or calibration roles.
 Query and support roles cannot recalibrate a head; overlapping selections are
 rejected. Every head records selected pair identities and per-pair data roles.
-`Predictor.training_pairs` and `validation_pairs` independently retain encoder
+`CalibratedModel.training_pairs` and `validation_pairs` independently retain encoder
 training and selection access, including after subsequent recalibration. A new
 region with no recorded encoder-training pairs requires an explicit selection.
 Existing head numerical settings are retained unless a replacement `MLPEConfig`
-is supplied. The original predictor, other regional heads, and prior fit history
+is supplied. The original model, other regional heads, and prior fit history
 remain unchanged; new development-data use does not rewrite earlier validation.
 
 ## Joint MLPE training
 
-Select `FitConfig(objective="mlpe")` to train an embedding or conductance encoder
+Select `TrainingConfig(objective="mlpe")` to train an embedding or conductance encoder
 with full Gaussian maximum likelihood. Enable JAX float64 explicitly:
 
 ```python
 import jax
-from ilg_toolkit import FitConfig, fit
+from ilg_toolkit import TrainingConfig, fit
 
 with jax.enable_x64():
     result = fit(
         region, observations, model=model,
-        config=FitConfig(objective="mlpe", epochs=30, learning_rate=.01),
+        config=TrainingConfig(objective="mlpe", epochs=30, learning_rate=.01),
     )
-    genetic_prediction = result.predictor.predict(region)
-    landscape_scores = result.predictor.landscape_scores(region)
+    genetic_prediction = result.model.predict(region)
+    landscape_scores = result.model.landscape_scores(region)
 ```
 
 The same call accepts regional sequences or mappings, with one shared encoder
@@ -321,7 +321,7 @@ After every update, training observations refresh the score mean, sample SD,
 GLS coefficients and population-effect posterior. Validation uses those frozen
 training quantities and can contain one observed pair. It requires a training
 calibration for the same region and cannot overlap training pairs. Validation
-selects the returned predictor without changing the fixed epoch budget or
+selects the returned model without changing the fixed epoch budget or
 learning rate. A trained head reports `converged=False`: the budget does not
 claim a fully converged variance optimum. Constant scores, unidentifiable pair
 sets, nonfinite gradients or posteriors, and unsupported variance conditioning
@@ -330,8 +330,8 @@ supports population dissimilarities.
 
 `result.state` retains the latest encoder, regional raw variances, Adam state,
 random key, history, selection and fixed learning-rate/stopping policy.
-`result.latest_predictor` can differ from the validation-selected
-`result.predictor`. In-memory continuation preserves that trajectory:
+`result.latest_model` can differ from the validation-selected
+`result.model`. In-memory continuation preserves that trajectory:
 
 ```python
 from dataclasses import replace
@@ -350,14 +350,14 @@ resuming. The state uses a legacy uint32 JAX random key; solver contexts are
 rebuilt from the declared solver settings. [Training checkpoints](docs/checkpoints.md)
 describe atomic disk save/load, per-epoch checkpoint callbacks, and compatibility.
 
-Save a complete fitted predictor for inference in another process:
+Save a complete fitted model for inference in another process:
 
 ```python
-from ilg_toolkit import load_predictor, save_predictor
+from ilg_toolkit import load_model, save_model
 
-save_predictor("fitted.ilg", result.predictor)
-predictor = load_predictor("fitted.ilg")
-prediction = predictor.predict(prepared_query_region)
+save_model("fitted.ilg", result.model)
+model = load_model("fitted.ilg")
+prediction = model.predict(prepared_query_region)
 ```
 
 The artifact retains feature and target contracts, solver settings, regional
@@ -377,7 +377,7 @@ with jax.enable_x64():
     ensemble = fit_ensemble(
         region, observations, n_folds=2, holdout_size=2, fold_seed=47,
         initialization_seeds=(13, 29), model_factory=model_factory,
-        config=FitConfig(objective="mlpe", epochs=30),
+        config=TrainingConfig(objective="mlpe", epochs=30),
     )
     prediction = ensemble.predict(region)
 ```
@@ -401,7 +401,7 @@ different split. MLPE still requires at least three informative training pairs.
 
 For a supplied design, pass `folds=[PopulationFold(...), ...]` with named regional
 `held_out_units`, `training`, `query` and optional `validation` partitions.
-Validation can explicitly reuse query pairs for model selection; the predictor
+Validation can explicitly reuse query pairs for model selection; the model
 records that target access. A nominal holdout assignment then does not establish
 out-of-fold eligibility. `ensemble.predict` is deployment prediction and uses
 all members; eligibility-aware evaluation is a separate operation.
@@ -419,7 +419,7 @@ not solve resistance on that mean surface. Conductance 1 and 4 give resistances
 the mean surface 2.5.
 
 `ensemble.members` includes every requested outcome and its identity/fold,
-`predictor`, `fit_result` or explicit `failure`. `.failures` reports failed members;
+`model`, `fit_result` or explicit `failure`. `.failures` reports failed members;
 prediction refuses to drop failed, pending or missing members. Initialization or
 numerical fit failures are recorded and remaining requested members still run.
 `on_member(member)` observes each sequential outcome. Its exceptions propagate
@@ -433,7 +433,7 @@ interrupt execution. Solver contexts and differentiation graphs are never
 retained across independent member fits.
 
 `save_ensemble(path, ensemble)` and `load_ensemble(path)` preserve every member
-and its deployment predictor in one portable inference artifact.
+and its deployment model in one portable inference artifact.
 `fit_ensemble_run(directory, region, observations, ...)` saves independent
 member checkpoints and an atomic run manifest. Resume with the same inputs and
 `resume=True` to skip compatible completed members and continue unfinished

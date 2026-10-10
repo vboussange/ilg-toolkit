@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from ilg_toolkit import FitConfig, PairwiseObservations, PreparedRegion, TargetSpec, fit
+from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
 
 
@@ -24,7 +24,7 @@ def embedding_problem(name="alpine", offset=0.0, seed=14):
     rng = np.random.default_rng(seed)
     features = rng.normal(size=(2, 3, 2)).astype(np.float32)
     ids = tuple(f"unit-{i}" for i in range(6))
-    region = PreparedRegion(
+    region = RegionBatch(
         name,
         features,
         ids,
@@ -61,21 +61,21 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
             region,
             observations,
             model=model,
-            config=FitConfig(
+            config=TrainingConfig(
                 objective="mlpe",
                 epochs=20,
                 learning_rate=0.03,
                 mlpe_initial_variances=(0.05, 0.1),
             ),
         )
-        prediction = result.predictor.predict(region)
-        scores = result.predictor.landscape_scores(region)
+        prediction = result.model.predict(region)
+        scores = result.model.landscape_scores(region)
     assert result.history[-1].training_loss < result.history[0].training_loss - 0.1
-    assert not np.allclose(result.predictor.encoder.log_weights, model.log_weights)
-    head = result.predictor.calibrations[region.name]
+    assert not np.allclose(result.model.encoder.log_weights, model.log_weights)
+    head = result.model.calibrations[region.name]
     assert not np.allclose([head.unit_variance, head.residual_variance], [0.05, 0.1])
     assert head.slope < 0
-    assert result.predictor.objective == "mlpe"
+    assert result.model.objective == "mlpe"
     assert prediction.target.units == "index"
     assert np.isfinite(prediction.values).all()
     assert not np.allclose(prediction.values, scores)
@@ -120,7 +120,7 @@ def test_joint_adam_update_matches_dense_finite_difference_objective(jit):
         )
 
         def objective(parameters):
-            embedding = region.features.reshape(6, 2) * np.exp(parameters[:2])
+            embedding = region.feature_array.reshape(6, 2) * np.exp(parameters[:2])
             scores = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
             variances = np.logaddexp(0, parameters[2:]) + 1e-10
             return dense_profile(scores, targets, left, right, 6, variances)[0] / len(scores)
@@ -137,7 +137,7 @@ def test_joint_adam_update_matches_dense_finite_difference_objective(jit):
             region,
             observations,
             model=WeightedEmbedding(jnp.zeros(2)),
-            config=FitConfig(
+            config=TrainingConfig(
                 objective="mlpe",
                 epochs=1,
                 jit=jit,
@@ -150,8 +150,8 @@ def test_joint_adam_update_matches_dense_finite_difference_objective(jit):
         moment = result.state.optimizer_state[0].mu
         actual_moment = np.concatenate((moment[0].log_weights, moment[1][0]))
         np.testing.assert_allclose(actual_moment, 0.1 * gradient, rtol=1e-7, atol=1e-10)
-        scores = np.asarray(result.predictor.landscape_scores(region))[left, right]
-    head = result.predictor.calibrations[region.name]
+        scores = np.asarray(result.model.landscape_scores(region))[left, right]
+    head = result.model.calibrations[region.name]
     expected_nll, beta, mean, posterior = dense_profile(
         scores,
         targets,
@@ -181,7 +181,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
             target=observations.target,
             sampling_unit_ids=region.sampling_unit_ids,
         )
-        config = FitConfig(
+        config = TrainingConfig(
             objective="mlpe", epochs=4, learning_rate=0.03, mlpe_initial_variances=(0.05, 0.1)
         )
         runs = [
@@ -196,17 +196,17 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
             )
             for validation_observations in (observations, altered)
         ]
-        scores = np.asarray(runs[0].latest_predictor.landscape_scores(region))
+        scores = np.asarray(runs[0].latest_model.landscape_scores(region))
     first, second = runs
     assert [r.training_loss for r in first.history] == [r.training_loss for r in second.history]
     np.testing.assert_array_equal(first.state.encoder.log_weights, second.state.encoder.log_weights)
     np.testing.assert_array_equal(first.state.raw_variances, second.state.raw_variances)
-    assert first.latest_predictor.calibrations == second.latest_predictor.calibrations
+    assert first.latest_model.calibrations == second.latest_model.calibrations
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
     assert first.state.rng_key.dtype == np.uint32
-    head = first.latest_predictor.calibrations[region.name]
+    head = first.latest_model.calibrations[region.name]
     assert set(head.calibration_pairs) == set(train_partition.pairs)
-    assert first.latest_predictor.validation_pairs[region.name] == query_partition.pairs
+    assert first.latest_model.validation_pairs[region.name] == query_partition.pairs
     (left, right), values = observations.aligned_pairs(region, train_partition)
     np.testing.assert_allclose(head.score_center, scores[left, right].mean(), atol=1e-12)
     np.testing.assert_allclose(head.score_scale, scores[left, right].std(ddof=1), atol=1e-12)
@@ -230,7 +230,7 @@ def test_shared_mlpe_fit_has_one_encoder_and_separate_regional_heads():
             regions,
             observations,
             model=WeightedEmbedding(jnp.zeros(2)),
-            config=FitConfig(
+            config=TrainingConfig(
                 objective="mlpe",
                 epochs=15,
                 learning_rate=0.03,
@@ -239,10 +239,10 @@ def test_shared_mlpe_fit_has_one_encoder_and_separate_regional_heads():
         )
         assert result.history[-1].training_loss < result.history[0].training_loss - 0.1
         for region in regions:
-            assert np.isfinite(result.predictor.predict(region).values).all()
+            assert np.isfinite(result.model.predict(region).values).all()
     assert result.state.raw_variances.shape == (2, 2)
     assert result.region_names == ("alpine", "valley")
-    heads = result.predictor.calibrations
+    heads = result.model.calibrations
     assert heads["valley"].intercept - heads["alpine"].intercept > 2
     assert not np.array_equal(result.state.raw_variances[0], result.state.raw_variances[1])
     assert result.history[-1].training_loss == np.mean(
@@ -264,11 +264,11 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver():
     with jax.enable_x64():
         features = np.array([[[0.0], [0.2], [0.8]], [[-0.3], [1.4], [-0.7]]])
         ids = tuple(f"population-{i}" for i in range(6))
-        region = PreparedRegion(
+        region = RegionBatch(
             "graph", features, ids, np.array(list(np.ndindex(2, 3))), feature_names=("habitat",)
         )
         left, right = np.triu_indices(6, 1)
-        scores = dense_graph_scores(np.exp(1.2 * region.features[..., 0]), region.pixel_nodes)[
+        scores = dense_graph_scores(np.exp(1.2 * region.feature_array[..., 0]), region.pixel_nodes)[
             left, right
         ]
         target = 2 + 0.5 * (scores - scores.mean()) / scores.std(ddof=1)
@@ -283,7 +283,7 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver():
             region,
             observations,
             model=CovariateConductance(jnp.asarray(0.1)),
-            config=FitConfig(
+            config=TrainingConfig(
                 objective="mlpe",
                 epochs=20,
                 learning_rate=0.08,
@@ -291,10 +291,10 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver():
             ),
         )
         assert result.history[-1].training_loss < result.history[0].training_loss - 0.2
-        assert float(result.predictor.encoder.weight) > 0.6
-        assert np.isfinite(result.predictor.predict(region).values).all()
-        surface = result.predictor.conductance_surface(region)
-        actual_scores = result.predictor.landscape_scores(region)
+        assert float(result.model.encoder.weight) > 0.6
+        assert np.isfinite(result.model.predict(region).values).all()
+        surface = result.model.conductance_surface(region)
+        actual_scores = result.model.landscape_scores(region)
     np.testing.assert_allclose(
         actual_scores, dense_graph_scores(surface, region.pixel_nodes), atol=1e-7
     )
@@ -305,13 +305,13 @@ def test_in_memory_continuation_preserves_optimizer_rng_and_selected_heads():
 
     with jax.enable_x64():
         region, observations = embedding_problem()
-        config = FitConfig(objective="mlpe", epochs=6, seed=31, learning_rate=0.03)
+        config = TrainingConfig(objective="mlpe", epochs=6, seed=31, learning_rate=0.03)
         model = WeightedEmbedding(jnp.zeros(2))
         uninterrupted = fit(region, observations, model=model, config=config)
         partial = fit(region, observations, model=model, config=replace(config, epochs=2))
         resumed = fit(region, observations, state=partial.state, config=config)
     assert resumed.history == uninterrupted.history
-    assert resumed.predictor.calibrations == uninterrupted.predictor.calibrations
+    assert resumed.model.calibrations == uninterrupted.model.calibrations
     assert resumed.selected_epoch == uninterrupted.selected_epoch == 6
     for expected, actual in zip(
         jax.tree.leaves(
@@ -342,7 +342,7 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
 
     region, observations = embedding_problem()
     model = WeightedEmbedding(jnp.zeros(2))
-    config = FitConfig(objective="mlpe", epochs=0)
+    config = TrainingConfig(objective="mlpe", epochs=0)
     with jax.enable_x64(False), pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
         fit(region, observations, model=model, config=config)
     with jax.enable_x64():
@@ -357,7 +357,7 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
         individual = replace(region, sampling_unit_kinds=("individual",) * 6)
         with pytest.raises(ValueError, match="individual"):
             fit(individual, observations, model=model, config=config)
-        constant_region = replace(region, features=np.ones_like(region.features))
+        constant_region = replace(region, features=np.ones_like(region.feature_array))
         with pytest.raises(FloatingPointError, match="alpine.*nonfinite MLPE.*nonconstant scores"):
             fit(constant_region, observations, model=model, config=config)
         extreme = replace(config, mlpe_initial_variances=(1e12, 1e-9))
@@ -372,14 +372,14 @@ def test_continuation_rejects_changed_data_or_optimization_policy():
 
     with jax.enable_x64():
         region, observations = embedding_problem()
-        config = FitConfig(objective="mlpe", epochs=1)
+        config = TrainingConfig(objective="mlpe", epochs=1)
         result = fit(region, observations, model=WeightedEmbedding(jnp.zeros(2)), config=config)
         with pytest.raises(ValueError, match="configuration"):
             fit(region, observations, state=result.state, config=replace(config, learning_rate=0.1))
         with pytest.raises(ValueError, match="already contains"):
             fit(region, observations, state=result.state, model=result.state.encoder)
         with pytest.raises(ValueError, match="Continuation inputs"):
-            fit(replace(region, features=region.features + 1), observations, state=result.state)
+            fit(replace(region, features=region.feature_array + 1), observations, state=result.state)
         with pytest.raises(ValueError, match="Continuation inputs"):
             fit(
                 region,
@@ -412,7 +412,7 @@ def test_shared_likelihood_gradient_weights_regions_equally_with_unequal_pair_co
             losses = []
             for i, (region, observed) in enumerate(zip(regions, observations, strict=True)):
                 (left, right), targets = observed.aligned_pairs(region)
-                embedding = region.features.reshape(6, 2) * np.exp(parameters[:2])
+                embedding = region.feature_array.reshape(6, 2) * np.exp(parameters[:2])
                 scores = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
                 variances = np.logaddexp(0, parameters[2 + 2 * i : 4 + 2 * i]) + 1e-10
                 losses.append(
@@ -431,7 +431,7 @@ def test_shared_likelihood_gradient_weights_regions_equally_with_unequal_pair_co
             regions,
             observations,
             model=WeightedEmbedding(jnp.zeros(2)),
-            config=FitConfig(
+            config=TrainingConfig(
                 objective="mlpe",
                 epochs=1,
                 mlpe_initial_variances=(0.05, 0.1),

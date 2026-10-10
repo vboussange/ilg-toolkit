@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from ilg_toolkit import FitConfig, PairwiseObservations, PreparedRegion, TargetSpec, fit
+from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
 from ilg_toolkit.models import EmbeddingDistanceModel
 
 
@@ -20,7 +20,7 @@ class LinearEmbedding(EmbeddingDistanceModel):
 
 
 def problem():
-    region = PreparedRegion(
+    region = RegionBatch(
         "anywhere",
         np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]),
         ("unit/7", "unit/20", "unit/99"),
@@ -30,7 +30,7 @@ def problem():
     return region, target, LinearEmbedding(jnp.asarray(0.7))
 
 
-def test_equivalent_matrix_and_pair_inputs_train_equivalent_predictors():
+def test_equivalent_matrix_and_pair_inputs_train_equivalent_models():
     region, target, model = problem()
     matrix = PairwiseObservations.from_matrix(
         region.sampling_unit_ids, [[0, 1, 4], [1, 0, 1], [4, 1, 0]], target=target
@@ -40,10 +40,10 @@ def test_equivalent_matrix_and_pair_inputs_train_equivalent_predictors():
         [4, 1, 1],
         target=target,
     )
-    left = fit(region, matrix, model=model, config=FitConfig(epochs=2))
-    right = fit(region, pairs, model=model, config=FitConfig(epochs=2))
+    left = fit(region, matrix, model=model, config=TrainingConfig(epochs=2))
+    right = fit(region, pairs, model=model, config=TrainingConfig(epochs=2))
     np.testing.assert_allclose(
-        left.predictor.predict(region).values, right.predictor.predict(region).values, rtol=1e-6
+        left.model.predict(region).values, right.model.predict(region).values, rtol=1e-6
     )
     assert left.history[-1].training_loss == right.history[-1].training_loss
 
@@ -57,13 +57,13 @@ def test_incomplete_pairs_remain_absent_through_fitting():
         sampling_unit_ids=region.sampling_unit_ids,
     )
     result = fit(
-        region, observations, model=LinearEmbedding(jnp.asarray(1.0)), config=FitConfig(epochs=0)
+        region, observations, model=LinearEmbedding(jnp.asarray(1.0)), config=TrainingConfig(epochs=0)
     )
     assert observations.observed_pairs == (("unit/7", "unit/20"),)
     assert np.isnan(observations.values[0, 2])
     assert result.history[0].training_loss == pytest.approx(0, abs=1e-14)
     # Unobserved pairs can still be predicted, but never become zero training targets.
-    np.testing.assert_allclose(result.predictor.predict(region).values[0, 2], 4)
+    np.testing.assert_allclose(result.model.predict(region).values[0, 2], 4)
 
 
 def test_explicit_transform_returns_original_units_and_separate_landscape_scores():
@@ -73,15 +73,15 @@ def test_explicit_transform_returns_original_units_and_separate_landscape_scores
         [("unit/7", "unit/20")], [np.e - 1], target=target
     )
     result = fit(
-        region, observations, model=LinearEmbedding(jnp.asarray(1.0)), config=FitConfig(epochs=0)
+        region, observations, model=LinearEmbedding(jnp.asarray(1.0)), config=TrainingConfig(epochs=0)
     )
-    prediction = result.predictor.predict(region)
+    prediction = result.model.predict(region)
     assert result.history[0].training_loss < 1e-12
     assert prediction.scale == "original"
     assert prediction.target.transform == "log1p"
     assert prediction.target.units == "index"
     np.testing.assert_allclose(prediction.values[0, 1], np.e - 1, rtol=1e-6)
-    np.testing.assert_allclose(result.predictor.landscape_scores(region)[0, 1], 1)
+    np.testing.assert_allclose(result.model.landscape_scores(region)[0, 1], 1)
 
 
 def test_supplied_partitions_select_observations_and_reject_invalid_membership():
@@ -99,7 +99,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership()
         region,
         observations,
         model=model,
-        config=FitConfig(epochs=0),
+        config=TrainingConfig(epochs=0),
         partition=training,
         validation=(region, observations),
         validation_partition=validation,
@@ -110,7 +110,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership()
             region,
             observations,
             model=model,
-            config=FitConfig(epochs=0),
+            config=TrainingConfig(epochs=0),
             validation=(region, observations),
         )
     wrong_region = ObservationPartition("somewhere-else", training.pairs)
@@ -134,12 +134,12 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit():
         sampling_unit_kinds=("individual", "population", "individual"),
     )
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
-    result = fit(region, observations, model=model, config=FitConfig(epochs=0))
+    result = fit(region, observations, model=model, config=TrainingConfig(epochs=0))
     assert region.sampling_unit_kinds == ("individual", "population", "individual")
-    assert result.predictor.feature_names == ("elevation", "canopy")
+    assert result.model.feature_names == ("elevation", "canopy")
     swapped = replace(region, feature_names=("canopy", "elevation"))
     with pytest.raises(ValueError, match="feature.*order|feature.*contract"):
-        result.predictor.predict(swapped)
+        result.model.predict(swapped)
     relatedness = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20")], [-0.2], target=TargetSpec("relatedness", kind="relatedness")
     )

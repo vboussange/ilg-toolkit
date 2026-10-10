@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ilg_toolkit import Prediction, Predictor, PreparedRegion, TargetSpec, aggregate_predictions
+from ilg_toolkit import Prediction, CalibratedModel, RegionBatch, TargetSpec, aggregate_predictions
 from ilg_toolkit.models import ConductanceModel
 
 # Known calibrated means on a log1p fitted scale: invert EACH before averaging.
@@ -29,18 +29,18 @@ class ConstantConductance(ConductanceModel):
 
 
 with jax.enable_x64():
-    region = PreparedRegion("graph", np.ones((1, 2, 1)), ("a", "b"), np.array([[0, 0], [0, 1]]))
+    region = RegionBatch("graph", np.ones((1, 2, 1)), ("a", "b"), np.array([[0, 0], [0, 1]]))
     target = TargetSpec("synthetic resistance dissimilarity", units="index")
-    predictors = {
-        str(i): Predictor(ConstantConductance(jnp.asarray(level)), target, 1)
+    models = {
+        str(i): CalibratedModel(ConstantConductance(jnp.asarray(level)), target, 1)
         for i, level in enumerate((1.0, 4.0))
     }
-    predictions = {name: predictor.predict(region) for name, predictor in predictors.items()}
+    predictions = {name: model.predict(region) for name, model in models.items()}
     average = aggregate_predictions(predictions)
     descriptive_surface_mean = np.mean(
-        [predictor.conductance_surface(region) for predictor in predictors.values()], axis=0
+        [model.conductance_surface(region) for model in models.values()], axis=0
     )
-    mean_surface_model = Predictor(
+    mean_surface_model = CalibratedModel(
         ConstantConductance(jnp.asarray(descriptive_surface_mean[0, 0])), target, 1
     )
     print("Mean member resistance:", average.values[0, 1], "(expected .625)")

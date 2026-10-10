@@ -10,12 +10,12 @@ import lineax as lx
 from jaxscape import GridGraph, ResistanceDistance
 from jaxscape.solvers import AMJaxCGSolver, AMJaxCGSolverState
 
-from .config import SolverConfig
+from .config import ResistanceSolverConfig
 
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
-class SolverContext:
+class ResistanceSolverContext:
     """A shape-specific solver with dynamic, reusable preconditioner arrays."""
 
     graph_shape: tuple[int, int] = field(metadata={"static": True})
@@ -34,7 +34,7 @@ def _mean_conductance(left, right):
     return 0.5 * (left + right)
 
 
-def build_solver_context(graph_shape, config: SolverConfig | None = None) -> SolverContext:
+def build_resistance_context(graph_shape, config: ResistanceSolverConfig | None = None) -> ResistanceSolverContext:
     """Build CG or an optional AMG hierarchy outside JIT/gradient transforms.
 
     The all-ones hierarchy is reused as a preconditioner only. Every resistance
@@ -49,22 +49,22 @@ def build_solver_context(graph_shape, config: SolverConfig | None = None) -> Sol
     shape = tuple(int(size) for size in graph_shape)
     if shape[0] * shape[1] < 2:
         raise ValueError("Effective resistance requires at least two graph vertices")
-    config = config or SolverConfig()
+    config = config or ResistanceSolverConfig()
     options = dict(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps)
     if not config.use_amg:
-        return SolverContext(shape, lx.CG(**options))
+        return ResistanceSolverContext(shape, lx.CG(**options))
     solver = AMJaxCGSolver(**options, coarse_solver="pinv")
     template = GridGraph(jnp.ones(shape, dtype=jnp.float64), fun=_mean_conductance)
     state = ResistanceDistance(solver=solver).init_preconditioner(template)
-    return SolverContext(shape, solver, state)
+    return ResistanceSolverContext(shape, solver, state)
 
 
 def effective_resistance(
     conductance,
     terminal_nodes,
     *,
-    context: SolverContext | None = None,
-    config: SolverConfig | None = None,
+    context: ResistanceSolverContext | None = None,
+    config: ResistanceSolverConfig | None = None,
 ) -> jax.Array:
     """Return terminal resistance scores for a positive four-neighbour grid.
 
@@ -95,7 +95,7 @@ def effective_resistance(
     ).astype(jnp.int32)
     if context is not None and config is not None:
         raise ValueError("Supply either a solver context or a solver configuration")
-    context = context or build_solver_context(surface.shape, config)
+    context = context or build_resistance_context(surface.shape, config)
     if context.graph_shape != surface.shape:
         raise ValueError(
             f"Solver context shape {context.graph_shape} does not match surface {surface.shape}"

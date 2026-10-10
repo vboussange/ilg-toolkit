@@ -7,15 +7,15 @@ import numpy as np
 import pytest
 
 from ilg_toolkit import (
-    FitConfig,
+    TrainingConfig,
     PairwiseObservations,
-    PreparedRegion,
-    SolverConfig,
+    RegionBatch,
+    ResistanceSolverConfig,
     TargetSpec,
     fit,
 )
 from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
-from ilg_toolkit.solver import build_solver_context, effective_resistance
+from ilg_toolkit.resistance import build_resistance_context, effective_resistance
 
 
 def dense_resistance(surface, nodes):
@@ -46,7 +46,7 @@ def test_actual_resistance_and_gradients_match_independent_laplacian(use_amg):
     with jax.enable_x64():
         surface = np.array([[1.0, 1.4], [0.8, 2.0]])
         nodes = np.array([3, 0, 1, 1])
-        context = build_solver_context(surface.shape, SolverConfig(use_amg=use_amg))
+        context = build_resistance_context(surface.shape, ResistanceSolverConfig(use_amg=use_amg))
         actual = effective_resistance(jnp.asarray(surface), nodes, context=context)
         expected = dense_resistance(surface, nodes)
         np.testing.assert_allclose(actual, expected, atol=1e-8, rtol=1e-8)
@@ -67,7 +67,7 @@ def test_actual_resistance_and_gradients_match_independent_laplacian(use_amg):
 def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
     with jax.enable_x64():
         features = np.random.default_rng(4).normal(size=(8, 8, 2)).astype(np.float32)
-        region = PreparedRegion(
+        region = RegionBatch(
             "small-valley",
             features,
             ("south", "north", "east"),
@@ -83,16 +83,16 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
             region,
             observations,
             model=model,
-            config=FitConfig(epochs=4, learning_rate=0.001, solver=SolverConfig(rtol=1e-8)),
+            config=TrainingConfig(epochs=4, learning_rate=0.001, solver=ResistanceSolverConfig(rtol=1e-8)),
         )
         assert result.history[-1].training_loss < result.history[0].training_loss
-        surface = result.predictor.conductance_surface(region)
-        prediction = result.predictor.predict(region)
+        surface = result.model.conductance_surface(region)
+        prediction = result.model.predict(region)
         assert surface.shape == (2, 2)
         assert np.all(np.isfinite(surface) & (surface > 0))
         expected = dense_resistance(surface, np.array([0, 1, 3]))
         np.testing.assert_allclose(prediction.values, expected, atol=2e-6, rtol=2e-6)
-        np.testing.assert_allclose(result.predictor.landscape_scores(region), prediction.values)
+        np.testing.assert_allclose(result.model.landscape_scores(region), prediction.values)
         assert prediction.target.units == "index"
 
 
@@ -108,7 +108,7 @@ class PointConductance(ConductanceModel):
 
 def test_failed_solver_reports_region_and_epoch_without_changing_solver():
     with jax.enable_x64():
-        region = PreparedRegion(
+        region = RegionBatch(
             "bad-solve",
             np.linspace(0.1, 2, 12).reshape(3, 4, 1),
             ("first", "last"),
@@ -122,8 +122,8 @@ def test_failed_solver_reports_region_and_epoch_without_changing_solver():
                 region,
                 observations,
                 model=PointConductance(jnp.array(0.0)),
-                config=FitConfig(
-                    epochs=0, solver=SolverConfig(rtol=1e-12, atol=1e-12, max_steps=1)
+                config=TrainingConfig(
+                    epochs=0, solver=ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1)
                 ),
             )
 
@@ -178,4 +178,4 @@ def test_solver_rejects_silent_float64_truncation_and_invalid_terminals():
 )
 def test_solver_settings_reject_invalid_options(options):
     with pytest.raises(ValueError, match="solver|tolerance"):
-        SolverConfig(**options)
+        ResistanceSolverConfig(**options)

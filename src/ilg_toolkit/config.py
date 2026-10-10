@@ -12,7 +12,7 @@ def validate_patch_batch_size(value: int | None) -> None:
 
 
 @dataclass(frozen=True)
-class SolverConfig:
+class ResistanceSolverConfig:
     """Explicit float64 resistance-solver settings.
 
     Ordinary CG requires no AMG dependencies. ``use_amg=True`` requires the
@@ -49,8 +49,8 @@ class SolverConfig:
 
 
 @dataclass(frozen=True)
-class FitConfig:
-    """Fixed training budget; validation only changes predictor selection.
+class TrainingConfig:
+    """Fixed training budget; validation only changes model selection.
 
     A fixed Adam learning rate is used. Epoch zero is included in the reported
     history and is eligible for validation selection. No test data is accepted.
@@ -63,7 +63,7 @@ class FitConfig:
     learning_rate: float = 0.001
     seed: int = 0
     jit: bool = True
-    solver: SolverConfig = field(default_factory=SolverConfig)
+    solver: ResistanceSolverConfig = field(default_factory=ResistanceSolverConfig)
     objective: str = "direct_log1p"
     mlpe_variance_floor: float = 1e-10
     mlpe_jitter: float = 0.0

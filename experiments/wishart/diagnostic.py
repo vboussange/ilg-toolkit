@@ -12,10 +12,10 @@ from numbers import Integral, Real
 
 import numpy as np
 
-from ..config import SolverConfig
-from ..data import PreparedRegion
-from ..models import ConductanceModel
-from ..solver import build_solver_context
+from ilg_toolkit.config import ResistanceSolverConfig
+from ilg_toolkit.data import RegionBatch
+from ilg_toolkit.models import ConductanceModel
+from ilg_toolkit.resistance import build_resistance_context
 
 
 def _helmert(populations):
@@ -304,7 +304,7 @@ class WishartDiagnostic:
 
 
 def diagnose_wishart(
-    region: PreparedRegion,
+    region: RegionBatch,
     observations: GaussianMarkerDistances,
     *,
     encoder: ConductanceModel,
@@ -313,7 +313,7 @@ def diagnose_wishart(
     training_unit_ids,
     anchor_id: str,
     parameter_source: str,
-    solver_config: SolverConfig | None = None,
+    solver_config: ResistanceSolverConfig | None = None,
 ) -> WishartDiagnostic:
     """Connect an actual resistance graph to a frozen Gaussian-marker covariance.
 
@@ -344,14 +344,14 @@ def diagnose_wishart(
             raise ValueError(
                 f"{name} must be finite and {'nonnegative' if lower_inclusive else 'positive'}"
             )
-    height, width = region.features.shape[:2]
+    height, width = region.feature_array.shape[:2]
     if height % encoder.patch_size or width % encoder.patch_size:
         raise ValueError("Raster dimensions must be divisible by encoder patch_size")
-    context = build_solver_context(
+    context = build_resistance_context(
         (height // encoder.patch_size, width // encoder.patch_size), solver_config
     )
     scores = np.asarray(
-        encoder.predict_distances(region.features, region.pixel_nodes, context=context)
+        encoder.predict_distances(region.feature_array, region.pixel_nodes, context=context)
     )
     order = [region.sampling_unit_ids.index(label) for label in observations.sampling_unit_ids]
     scores = np.array(scores[np.ix_(order, order)], dtype=np.float64)

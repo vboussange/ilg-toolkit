@@ -4,16 +4,16 @@ import jax
 import numpy as np
 
 from ilg_toolkit import (
-    FitConfig,
+    TrainingConfig,
     PairwiseObservations,
-    PreparedRegion,
-    SolverConfig,
+    RegionBatch,
+    ResistanceSolverConfig,
     TargetSpec,
     fit,
 )
 from ilg_toolkit.models import ResNet9Conductance
 
-region = PreparedRegion(
+region = RegionBatch(
     name="synthetic-valley",
     features=np.random.default_rng(4).normal(size=(8, 8, 2)).astype(np.float32),
     sampling_unit_ids=("south", "north", "east"),
@@ -32,10 +32,10 @@ result = fit(
     region,
     observations,
     model=encoder,
-    config=FitConfig(epochs=4, learning_rate=0.001, solver=SolverConfig(rtol=1e-8)),
+    config=TrainingConfig(epochs=4, learning_rate=0.001, solver=ResistanceSolverConfig(rtol=1e-8)),
 )
 print("Training loss:", result.history[0].training_loss, "->", result.history[-1].training_loss)
 # Neither operation requires genetic observations at the query locations.
-print("Conductance surface:\n", result.predictor.conductance_surface(region))
-print("Resistance landscape scores:\n", result.predictor.landscape_scores(region))
-print("Direct genetic predictions:\n", result.predictor.predict(region).values)
+print("Conductance surface:\n", result.model.conductance_surface(region))
+print("Resistance landscape scores:\n", result.model.landscape_scores(region))
+print("Direct genetic predictions:\n", result.model.predict(region).values)
