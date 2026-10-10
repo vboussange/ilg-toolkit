@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from numbers import Integral
+from typing import final
 
 import equinox as eqx
 import jax
@@ -20,6 +21,7 @@ def _encode_patch(model: ResNet9Conductance, patch: jax.Array) -> jax.Array:
     return model.encode_patch(patch)
 
 
+@final
 class ResidualBlock(eqx.Module):
     """Two convolutions with GroupNorm and an identity skip connection."""
 
@@ -43,6 +45,7 @@ class ResidualBlock(eqx.Module):
         return jax.nn.relu(outputs + residual)
 
 
+@final
 class ResNet9Conductance(ConductanceModel):
     """Map each native-resolution raster patch to one positive conductance."""
 
@@ -114,7 +117,7 @@ class ResNet9Conductance(ConductanceModel):
             raise ValueError(f"Expected HWC features with {self.conv1.weight.shape[1]} channels")
         patches, grid_shape = patchify(features, self.patch_size)
         if patch_batch_size is None:
-            return jax.vmap(self.encode_patch)(patches).reshape(grid_shape)
+            return eqx.filter_vmap(self.encode_patch)(patches).reshape(grid_shape)
         # lax.map batches with vmap inside a compiled loop, including a ragged
         # final chunk. This avoids unrolling one CNN graph per chunk under JIT.
         conductance = jax.lax.map(

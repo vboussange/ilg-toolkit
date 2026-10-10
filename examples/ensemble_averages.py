@@ -1,11 +1,13 @@
 """Known-output checks: average genetic predictions after transforms, not surfaces."""
 
+from typing import final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ilg_toolkit import Prediction, CalibratedModel, RegionBatch, TargetSpec, aggregate_predictions
+from ilg_toolkit import CalibratedModel, Prediction, RegionBatch, TargetSpec, aggregate_predictions
 from ilg_toolkit.models import ConductanceModel
 
 # Known calibrated means on a log1p fitted scale: invert EACH before averaging.
@@ -20,6 +22,7 @@ print("Mean original-scale prediction:", aggregate.values[0, 1], "(expected 5)")
 print("Inverse of mean fitted-scale prediction:", np.expm1(np.mean(model_means)))
 
 
+@final
 class ConstantConductance(ConductanceModel):
     level: jax.Array
     patch_size: int = eqx.field(static=True, default=1)

@@ -3,7 +3,7 @@
 import jax
 import numpy as np
 
-from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 
@@ -32,7 +32,10 @@ def synthetic_problem():
 def test_fixed_budget_fit_improves_and_predicts_without_query_targets():
     region, observations, model = synthetic_problem()
     result = fit(
-        region, observations, model=model, config=TrainingConfig(epochs=20, learning_rate=0.01, seed=3)
+        region,
+        observations,
+        model=model,
+        config=TrainingConfig(epochs=20, learning_rate=0.01, seed=3),
     )
     prediction = result.model.predict(region)
     assert result.history[-1].training_loss < result.history[0].training_loss * 0.75

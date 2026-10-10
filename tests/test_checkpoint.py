@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 
 from ilg_toolkit import (
-    TrainingConfig,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
+    TrainingConfig,
     fit,
     load_checkpoint,
     save_checkpoint,
@@ -40,6 +40,39 @@ def checkpoint_model():
         embedding_dim=2,
         dropout=0.2,
         key=jax.random.PRNGKey(8),
+    )
+
+
+def test_checkpoint_loader_retains_schema_one_model_state(tmp_path):
+    """Canonical Python state names continue to load the established disk format."""
+    import json
+    import zipfile
+
+    region, observations = checkpoint_problem()
+    result = fit(
+        region,
+        observations,
+        model=checkpoint_model(),
+        config=TrainingConfig(epochs=0),
+    )
+    path = tmp_path / "schema-one-checkpoint.ilg"
+    save_checkpoint(path, result.state)
+    with zipfile.ZipFile(path) as archive:
+        content = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(content["manifest.json"])
+    assert manifest["schema"] == 1
+    payload = manifest["payload"]
+    # Only Python API names changed; the numeric checkpoint schema did not.
+    payload["latest_predictor"] = payload.pop("latest_model", payload.get("latest_predictor"))
+    payload["best_predictor"] = payload.pop("best_model", payload.get("best_predictor"))
+    content["manifest.json"] = json.dumps(manifest).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, value in content.items():
+            archive.writestr(name, value)
+    restored = load_checkpoint(path)
+    assert restored.epoch == 0
+    np.testing.assert_array_equal(
+        restored.latest_model.predict(region).values, result.model.predict(region).values
     )
 
 
@@ -142,9 +175,7 @@ def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp
         assert restored.latest_model.calibrations == partial.latest_model.calibrations
         assert restored.best_model.calibrations == partial.best_model.calibrations
         assert restored.latest_model.training_pairs == partial.latest_model.training_pairs
-        assert (
-            restored.latest_model.validation_pairs == partial.latest_model.validation_pairs
-        )
+        assert restored.latest_model.validation_pairs == partial.latest_model.validation_pairs
         resumed = fit(
             dict(zip(reversed([r.name for r in regions]), reversed(regions), strict=True)),
             dict(zip(reversed([r.name for r in regions]), reversed(observations), strict=True)),
@@ -215,7 +246,9 @@ def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(tmp_path
 
     with jax.enable_x64():
         region, observations = checkpoint_problem()
-        result = fit(region, observations, model=checkpoint_model(), config=TrainingConfig(epochs=0))
+        result = fit(
+            region, observations, model=checkpoint_model(), config=TrainingConfig(epochs=0)
+        )
         changed_optimizer = jax.tree.map(
             lambda value: value.astype(np.float64) if value.dtype == np.float32 else value,
             result.state.optimizer_state,
@@ -338,7 +371,7 @@ def test_checkpoint_load_refuses_incomplete_schema_runtime_and_progress(tmp_path
             load_checkpoint(path)
 
     corrupt("version.ilg", lambda m: m["payload"].update(checkpoint_version=2), "schema")
-    corrupt("missing.ilg", lambda m: m["payload"].pop("best_model"), "incomplete")
+    corrupt("missing.ilg", lambda m: m["payload"].pop("best_predictor"), "incomplete")
     corrupt("runtime.ilg", lambda m: m["payload"]["resume_runtime"].update(jax="0.0"), "runtime")
     corrupt("progress.ilg", lambda m: m["payload"].update(step=1), "progress")
     corrupt("history.ilg", lambda m: m["payload"].update(history=[]), "history")

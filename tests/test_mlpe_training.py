@@ -1,15 +1,18 @@
 """MLPE fitting checked through the accepted public synthetic workflow seam."""
 
+from typing import final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
 
 
+@final
 class WeightedEmbedding(EmbeddingDistanceModel):
     """Actual squared embedding distances with a learnable feature relationship."""
 
@@ -250,6 +253,7 @@ def test_shared_mlpe_fit_has_one_encoder_and_separate_regional_heads():
     )
 
 
+@final
 class CovariateConductance(ConductanceModel):
     weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
@@ -379,7 +383,9 @@ def test_continuation_rejects_changed_data_or_optimization_policy():
         with pytest.raises(ValueError, match="already contains"):
             fit(region, observations, state=result.state, model=result.state.encoder)
         with pytest.raises(ValueError, match="Continuation inputs"):
-            fit(replace(region, features=region.feature_array + 1), observations, state=result.state)
+            fit(
+                replace(region, features=region.feature_array + 1), observations, state=result.state
+            )
         with pytest.raises(ValueError, match="Continuation inputs"):
             fit(
                 region,

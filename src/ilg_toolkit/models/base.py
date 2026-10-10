@@ -24,34 +24,36 @@ class ConductanceModel(eqx.Module):
     patch_size: eqx.AbstractVar[int]
 
     @abstractmethod
-    def conductance(self, features, *, patch_batch_size=None):
+    def conductance(self, features: jax.Array, *, patch_batch_size: int | None = None) -> jax.Array:
         """Return a positive 2D patch-grid surface for one HWC feature raster."""
 
     def resistance_and_conductance(
         self,
-        features,
-        pixel_nodes,
+        features: jax.Array,
+        pixel_nodes: jax.Array,
         *,
         context: ResistanceSolverContext | None = None,
-        patch_batch_size=None,
-    ):
+        patch_batch_size: int | None = None,
+    ) -> tuple[jax.Array, jax.Array]:
         """Return landscape scores and the conductance surface that induced them."""
         surface = self.conductance(features, patch_batch_size=patch_batch_size)
         nodes = pixel_to_patch_nodes(
-            pixel_nodes, raster_shape=features.shape[:2], patch_size=self.patch_size
+            pixel_nodes,
+            raster_shape=(features.shape[0], features.shape[1]),
+            patch_size=self.patch_size,
         )
         return effective_resistance(surface, nodes, context=context), surface
 
     def predict_distances(
         self,
-        features,
-        pixel_nodes,
+        features: jax.Array,
+        pixel_nodes: jax.Array,
         *,
         context: ResistanceSolverContext | None = None,
-        inference=True,
-        key=None,
-        patch_batch_size=None,
-    ):
+        inference: bool = True,
+        key: jax.Array | None = None,
+        patch_batch_size: int | None = None,
+    ) -> jax.Array:
         """Return all pairwise resistance scores independently of genetic labels."""
         scores, _ = self.resistance_and_conductance(
             features, pixel_nodes, context=context, patch_batch_size=patch_batch_size
@@ -65,17 +67,32 @@ class EmbeddingDistanceModel(eqx.Module):
     patch_size: eqx.AbstractVar[int]
 
     @abstractmethod
-    def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
+    def embedding_grid(
+        self,
+        features: jax.Array,
+        *,
+        inference: bool = True,
+        key: jax.Array | None = None,
+        patch_batch_size: int | None = None,
+    ) -> jax.Array:
         """Return an HWC grid of embeddings."""
 
     def predict_distances(
-        self, features, pixel_nodes, *, inference=True, key=None, patch_batch_size=None
+        self,
+        features: jax.Array,
+        pixel_nodes: jax.Array,
+        *,
+        inference: bool = True,
+        key: jax.Array | None = None,
+        patch_batch_size: int | None = None,
     ) -> jax.Array:
         """Return all pairwise squared embedding distances at row-major pixel nodes."""
         grid = self.embedding_grid(
             features, inference=inference, key=key, patch_batch_size=patch_batch_size
         )
         nodes = pixel_to_patch_nodes(
-            pixel_nodes, raster_shape=features.shape[:2], patch_size=self.patch_size
+            pixel_nodes,
+            raster_shape=(features.shape[0], features.shape[1]),
+            patch_size=self.patch_size,
         )
         return squared_embedding_distances(grid.reshape(-1, grid.shape[-1])[nodes])

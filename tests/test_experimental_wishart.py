@@ -1,5 +1,7 @@
 """Experimental diagnostic seam; independent Gaussian and SciPy references."""
 
+from typing import final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -8,13 +10,13 @@ import pytest
 from scipy.linalg import helmert
 from scipy.stats import matrix_normal, wishart
 
-from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec
 from experiments.wishart import (
     GaussianMarkerDistances,
     diagnose_wishart,
     heldout_log_likelihood,
     wishart_log_likelihood,
 )
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec
 from ilg_toolkit.models import ConductanceModel
 
 
@@ -130,6 +132,7 @@ def test_population_holdout_matches_independent_gaussian_regression_decompositio
     assert not np.isclose(rescored.log_likelihood, actual.log_likelihood)
 
 
+@final
 class UniformConductance(ConductanceModel):
     scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)

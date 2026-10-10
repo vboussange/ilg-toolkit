@@ -12,7 +12,8 @@ def save_model(path, model: CalibratedModel) -> None:
     try:
         arrays = ArrayWriter()
         payload = encode_model(model, arrays)
-        write_archive(path, kind="model", payload=payload, arrays=arrays)
+        # Schema one uses this historical artifact tag independently of API names.
+        write_archive(path, kind="predictor", payload=payload, arrays=arrays)
     except (TypeError, KeyError, ValueError) as error:
         if isinstance(error, ArtifactError):
             raise
@@ -22,7 +23,7 @@ def save_model(path, model: CalibratedModel) -> None:
 def load_model(path) -> CalibratedModel:
     """Load without training data or caller template; refuse incomplete artifacts."""
     try:
-        with read_archive(path, expected_kind="model") as archive:
+        with read_archive(path, expected_kind="predictor") as archive:
             model = decode_model(archive.payload, archive)
             archive.finish()
             return model
