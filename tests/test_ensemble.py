@@ -8,7 +8,15 @@ import jax.numpy as jnp
 import numpy as np
 from test_mlpe_training import embedding_problem
 
-from ilg_toolkit import TrainingConfig, fit_ensemble, generate_population_folds
+from ilg_toolkit import (
+    CalibratedModel,
+    EnsembleMember,
+    FitResult,
+    TrainingConfig,
+    TrainingState,
+    fit_ensemble,
+    generate_population_folds,
+)
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
 
 
@@ -22,7 +30,15 @@ class InitializedEmbedding(EmbeddingDistanceModel):
 
 
 def model_factory(key):
-    return InitializedEmbedding(jax.random.normal(key, (2,)) * 0.1)
+    return InitializedEmbedding(log_weights=jax.random.normal(key, (2,)) * 0.1)
+
+
+def completed_fit(member: EnsembleMember) -> tuple[CalibratedModel, FitResult, TrainingState]:
+    assert member.status == "completed"
+    assert member.model is not None
+    assert member.fit_result is not None
+    assert member.fit_result.state is not None
+    return member.model, member.fit_result, member.fit_result.state
 
 
 def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_predictions():
@@ -38,28 +54,32 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
             model_factory=model_factory,
         )
         prediction = result.predict(region)
-        member_values = np.stack([member.model.predict(region).values for member in result.members])
+        fits = [completed_fit(member) for member in result.members]
+        member_values = np.stack([model.predict(region).values for model, _, _ in fits])
     assert len(result.members) == 4
     assert all(member.status == "completed" for member in result.members)
     assert len({member.identity.member_id for member in result.members}) == 4
     assert len({member.identity.effective_seed for member in result.members}) == 4
-    assert len({id(member.fit_result.state.optimizer_state) for member in result.members}) == 4
-    assert (
-        len({tuple(np.asarray(member.model.encoder.log_weights)) for member in result.members}) == 4
-    )
+    assert len({id(state.optimizer_state) for _, _, state in fits}) == 4
+    encoders = [model.encoder for model, _, _ in fits]
+    assert all(isinstance(encoder, InitializedEmbedding) for encoder in encoders)
+    weights = []
+    for encoder in encoders:
+        assert isinstance(encoder, InitializedEmbedding)
+        weights.append(tuple(np.asarray(encoder.log_weights)))
+    assert len(set(weights)) == 4
     np.testing.assert_allclose(prediction.values, member_values.mean(axis=0), atol=1e-12)
     np.testing.assert_allclose(prediction.member_spread, member_values.std(axis=0), atol=1e-12)
     np.testing.assert_array_equal(prediction.member_values, member_values)
     assert prediction.target.units == "index"
     for member in result.members:
-        assert (
-            member.fit_result.history[-1].training_loss < member.fit_result.history[0].training_loss
-        )
-        head = member.model.calibrations[region.name]
+        model, fitted, _ = completed_fit(member)
+        assert fitted.history[-1].training_loss < fitted.history[0].training_loss
+        head = model.calibrations[region.name]
         heldout = set(member.fold.held_out_units[region.name])
         assert not any(heldout & set(pair) for pair in head.calibration_pairs)
-        assert member.model.validation_pairs == {}
-        assert not any(heldout & set(pair) for pair in member.model.training_pairs[region.name])
+        assert model.validation_pairs == {}
+        assert not any(heldout & set(pair) for pair in model.training_pairs[region.name])
 
 
 def test_generated_folds_are_identity_stable_and_query_values_cannot_change_members():
@@ -106,8 +126,10 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
         np.testing.assert_array_equal(
             baseline.predict(region).values, perturbed.predict(region).values
         )
-    assert baseline.members[0].fit_result.history == perturbed.members[0].fit_result.history
-    assert baseline.members[0].model.calibrations == perturbed.members[0].model.calibrations
+    baseline_model, baseline_fit, _ = completed_fit(baseline.members[0])
+    perturbed_model, perturbed_fit, _ = completed_fit(perturbed.members[0])
+    assert baseline_fit.history == perturbed_fit.history
+    assert baseline_model.calibrations == perturbed_model.calibrations
 
 
 def test_original_scale_known_outputs_are_averaged_after_inverse_transformation():
@@ -118,16 +140,39 @@ def test_original_scale_known_outputs_are_averaged_after_inverse_transformation(
         np.array([[0, np.log(2)], [np.log(2), 0]]),
         np.array([[0, np.log(10)], [np.log(10), 0]]),
     ]
-    predictions = {
-        str(i): Prediction(np.expm1(value), ("a", "b"), target)
-        for i, value in enumerate(transformed)
-    }
-    result = aggregate_predictions(predictions, expected_member_ids=("0", "1"))
+    with jax.enable_x64():
+        predictions = {
+            str(i): Prediction(jnp.asarray(np.expm1(value)), ("a", "b"), target)
+            for i, value in enumerate(transformed)
+        }
+        result = aggregate_predictions(predictions, expected_member_ids=("0", "1"))
+    assert all(
+        isinstance(value, jax.Array) and value.dtype == jnp.float64
+        for value in (result.values, result.member_values, result.member_spread)
+    )
     np.testing.assert_allclose(result.values, [[0, 5], [5, 0]], atol=1e-14)
     np.testing.assert_allclose(result.member_spread, [[0, 4], [4, 0]], atol=1e-14)
     assert not np.allclose(result.values, np.expm1(np.mean(transformed, axis=0)))
     assert result.scale == "original"
     assert result.target == target
+
+
+def test_original_scale_aggregation_preserves_large_finite_means_and_spreads():
+    from ilg_toolkit import Prediction, TargetSpec, aggregate_predictions
+
+    with jax.enable_x64():
+        target = TargetSpec("signed synthetic measurement")
+        for levels, expected_mean, expected_spread in [
+            ((1e308, 1e308), 1e308, 0),
+            ((-1e308, 1e308), 0, 1e308),
+        ]:
+            predictions = {
+                str(i): Prediction(jnp.asarray([level]), ("a",), target)
+                for i, level in enumerate(levels)
+            }
+            result = aggregate_predictions(predictions)
+            np.testing.assert_allclose(result.values, [expected_mean], rtol=1e-14)
+            np.testing.assert_allclose(result.member_spread, [expected_spread], rtol=1e-14)
 
 
 def test_failed_members_and_missing_composition_cannot_be_silently_dropped():
@@ -160,6 +205,7 @@ def test_failed_members_and_missing_composition_cannot_be_silently_dropped():
     assert outcomes == list(result.members)
     failed = result.members[1]
     assert result.failures == {failed.identity.member_id: failed.failure}
+    assert failed.failure is not None
     assert failed.failure.stage == "initialization"
     assert failed.failure.error_type == "ArithmeticError"
     assert "deliberate" in failed.failure.message
@@ -195,10 +241,10 @@ def test_explicit_validation_retains_selection_target_access_on_every_member():
             model_factory=model_factory,
         )
     member = result.members[0]
-    assert member.status == "completed"
-    assert member.model.validation_pairs[region.name] == validation[region.name].pairs
-    assert member.fit_result.selection == "validation"
-    assert len(member.model.calibrations[region.name].calibration_pairs) == 6
+    model, fitted, _ = completed_fit(member)
+    assert model.validation_pairs[region.name] == validation[region.name].pairs
+    assert fitted.selection == "validation"
+    assert len(model.calibrations[region.name].calibration_pairs) == 6
 
 
 def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitialize():
@@ -232,6 +278,7 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
         def cannot_initialize(key):
             raise AssertionError("continuation must use checkpoint encoder")
 
+        _, _, partial_state = completed_fit(partial)
         resumed = fit_ensemble_member(
             region,
             observations,
@@ -239,16 +286,16 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
             initialization_seed=31,
             config=config,
             model_factory=cannot_initialize,
-            state=partial.fit_result.state,
+            state=partial_state,
         )
         assert resumed.status == complete.status == "completed"
+        resumed_model, resumed_fit, resumed_state = completed_fit(resumed)
+        complete_model, complete_fit, complete_state = completed_fit(complete)
         np.testing.assert_array_equal(
-            resumed.model.predict(region).values, complete.model.predict(region).values
+            resumed_model.predict(region).values, complete_model.predict(region).values
         )
-    assert resumed.fit_result.history == complete.fit_result.history
-    np.testing.assert_array_equal(
-        resumed.fit_result.state.rng_key, complete.fit_result.state.rng_key
-    )
+    assert resumed_fit.history == complete_fit.history
+    np.testing.assert_array_equal(resumed_state.rng_key, complete_state.rng_key)
 
 
 def test_incompatible_scales_and_invalid_fold_membership_fail_clearly():
@@ -265,7 +312,7 @@ def test_incompatible_scales_and_invalid_fold_membership_fail_clearly():
     )
 
     target = TargetSpec("divergence", units="index")
-    first = Prediction(np.zeros((2, 2)), ("a", "b"), target)
+    first = Prediction(jnp.zeros((2, 2)), ("a", "b"), target)
     for second in [
         replace(first, target=replace(target, units="percent")),
         replace(first, scale="model"),
@@ -303,16 +350,12 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
             model_factory=model_factory,
         )
     member = result.members[0]
-    assert member.status == "completed"
-    assert member.fit_result.region_names == ("alpine", "valley")
-    assert set(member.model.calibrations) == {"alpine", "valley"}
-    assert member.fit_result.state.raw_variances.shape == (2, 2)
-    assert member.fit_result.history[-1].training_loss < member.fit_result.history[0].training_loss
-    assert (
-        member.model.calibrations["valley"].intercept
-        - member.model.calibrations["alpine"].intercept
-        > 2
-    )
+    model, fitted, state = completed_fit(member)
+    assert fitted.region_names == ("alpine", "valley")
+    assert set(model.calibrations) == {"alpine", "valley"}
+    assert state.raw_variances is not None and state.raw_variances.shape == (2, 2)
+    assert fitted.history[-1].training_loss < fitted.history[0].training_loss
+    assert model.calibrations["valley"].intercept - model.calibrations["alpine"].intercept > 2
 
 
 @final
@@ -352,7 +395,7 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
                 {"graph": ObservationPartition("graph", (("c", "d"),), "query")},
             )
             model = CalibratedModel(
-                ConstantConductance(jnp.asarray(level)), TargetSpec("divergence"), 1
+                ConstantConductance(level=jnp.asarray(level)), TargetSpec("divergence"), 1
             )
             members.append(
                 EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
@@ -361,11 +404,15 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
         prediction = ensemble.predict(region)
         summary = ensemble.conductance_surfaces(region)
         averaged_surface_model = CalibratedModel(
-            ConstantConductance(jnp.asarray(2.5)), TargetSpec("divergence"), 1
+            ConstantConductance(level=jnp.asarray(2.5)), TargetSpec("divergence"), 1
         )
         surface_prediction = averaged_surface_model.predict(region)
     np.testing.assert_allclose(prediction.values[0, 1], 0.625, atol=1e-7)
     np.testing.assert_allclose(summary.values, 2.5, atol=1e-12)
+    assert all(
+        isinstance(value, jax.Array) and value.dtype == jnp.float64
+        for value in (summary.values, summary.member_values, summary.member_spread)
+    )
     np.testing.assert_allclose(summary.member_spread, 1.5, atol=1e-12)
     np.testing.assert_allclose(surface_prediction.values[0, 1], 0.4, atol=1e-7)
     assert not np.allclose(prediction.values, surface_prediction.values)
@@ -448,6 +495,6 @@ def test_epoch_hook_interrupts_and_member_states_continue_the_exact_ensemble():
         np.testing.assert_array_equal(
             resumed.predict(region).values, complete.predict(region).values
         )
-    assert [member.fit_result.history for member in resumed.members] == [
-        member.fit_result.history for member in complete.members
+    assert [completed_fit(member)[1].history for member in resumed.members] == [
+        completed_fit(member)[1].history for member in complete.members
     ]

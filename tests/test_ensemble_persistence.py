@@ -10,6 +10,7 @@ import jax
 import numpy as np
 import pytest
 from test_checkpoint import assert_same_state, checkpoint_problem
+from test_ensemble import completed_fit
 
 from ilg_toolkit import ArtifactError, TrainingConfig, fit_ensemble, generate_population_folds
 from ilg_toolkit.models import UNetEmbeddingDistance
@@ -92,6 +93,7 @@ def test_portable_ensemble_preserves_calibrated_members_and_descriptive_spread(t
         for original, restored in zip(ensemble.members, loaded.members, strict=True):
             assert restored.identity == original.identity
             assert restored.fold == original.fold
+            assert restored.model is not None and original.model is not None
             assert restored.model.calibrations == original.model.calibrations
             assert restored.model.training_pairs == original.model.training_pairs
             assert restored.fit_result is None
@@ -128,7 +130,6 @@ def test_real_interruption_skips_complete_and_resumes_unfinished_members(tmp_pat
     region, observations = checkpoint_problem()
     folds = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)
     config = TrainingConfig(objective="mlpe", epochs=2, learning_rate=0.002)
-    arguments = dict(folds=folds, initialization_seeds=(13, 29), config=config)
     initialized, completed = [], []
 
     def tracked(key):
@@ -140,7 +141,14 @@ def test_real_interruption_skips_complete_and_resumes_unfinished_members(tmp_pat
             raise InterruptedError("interrupt second member after saved epoch")
 
     with jax.enable_x64():
-        baseline = fit_ensemble(region, observations, model_factory=factory, **arguments)
+        baseline = fit_ensemble(
+            region,
+            observations,
+            model_factory=factory,
+            folds=folds,
+            initialization_seeds=(13, 29),
+            config=config,
+        )
         with pytest.raises(InterruptedError, match="second member"):
             fit_ensemble_run(
                 tmp_path / "run",
@@ -149,7 +157,9 @@ def test_real_interruption_skips_complete_and_resumes_unfinished_members(tmp_pat
                 model_factory=tracked,
                 on_epoch=interrupt,
                 on_member=completed.append,
-                **arguments,
+                folds=folds,
+                initialization_seeds=(13, 29),
+                config=config,
             )
         assert len(initialized) == 2
         assert len(completed) == 1
@@ -173,7 +183,7 @@ def test_real_interruption_skips_complete_and_resumes_unfinished_members(tmp_pat
             resumed.predict(region).values, baseline.predict(region).values
         )
         for actual, expected in zip(resumed.members, baseline.members, strict=True):
-            assert_same_state(actual.fit_result.state, expected.fit_result.state)
+            assert_same_state(completed_fit(actual)[2], completed_fit(expected)[2])
         epochs.clear()
         skipped = fit_ensemble_run(
             tmp_path / "run",
@@ -195,14 +205,24 @@ def test_larger_budget_continues_previously_completed_members(tmp_path):
     region, observations = checkpoint_problem()
     folds = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)
     config = TrainingConfig(objective="mlpe", epochs=1, learning_rate=0.002)
-    arguments = dict(folds=folds, initialization_seeds=(13, 29))
     with jax.enable_x64():
         fit_ensemble_run(
-            tmp_path, region, observations, config=config, model_factory=factory, **arguments
+            tmp_path,
+            region,
+            observations,
+            config=config,
+            model_factory=factory,
+            folds=folds,
+            initialization_seeds=(13, 29),
         )
         extended_config = replace(config, epochs=3)
         baseline = fit_ensemble(
-            region, observations, config=extended_config, model_factory=factory, **arguments
+            region,
+            observations,
+            config=extended_config,
+            model_factory=factory,
+            folds=folds,
+            initialization_seeds=(13, 29),
         )
         epochs = []
         extended = fit_ensemble_run(
@@ -218,7 +238,7 @@ def test_larger_budget_continues_previously_completed_members(tmp_path):
         )
         assert epochs == [(13, 2), (13, 3), (29, 2), (29, 3)]
         for actual, expected in zip(extended.members, baseline.members, strict=True):
-            assert_same_state(actual.fit_result.state, expected.fit_result.state)
+            assert_same_state(completed_fit(actual)[2], completed_fit(expected)[2])
         np.testing.assert_array_equal(
             extended.predict(region).values, baseline.predict(region).values
         )
@@ -236,19 +256,21 @@ def test_resume_checks_accessed_data_config_folds_and_composition_before_work(sa
     changed_observations = replace(observations, values=values)
     changed_region = replace(region, features=region.feature_array + 0.1)
     alternatives = [
-        (region, changed_observations, {}),
-        (changed_region, observations, {}),
-        (region, observations, {"initialization_seeds": (13, 29)}),
-        (region, observations, {"folds": (replace(folds[0], fold_id="other"),)}),
+        (region, changed_observations, None, None, None),
+        (changed_region, observations, None, None, None),
+        (region, observations, (13, 29), None, None),
+        (region, observations, None, (replace(folds[0], fold_id="other"),), None),
         (
             region,
             observations,
-            {"config": TrainingConfig(objective="mlpe", epochs=0, learning_rate=0.1)},
+            None,
+            None,
+            TrainingConfig(objective="mlpe", epochs=0, learning_rate=0.1),
         ),
     ]
     before = (directory / "run.ilg").read_bytes()
     with jax.enable_x64():
-        for prepared, observed, options in alternatives:
+        for prepared, observed, seeds, changed_folds, changed_config in alternatives:
             with pytest.raises(ArtifactError, match="configuration|composition"):
                 fit_ensemble_run(
                     directory,
@@ -256,7 +278,9 @@ def test_resume_checks_accessed_data_config_folds_and_composition_before_work(sa
                     observed,
                     resume=True,
                     model_factory=forbid_initialization,
-                    **options,
+                    initialization_seeds=seeds,
+                    folds=changed_folds,
+                    config=changed_config,
                 )
             assert (directory / "run.ilg").read_bytes() == before
         # Unaccessed query measurements do not change a training continuation.
@@ -335,7 +359,7 @@ def test_failed_members_remain_explicit_in_run_and_portable_artifact(tmp_path):
     path = tmp_path / "failed.ilg"
     save_ensemble(path, failed)
     loaded = load_ensemble(path)
-    assert len(failed.expected_member_ids) == 2
+    assert failed.expected_member_ids is not None and len(failed.expected_member_ids) == 2
     assert loaded.expected_member_ids == resumed.expected_member_ids == failed.expected_member_ids
     assert loaded.failures == resumed.failures == failed.failures
     for ensemble in (loaded, resumed):
@@ -364,7 +388,7 @@ def test_atomic_manifest_failure_retains_previous_member_generation(
         original(source, destination)
 
     with jax.enable_x64():
-        config = replace(ensemble.members[0].fit_result.state.config, epochs=1, seed=0)
+        config = replace(completed_fit(ensemble.members[0])[2].config, epochs=1, seed=0)
         baseline = fit_ensemble(
             region,
             observations,
@@ -389,7 +413,9 @@ def test_atomic_manifest_failure_retains_previous_member_generation(
         resumed = fit_ensemble_run(
             run, region, observations, resume=True, model_factory=forbid_initialization
         )
-        assert_same_state(resumed.members[0].fit_result.state, baseline.members[0].fit_result.state)
+        assert_same_state(
+            completed_fit(resumed.members[0])[2], completed_fit(baseline.members[0])[2]
+        )
 
 
 def test_pending_member_cannot_change_saved_encoder_architecture(tmp_path):

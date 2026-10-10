@@ -1,19 +1,28 @@
-"""Independent population-holdout fits and calibrated deployment prediction."""
+"""Independent population-holdout fitting, deployment and saved ensemble runs."""
 
 import hashlib
 import json
+import re
+import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from numbers import Integral
+from pathlib import Path
+from typing import Literal, overload
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
+from ._archive import ArrayWriter, ArtifactError, read_archive, require_fields, write_archive
+from ._codecs import decode_model, decode_training_config, encode_model
+from .checkpoint import load_checkpoint, save_checkpoint
 from .config import TrainingConfig
 from .data import ObservationPartition, RegionBatch, TargetSpec
+from .model import CalibratedModel, Prediction
 from .models import ConductanceModel, EmbeddingDistanceModel
-from .model import Prediction, CalibratedModel
-from .training import FitResult, TrainingState, _normalize_inputs, fit
+from .persistence import load_model, save_model
+from .training import FitResult, TrainingState, _fit_data_identity, _normalize_inputs, fit
 
 
 @dataclass(frozen=True)
@@ -119,6 +128,7 @@ def generate_population_folds(
         held_out, training, query = {}, {}, {}
         fold_id = f"fold-{index:04d}"
         for prepared, observed, _ in inputs:
+            assert prepared.sampling_unit_kinds is not None
             if any(kind != "population" for kind in prepared.sampling_unit_kinds):
                 raise ValueError("Population holdout generation requires population sampling units")
             observed.aligned_pairs(prepared)
@@ -221,12 +231,12 @@ class EnsembleMember:
 class EnsemblePrediction:
     """Equal-weight original-scale means and descriptive population SD (ddof=0)."""
 
-    values: np.ndarray
+    values: jax.Array
     sampling_unit_ids: tuple[str, ...]
     target: TargetSpec
     member_ids: tuple[str, ...]
-    member_values: np.ndarray
-    member_spread: np.ndarray
+    member_values: jax.Array
+    member_spread: jax.Array
     scale: str = "original"
 
 
@@ -234,13 +244,14 @@ class EnsemblePrediction:
 class EnsembleSurface:
     """Descriptive conductance summaries; no resistance is solved from this mean."""
 
-    values: np.ndarray
+    values: jax.Array
     member_ids: tuple[str, ...]
-    member_values: np.ndarray
-    member_spread: np.ndarray
+    member_values: jax.Array
+    member_spread: jax.Array
     region_name: str
 
 
+@jax.enable_x64()
 def aggregate_predictions(
     predictions: Mapping[str, Prediction],
     *,
@@ -262,14 +273,11 @@ def aggregate_predictions(
             raise ValueError("Ensemble predictions require compatible original target scales")
         if prediction.sampling_unit_ids != first.sampling_unit_ids:
             raise ValueError("Ensemble predictions must align sampling-unit identities and order")
-        member_values = np.asarray(prediction.values)
-        if (
-            member_values.shape != np.asarray(first.values).shape
-            or not np.isfinite(member_values).all()
-        ):
+        member_values = jnp.asarray(prediction.values, dtype=jnp.float64)
+        if member_values.shape != first.values.shape or not bool(jnp.isfinite(member_values).all()):
             raise ValueError("Ensemble member predictions must have aligned finite values")
         values.append(member_values)
-    stacked = np.stack(values)
+    stacked = jnp.stack(values)
     mean, spread = _summarize_members(stacked)
     return EnsemblePrediction(
         mean,
@@ -281,15 +289,20 @@ def aggregate_predictions(
     )
 
 
-def _summarize_members(values):
-    values = np.asarray(values, dtype=np.float64)
+@jax.jit
+def _member_moments(values):
     # Divide before summing and scale before squaring to avoid avoidable overflow
     # when individual original-scale predictions are large but finite.
-    mean = np.sum(values / len(values), axis=0)
-    scale = np.max(np.abs(values), axis=0)
-    normalized = values / np.where(scale > 0, scale, 1)
-    spread = np.std(normalized, axis=0, ddof=0) * scale
-    if not np.isfinite(mean).all() or not np.isfinite(spread).all():
+    mean = jnp.sum(values / len(values), axis=0)
+    scale = jnp.max(jnp.abs(values), axis=0)
+    normalized = values / jnp.where(scale > 0, scale, 1)
+    return mean, jnp.std(normalized, axis=0, ddof=0) * scale
+
+
+@jax.enable_x64()
+def _summarize_members(values):
+    mean, spread = _member_moments(jnp.asarray(values, dtype=jnp.float64))
+    if not bool(jnp.isfinite(mean).all() & jnp.isfinite(spread).all()):
         raise FloatingPointError("Ensemble mean or descriptive spread is nonfinite")
     return mean, spread
 
@@ -314,7 +327,12 @@ class Ensemble:
             raise ValueError(
                 "Missing, extra or duplicate ensemble members; composition cannot shrink"
             )
-        completed = [member.model for member in members if member.status == "completed"]
+        completed = []
+        for member in members:
+            if member.status == "completed":
+                if member.model is None:
+                    raise ValueError("A completed member requires a model")
+                completed.append(member.model)
         if completed:
             first = completed[0]
             if any(
@@ -343,23 +361,27 @@ class Ensemble:
         ]
         if unavailable:
             raise RuntimeError("Ensemble has unavailable members: " + ", ".join(unavailable))
-        return {member.identity.member_id: member.model for member in self.members}
+        models = {}
+        for member in self.members:
+            if member.model is None:
+                raise ValueError("A completed member requires a model")
+            models[member.identity.member_id] = member.model
+        return models
 
     def predict(self, region: RegionBatch) -> EnsemblePrediction:
         """Deployment marginal means, without query targets or eligibility filtering."""
         models = self._completed()
-        predictions = {
-            member_id: model.predict(region) for member_id, model in models.items()
-        }
+        predictions = {member_id: model.predict(region) for member_id, model in models.items()}
         return aggregate_predictions(predictions, expected_member_ids=self.expected_member_ids)
 
-    def landscape_scores(self, region: RegionBatch) -> dict[str, np.ndarray]:
+    def landscape_scores(self, region: RegionBatch) -> dict[str, jax.Array]:
         """Return each member's raw scores separately; their scales can differ."""
         return {
             member_id: model.landscape_scores(region)
             for member_id, model in self._completed().items()
         }
 
+    @jax.enable_x64()
     def conductance_surfaces(self, region: RegionBatch) -> EnsembleSurface:
         """Return an explicitly descriptive surface mean, separate from genetic means."""
         surfaces = {
@@ -367,7 +389,10 @@ class Ensemble:
             for member_id, model in self._completed().items()
         }
         ids = self.expected_member_ids
-        stacked = np.stack([surfaces[member_id] for member_id in ids])
+        assert ids is not None
+        stacked = jnp.stack(
+            [jnp.asarray(surfaces[member_id], dtype=jnp.float64) for member_id in ids]
+        )
         mean, spread = _summarize_members(stacked)
         return EnsembleSurface(mean, ids, stacked, spread, region.name)
 
@@ -384,6 +409,7 @@ def _fold_inputs(region, observations, fold):
     if set(fold.held_out_units) != {prepared.name for prepared, _, _ in inputs}:
         raise ValueError("Fold region identities must match all supplied regions")
     for prepared, observed, partition in inputs:
+        assert prepared.sampling_unit_kinds is not None
         if any(kind != "population" for kind in prepared.sampling_unit_kinds):
             raise ValueError("Population folds require population sampling units")
         if not set(fold.held_out_units[prepared.name]).issubset(prepared.sampling_unit_ids):
@@ -416,7 +442,8 @@ def fit_ensemble_member(
     inputs = _fold_inputs(region, observations, fold)
     identity = ensemble_member_identity(fold.fold_id, initialization_seed)
     config = replace(
-        config or (state.config if state is not None else TrainingConfig()), seed=identity.effective_seed
+        config or (state.config if state is not None else TrainingConfig()),
+        seed=identity.effective_seed,
     )
     regions = {prepared.name: prepared for prepared, _, _ in inputs}
     observed = {prepared.name: values for prepared, values, _ in inputs}
@@ -426,32 +453,34 @@ def fit_ensemble_member(
             {name: regions[name] for name in fold.validation},
             {name: observed[name] for name in fold.validation},
         )
-    options = dict(
-        config=config,
-        partition=fold.training,
-        validation=validation,
-        validation_partition=fold.validation if fold.validation else None,
-    )
-    if on_epoch is not None:
 
-        def progress(current):
-            try:
-                on_epoch(identity, current)
-            except Exception as error:
-                raise _ProgressFailure(error) from error
+    def progress(current: TrainingState):
+        assert on_epoch is not None
+        try:
+            on_epoch(identity, current)
+        except Exception as error:
+            raise _ProgressFailure(error) from error
 
-        options["on_epoch"] = progress
     stage = "initialization"
     try:
-        if state is not None:
-            options["state"] = state
-        elif model_factory is not None:
+        model = None
+        if state is None and model_factory is not None:
             init_key, _ = jax.random.split(jax.random.PRNGKey(identity.effective_seed))
-            options["model"] = model_factory(init_key)
-            if not isinstance(options["model"], (ConductanceModel, EmbeddingDistanceModel)):
+            model = model_factory(init_key)
+            if not isinstance(model, (ConductanceModel, EmbeddingDistanceModel)):
                 raise TypeError("model_factory must return a distance or conductance encoder")
         stage = "fit"
-        result = fit(regions, observed, **options)
+        result = fit(
+            regions,
+            observed,
+            model=model,
+            config=config,
+            partition=fold.training,
+            validation=validation,
+            validation_partition=fold.validation if fold.validation else None,
+            state=state,
+            on_epoch=progress if on_epoch is not None else None,
+        )
     except _ProgressFailure as failure:
         raise failure.error from failure
     except Exception as error:
@@ -565,21 +594,6 @@ def fit_ensemble(
                 on_member(member)
     return Ensemble(tuple(members), tuple(identity.member_id for identity in identities))
 
-import hashlib
-import json
-import re
-import uuid
-from dataclasses import asdict, replace
-from pathlib import Path
-
-import numpy as np
-
-from ._archive import ArrayWriter, ArtifactError, read_archive, require_fields, write_archive
-from ._codecs import decode_model, decode_training_config, encode_model
-from .checkpoint import load_checkpoint, save_checkpoint
-from .data import ObservationPartition
-from .persistence import load_model, save_model
-from .training import FitResult, _fit_data_identity
 
 def _identity(record):
     require_fields(
@@ -755,7 +769,19 @@ def _reference(directory, member_id, value, kind):
     return {"file": path.name, "sha256": _file_hash(path), "kind": kind}
 
 
-def _load_reference(directory, member_id, reference, kind):
+@overload
+def _load_reference(
+    directory, member_id, reference, kind: Literal["training_checkpoint"]
+) -> TrainingState: ...
+
+
+@overload
+def _load_reference(
+    directory, member_id, reference, kind: Literal["predictor"]
+) -> CalibratedModel: ...
+
+
+def _load_reference(directory, member_id, reference, kind: str) -> TrainingState | CalibratedModel:
     path = _member_path(directory, member_id, reference)
     if reference["kind"] != kind or not path.is_file():
         raise ArtifactError(f"Member {member_id}: missing or incompatible {kind} artifact")
@@ -904,6 +930,8 @@ def _saved_member(directory, record, run, config):
             )
     if record["status"] == "completed":
         model = _load_reference(directory, identity.member_id, record["predictor"], "predictor")
+        if state is None:
+            raise ArtifactError(f"Member {identity.member_id}: completed checkpoint is missing")
         if state.epoch != decode_training_config(run["config"]).epochs:
             raise ArtifactError(
                 f"Member {identity.member_id}: completed progress does not match saved budget"
@@ -917,7 +945,9 @@ def _saved_member(directory, record, run, config):
     return identity, fold, state, model
 
 
-def _completed_member(identity, fold, model, state):
+def _completed_member(
+    identity: MemberIdentity, fold: PopulationFold, model: CalibratedModel, state: TrainingState
+) -> EnsembleMember:
     result = FitResult(
         model, state.history, state.selected_epoch, state.selection, state.region_names, state
     )
@@ -925,21 +955,21 @@ def _completed_member(identity, fold, model, state):
 
 
 def fit_ensemble_run(
-    directory,
+    directory: str | Path,
     region,
     observations,
     *,
-    folds=None,
-    n_folds=None,
-    holdout_size=None,
-    fold_seed=0,
-    query_regime="both_unseen",
-    initialization_seeds=None,
-    config=None,
-    model_factory=None,
-    resume=False,
-    on_epoch=None,
-    on_member=None,
+    folds: Sequence[PopulationFold] | None = None,
+    n_folds: int | None = None,
+    holdout_size: int | Mapping[str, int] | None = None,
+    fold_seed: int = 0,
+    query_regime: str = "both_unseen",
+    initialization_seeds: Sequence[int] | None = None,
+    config: TrainingConfig | None = None,
+    model_factory: Callable[[jax.Array], ConductanceModel | EmbeddingDistanceModel] | None = None,
+    resume: bool = False,
+    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
+    on_member: Callable[[EnsembleMember], None] | None = None,
 ) -> Ensemble:
     """Fit a durable sequential run, skipping compatible members already at budget.
 
@@ -1060,6 +1090,8 @@ def fit_ensemble_run(
                 identity, fold, "failed", failure=_failure(member_record["failure"])
             )
         elif member_record["status"] == "completed":
+            if model is None or state is None:
+                raise ArtifactError(f"Member {identity.member_id}: completed artifacts are missing")
             member = _completed_member(identity, fold, model, state)
         else:
 
@@ -1094,16 +1126,26 @@ def fit_ensemble_run(
                 on_epoch=progress,
             )
             if member.status == "completed":
+                if (
+                    member.fit_result is None
+                    or member.fit_result.state is None
+                    or member.model is None
+                ):
+                    raise ArtifactError(
+                        f"Member {identity.member_id}: completed fit state is missing"
+                    )
                 # Zero-update finalization can occur after interruption of final publication.
                 if member_record["checkpoint"] is None:
                     progress(identity, member.fit_result.state)
                 model_reference = _reference(
                     directory, identity.member_id, member.model, "predictor"
                 )
-                member_record.update(
-                    status="completed", predictor=model_reference, failure=None
-                )
+                member_record.update(status="completed", predictor=model_reference, failure=None)
             else:
+                if member.failure is None:
+                    raise ArtifactError(
+                        f"Member {identity.member_id}: failure diagnostics are missing"
+                    )
                 member_record.update(
                     status="failed", failure=asdict(member.failure), predictor=None
                 )
