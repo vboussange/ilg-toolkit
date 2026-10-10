@@ -22,7 +22,14 @@ from .data import ObservationPartition, RegionBatch, TargetSpec
 from .model import CalibratedModel, Prediction
 from .models import ConductanceModel, EmbeddingDistanceModel
 from .persistence import load_model, save_model
-from .training import FitResult, TrainingState, _fit_data_identity, _normalize_inputs, fit
+from .training import (
+    FitResult,
+    TrainingState,
+    _fit_data_identity,
+    _normalize_inputs,
+    _RegionalInput,
+    fit,
+)
 
 
 @dataclass(frozen=True)
@@ -143,7 +150,7 @@ def generate_population_folds(
             rng = np.random.default_rng(_seed("ilg-holdout-v1", seed, index, prepared.name))
             selected = set(rng.choice(labels, size=size, replace=False).tolist())
             held_out[prepared.name] = tuple(sorted(selected))
-            pairs = tuple(sorted(tuple(sorted(pair)) for pair in observed.observed_pairs))
+            pairs = tuple(sorted((min(a, b), max(a, b)) for a, b in observed.observed_pairs))
             train_pairs = tuple(pair for pair in pairs if not selected.intersection(pair))
             threshold = 2 if query_regime == "both_unseen" else 1
             query_pairs = tuple(
@@ -291,12 +298,13 @@ def aggregate_predictions(
 
 @jax.jit
 def _member_moments(values):
-    # Divide before summing and scale before squaring to avoid avoidable overflow
-    # when individual original-scale predictions are large but finite.
+    # Divide before summing and scale before squaring to avoid avoidable overflow.
+    # Binary exponents avoid the underflowed reciprocal of a very large scale
+    # in XLA's division lowering (which would silently erase member spread).
     mean = jnp.sum(values / len(values), axis=0)
-    scale = jnp.max(jnp.abs(values), axis=0)
-    normalized = values / jnp.where(scale > 0, scale, 1)
-    return mean, jnp.std(normalized, axis=0, ddof=0) * scale
+    _, exponent = jnp.frexp(jnp.max(jnp.abs(values), axis=0))
+    normalized = jnp.ldexp(values, -exponent)
+    return mean, jnp.ldexp(jnp.std(normalized, axis=0, ddof=0), exponent)
 
 
 @jax.enable_x64()
@@ -894,7 +902,7 @@ def _compatible_config(old, new):
 def _data_identity(region, observations, fold):
     inputs = _fold_inputs(region, observations, fold)
     validation = tuple(
-        (prepared, observed, fold.validation[prepared.name])
+        _RegionalInput(prepared, observed, fold.validation[prepared.name])
         for prepared, observed, _ in inputs
         if prepared.name in fold.validation
     )

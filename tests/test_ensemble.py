@@ -167,12 +167,16 @@ def test_original_scale_aggregation_preserves_large_finite_means_and_spreads():
             ((-1e308, 1e308), 0, 1e308),
         ]:
             predictions = {
-                str(i): Prediction(jnp.asarray([level]), ("a",), target)
+                str(i): Prediction(jnp.asarray([[0, level], [level, 0]]), ("a", "b"), target)
                 for i, level in enumerate(levels)
             }
             result = aggregate_predictions(predictions)
-            np.testing.assert_allclose(result.values, [expected_mean], rtol=1e-14)
-            np.testing.assert_allclose(result.member_spread, [expected_spread], rtol=1e-14)
+            np.testing.assert_allclose(
+                result.values, [[0, expected_mean], [expected_mean, 0]], rtol=1e-14
+            )
+            np.testing.assert_allclose(
+                result.member_spread, [[0, expected_spread], [expected_spread, 0]], rtol=1e-14
+            )
 
 
 def test_failed_members_and_missing_composition_cannot_be_silently_dropped():
