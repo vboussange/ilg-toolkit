@@ -58,6 +58,11 @@ def saved_run(tmp_path_factory):
             config=TrainingConfig(objective="mlpe", epochs=0),
             model_factory=factory,
         )
+    record = manifest(directory / "run.ilg")
+    assert record["schema"] == record["payload"]["run_version"] == 1
+    member = record["payload"]["members"][0]
+    assert "model" not in member
+    assert member["predictor"]["kind"] == "predictor"
     return directory, region, observations, folds, ensemble
 
 
@@ -90,6 +95,31 @@ def test_portable_ensemble_preserves_calibrated_members_and_descriptive_spread(t
             assert restored.model.calibrations == original.model.calibrations
             assert restored.model.training_pairs == original.model.training_pairs
             assert restored.fit_result is None
+
+
+def test_ensemble_retains_schema_one_predictor_fields(saved_run, tmp_path):
+    from ilg_toolkit import load_ensemble, save_ensemble
+
+    _, region, _, _, ensemble = saved_run
+    path = tmp_path / "schema-one-ensemble.ilg"
+    with jax.enable_x64():
+        save_ensemble(path, ensemble)
+        assert "predictor" in manifest(path)["payload"]["members"][0]
+        # Disk field names are independent of the canonical Python model API.
+        alter_manifest(
+            path,
+            lambda payload: [
+                member.update(predictor=member.pop("model", member.get("predictor")))
+                for member in payload["members"]
+            ],
+        )
+        loaded = load_ensemble(path)
+        np.testing.assert_array_equal(
+            loaded.predict(region).values, ensemble.predict(region).values
+        )
+    record = manifest(path)
+    assert record["schema"] == record["payload"]["ensemble_version"] == 1
+    assert "predictor" in record["payload"]["members"][0]
 
 
 def test_real_interruption_skips_complete_and_resumes_unfinished_members(tmp_path):
@@ -408,6 +438,6 @@ def test_portable_artifact_rejects_missing_or_incompatible_member(saved_run, tmp
         if damage == "missing":
             alter_manifest(path, lambda payload: payload.update(members=[]))
         else:
-            alter_manifest(path, lambda payload: payload["members"][0].update(model=None))
+            alter_manifest(path, lambda payload: payload["members"][0].update(predictor=None))
         with jax.enable_x64(), pytest.raises(ArtifactError, match="composition|model"):
             load_ensemble(path)

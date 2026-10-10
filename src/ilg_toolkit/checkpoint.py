@@ -2,6 +2,7 @@
 
 from dataclasses import asdict
 from importlib.metadata import version
+from typing import cast
 
 import equinox as eqx
 import jax
@@ -10,8 +11,14 @@ import numpy as np
 import optax
 
 from ._archive import ArrayWriter, ArtifactError, read_archive, runtime_versions, write_archive
-from ._codecs import decode_model, decode_tree_leaves, encode_model, encode_tree_leaves
-from .config import ResistanceSolverConfig, TrainingConfig
+from ._codecs import (
+    decode_model,
+    decode_training_config,
+    decode_tree_leaves,
+    encode_model,
+    encode_tree_leaves,
+)
+from .config import TrainingConfig
 from .training import EpochRecord, TrainingState
 
 
@@ -21,7 +28,7 @@ def _runtime():
         "lineax": version("lineax"),
         "backend": jax.default_backend(),
         "devices": [device.device_kind for device in jax.devices()],
-        "x64": jax.config.x64_enabled,
+        "x64": jax.config.read("jax_enable_x64"),
     }
 
 
@@ -41,7 +48,7 @@ def _validate_state(state):
         or not 0 <= state.selected_epoch <= state.epoch
     ):
         raise ArtifactError("Checkpoint has inconsistent epoch/step/selection progress")
-    names = state.region_names
+    names = cast(object, state.region_names)
     if (
         not isinstance(names, tuple)
         or not names
@@ -49,10 +56,11 @@ def _validate_state(state):
         or names != tuple(sorted(set(names)))
     ):
         raise ArtifactError("Checkpoint region identities must be unique and sorted")
+    data_identity = cast(object, state.data_identity)
     if (
-        not isinstance(state.data_identity, str)
-        or len(state.data_identity) != 64
-        or any(c not in "0123456789abcdef" for c in state.data_identity)
+        not isinstance(data_identity, str)
+        or len(data_identity) != 64
+        or any(c not in "0123456789abcdef" for c in data_identity)
     ):
         raise ArtifactError("Checkpoint has invalid data identity")
     if state.schedule_state != {"kind": "fixed", "learning_rate": state.config.learning_rate}:
@@ -206,9 +214,7 @@ def load_checkpoint(path) -> TrainingState:
                     "Checkpoint continuation runtime differs: use the saved numerical library "
                     "versions, device/backend and JAX x64 setting"
                 )
-            config_record = dict(record["config"])
-            config_record["solver"] = ResistanceSolverConfig(**config_record["solver"])
-            config = TrainingConfig(**config_record)
+            config = decode_training_config(record["config"])
             latest = decode_model(record["latest_predictor"], archive)
             best = decode_model(record["best_predictor"], archive)
             raw = (

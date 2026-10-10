@@ -575,9 +575,8 @@ from pathlib import Path
 import numpy as np
 
 from ._archive import ArrayWriter, ArtifactError, read_archive, require_fields, write_archive
-from ._codecs import decode_model, encode_model
+from ._codecs import decode_model, decode_training_config, encode_model
 from .checkpoint import load_checkpoint, save_checkpoint
-from .config import TrainingConfig, ResistanceSolverConfig
 from .data import ObservationPartition
 from .persistence import load_model, save_model
 from .training import FitResult, _fit_data_identity
@@ -640,7 +639,7 @@ def save_ensemble(path, ensemble: Ensemble) -> None:
         records = []
         for member in ensemble.members:
             record = _member_metadata(member)
-            record["model"] = (
+            record["predictor"] = (
                 encode_model(member.model, arrays) if member.status == "completed" else None
             )
             records.append(record)
@@ -675,12 +674,12 @@ def load_ensemble(path) -> Ensemble:
             members = []
             for saved in record["members"]:
                 require_fields(
-                    saved, {"identity", "fold", "status", "failure", "model"}, "Ensemble member"
+                    saved, {"identity", "fold", "status", "failure", "predictor"}, "Ensemble member"
                 )
                 model = (
                     None
-                    if saved["model"] is None
-                    else decode_model(saved["model"], archive)
+                    if saved["predictor"] is None
+                    else decode_model(saved["predictor"], archive)
                 )
                 members.append(
                     EnsembleMember(
@@ -802,7 +801,7 @@ def _read_run(directory):
                     "failure",
                     "data_identity",
                     "checkpoint",
-                    "model",
+                    "predictor",
                     "epoch",
                 },
                 "Run member",
@@ -814,7 +813,7 @@ def _read_run(directory):
             status, checkpoint, model = (
                 member["status"],
                 member["checkpoint"],
-                member["model"],
+                member["predictor"],
             )
             if status not in {"pending", "running", "completed", "failed"}:
                 raise ArtifactError("Run member status is invalid")
@@ -854,14 +853,6 @@ def _read_run(directory):
             raise ArtifactError("Ensemble run is missing its architecture contract")
         archive.finish()
         return record
-
-
-def _config(record):
-    require_fields(record, set(TrainingConfig.__dataclass_fields__), "Run fit config")
-    values = dict(record)
-    require_fields(values["solver"], set(ResistanceSolverConfig.__dataclass_fields__), "Run solver config")
-    values["solver"] = ResistanceSolverConfig(**values["solver"])
-    return TrainingConfig(**values)
 
 
 def _compatible_config(old, new):
@@ -912,8 +903,8 @@ def _saved_member(directory, record, run, config):
                 f"Member {identity.member_id}: checkpoint data, progress or model contract differs"
             )
     if record["status"] == "completed":
-        model = _load_reference(directory, identity.member_id, record["model"], "model")
-        if state.epoch != _config(run["config"]).epochs:
+        model = _load_reference(directory, identity.member_id, record["predictor"], "predictor")
+        if state.epoch != decode_training_config(run["config"]).epochs:
             raise ArtifactError(
                 f"Member {identity.member_id}: completed progress does not match saved budget"
             )
@@ -968,7 +959,7 @@ def fit_ensemble_run(
     try:
         saved = _read_run(directory) if resume else None
         if saved is not None:
-            previous = _config(saved["config"])
+            previous = decode_training_config(saved["config"])
             config = config or previous
             _compatible_config(previous, config)
             if folds is None and n_folds is None and holdout_size is None:
@@ -1014,7 +1005,7 @@ def fit_ensemble_run(
                 "failure": None,
                 "data_identity": _data_identity(region, observations, fold),
                 "checkpoint": None,
-                "model": None,
+                "predictor": None,
                 "epoch": None,
             }
             for fold, identity in jobs
@@ -1040,7 +1031,7 @@ def fit_ensemble_run(
             record["config"] = asdict(config)
             for member in record["members"]:
                 if member["status"] == "completed" and member["epoch"] < config.epochs:
-                    member["status"], member["model"] = "running", None
+                    member["status"], member["predictor"] = "running", None
         else:
             record = {
                 "run_version": 1,
@@ -1085,7 +1076,7 @@ def fit_ensemble_run(
                 member_record.update(
                     status="running",
                     checkpoint=checkpoint,
-                    model=None,
+                    predictor=None,
                     epoch=current_state.epoch,
                 )
                 _publish(directory, record)
@@ -1107,14 +1098,14 @@ def fit_ensemble_run(
                 if member_record["checkpoint"] is None:
                     progress(identity, member.fit_result.state)
                 model_reference = _reference(
-                    directory, identity.member_id, member.model, "model"
+                    directory, identity.member_id, member.model, "predictor"
                 )
                 member_record.update(
-                    status="completed", model=model_reference, failure=None
+                    status="completed", predictor=model_reference, failure=None
                 )
             else:
                 member_record.update(
-                    status="failed", failure=asdict(member.failure), model=None
+                    status="failed", failure=asdict(member.failure), predictor=None
                 )
             _publish(directory, record)
         outcomes.append(member)

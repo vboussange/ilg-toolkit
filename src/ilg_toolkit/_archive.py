@@ -46,7 +46,7 @@ class ArrayWriter:
     """Collect numbered numeric payloads without serializing arbitrary objects."""
 
     def __init__(self):
-        self.values = {}
+        self.values: dict[str, np.ndarray] = {}
 
     def add(self, value):
         name = f"arrays/{len(self.values):06d}.npy"
@@ -56,17 +56,7 @@ class ArrayWriter:
 
 def write_archive(path, *, kind, payload, arrays):
     """Atomically replace one complete archive; failures retain the prior file."""
-    encoded, table = {}, {}
-    for name, array in arrays.values.items():
-        buffer = io.BytesIO()
-        np.save(buffer, array, allow_pickle=False)
-        data = buffer.getvalue()
-        encoded[name] = data
-        table[name] = {
-            "shape": list(array.shape),
-            "dtype": array.dtype.str,
-            "sha256": hashlib.sha256(data).hexdigest(),
-        }
+    table = {}
     manifest = {
         "format": "ilg-toolkit",
         "schema": 1,
@@ -75,10 +65,6 @@ def write_archive(path, *, kind, payload, arrays):
         "payload": payload,
         "arrays": table,
     }
-    try:
-        content = json.dumps(manifest, allow_nan=False, sort_keys=True).encode("utf-8")
-    except (TypeError, ValueError) as error:
-        raise ArtifactError("Artifact metadata must be finite standard JSON") from error
     destination = Path(path)
     temporary = None
     try:
@@ -87,9 +73,23 @@ def write_archive(path, *, kind, payload, arrays):
         )
         with os.fdopen(descriptor, "w+b") as stream:
             with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.writestr("manifest.json", content)
-                for name, data in encoded.items():
+                # Serialize one numeric array at a time; retaining a second copy
+                # of every encoded payload is unnecessary for atomic publication.
+                for name, array in arrays.values.items():
+                    buffer = io.BytesIO()
+                    np.save(buffer, array, allow_pickle=False)
+                    data = buffer.getvalue()
                     archive.writestr(name, data)
+                    table[name] = {
+                        "shape": list(array.shape),
+                        "dtype": array.dtype.str,
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                    }
+                try:
+                    content = json.dumps(manifest, allow_nan=False, sort_keys=True).encode("utf-8")
+                except (TypeError, ValueError) as error:
+                    raise ArtifactError("Artifact metadata must be finite standard JSON") from error
+                archive.writestr("manifest.json", content)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, destination)
@@ -122,9 +122,9 @@ class ArchiveReader:
     """Context-managed strict manifest and lazy checked numeric payload reader."""
 
     def __init__(self, path, expected_kind):
-        self._zip = None
+        opened = None
         try:
-            self._zip = zipfile.ZipFile(path)
+            self._zip = opened = zipfile.ZipFile(path)
             names = self._zip.namelist()
             if len(names) != len(set(names)):
                 raise ArtifactError("Archive contains duplicate entry names")
@@ -191,8 +191,8 @@ class ArchiveReader:
                 if not expected <= self._zip.getinfo(name).file_size <= expected + 65536:
                     raise ArtifactError("Numeric payload size does not match declared shape")
         except Exception as error:
-            if self._zip is not None:
-                self._zip.close()
+            if opened is not None:
+                opened.close()
             if isinstance(error, ArtifactError):
                 raise
             raise ArtifactError(f"Cannot read artifact: {error}") from error
