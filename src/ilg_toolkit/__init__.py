@@ -29,6 +29,7 @@ from .evaluation import (
     predict_out_of_fold,
     score_out_of_fold,
 )
+from .ibd import IBDModel
 from .mlpe import (
     MLPEConditionalPrediction,
     MLPEConfig,
@@ -46,6 +47,7 @@ from .model import PairPrediction, Prediction, CalibratedModel
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
+    "IBDModel",
     "fit_ensemble_run",
     "load_ensemble",
     "save_ensemble",
