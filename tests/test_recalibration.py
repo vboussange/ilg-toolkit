@@ -24,11 +24,16 @@ class ScalarEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
 
+    def __init__(self, weight: jax.Array):
+        self.weight = weight
+
     def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
         return features[..., :1] * self.weight
 
 
-def problem(name="original"):
+def problem(
+    name: str = "original",
+) -> tuple[RegionBatch, PairwiseObservations, ObservationPartition, ObservationPartition]:
     coordinates = np.array([0, 0.2, 0.8, 1.1, 1.9, 2.8])
     features = np.stack((coordinates, coordinates * 0.1 + 1), axis=-1).reshape(2, 3, 2)
     ids = tuple(f"population-{index}" for index in range(6))
@@ -169,6 +174,7 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
         config=TrainingConfig(epochs=0),
         partition=training,
     ).model
+    assert region.feature_names is not None
     with pytest.raises(ValueError, match="feature contract"):
         recalibrate(
             model,

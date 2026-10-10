@@ -3,7 +3,7 @@
 import jax
 import numpy as np
 
-from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 
@@ -38,7 +38,10 @@ model = UNetEmbeddingDistance(
     2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4)
 )
 result = fit(
-    regions, observations, model=model, config=TrainingConfig(epochs=10, learning_rate=0.001, seed=4)
+    regions,
+    observations,
+    model=model,
+    config=TrainingConfig(epochs=10, learning_rate=0.001, seed=4),
 )
 print("Selected shared encoder at epoch", result.selected_epoch)
 print("Per-region training objectives:", result.history[-1].training_by_region)

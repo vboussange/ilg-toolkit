@@ -1,0 +1,42 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: "true"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install toolkit and declared development dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Check formatting
+        run: ruff format --check .
+      - name: Lint
+        run: ruff check .
+      - name: Check types
+        run: pyright
+      - name: Test public workflows and installed wheel
+        run: pytest
+      - name: Run synthetic examples and research reference
+        run: |
+          for example in examples/*.py; do python "$example"; done
+          python -m experiments.wishart
+      - name: Build source distribution and wheel
+        run: python -m build

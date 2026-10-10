@@ -32,9 +32,7 @@ def recalibrate(
     """
     model._validate_region(region)
     if observations.target != model.target:
-        raise ValueError(
-            "Calibration target meaning, transform, and units must match the model"
-        )
+        raise ValueError("Calibration target meaning, transform, and units must match the model")
     observations.aligned_pairs(region)
     if partitions is None:
         pairs = model.training_pairs.get(region.name)
@@ -56,7 +54,9 @@ def recalibrate(
     if region.name not in model.training_pairs and model.feature_names is None:
         raise ValueError("Transferring calibration to a new region requires declared feature_names")
     roles = {}
-    kinds = dict(zip(region.sampling_unit_ids, region.sampling_unit_kinds, strict=True))
+    sampling_kinds = region.sampling_unit_kinds
+    assert sampling_kinds is not None  # RegionBatch normalizes optional constructor input.
+    kinds = dict(zip(region.sampling_unit_ids, sampling_kinds, strict=True))
     for partition in partitions:
         if not isinstance(partition, ObservationPartition):
             raise ValueError("Calibration selections must be ObservationPartition inputs")

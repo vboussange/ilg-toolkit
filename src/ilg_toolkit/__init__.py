@@ -2,7 +2,7 @@
 
 from .calibration import recalibrate
 from .checkpoint import load_checkpoint, save_checkpoint
-from .config import TrainingConfig, ResistanceSolverConfig
+from .config import ResistanceSolverConfig, TrainingConfig
 from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
 from .ensemble import (
     Ensemble,
@@ -16,9 +16,11 @@ from .ensemble import (
     ensemble_member_identity,
     fit_ensemble,
     fit_ensemble_member,
+    fit_ensemble_run,
     generate_population_folds,
+    load_ensemble,
+    save_ensemble,
 )
-from .ensemble import fit_ensemble_run, load_ensemble, save_ensemble
 from .evaluation import (
     EvaluationAccess,
     EvaluationRegime,
@@ -42,8 +44,8 @@ from .mlpe import (
     condition_on_support,
     predict_known_effects,
 )
+from .model import CalibratedModel, PairPrediction, Prediction
 from .persistence import ArtifactError, load_model, save_model
-from .model import PairPrediction, Prediction, CalibratedModel
 from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [

@@ -3,9 +3,17 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
+from .data import (
+    ObservationPartition,
+    PairwiseObservations,
+    RegionBatch,
+    TargetSpec,
+    _target_array,
+)
 from .ensemble import Ensemble, MemberFailure, _summarize_members
 from .training import _normalize_inputs
 
@@ -77,15 +85,17 @@ class OOFPrediction:
     Member SD is descriptive in original target units. Conditional member
     variances are retained separately on the transformed model scale; they do
     not include encoder, fixed-coefficient or variance-parameter uncertainty.
+    Numerical results are float64 JAX arrays. Coverage and target-access metadata
+    remain on the host.
     """
 
     keys: tuple[tuple[str, tuple[str, str]], ...]
-    values: np.ndarray
+    values: jax.Array
     target: TargetSpec
     regime: EvaluationRegime
     member_ids: tuple[str, ...]
-    member_values: np.ndarray
-    member_spread: np.ndarray
+    member_values: jax.Array
+    member_spread: jax.Array
     eligible_counts: np.ndarray
     covered_mask: np.ndarray
     exclusion_reasons: dict[str, tuple[str | None, ...]]
@@ -94,7 +104,7 @@ class OOFPrediction:
     prediction_failures: dict[str, dict[str, MemberFailure]]
     access: dict[str, dict[str, EvaluationAccess]]
     conditioning_provenance: dict = field(default_factory=dict)
-    member_model_variances: np.ndarray | None = None
+    member_model_variances: jax.Array | None = None
     scale: str = "original"
     variance_scale: str = "model"
     excluded_uncertainty: tuple[str, ...] = (
@@ -134,7 +144,7 @@ class OOFEvaluation:
     """Metrics after eligible means; each covered region/pair counts once."""
 
     predictions: OOFPrediction
-    observed_values: np.ndarray
+    observed_values: jax.Array
     n_pairs: int
     n_query_pairs: int
     coverage: float
@@ -325,7 +335,9 @@ def predict_out_of_fold(
         raise ValueError("regime must be an EvaluationRegime")
     completed = [member for member in ensemble.members if member.status == "completed"]
     if completed:
-        inferred = completed[0].model.target
+        completed_model = completed[0].model
+        assert completed_model is not None  # Ensemble validates completed members.
+        inferred = completed_model.target
         if target is not None and target != inferred:
             raise ValueError("Declared evaluation target scale must match ensemble members")
         target = inferred
@@ -335,6 +347,7 @@ def predict_out_of_fold(
     supports = _support_inputs(support, regions, queries, target, regime)
     keys = tuple((name, pair) for name in sorted(queries) for pair in queries[name])
     member_ids = ensemble.expected_member_ids
+    assert member_ids is not None  # Ensemble normalizes its requested composition.
     by_id = {member.identity.member_id: member for member in ensemble.members}
     values = np.full((len(member_ids), len(keys)), np.nan)
     variances = None if regime.prediction_mode == "marginal" else np.full_like(values, np.nan)
@@ -342,7 +355,7 @@ def predict_out_of_fold(
     statuses = {member_id: by_id[member_id].status for member_id in member_ids}
     for row, member_id in enumerate(member_ids):
         member = by_id[member_id]
-        member_reasons = [None] * len(keys)
+        member_reasons: list[str | None] = [None] * len(keys)
         reasons[member_id] = member_reasons
         if member.status != "completed":
             member_reasons[:] = [f"member_{member.status}"] * len(keys)
@@ -350,11 +363,13 @@ def predict_out_of_fold(
                 "member", "Pending", "Member is pending"
             )
             continue
+        model = member.model
+        assert model is not None  # A completed member retains its inference model.
         access_records[member_id], provenance_records[member_id] = {}, {}
         for name, prepared in regions.items():
             columns = [index for index, (region_name, _) in enumerate(keys) if region_name == name]
             try:
-                access = _access(member.model, name, supports.get(name), regime)
+                access = _access(model, name, supports.get(name), regime)
                 access_records[member_id][name] = access
                 eligible = []
                 for column in columns:
@@ -367,7 +382,7 @@ def predict_out_of_fold(
                 if not eligible:
                     continue
                 predicted, model_variance, provenance = _member_predict(
-                    member.model,
+                    model,
                     prepared,
                     tuple(keys[column][1] for column in eligible),
                     regime,
@@ -376,6 +391,7 @@ def predict_out_of_fold(
                 )
                 values[row, eligible] = predicted
                 if model_variance is not None:
+                    assert variances is not None
                     variances[row, eligible] = model_variance
                 if provenance is not None:
                     provenance_records[member_id][name] = provenance
@@ -395,12 +411,12 @@ def predict_out_of_fold(
         )
     return OOFPrediction(
         keys,
-        mean,
+        _target_array(mean),
         target,
         regime,
         member_ids,
-        values,
-        spread,
+        _target_array(values),
+        _target_array(spread),
         counts,
         covered,
         {member_id: tuple(items) for member_id, items in reasons.items()},
@@ -409,7 +425,7 @@ def predict_out_of_fold(
         prediction_failures,
         access_records,
         provenance_records,
-        variances,
+        None if variances is None else _target_array(variances),
     )
 
 
@@ -437,14 +453,17 @@ def score_out_of_fold(prediction: OOFPrediction, observations) -> OOFEvaluation:
             }
         )
     try:
-        targets = np.array([lookup[key] for key in prediction.keys], dtype=np.float64)
+        targets = _target_array(
+            np.array([lookup[key] for key in prediction.keys], dtype=np.float64)
+        )
     except KeyError as error:
         raise ValueError("Every requested query must have an observed scoring target") from error
     n = int(np.sum(prediction.covered_mask))
     if n:
         residual = prediction.values[prediction.covered_mask] - targets[prediction.covered_mask]
-        mse, mae = float(np.mean(residual**2)), float(np.mean(np.abs(residual)))
-        rmse = float(np.sqrt(mse))
+        squared_error = jnp.mean(residual**2)
+        mse, mae = float(squared_error), float(jnp.mean(jnp.abs(residual)))
+        rmse = float(jnp.sqrt(squared_error))
         if not np.isfinite([mse, mae, rmse]).all():
             raise FloatingPointError("Pooled original-scale evaluation metrics are nonfinite")
     else:
@@ -464,9 +483,13 @@ def evaluate_ensemble(
     """Predict from declared query identities, then score original-scale observations."""
     inputs = _normalize_inputs(region, observations, partitions)
     regions, queries, observed_by_region = {}, {}, {}
-    target = inputs[0][1].target
+    target = None
     for prepared, observed, partition in inputs:
-        if observed.target != target:
+        if observed is None:
+            raise ValueError("Evaluation scoring requires pairwise observations")
+        if target is None:
+            target = observed.target
+        elif observed.target != target:
             raise ValueError("Regional scoring targets must have identical scale contracts")
         if not set(observed.sampling_unit_ids).issubset(prepared.sampling_unit_ids):
             raise ValueError("Scoring observation labels require prepared query locations")

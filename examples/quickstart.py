@@ -3,7 +3,7 @@
 import jax
 import numpy as np
 
-from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 region = RegionBatch(
