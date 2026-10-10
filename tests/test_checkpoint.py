@@ -1,5 +1,7 @@
 """Disk continuation checked through the public fit/checkpoint workflow."""
 
+from typing import TypedDict
+
 import jax
 import numpy as np
 import pytest
@@ -14,6 +16,26 @@ from ilg_toolkit import (
     save_checkpoint,
 )
 from ilg_toolkit.models import UNetEmbeddingDistance
+from ilg_toolkit.training import (
+    ObservationCollection,
+    PartitionCollection,
+    RegionCollection,
+    TrainingState,
+)
+
+
+class _ValidationOptions(TypedDict, total=False):
+    validation: tuple[RegionCollection, ObservationCollection]
+    partition: PartitionCollection
+    validation_partition: PartitionCollection
+
+
+class _FitOptions(_ValidationOptions, total=False):
+    region: RegionCollection
+    observations: ObservationCollection
+    model: UNetEmbeddingDistance
+    config: TrainingConfig
+    state: TrainingState
 
 
 def checkpoint_problem(name="alpine", seed=14):
@@ -55,6 +77,7 @@ def test_checkpoint_loader_retains_schema_one_model_state(tmp_path):
         model=checkpoint_model(),
         config=TrainingConfig(epochs=0),
     )
+    assert result.state is not None
     path = tmp_path / "schema-one-checkpoint.ilg"
     save_checkpoint(path, result.state)
     with zipfile.ZipFile(path) as archive:
@@ -102,6 +125,7 @@ def test_direct_disk_resume_matches_uninterrupted_dropout_training(tmp_path):
     region, observations = checkpoint_problem()
     config = TrainingConfig(epochs=3, seed=21, learning_rate=0.002)
     uninterrupted = fit(region, observations, model=checkpoint_model(), config=config)
+    assert uninterrupted.state is not None
     path = tmp_path / "direct.ilg"
     epochs = []
 
@@ -121,6 +145,7 @@ def test_direct_disk_resume_matches_uninterrupted_dropout_training(tmp_path):
     with pytest.raises(ValueError, match="epoch budget"):
         fit(region, observations, state=restored, config=replace(config, epochs=2))
     resumed = fit(region, observations, state=restored, config=config)
+    assert resumed.state is not None
     assert_same_state(resumed.state, uninterrupted.state)
     np.testing.assert_array_equal(
         resumed.model.predict(region).values, uninterrupted.model.predict(region).values
@@ -134,9 +159,9 @@ def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp
 
     from ilg_toolkit import ObservationPartition
 
-    regions, observations = zip(
-        checkpoint_problem(), checkpoint_problem("valley", seed=71), strict=True
-    )
+    problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
+    regions = tuple(problem[0] for problem in problems)
+    observations = tuple(problem[1] for problem in problems)
     training = tuple(
         ObservationPartition(region.name, obs.observed_pairs[:-2], role="training")
         for region, obs in zip(regions, observations, strict=True)
@@ -152,7 +177,7 @@ def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp
         seed=21,
         mlpe_initial_variances=(0.05, 0.1),
     )
-    arguments = dict(
+    arguments = _ValidationOptions(
         partition={part.region_name: part for part in training},
         validation=(regions, observations),
         validation_partition={part.region_name: part for part in validation},
@@ -161,6 +186,7 @@ def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp
         uninterrupted = fit(
             regions, observations, model=checkpoint_model(), config=config, **arguments
         )
+        assert uninterrupted.state is not None
         partial = fit(
             regions,
             observations,
@@ -168,6 +194,7 @@ def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp
             config=replace(config, epochs=1),
             **arguments,
         )
+        assert partial.state is not None
         path = tmp_path / "mlpe.ilg"
         save_checkpoint(path, partial.state)
         restored = load_checkpoint(path)
@@ -183,6 +210,7 @@ def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp
             config=config,
             **arguments,
         )
+        assert resumed.state is not None
         assert_same_state(resumed.state, uninterrupted.state)
         assert resumed.model.calibrations == uninterrupted.model.calibrations
         assert resumed.latest_model.calibrations == uninterrupted.latest_model.calibrations
@@ -198,10 +226,10 @@ def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(tmp_pa
 
     from ilg_toolkit import ObservationPartition
 
-    regions, observations = zip(
-        checkpoint_problem(), checkpoint_problem("valley", seed=71), strict=True
-    )
-    arguments = dict(
+    problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
+    regions = tuple(problem[0] for problem in problems)
+    observations = tuple(problem[1] for problem in problems)
+    arguments = _ValidationOptions(
         partition={
             r.name: ObservationPartition(r.name, o.observed_pairs[:-2], role="training")
             for r, o in zip(regions, observations, strict=True)
@@ -217,6 +245,7 @@ def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(tmp_pa
     )
     with jax.enable_x64():
         partial = fit(regions, observations, model=checkpoint_model(), config=config, **arguments)
+        assert partial.state is not None
         assert partial.selected_epoch == 0
         path = tmp_path / "selected.ilg"
         save_checkpoint(path, partial.state)
@@ -225,11 +254,14 @@ def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(tmp_pa
         unchanged = fit(
             regions, observations, state=restored, on_epoch=callbacks.append, **arguments
         )
+        assert unchanged.state is not None
         assert callbacks == []
         assert_same_state(unchanged.state, partial.state)
         continued = fit(
             regions, observations, state=restored, config=replace(config, epochs=2), **arguments
         )
+        assert continued.state is not None
+        assert continued.history[-1].validation_loss is not None
         assert continued.history[-1].validation_loss > partial.state.best_loss
         assert continued.selected_epoch == 0
         assert continued.model.calibrations == partial.model.calibrations
@@ -249,6 +281,7 @@ def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(tmp_path
         result = fit(
             region, observations, model=checkpoint_model(), config=TrainingConfig(epochs=0)
         )
+        assert result.state is not None
         changed_optimizer = jax.tree.map(
             lambda value: value.astype(np.float64) if value.dtype == np.float32 else value,
             result.state.optimizer_state,
@@ -269,6 +302,7 @@ def test_interrupted_replacement_retains_previous_complete_generation(tmp_path, 
     result = fit(
         region, observations, model=checkpoint_model(), config=config, on_epoch=completed.append
     )
+    assert result.state is not None
     path = tmp_path / "atomic.ilg"
     save_checkpoint(path, completed[0])
     original = path.read_bytes()
@@ -287,6 +321,7 @@ def test_interrupted_replacement_retains_previous_complete_generation(tmp_path, 
     restored = load_checkpoint(path)
     assert_same_state(restored, completed[0])
     continued = fit(region, observations, state=restored, config=config)
+    assert continued.state is not None
     assert_same_state(continued.state, result.state)
 
 
@@ -299,10 +334,11 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tm
     training = ObservationPartition(region.name, observations.observed_pairs[:-2], role="training")
     config = TrainingConfig(epochs=1, seed=21, learning_rate=0.002)
     result = fit(region, observations, model=checkpoint_model(), config=config, partition=training)
+    assert result.state is not None
     path = tmp_path / "compatible.ilg"
     save_checkpoint(path, result.state)
     state = load_checkpoint(path)
-    base = dict(
+    base = _FitOptions(
         region=region,
         observations=observations,
         state=state,
@@ -316,23 +352,27 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tm
         sampling_unit_ids=region.sampling_unit_ids,
     )
     changed_target = replace(observations, target=TargetSpec("different target", units="index"))
-    changes = [
-        dict(region=replace(region, features=region.feature_array + 0.1)),
-        dict(
+    changes: list[_FitOptions] = [
+        _FitOptions(region=replace(region, features=region.feature_array + 0.1)),
+        _FitOptions(
             region=replace(
                 region, features=region.feature_array, feature_names=("canopy", "elevation")
             )
         ),
-        dict(region=replace(region, grid_positions=region.grid_positions[::-1])),
-        dict(region=replace(region, sampling_unit_kinds=("individual",) * 6)),
-        dict(observations=changed_labels),
-        dict(observations=changed_target),
-        dict(partition=ObservationPartition(region.name, training.pairs[:-1], role="training")),
-        dict(partition=ObservationPartition(region.name, training.pairs, role="calibration")),
-        dict(config=replace(config, epochs=2, learning_rate=0.003)),
-        dict(config=replace(config, epochs=2, solver=ResistanceSolverConfig(rtol=1e-8))),
-        dict(config=replace(config, epochs=0)),
-        dict(model=checkpoint_model()),
+        _FitOptions(region=replace(region, grid_positions=region.grid_positions[::-1])),
+        _FitOptions(region=replace(region, sampling_unit_kinds=("individual",) * 6)),
+        _FitOptions(observations=changed_labels),
+        _FitOptions(observations=changed_target),
+        _FitOptions(
+            partition=ObservationPartition(region.name, training.pairs[:-1], role="training")
+        ),
+        _FitOptions(
+            partition=ObservationPartition(region.name, training.pairs, role="calibration")
+        ),
+        _FitOptions(config=replace(config, epochs=2, learning_rate=0.003)),
+        _FitOptions(config=replace(config, epochs=2, solver=ResistanceSolverConfig(rtol=1e-8))),
+        _FitOptions(config=replace(config, epochs=0)),
+        _FitOptions(model=checkpoint_model()),
     ]
     callbacks = []
     for change in changes:
@@ -340,6 +380,7 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tm
             fit(**(base | change), on_epoch=callbacks.append)
     assert callbacks == []
     extended = fit(**base)
+    assert extended.state is not None
     assert extended.state.epoch == 2
 
 
@@ -356,6 +397,7 @@ def test_checkpoint_load_refuses_incomplete_schema_runtime_and_progress(tmp_path
         config=TrainingConfig(epochs=0),
         on_epoch=callbacks.append,
     )
+    assert result.state is not None
     assert [state.epoch for state in callbacks] == [0]
     original = tmp_path / "complete.ilg"
     save_checkpoint(original, result.state)
@@ -396,6 +438,7 @@ def test_checkpoint_requires_calibration_for_every_training_region(tmp_path):
             model=checkpoint_model(),
             config=TrainingConfig(epochs=0, objective="mlpe"),
         )
+        assert result.state is not None
         partial = replace(
             result.model, calibrations={region.name: result.model.calibrations[region.name]}
         )
