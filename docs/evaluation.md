@@ -5,16 +5,17 @@ prediction selects members separately for each canonical `(region, unordered
 pair)` and reports coverage. Run `python examples/ensemble.py` for the complete
 synthetic fit and prediction workflow.
 
-| Operation | Genetic information used for prediction | Evaluation requirement | Returned quantities |
-| --- | --- | --- | --- |
-| `ensemble.predict(region)` | Each member's saved calibration; population effects marginalised | Deployment; all requested members must be available | Original-scale mean, member values and descriptive SD |
-| `model.predict_known_effects(region, pairs)` | Saved posterior population effects | Explicit mode; accessed calibration targets cannot be OOF queries | Original-scale points, model-scale variance and access provenance |
-| `model.predict_with_support(...)` | Saved posterior plus exactly declared disjoint support targets | Explicit support partition; query targets remain separate | Conditional points, model-scale variance and support provenance |
-| `predict_out_of_fold(...)` | Only eligible members' marginal predictions by default | Nominal holdout and actual unseen endpoint access; own-query target forbidden | Unique-pair predictions, eligible counts, coverage and descriptive SD |
-| OOF with an explicit known/support `EvaluationRegime` | Stored effects or declared support, as selected | Same own-target rules; declared support endpoint policy retained | Conditional OOF points/coverage and separate per-member model variances |
-| `score_out_of_fold(prediction, observations)` | Reads original-scale query targets after predictions and eligibility are frozen | Scores each covered unique pair once | MSE, RMSE, MAE, covered-pair count and observed targets; no uncertainty interval |
+| Operation | Information access | Endpoint / target requirement | Outputs and coverage | Uncertainty |
+| --- | --- | --- | --- | --- |
+| `ensemble.predict(region)` | Saved calibration; effects marginalised | Prepared locations; no query targets or holdout requirement | Original-scale mean and member values; all requested members required | Descriptive member SD |
+| `model.predict_known_effects(region, pairs)` | Saved effect posterior | Prepared locations; no query targets; deployment may reuse calibration endpoints | Original-scale conditional points and access provenance | Separate model-scale predictive variance |
+| `model.predict_with_support(...)` | Saved posterior and declared support targets | Support-role partition; support and query pairs disjoint | Conditional points and support provenance | Separate model-scale predictive variance |
+| `predict_out_of_fold(...)` | Eligible members' marginal predictions by default | Held-out endpoints also unseen in actual target access; own-query target forbidden | Unique-pair means, member values, counts and coverage | Descriptive member SD |
+| OOF with known/support `EvaluationRegime` | Saved effects or declared support | Same own-target rule; explicit endpoint and support policies | Conditional OOF values, access and coverage | Member SD and separate per-member model variances |
+| `score_out_of_fold(prediction, observations)` | Query targets read after predictions are fixed | Matching original-scale targets; each covered unique pair counted once | MSE, RMSE, MAE, covered count and observed targets | No interval inferred |
 
-Numerical means, member values, spreads and conditional variances are JAX arrays.
+Numerical means, member values, spreads, conditional variances and scoring targets
+are float64 JAX arrays; enable JAX x64 explicitly before prediction.
 Coverage masks/counts and access/provenance records retain labelled host metadata.
 
 ```python

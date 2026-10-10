@@ -13,12 +13,11 @@ pip install .
 # Optional geospatial preparation libraries: pip install '.[geo]'
 # Optional AMG preconditioning: pip install '.[amg]'
 # Optional CUDA JAX wheels: pip install '.[gpu]'
-# Tests and formatting: pip install '.[dev]'
+# Development checks: pip install '.[dev]'
 ```
 
-The minimal workflow uses NumPy, SciPy, JAX, Equinox, Optax, Lineax, and JAXScape.
-It has no paper-data,
-benchmark, geospatial acquisition, or research-checkout dependency.
+The prepared-array workflow uses Coordax, NumPy, SciPy, JAX, Equinox, Optax,
+Lineax, and JAXScape, independently of the research checkouts.
 
 ## Synthetic quickstart
 
@@ -125,6 +124,20 @@ rtol=1e-6, atol=1e-6, max_steps=1000, use_amg=False))` to choose convergence
 settings. AMG is optional and builds a reusable hierarchy outside differentiation.
 Failure to converge raises with the region and epoch; the toolkit does not
 silently change solver settings. Prediction retains the fitted solver configuration.
+
+## Isolation by distance
+
+Run `JAX_ENABLE_X64=true python examples/ibd.py` for the independent `IBDModel`
+geographic reference. Supply Euclidean-distance and nonnegative genetic-target
+vectors keyed by region, explicit distance units, and a dissimilarity `TargetSpec`
+with the identity transform. The model fits a nonnegative affine slope and
+intercept using the equal-weight mean of regional mean log1p squared errors,
+so pair-rich regions do not dominate.
+Prediction accepts supplied distance vectors or square matrices, returns original
+target units as float64 JAX arrays, and preserves a structural zero diagonal for
+matrices. The example converts raster positions using explicitly declared
+row/column resolution. Here `log1p` belongs to the fitting loss, while predictions
+retain the original target scale.
 
 ## Development
 
