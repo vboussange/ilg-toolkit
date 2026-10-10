@@ -17,14 +17,17 @@ from ilg_toolkit.models import EmbeddingDistanceModel
 class LinearEmbedding(EmbeddingDistanceModel):
     """Small real distance encoder using the documented model extension boundary."""
 
-    weight: jnp.ndarray
+    weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, weight: jax.Array):
+        self.weight = weight
 
     def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
         return features[..., :1] * self.weight
 
 
-def problem():
+def problem() -> tuple[RegionBatch, TargetSpec, LinearEmbedding]:
     region = RegionBatch(
         "anywhere",
         np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]),

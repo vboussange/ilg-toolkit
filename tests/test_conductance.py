@@ -110,6 +110,9 @@ class PointConductance(ConductanceModel):
     log_scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
 
+    def __init__(self, log_scale: jax.Array):
+        self.log_scale = log_scale
+
     def conductance(self, features, *, patch_batch_size=None):
         return jnp.exp(self.log_scale) * features[..., 0]
 

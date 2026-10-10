@@ -6,11 +6,11 @@ import jax
 import numpy as np
 
 from ilg_toolkit import (
-    TrainingConfig,
     ObservationPartition,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
+    TrainingConfig,
     fit,
     recalibrate,
 )
