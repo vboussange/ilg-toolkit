@@ -151,7 +151,9 @@ def test_conductance_archive_retains_actual_graph_scores_and_surface(tmp_path):
     )
     with jax.enable_x64():
         model = CalibratedModel(
-            ResNet9Conductance(2, patch_size=4, min_conductance=0.02, key=jax.random.key(3)),
+            ResNet9Conductance(
+                2, patch_size=4, min_conductance=0.02, patch_batch_size=3, key=jax.random.key(3)
+            ),
             TargetSpec("divergence"),
             feature_count=2,
             solver_config=ResistanceSolverConfig(rtol=1e-9, atol=1e-10),
@@ -159,6 +161,8 @@ def test_conductance_archive_retains_actual_graph_scores_and_surface(tmp_path):
         path = tmp_path / "conductance.ilg"
         save_model(path, model)
         restored = load_model(path)
+        assert isinstance(restored.encoder, ResNet9Conductance)
+        assert restored.encoder.patch_batch_size == 3
         np.testing.assert_array_equal(
             restored.conductance_surface(region), model.conductance_surface(region)
         )
@@ -168,6 +172,70 @@ def test_conductance_archive_retains_actual_graph_scores_and_surface(tmp_path):
             atol=1e-12,
         )
         assert restored.solver_config == model.solver_config
+
+
+def test_resnet_codec_preserves_legacy_unbatched_artifacts_and_strict_versions(tmp_path):
+    import json
+    import zipfile
+
+    from ilg_toolkit import ArtifactError, CalibratedModel, TargetSpec, load_model, save_model
+    from ilg_toolkit.models import ResNet9Conductance
+
+    key = jax.random.key(3)
+    path = tmp_path / "chunked.ilg"
+    model = CalibratedModel(
+        ResNet9Conductance(2, patch_size=4, patch_batch_size=3, key=key),
+        TargetSpec("synthetic dissimilarity"),
+        2,
+    )
+    save_model(path, model)
+    with zipfile.ZipFile(path) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(entries["manifest.json"])
+    assert manifest["schema"] == 1
+    assert manifest["payload"]["encoder"]["version"] == 2
+    assert manifest["payload"]["encoder"]["constructor"]["patch_batch_size"] == 3
+
+    def write_modified(name, change):
+        record = json.loads(json.dumps(manifest))
+        change(record["payload"]["encoder"])
+        output = tmp_path / name
+        with zipfile.ZipFile(output, "w") as archive:
+            for entry, value in entries.items():
+                archive.writestr(entry, json.dumps(record) if entry == "manifest.json" else value)
+        return output
+
+    def legacy(record):
+        record["version"] = 1
+        record["constructor"].pop("patch_batch_size")
+
+    restored = load_model(write_modified("legacy.ilg", legacy))
+    assert isinstance(restored.encoder, ResNet9Conductance)
+    assert restored.encoder.patch_batch_size is None
+    features = jax.numpy.asarray(np.random.default_rng(4).normal(size=(8, 8, 2)), np.float32)
+    unchunked = ResNet9Conductance(2, patch_size=4, key=key)
+    np.testing.assert_array_equal(restored.encoder.conductance(features), unchunked(features))
+
+    # The default writer keeps old run architecture hashes stable: exact v1 metadata.
+    save_model(path, CalibratedModel(unchunked, model.target, 2))
+    with zipfile.ZipFile(path) as archive:
+        default = json.loads(archive.read("manifest.json"))["payload"]["encoder"]
+    assert default["version"] == 1
+    assert set(default["constructor"]) == {"in_channels", "patch_size", "min_conductance"}
+
+    for index, change in enumerate(
+        [
+            lambda record: record.update(version=True),
+            lambda record: record.update(version=3),
+            lambda record: record.update(version=1),  # extra field is forbidden in v1
+            lambda record: record["constructor"].pop("patch_batch_size"),
+            lambda record: record["constructor"].update(patch_batch_size=0),
+            lambda record: record["constructor"].update(patch_batch_size=True),
+            lambda record: record["constructor"].update(patch_batch_size=None),
+        ]
+    ):
+        with pytest.raises(ArtifactError, match="codec version|constructor|patch_batch_size"):
+            load_model(write_modified(f"invalid-{index}.ilg", change))
 
 
 def test_reload_rejects_incomplete_incompatible_and_corrupt_content(tmp_path):

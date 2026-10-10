@@ -154,6 +154,72 @@ def test_direct_disk_resume_matches_uninterrupted_dropout_training(tmp_path):
     assert resumed.selection == "final"
 
 
+@pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
+def test_chunked_resnet_disk_resume_and_calibration_retain_execution_setting(tmp_path, objective):
+    from dataclasses import replace
+
+    from test_conductance import dense_resistance
+
+    from ilg_toolkit import load_model, save_model
+    from ilg_toolkit.models import ResNet9Conductance
+
+    features = np.random.default_rng(4).normal(size=(8, 8, 2)).astype(np.float32)
+    region = RegionBatch(
+        "resnet-resume",
+        features,
+        ("south", "north", "west", "east"),
+        np.array([[0, 0], [0, 7], [7, 0], [7, 7]]),
+    )
+    observations = PairwiseObservations.from_matrix(
+        region.sampling_unit_ids,
+        dense_resistance(np.array([[1.0, 1.4], [0.8, 2.0]]), np.arange(4)),
+        target=TargetSpec("synthetic dissimilarity", units="index"),
+    )
+    encoder = ResNet9Conductance(2, patch_size=4, patch_batch_size=3, key=jax.random.key(6))
+    config = TrainingConfig(objective=objective, epochs=2, seed=7, learning_rate=1e-4)
+    with jax.enable_x64():
+        uninterrupted = fit(region, observations, model=encoder, config=config)
+        partial = fit(region, observations, model=encoder, config=replace(config, epochs=1))
+        assert uninterrupted.state is not None and partial.state is not None
+        path = tmp_path / "resnet.ilg"
+        save_checkpoint(path, partial.state)
+        restored = load_checkpoint(path)
+        for saved in (restored.encoder, restored.latest_model.encoder, restored.best_model.encoder):
+            assert isinstance(saved, ResNet9Conductance)
+            assert saved.patch_batch_size == 3
+        resumed = fit(region, observations, state=restored, config=config)
+        assert resumed.state is not None
+        assert_same_state(resumed.state, uninterrupted.state)
+        np.testing.assert_array_equal(
+            resumed.model.predict(region).values, uninterrupted.model.predict(region).values
+        )
+        # A continuation always keeps its saved execution setting, not a replacement model.
+        with pytest.raises(ValueError, match="omit model"):
+            fit(
+                region,
+                observations,
+                state=restored,
+                config=config,
+                model=ResNet9Conductance(
+                    2, patch_size=4, patch_batch_size=1, key=jax.random.key(6)
+                ),
+            )
+        if objective == "direct_log1p":
+            calibrated = resumed.model.recalibrate(region, observations)
+            assert isinstance(calibrated.encoder, ResNet9Conductance)
+            assert calibrated.encoder.patch_batch_size == 3
+            np.testing.assert_array_equal(
+                calibrated.conductance_surface(region), resumed.model.conductance_surface(region)
+            )
+            save_model(path, calibrated)
+            loaded = load_model(path)
+            assert isinstance(loaded.encoder, ResNet9Conductance)
+            assert loaded.encoder.patch_batch_size == 3
+            np.testing.assert_array_equal(
+                loaded.predict(region).values, calibrated.predict(region).values
+            )
+
+
 def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp_path):
     from dataclasses import replace
 

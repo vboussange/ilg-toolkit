@@ -136,6 +136,13 @@ modifications or mutable model state require explicit future codecs. Inference
 artifacts may contain heads for only selected regions; checkpoints require heads
 for every MLPE training region.
 
+ResNet9 retains its optional `patch_batch_size` execution setting in models,
+checkpoints and saved runs. Default unbatched models keep the historical ResNet
+codec version 1 metadata; explicitly configured positive batch sizes use version
+2. Both load strictly under archive schema 1. A version 1 ResNet loads with
+`patch_batch_size=None`. Continuation uses the saved encoder and its batch size;
+it rejects a replacement model supplied alongside the continuation state.
+
 Array dtypes are preserved. Float64 JAX leaves require `JAX_ENABLE_X64=true` or an
 active `jax.enable_x64()` context when loading; silent truncation is refused.
 MLPE fitting and exact checkpoint continuation require the saved explicit
