@@ -92,7 +92,7 @@ _R_BLUPS = np.array(
 )
 
 
-def dense_profile(scores, targets, left, right, n_populations, variances, *, jitter=0):
+def dense_profile(scores, targets, left, right, n_populations, variances, *, jitter: float = 0):
     """Independent dense full-covariance oracle retained for acceleration checks."""
     scores = np.asarray(scores, dtype=np.float64)
     z = np.zeros((len(scores), n_populations))

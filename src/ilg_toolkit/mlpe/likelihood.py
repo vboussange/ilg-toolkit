@@ -102,14 +102,14 @@ def _components(
         & (scale > DEFAULT_MIN_SCORE_SCALE)
         & jnp.isfinite(design).all()
         & jnp.isfinite(targets).all()
-        & (system.count >= 1)
+        & (system.pair_count >= 1)
     )
     return targets, design, system, valid
 
 
 def _nll(system, remaining, effects):
     quadratic = jnp.sum(remaining**2) / system.residual + jnp.sum(effects**2) / system.unit
-    return 0.5 * (system.count * math.log(2 * math.pi) + system.logdet + quadratic)
+    return 0.5 * (system.pair_count * math.log(2 * math.pi) + system.logdet + quadratic)
 
 
 def profiled_mlpe_ml_fit(
@@ -156,7 +156,7 @@ def profiled_mlpe_ml_fit(
     valid = (
         valid
         & system.identifiable
-        & (system.count >= 3)
+        & (system.pair_count >= 3)
         & jnp.isfinite(beta).all()
         & jnp.isfinite(nll)
     )

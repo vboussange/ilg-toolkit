@@ -1,6 +1,7 @@
 """Standalone calibration and independent numerical seams accepted in spec #1."""
 
 import itertools
+from typing import Any
 
 import numpy as np
 import pytest
@@ -44,6 +45,20 @@ def test_calibration_matches_frozen_r_full_ml_and_predicts_without_query_targets
     assert head.region_name == "alpine"
     assert head.calibration_pairs == observations.observed_pairs
     assert set(head.calibration_roles) == {"calibration"}
+
+
+def test_marginal_prediction_retains_float64_jax_values_without_changing_global_precision():
+    import jax
+    import jax.numpy as jnp
+
+    with jax.enable_x64(False):
+        head = calibrate_mlpe(_R_SCORES, reference_observations(), region_name="alpine")
+        query = head.predict_marginal([2.5, -2.0], [("new", "p01"), ("p02", "new")])
+        assert not jax.config.read("jax_enable_x64")
+    assert isinstance(query.values, jax.Array)
+    assert isinstance(query.model_values, jax.Array)
+    assert query.values.dtype == query.model_values.dtype == jnp.float64
+    np.testing.assert_allclose(query.values, [-0.49407802616878604, 2.4619456646531583], atol=1e-5)
 
 
 def test_differentiable_full_ml_matches_dense_incomplete_pair_oracle():
@@ -161,7 +176,12 @@ def test_incomplete_partition_calibration_records_roles_and_original_target_scal
 def test_explicit_numerical_constraints_and_optimization_failure_are_visible():
     from ilg_toolkit.mlpe import MLPEConfig, MLPEError
 
-    for options in ({"variance_floor": 0}, {"min_score_scale": float("nan")}, {"jitter": 1e-3}):
+    invalid_options: tuple[dict[str, Any], ...] = (
+        {"variance_floor": 0},
+        {"min_score_scale": float("nan")},
+        {"jitter": 1e-3},
+    )
+    for options in invalid_options:
         with pytest.raises(MLPEError):
             MLPEConfig(**options)
     with pytest.raises(MLPEError, match="converged"):
