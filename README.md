@@ -215,6 +215,9 @@ region identities; each epoch exposes `training_by_region` and
 
 ## Regional MLPE calibration
 
+The [statistical guide](docs/statistics.md) explains direct log1p-MSE, MLPE
+shared-endpoint covariance, GLS profiling, likelihood and prediction information.
+
 `python examples/mlpe_calibration.py` demonstrates a frozen encoder's landscape
 scores and a separate full-Gaussian-ML genetic calibration:
 
