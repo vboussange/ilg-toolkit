@@ -1,5 +1,7 @@
 """Experimental diagnostic seam; independent Gaussian and SciPy references."""
 
+from typing import cast, final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -8,13 +10,13 @@ import pytest
 from scipy.linalg import helmert
 from scipy.stats import matrix_normal, wishart
 
-from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec
 from experiments.wishart import (
     GaussianMarkerDistances,
     diagnose_wishart,
     heldout_log_likelihood,
     wishart_log_likelihood,
 )
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec
 from ilg_toolkit.models import ConductanceModel
 
 
@@ -34,15 +36,16 @@ def test_declared_marker_average_and_scatter_match_normalized_reference_density(
     basis = helmert(len(labels))
     scatter = (basis @ raw) @ (basis @ raw).T
     model = basis @ covariance @ basis.T
-    common = dict(
-        region_name="synthetic",
-        sampling_unit_ids=labels,
-        marker_count=raw.shape[1],
-        interpretation="squared_gaussian_marker_distance",
+    average = GaussianMarkerDistances(
+        "synthetic", labels, distances, raw.shape[1], "average", "squared_gaussian_marker_distance"
     )
-    average = GaussianMarkerDistances(distances=distances, marker_scaling="average", **common)
     summed = GaussianMarkerDistances(
-        distances=distances * raw.shape[1], marker_scaling="scatter", **common
+        "synthetic",
+        labels,
+        distances * raw.shape[1],
+        raw.shape[1],
+        "scatter",
+        "squared_gaussian_marker_distance",
     )
     np.testing.assert_allclose(average.centered_scatter, scatter, atol=1e-12)
     expected = wishart.logpdf(scatter, df=raw.shape[1], scale=model)
@@ -130,9 +133,13 @@ def test_population_holdout_matches_independent_gaussian_regression_decompositio
     assert not np.isclose(rescored.log_likelihood, actual.log_likelihood)
 
 
+@final
 class UniformConductance(ConductanceModel):
     scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, scale: jax.Array):
+        self.scale = scale
 
     def conductance(self, features, *, patch_batch_size=None):
         return self.scale * features[..., 0]
@@ -224,7 +231,7 @@ def test_missing_indefinite_and_singular_inputs_are_rejected_without_repair():
                 "synthetic",
                 labels,
                 distances,
-                marker_count,
+                cast(int, marker_count),  # Deliberately invalid inputs exercise runtime validation.
                 "average",
                 "squared_gaussian_marker_distance",
             )
@@ -261,7 +268,7 @@ def test_generic_genetic_targets_are_not_silently_promoted_to_marker_observation
     labels, _, distances, _ = gaussian_example()
     generic = PairwiseObservations.from_matrix(labels, distances, target=TargetSpec("FST"))
     with pytest.raises(TypeError, match="GaussianMarkerDistances"):
-        wishart_log_likelihood(generic, np.eye(len(labels) - 1))
+        wishart_log_likelihood(cast(GaussianMarkerDistances, generic), np.eye(len(labels) - 1))
 
 
 def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible():
@@ -270,20 +277,27 @@ def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible
         "coincident", labels, distances, raw.shape[1], "average", "squared_gaussian_marker_distance"
     )
     region = RegionBatch("coincident", np.ones((2, 2, 1)), labels, np.zeros((3, 2), dtype=int))
-    options = dict(
-        encoder=UniformConductance(jnp.array(1.0)),
-        training_unit_ids=labels[:2],
-        anchor_id=labels[0],
-        parameter_source="fixed",
-    )
+
+    def diagnostic(scale: float, nugget: float):
+        return diagnose_wishart(
+            region,
+            observations,
+            scale=scale,
+            nugget=nugget,
+            encoder=UniformConductance(jnp.array(1.0)),
+            training_unit_ids=labels[:2],
+            anchor_id=labels[0],
+            parameter_source="fixed",
+        )
+
     with jax.enable_x64():
-        report = diagnose_wishart(region, observations, scale=1, nugget=0.2, **options)
+        report = diagnostic(scale=1, nugget=0.2)
         assert report.scale_nugget_rank == 1
         assert np.isinf(report.scale_nugget_condition_number)
         np.testing.assert_allclose(report.model_covariance, 0.2 * np.eye(2), atol=1e-10)
         with pytest.raises(ValueError, match="Model covariance.*positive definite"):
-            diagnose_wishart(region, observations, scale=1, nugget=0, **options)
+            diagnostic(scale=1, nugget=0)
     with pytest.raises(ValueError, match="scale.*positive"):
-        diagnose_wishart(region, observations, scale=0, nugget=0.2, **options)
+        diagnostic(scale=0, nugget=0.2)
     with pytest.raises(ValueError, match="nugget.*nonnegative"):
-        diagnose_wishart(region, observations, scale=1, nugget=-0.2, **options)
+        diagnostic(scale=1, nugget=-0.2)
