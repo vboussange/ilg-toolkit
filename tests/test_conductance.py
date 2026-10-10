@@ -92,6 +92,9 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
         assert result.history[-1].training_loss < result.history[0].training_loss
         surface = result.model.conductance_surface(region)
         prediction = result.model.predict(region)
+        assert isinstance(surface, jax.Array)
+        assert isinstance(result.model.landscape_scores(region), jax.Array)
+        assert isinstance(prediction.values, jax.Array)
         assert surface.shape == (2, 2)
         assert np.all(np.isfinite(surface) & (surface > 0))
         expected = dense_resistance(surface, np.array([0, 1, 3]))

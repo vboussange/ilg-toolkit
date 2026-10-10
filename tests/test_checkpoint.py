@@ -318,7 +318,11 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tm
     changed_target = replace(observations, target=TargetSpec("different target", units="index"))
     changes = [
         dict(region=replace(region, features=region.feature_array + 0.1)),
-        dict(region=replace(region, feature_names=("canopy", "elevation"))),
+        dict(
+            region=replace(
+                region, features=region.feature_array, feature_names=("canopy", "elevation")
+            )
+        ),
         dict(region=replace(region, grid_positions=region.grid_positions[::-1])),
         dict(region=replace(region, sampling_unit_kinds=("individual",) * 6)),
         dict(observations=changed_labels),

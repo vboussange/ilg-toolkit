@@ -178,7 +178,11 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
     with pytest.raises(ValueError, match="feature contract"):
         recalibrate(
             model,
-            replace(region, feature_names=tuple(reversed(region.feature_names))),
+            replace(
+                region,
+                features=region.feature_array,
+                feature_names=tuple(reversed(region.feature_names)),
+            ),
             observations,
         )
     incompatible = PairwiseObservations.from_matrix(
