@@ -1,14 +1,17 @@
 """Shared fitting checked at the approved public workflow seam."""
 
+from typing import final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
 
 
+@final
 class ScalarEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
@@ -79,6 +82,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective():
             assert np.isfinite(result.model.predict(region).values).all()
 
 
+@final
 class ScaledConductance(ConductanceModel):
     log_scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
@@ -169,9 +173,22 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
             )
 
 
-class StochasticEmbedding(ScalarEmbedding):
+@final
+class StochasticEmbedding(EmbeddingDistanceModel):
+    encoder: ScalarEmbedding
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, weight: jax.Array):
+        self.encoder = ScalarEmbedding(weight)
+
+    @property
+    def weight(self) -> jax.Array:
+        return self.encoder.weight
+
     def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-        values = super().embedding_grid(features, inference=inference, key=key)
+        values = self.encoder.embedding_grid(
+            features, inference=inference, key=key, patch_batch_size=patch_batch_size
+        )
         if inference:
             return values
         return values * jax.random.bernoulli(key, 0.7, values.shape) / 0.7
@@ -201,9 +218,7 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory():
         epoch.training_by_region for epoch in validated.history
     ]
     reordered = fit(reversed_regions, reversed_observations, model=model, config=config)
-    np.testing.assert_array_equal(
-        baseline.model.encoder.weight, reordered.model.encoder.weight
-    )
+    np.testing.assert_array_equal(baseline.model.encoder.weight, reordered.model.encoder.weight)
 
 
 def test_incompatible_regional_inputs_fail_before_optimization():

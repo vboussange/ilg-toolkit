@@ -1,5 +1,7 @@
 """Independent fold fits and original-target-scale ensemble aggregation."""
 
+from typing import final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -10,6 +12,7 @@ from ilg_toolkit import TrainingConfig, fit_ensemble, generate_population_folds
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
 
 
+@final
 class InitializedEmbedding(EmbeddingDistanceModel):
     log_weights: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
@@ -35,17 +38,14 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
             model_factory=model_factory,
         )
         prediction = result.predict(region)
-        member_values = np.stack(
-            [member.model.predict(region).values for member in result.members]
-        )
+        member_values = np.stack([member.model.predict(region).values for member in result.members])
     assert len(result.members) == 4
     assert all(member.status == "completed" for member in result.members)
     assert len({member.identity.member_id for member in result.members}) == 4
     assert len({member.identity.effective_seed for member in result.members}) == 4
     assert len({id(member.fit_result.state.optimizer_state) for member in result.members}) == 4
     assert (
-        len({tuple(np.asarray(member.model.encoder.log_weights)) for member in result.members})
-        == 4
+        len({tuple(np.asarray(member.model.encoder.log_weights)) for member in result.members}) == 4
     )
     np.testing.assert_allclose(prediction.values, member_values.mean(axis=0), atol=1e-12)
     np.testing.assert_allclose(prediction.member_spread, member_values.std(axis=0), atol=1e-12)
@@ -315,6 +315,7 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
     )
 
 
+@final
 class ConstantConductance(ConductanceModel):
     level: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
@@ -325,11 +326,11 @@ class ConstantConductance(ConductanceModel):
 
 def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
     from ilg_toolkit import (
+        CalibratedModel,
         Ensemble,
         EnsembleMember,
         ObservationPartition,
         PopulationFold,
-        CalibratedModel,
         RegionBatch,
         TargetSpec,
         ensemble_member_identity,
@@ -354,9 +355,7 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
                 ConstantConductance(jnp.asarray(level)), TargetSpec("divergence"), 1
             )
             members.append(
-                EnsembleMember(
-                    ensemble_member_identity(fold.fold_id, 0), fold, "completed", model
-                )
+                EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
             )
         ensemble = Ensemble(tuple(members))
         prediction = ensemble.predict(region)

@@ -24,7 +24,7 @@ class ResistanceSolverContext:
 
 
 def _require_x64():
-    if not jax.config.x64_enabled:
+    if not jax.config.read("jax_enable_x64"):
         raise RuntimeError(
             "Effective resistance requires float64: set JAX_ENABLE_X64=true before Python"
         )
@@ -34,7 +34,9 @@ def _mean_conductance(left, right):
     return 0.5 * (left + right)
 
 
-def build_resistance_context(graph_shape, config: ResistanceSolverConfig | None = None) -> ResistanceSolverContext:
+def build_resistance_context(
+    graph_shape: tuple[int, int], config: ResistanceSolverConfig | None = None
+) -> ResistanceSolverContext:
     """Build CG or an optional AMG hierarchy outside JIT/gradient transforms.
 
     The all-ones hierarchy is reused as a preconditioner only. Every resistance
@@ -46,14 +48,17 @@ def build_resistance_context(graph_shape, config: ResistanceSolverConfig | None 
         for size in graph_shape
     ):
         raise ValueError("graph_shape must contain two positive integer dimensions")
-    shape = tuple(int(size) for size in graph_shape)
+    shape = (int(graph_shape[0]), int(graph_shape[1]))
     if shape[0] * shape[1] < 2:
         raise ValueError("Effective resistance requires at least two graph vertices")
     config = config or ResistanceSolverConfig()
-    options = dict(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps)
     if not config.use_amg:
-        return ResistanceSolverContext(shape, lx.CG(**options))
-    solver = AMJaxCGSolver(**options, coarse_solver="pinv")
+        return ResistanceSolverContext(
+            shape, lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps)
+        )
+    solver = AMJaxCGSolver(
+        rtol=config.rtol, atol=config.atol, max_steps=config.max_steps, coarse_solver="pinv"
+    )
     template = GridGraph(jnp.ones(shape, dtype=jnp.float64), fun=_mean_conductance)
     state = ResistanceDistance(solver=solver).init_preconditioner(template)
     return ResistanceSolverContext(shape, solver, state)

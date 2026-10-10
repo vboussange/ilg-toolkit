@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -32,6 +34,7 @@ def _match_shape(values: jax.Array, reference: jax.Array) -> jax.Array:
     return values
 
 
+@final
 class ResidualConvBlock(eqx.Module):
     """Residual convolutional block used throughout the U-Net."""
 
@@ -70,6 +73,7 @@ class ResidualConvBlock(eqx.Module):
         return jax.nn.gelu(values + residual)
 
 
+@final
 class UNetEmbeddingDistance(EmbeddingDistanceModel):
     """Predict patch embeddings and squared distances between population nodes."""
 
@@ -197,7 +201,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         batch_size = flattened.shape[0] if patch_batch_size is None else patch_batch_size
         embedded = jnp.concatenate(
             [
-                jax.vmap(self.patch_embedding)(flattened[start : start + batch_size])
+                eqx.filter_vmap(self.patch_embedding)(flattened[start : start + batch_size])
                 for start in range(0, flattened.shape[0], batch_size)
             ]
         )

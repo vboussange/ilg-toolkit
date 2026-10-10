@@ -11,7 +11,7 @@ import optax
 
 from ._archive import ArrayWriter, ArtifactError, read_archive, runtime_versions, write_archive
 from ._codecs import decode_model, decode_tree_leaves, encode_model, encode_tree_leaves
-from .config import TrainingConfig, ResistanceSolverConfig
+from .config import ResistanceSolverConfig, TrainingConfig
 from .training import EpochRecord, TrainingState
 
 
@@ -142,8 +142,9 @@ def save_checkpoint(path, state: TrainingState) -> None:
             "region_names": list(state.region_names),
             "data_identity": state.data_identity,
             "history": [asdict(record) for record in state.history],
-            "latest_model": encode_model(state.latest_model, arrays),
-            "best_model": encode_model(state.best_model, arrays),
+            # Schema-one field names are independent of the public Python names.
+            "latest_predictor": encode_model(state.latest_model, arrays),
+            "best_predictor": encode_model(state.best_model, arrays),
             "raw_variances": None
             if state.raw_variances is None
             else arrays.add(state.raw_variances),
@@ -182,8 +183,8 @@ def load_checkpoint(path) -> TrainingState:
                 "region_names",
                 "data_identity",
                 "history",
-                "latest_model",
-                "best_model",
+                "latest_predictor",
+                "best_predictor",
                 "raw_variances",
                 "optimizer_state",
                 "rng_key",
@@ -208,8 +209,8 @@ def load_checkpoint(path) -> TrainingState:
             config_record = dict(record["config"])
             config_record["solver"] = ResistanceSolverConfig(**config_record["solver"])
             config = TrainingConfig(**config_record)
-            latest = decode_model(record["latest_model"], archive)
-            best = decode_model(record["best_model"], archive)
+            latest = decode_model(record["latest_predictor"], archive)
+            best = decode_model(record["best_predictor"], archive)
             raw = (
                 None
                 if record["raw_variances"] is None
