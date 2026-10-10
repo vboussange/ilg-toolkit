@@ -1,6 +1,6 @@
 """Explicit shipped-model codecs; no serialized classes or pytree definitions."""
 
-from dataclasses import asdict
+from dataclasses import asdict, fields
 
 import equinox as eqx
 import jax
@@ -8,10 +8,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._archive import ArtifactError, require_fields
-from .config import ResistanceSolverConfig
+from .config import ResistanceSolverConfig, TrainingConfig
 from .data import TargetSpec
-from .models import ResNet9Conductance, UNetEmbeddingDistance
+from .mlpe import MLPEConfig, MLPEHead
 from .model import CalibratedModel
+from .models import ResNet9Conductance, UNetEmbeddingDistance
 
 
 def _arraylike(value):
@@ -49,9 +50,8 @@ def decode_tree_leaves(template, record, archive):
             array = archive.array(leaf["value"], shape=value.shape)
             if array.dtype.kind != np.dtype(value.dtype).kind:
                 raise ArtifactError("Tree payload dtype category does not match its template")
-            if (
-                array.dtype.itemsize > (8 if array.dtype.kind == "c" else 4)
-                and not jax.config.x64_enabled
+            if array.dtype.itemsize > (8 if array.dtype.kind == "c" else 4) and not jax.config.read(
+                "jax_enable_x64"
             ):
                 raise ArtifactError(
                     "64-bit JAX payload requires JAX_ENABLE_X64=true; no truncation"
@@ -95,11 +95,12 @@ def _template(record):
 def encode_encoder(model, arrays):
     if type(model) is UNetEmbeddingDistance:
         area = model.patch_size**2
-        if model.patch_embedding.in_features % area:
+        inputs = model.patch_embedding.in_features
+        if not isinstance(inputs, int) or inputs % area:
             raise ArtifactError("Model patch inputs do not match its declared patch size")
         kind = "unet_embedding"
         options = {
-            "in_channels": model.patch_embedding.in_features // area,
+            "in_channels": inputs // area,
             "patch_size": model.patch_size,
             "base_channels": model.base_channels,
             "embedding_dim": model.embedding_dim,
@@ -138,10 +139,21 @@ def decode_encoder(record, archive):
 
 
 def _target(record):
-    require_fields(record, {"name", "units", "kind", "transform"}, "Target")
+    require_fields(record, set(TargetSpec.__dataclass_fields__), "Target")
     if any(not isinstance(value, str) or not value for value in record.values()):
         raise ArtifactError("Target fields must be nonempty strings")
     return TargetSpec(**record)
+
+
+def decode_training_config(record):
+    """Validate the same explicit optimization record in checkpoints and runs."""
+    require_fields(record, set(TrainingConfig.__dataclass_fields__), "Training config")
+    values = dict(record)
+    require_fields(
+        values["solver"], set(ResistanceSolverConfig.__dataclass_fields__), "Solver config"
+    )
+    values["solver"] = ResistanceSolverConfig(**values["solver"])
+    return TrainingConfig(**values)
 
 
 def _pairs(value, context):
@@ -253,40 +265,21 @@ def decode_model(record, archive):
     )
 
 
-_HEAD_FIELDS = {
-    "region_name",
-    "target",
-    "population_ids",
-    "score_center",
-    "score_scale",
-    "intercept",
-    "slope",
-    "unit_variance",
-    "residual_variance",
-    "effect_mean",
-    "effect_covariance",
-    "effect_precision_cholesky",
-    "calibration_pairs",
-    "calibration_roles",
-    "ml_log_likelihood",
-    "config",
-    "optimizer_iterations",
-    "optimizer_message",
-    "converged",
-}
+_HEAD_FIELDS = set(MLPEHead.__dataclass_fields__)
 _POSTERIOR_FIELDS = {"effect_mean", "effect_covariance", "effect_precision_cholesky"}
 
 
 def encode_head(head, arrays):
-    record = asdict(head)
+    # Preserve immutable metadata directly; asdict would first deep-copy the
+    # entire posterior only to replace it with numeric archive references.
+    record = {field.name: getattr(head, field.name) for field in fields(head)}
+    record["target"], record["config"] = asdict(head.target), asdict(head.config)
     for name in _POSTERIOR_FIELDS:
         record[name] = arrays.add(np.asarray(getattr(head, name), dtype=np.float64))
     return record
 
 
 def decode_head(record, archive):
-    from .mlpe import MLPEConfig, MLPEHead
-
     require_fields(record, _HEAD_FIELDS, "MLPE head")
     values = dict(record)
     labels = values["population_ids"]
@@ -316,7 +309,7 @@ def decode_head(record, archive):
     values["calibration_roles"] = tuple(roles)
     require_fields(
         values["config"],
-        {"variance_floor", "min_score_scale", "jitter", "max_iterations"},
+        set(MLPEConfig.__dataclass_fields__),
         "MLPE config",
     )
     if any(isinstance(value, bool) for value in values["config"].values()):
