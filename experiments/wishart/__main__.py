@@ -1,11 +1,13 @@
-"""Run the strict synthetic reference: JAX_ENABLE_X64=true python -m ilg_toolkit.experimental."""
+"""Run from the checkout: JAX_ENABLE_X64=true python -m experiments.wishart."""
 
 import jax
 import numpy as np
+from scipy.linalg import helmert
 
 from ilg_toolkit.data import RegionBatch
 from ilg_toolkit.models import ResNet9Conductance
-from .diagnostic import GaussianMarkerDistances, _helmert, diagnose_wishart
+
+from .diagnostic import GaussianMarkerDistances, diagnose_wishart
 
 
 def main():
@@ -19,7 +21,7 @@ def main():
     )
     encoder = ResNet9Conductance(2, patch_size=4, key=jax.random.key(6))
     scores = np.asarray(encoder.predict_distances(region.feature_array, region.pixel_nodes))
-    basis = _helmert(len(labels))
+    basis = helmert(len(labels))
     scale, nugget, marker_count = 1.3, 0.2, 20
     covariance = -0.5 * scale * basis @ scores @ basis.T + nugget * np.eye(3)
     markers = (

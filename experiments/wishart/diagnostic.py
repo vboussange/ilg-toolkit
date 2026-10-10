@@ -1,7 +1,7 @@
 """Strict Gaussian-marker Wishart references; this module enables no training.
 
 The contract and conditional-score derivation live in
-``docs/wishart-experimental-contract.md``. Inputs declare known-zero-mean,
+``docs/statistics/wishart.md``. Inputs declare known-zero-mean,
 independent Gaussian marker contrasts; structural validation cannot establish
 that scientific assumption for real genetic observations.
 """
@@ -330,7 +330,9 @@ def diagnose_wishart(
         observations.sampling_unit_ids
     ):
         raise ValueError("Region identity and sampling-unit labels must match the observations")
-    if any(kind != "population" for kind in region.sampling_unit_kinds):
+    kinds = region.sampling_unit_kinds
+    assert kinds is not None  # RegionBatch normalizes this optional constructor input.
+    if any(kind != "population" for kind in kinds):
         raise ValueError(
             "This experimental contract supports declared population sampling units only"
         )
