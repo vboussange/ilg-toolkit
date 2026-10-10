@@ -46,6 +46,12 @@ print(prediction.values, prediction.target)
 scores = result.model.landscape_scores(region)
 ```
 
+`RegionBatch` keeps prepared landscape inputs separate from observations.
+`TrainingConfig` declares optimization settings, and `result.model` is a
+`CalibratedModel` retaining the encoder, target contract, resistance settings,
+and any regional MLPE heads. Direct regression uses the declared target mapping
+without an MLPE head; label-free landscape scoring is available in either mode.
+
 `predict()` returns a symmetric matrix in the region's sampling-unit order. For
 selected pairs, use `result.model.predict_pairs(region, [("a", "d")])`.
 Its `PairPrediction` contains a vector of `values`, the requested `pairs` in their
@@ -71,6 +77,11 @@ Pass a configured `ilg_toolkit.models.UNetEmbeddingDistance` as `model=` to
 choose patch size, embedding dimensions, U-Net width, and dropout explicitly.
 For example, `patch_size=1, base_channels=2, embedding_dim=2, dropout=0` is useful
 for tiny synthetic problems. Raster dimensions must be divisible by patch size.
+
+Custom Equinox encoders implement the abstract `ConductanceModel.conductance`
+or `EmbeddingDistanceModel.embedding_grid` boundary and declare `patch_size`.
+Mark concrete implementations with `typing.final`; adapt a concrete encoder by
+composition. The shipped ResNet9 and U-Net are final implementations.
 
 Without validation, the final fixed-budget encoder is returned. With
 `validation=(prepared_validation_region, validation_observations)`, the lowest
