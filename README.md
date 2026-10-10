@@ -128,10 +128,27 @@ silently change solver settings. Prediction retains the fitted solver configurat
 
 ## Development
 
+Install `.[dev]` in a Python 3.12 environment and run the same CPU gates as
+`.github/workflows/checks.yml`:
+
 ```bash
-pytest
+python -m pip install -e '.[dev]'
+export JAX_PLATFORMS=cpu JAX_ENABLE_X64=true
+ruff format --check .
 ruff check .
+pyright
+pytest
+for example in examples/*.py; do python "$example"; done
+python -m experiments.wishart
+python -m build
 ```
+
+Pyright covers the installed package, tests, examples, benchmarks and source-only
+experiments. The development extra includes its Node runtime and the build tools
+used by the installed-wheel test; CI also selects Node 22 explicitly. Chex is a
+declared runtime dependency because Coordax imports its testing helper on import.
+The Wishart reference uses the declared NumPy/SciPy dependencies. Optional AMG
+tests skip when its extra is absent; install `.[amg]` to exercise them.
 
 Tests exercise public fit/predict behavior on synthetic arrays and build a wheel
 to run outside the source tree. Extracted components and their license are listed

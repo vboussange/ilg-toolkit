@@ -6,6 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from ilg_toolkit import (
     CalibratedModel,
@@ -29,11 +30,19 @@ class ScalarEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
 
+    def __init__(self, weight: jax.Array):
+        self.weight = weight
+
     def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
         return features * self.weight
 
 
-def known_ensemble():
+def completed_model(member: EnsembleMember) -> CalibratedModel:
+    assert member.model is not None
+    return member.model
+
+
+def known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
     region = RegionBatch(
         "alpine",
         np.arange(4).reshape(1, 4, 1),
@@ -64,6 +73,9 @@ def known_ensemble():
 def test_label_free_eligible_predictions_average_first_and_score_each_pair_once():
     region, ensemble, target = known_ensemble()
     prediction = predict_out_of_fold(ensemble, region, [("d", "c"), ("a", "b"), ("c", "d")])
+    for values in (prediction.values, prediction.member_values, prediction.member_spread):
+        assert isinstance(values, jax.Array)
+        assert values.dtype == jnp.float64
     assert prediction.keys == (("alpine", ("a", "b")), ("alpine", ("c", "d")))
     np.testing.assert_array_equal(prediction.eligible_counts, [0, 2])
     np.testing.assert_array_equal(prediction.covered_mask, [False, True])
@@ -73,6 +85,8 @@ def test_label_free_eligible_predictions_average_first_and_score_each_pair_once(
     assert prediction.coverage == 0.5
     observations = PairwiseObservations.from_pairs([("a", "b"), ("c", "d")], [1, 3], target=target)
     evaluation = score_out_of_fold(prediction, observations)
+    assert isinstance(evaluation.observed_values, jax.Array)
+    assert evaluation.observed_values.dtype == jnp.float64
     assert evaluation.n_pairs == 1
     assert evaluation.n_query_pairs == 2
     assert evaluation.mse == 0.25
@@ -115,7 +129,7 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
     np.testing.assert_array_equal(first.predictions.values, perturbed.predictions.values)
     assert first.mse != perturbed.mse
     for member in ensemble.members:
-        head = member.model.calibrations[region.name]
+        head = completed_model(member).calibrations[region.name]
         assert set(folds[0].held_out_units[region.name]).issubset(head.population_ids)
         assert not any(
             set(pair) & set(folds[0].held_out_units[region.name]) for pair in head.calibration_pairs
@@ -126,6 +140,14 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
         )
 
 
+def test_oof_float64_outputs_require_explicit_device_precision():
+    with jax.enable_x64(False):
+        region, ensemble, _ = known_ensemble()
+        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
+            predict_out_of_fold(ensemble, region, [("c", "d")])
+        assert jax.config.read("jax_enable_x64") is False
+
+
 def test_validation_selection_and_own_query_target_access_preclude_scoring():
     from dataclasses import replace
 
@@ -134,7 +156,7 @@ def test_validation_selection_and_own_query_target_access_preclude_scoring():
     region, ensemble, target = known_ensemble()
     contaminated = []
     for member in ensemble.members:
-        model = replace(member.model, validation_pairs={region.name: (("d", "c"),)})
+        model = replace(completed_model(member), validation_pairs={region.name: (("d", "c"),)})
         contaminated.append(replace(member, model=model))
     contaminated = Ensemble(tuple(contaminated))
     observed = PairwiseObservations.from_pairs([("c", "d")], [3], target=target)
@@ -166,7 +188,7 @@ def test_at_least_one_requires_the_same_endpoint_to_be_heldout_and_still_unseen(
     members = []
     for member in ensemble.members:
         model = replace(
-            member.model,
+            completed_model(member),
             training_pairs={region.name: ()},
             validation_pairs={region.name: (("a", "c"),)},
         )
@@ -205,13 +227,15 @@ def test_failed_pending_and_unknown_access_members_are_explicit_in_coverage():
     unavailable = predict_out_of_fold(Ensemble((pending,)), region, [("c", "d")], target=target)
     assert unavailable.coverage == 0
     assert unavailable.member_statuses[pending.identity.member_id] == "pending"
-    unknown = replace(first, model=replace(first.model, training_pairs={}))
+    unknown = replace(first, model=replace(completed_model(first), training_pairs={}))
     unknown_result = predict_out_of_fold(Ensemble((unknown,)), region, [("c", "d")])
     assert unknown_result.coverage == 0
     assert unknown_result.exclusion_reasons[unknown.identity.member_id] == (
         "unknown_encoder_access",
     )
-    declared = replace(unknown, model=replace(unknown.model, training_pairs={region.name: ()}))
+    declared = replace(
+        unknown, model=replace(completed_model(unknown), training_pairs={region.name: ()})
+    )
     declared_result = predict_out_of_fold(Ensemble((declared,)), region, [("c", "d")])
     assert declared_result.coverage == 1
 
@@ -248,21 +272,25 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
         old = next(label for label in region.sampling_unit_ids if label not in held)
         cross = ObservationPartition(region.name, ((held[0], old),), "calibration")
         training = member.fold.training[region.name]
-        recalibrated = member.model.recalibrate(region, observations, partitions=(training, cross))
+        recalibrated = completed_model(member).recalibrate(
+            region, observations, partitions=(training, cross)
+        )
         changed = Ensemble((replace(member, model=recalibrated),))
         strict = predict_out_of_fold(changed, region, [held])
         partial = predict_out_of_fold(
             changed, region, [held], regime=EvaluationRegime(endpoint_regime="at_least_one_unseen")
         )
-        own = ObservationPartition(region.name, (held,), "calibration")
-        contaminated = member.model.recalibrate(region, observations, partitions=(training, own))
+        own = ObservationPartition(region.name, ((held[0], held[1]),), "calibration")
+        contaminated = completed_model(member).recalibrate(
+            region, observations, partitions=(training, own)
+        )
         forbidden = predict_out_of_fold(
             Ensemble((replace(member, model=contaminated),)),
             region,
             [held],
             regime=EvaluationRegime(endpoint_regime="at_least_one_unseen"),
         )
-    assert recalibrated.encoder is member.model.encoder
+    assert recalibrated.encoder is completed_model(member).encoder
     assert strict.coverage == 0
     assert partial.coverage == 1
     assert forbidden.coverage == 0
@@ -313,7 +341,7 @@ def test_recalibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_tr
         )
         member = ensemble.members[0]
         assert member.status == "completed"
-        recalibrated = member.model.recalibrate(
+        recalibrated = completed_model(member).recalibrate(
             region,
             observed,
             partitions=(
@@ -352,8 +380,13 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
                 endpoint_regime="at_least_one_unseen", prediction_mode="known_effects"
             ),
         )
-        expected_known = member.model.predict_known_effects(region, [tuple(sorted(known_pair))])
+        expected_known = completed_model(member).predict_known_effects(
+            region, [tuple(sorted(known_pair))]
+        )
         np.testing.assert_allclose(known.values, expected_known.values, atol=1e-12)
+        assert known.member_model_variances is not None
+        assert isinstance(known.member_model_variances, jax.Array)
+        assert known.member_model_variances.dtype == jnp.float64
         np.testing.assert_allclose(
             known.member_model_variances[0], expected_known.model_variance, atol=1e-12
         )
@@ -391,10 +424,11 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
         conditional = predict_out_of_fold(
             ensemble, region, [held], support=support, regime=permitted
         )
-        expected = member.model.predict_with_support(
+        expected = completed_model(member).predict_with_support(
             region, [held], support_observed, support_partition=support.partition
         )
         np.testing.assert_allclose(conditional.values, expected.values, atol=1e-12)
+        assert conditional.member_model_variances is not None
         np.testing.assert_allclose(
             conditional.member_model_variances[0], expected.model_variance, atol=1e-12
         )
@@ -434,7 +468,8 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
             },
         )
         model = replace(
-            member.model, training_pairs={"alpine": (("c", "d"),), "valley": (("a", "b"),)}
+            completed_model(member),
+            training_pairs={"alpine": (("c", "d"),), "valley": (("a", "b"),)},
         )
         members.append(replace(member, fold=fold, model=model))
     regional = predict_out_of_fold(
@@ -443,7 +478,9 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
     np.testing.assert_array_equal(regional.eligible_counts, [0, 2])
     broken = replace(
         ensemble.members[0],
-        model=replace(ensemble.members[0].model, encoder=ScalarEmbedding(jnp.asarray(np.nan))),
+        model=replace(
+            completed_model(ensemble.members[0]), encoder=ScalarEmbedding(jnp.asarray(np.nan))
+        ),
     )
     partial = predict_out_of_fold(Ensemble((broken, ensemble.members[1])), region, [("c", "d")])
     np.testing.assert_array_equal(partial.eligible_counts, [1])
@@ -485,7 +522,7 @@ def test_only_eligible_pairs_are_inverse_transformed():
         assert ensemble.members[0].status == "completed"
         with pytest.raises(ValueError, match="sqrt inverse"):
             ensemble.predict(region)  # unrelated (a,e) has score16 and fitted mean-4
-        marginal = ensemble.members[0].model.predict_pairs(region, [("d", "e")])
+        marginal = completed_model(ensemble.members[0]).predict_pairs(region, [("d", "e")])
         assert marginal.pairs == (("d", "e"),)
         assert marginal.target == target
         assert marginal.region_name == region.name
@@ -508,7 +545,7 @@ def test_reused_calibration_support_cannot_contribute_and_target_scales_must_mat
         region, observations, ensemble = fitted_member_problem()
         member = ensemble.members[0]
         held = member.fold.held_out_units[region.name]
-        reused = member.model.calibrations[region.name].calibration_pairs[0]
+        reused = completed_model(member).calibrations[region.name].calibration_pairs[0]
         values = {
             tuple(sorted(pair)): value
             for pair, value in zip(
@@ -558,12 +595,13 @@ def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_o
     region = replace(region, features=np.array([0, 100, 1, 2]).reshape(1, 4, 1))
     target = TargetSpec("divergence", units="index", transform="log1p")
     members = tuple(
-        replace(member, model=replace(member.model, target=target)) for member in ensemble.members
+        replace(member, model=replace(completed_model(member), target=target))
+        for member in ensemble.members
     )
     ensemble = Ensemble(members)
     expected = [np.expm1(1), np.expm1(4)]
     for member, value in zip(members, expected, strict=True):
-        model = member.model
+        model = completed_model(member)
         with pytest.raises(FloatingPointError, match="inverse transformation"):
             model.predict(region)
         selected = model.predict_pairs(region, [("d", "c")])
@@ -583,7 +621,7 @@ def test_pair_queries_require_unique_distinct_labels_with_query_locations():
     import pytest
 
     region, ensemble, _ = known_ensemble()
-    model = ensemble.members[0].model
+    model = completed_model(ensemble.members[0])
     for pairs in ([], [("a", "a")], [("a", "b"), ("b", "a")], [("a",)], ["ab"], [("a", "unknown")]):
         with pytest.raises(ValueError):
             model.predict_pairs(region, pairs)

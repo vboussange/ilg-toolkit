@@ -16,11 +16,14 @@ class ScalarEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
 
+    def __init__(self, weight: jax.Array):
+        self.weight = weight
+
     def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
         return features[..., :1] * self.weight
 
 
-def regions_and_observations():
+def regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObservations]]:
     regions = [
         RegionBatch(
             "wide",
@@ -73,6 +76,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective():
             model=ScalarEmbedding(jnp.asarray(initial, dtype=jnp.float64)),
             config=TrainingConfig(epochs=1, learning_rate=0.01),
         )
+        assert isinstance(result.model.encoder, ScalarEmbedding)
         np.testing.assert_allclose(result.model.encoder.weight, expected, rtol=1e-8)
         np.testing.assert_allclose(
             result.history[0].training_loss, independent_objective(initial), rtol=1e-8
@@ -86,6 +90,9 @@ def test_shared_embedding_update_matches_independent_equal_region_objective():
 class ScaledConductance(ConductanceModel):
     log_scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, log_scale: jax.Array):
+        self.log_scale = log_scale
 
     def conductance(self, features, *, patch_batch_size=None):
         return jnp.exp(self.log_scale) * features[..., 0]
@@ -160,6 +167,7 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
             model=ScaledConductance(jnp.asarray(initial, dtype=jnp.float64)),
             config=TrainingConfig(epochs=1, learning_rate=0.01),
         )
+        assert isinstance(result.model.encoder, ScaledConductance)
         np.testing.assert_allclose(result.model.encoder.log_scale, expected, rtol=1e-8)
         np.testing.assert_allclose(
             result.history[0].training_loss, independent_objective(initial), rtol=1e-8
@@ -191,6 +199,7 @@ class StochasticEmbedding(EmbeddingDistanceModel):
         )
         if inference:
             return values
+        assert key is not None
         return values * jax.random.bernoulli(key, 0.7, values.shape) / 0.7
 
 
@@ -218,6 +227,8 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory():
         epoch.training_by_region for epoch in validated.history
     ]
     reordered = fit(reversed_regions, reversed_observations, model=model, config=config)
+    assert isinstance(baseline.model.encoder, StochasticEmbedding)
+    assert isinstance(reordered.model.encoder, StochasticEmbedding)
     np.testing.assert_array_equal(baseline.model.encoder.weight, reordered.model.encoder.weight)
 
 

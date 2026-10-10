@@ -69,7 +69,10 @@ def test_validation_selects_model_without_refitting_on_validation_targets():
     )
     assert result.selection == "validation"
     assert result.selected_epoch == 0
-    assert result.history[-1].validation_loss > result.history[0].validation_loss
+    final_loss = result.history[-1].validation_loss
+    initial_loss = result.history[0].validation_loss
+    assert final_loss is not None and initial_loss is not None
+    assert final_loss > initial_loss
     np.testing.assert_allclose(result.model.predict(region).values, initial, atol=1e-5)
 
 
