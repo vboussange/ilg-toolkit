@@ -1,14 +1,17 @@
 """Public prepared-input and fit/predict contracts from the approved spec seam."""
 
+from typing import final
+
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from ilg_toolkit import TrainingConfig, PairwiseObservations, RegionBatch, TargetSpec, fit
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
 from ilg_toolkit.models import EmbeddingDistanceModel
 
 
+@final
 class LinearEmbedding(EmbeddingDistanceModel):
     """Small real distance encoder using the documented model extension boundary."""
 
@@ -57,7 +60,10 @@ def test_incomplete_pairs_remain_absent_through_fitting():
         sampling_unit_ids=region.sampling_unit_ids,
     )
     result = fit(
-        region, observations, model=LinearEmbedding(jnp.asarray(1.0)), config=TrainingConfig(epochs=0)
+        region,
+        observations,
+        model=LinearEmbedding(jnp.asarray(1.0)),
+        config=TrainingConfig(epochs=0),
     )
     assert observations.observed_pairs == (("unit/7", "unit/20"),)
     assert np.isnan(observations.values[0, 2])
@@ -73,7 +79,10 @@ def test_explicit_transform_returns_original_units_and_separate_landscape_scores
         [("unit/7", "unit/20")], [np.e - 1], target=target
     )
     result = fit(
-        region, observations, model=LinearEmbedding(jnp.asarray(1.0)), config=TrainingConfig(epochs=0)
+        region,
+        observations,
+        model=LinearEmbedding(jnp.asarray(1.0)),
+        config=TrainingConfig(epochs=0),
     )
     prediction = result.model.predict(region)
     assert result.history[0].training_loss < 1e-12

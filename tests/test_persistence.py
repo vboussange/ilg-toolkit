@@ -32,14 +32,47 @@ def test_direct_model_roundtrip_preserves_prepared_contract_and_predictions(tmp_
     path = tmp_path / "direct.ilg"
     save_model(path, model)
     restored = load_model(path)
-    np.testing.assert_array_equal(
-        restored.landscape_scores(region), model.landscape_scores(region)
-    )
+    np.testing.assert_array_equal(restored.landscape_scores(region), model.landscape_scores(region))
     np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
     assert restored.target == model.target
     assert restored.feature_names == model.feature_names
     assert restored.training_pairs == model.training_pairs
     assert restored.encoder.encoder1.dropout.p == 0.23
+
+
+def test_model_loader_retains_schema_one_inference_artifacts(tmp_path):
+    """Renaming the Python model must keep the established numeric format usable."""
+    import json
+    import zipfile
+
+    from ilg_toolkit import CalibratedModel, load_model, save_model
+
+    region, observations, _, _ = problem()
+    model = fit(
+        region,
+        observations,
+        model=UNetEmbeddingDistance(
+            2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(3)
+        ),
+        config=TrainingConfig(epochs=0),
+    ).model
+    assert isinstance(model, CalibratedModel)
+    assert model.calibrations == {}
+    path = tmp_path / "schema-one.ilg"
+    save_model(path, model)
+    with zipfile.ZipFile(path) as archive:
+        content = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(content["manifest.json"])
+    assert manifest["schema"] == 1
+    # The established format predates the public CalibratedModel name.
+    manifest["kind"] = "predictor"
+    content["manifest.json"] = json.dumps(manifest).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, value in content.items():
+            archive.writestr(name, value)
+    restored = load_model(path)
+    assert isinstance(restored, CalibratedModel)
+    np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
 
 
 def test_mlpe_reload_retains_regional_posteriors_and_support_predictions(tmp_path):
@@ -78,12 +111,8 @@ def test_mlpe_reload_retains_regional_posteriors_and_support_predictions(tmp_pat
         path = tmp_path / "mlpe.ilg"
         save_model(path, model)
         restored = load_model(path)
-        np.testing.assert_array_equal(
-            restored.predict(region).values, model.predict(region).values
-        )
-        np.testing.assert_array_equal(
-            restored.predict(other).values, model.predict(other).values
-        )
+        np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
+        np.testing.assert_array_equal(restored.predict(other).values, model.predict(other).values)
         query = (("population-4", "population-2"), ("population-5", "population-3"))
         before = model.predict_known_effects(region, query)
         after = restored.predict_known_effects(region, query)
@@ -246,7 +275,10 @@ def test_partial_regional_calibration_roundtrip_retains_available_predictions(
     )
     if shared_training:
         fitted = fit(
-            (original, other), (observations, observations), model=model, config=TrainingConfig(epochs=0)
+            (original, other),
+            (observations, observations),
+            model=model,
+            config=TrainingConfig(epochs=0),
         )
     else:
         fitted = fit(original, observations, model=model, config=TrainingConfig(epochs=0))
@@ -281,7 +313,9 @@ def test_numpy_numeric_config_values_survive_inference_and_checkpoint_reload(tmp
     config = TrainingConfig(
         epochs=0,
         learning_rate=np.float32(0.01),
-        solver=ResistanceSolverConfig(rtol=np.float32(1e-6), atol=np.float32(1e-7), max_steps=np.int64(200)),
+        solver=ResistanceSolverConfig(
+            rtol=np.float32(1e-6), atol=np.float32(1e-7), max_steps=np.int64(200)
+        ),
         mlpe_variance_floor=np.float32(1e-10),
         mlpe_jitter=np.float32(1e-8),
         mlpe_initial_variances=(np.float32(0.05), np.float32(0.1)),

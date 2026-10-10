@@ -8,9 +8,20 @@ Inverse landscape genetics: learning relationships between landscapes and pairwi
 The prepared landscape features and sampling-unit locations for one region, independent of genetic observations.
 _Avoid_: Prepared region, when naming this input boundary.
 
+**Training configuration**:
+The explicit optimization budget and numerical settings supplied as `TrainingConfig`.
+_Avoid_: FitConfig, when naming this public configuration.
+
 **Calibrated model**:
 A fitted landscape encoder together with the target-scale relationship and regional calibration needed for genetic prediction. Direct regression uses its declared target transform; MLPE uses explicit regional genetic calibration.
-_Avoid_: CalibratedModel.
+The public API names this boundary `CalibratedModel`.
+_Avoid_: Predictor, when naming this fitted model boundary.
+
+**Resistance calculation**:
+Effective resistance between sampling-unit nodes in a conductance graph, computed
+by `effective_resistance`. `ResistanceSolverConfig` declares numerical settings;
+`ResistanceSolverContext` holds a reusable solver for one graph shape.
+_Avoid_: Distance solver, when referring specifically to resistance computation.
 
 **Isolation by distance (IBD)**:
 A reference relationship between geographic separation and genetic dissimilarity, independent of landscape resistance.

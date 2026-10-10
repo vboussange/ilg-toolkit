@@ -1,5 +1,7 @@
 """Actual graph calculation checked against independent tiny-graph references."""
 
+from typing import final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -7,11 +9,11 @@ import numpy as np
 import pytest
 
 from ilg_toolkit import (
-    TrainingConfig,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
+    TrainingConfig,
     fit,
 )
 from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
@@ -83,7 +85,9 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
             region,
             observations,
             model=model,
-            config=TrainingConfig(epochs=4, learning_rate=0.001, solver=ResistanceSolverConfig(rtol=1e-8)),
+            config=TrainingConfig(
+                epochs=4, learning_rate=0.001, solver=ResistanceSolverConfig(rtol=1e-8)
+            ),
         )
         assert result.history[-1].training_loss < result.history[0].training_loss
         surface = result.model.conductance_surface(region)
@@ -96,6 +100,7 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
         assert prediction.target.units == "index"
 
 
+@final
 class PointConductance(ConductanceModel):
     """Tiny learnable encoder keeps failure tests independent of CNN compilation."""
 

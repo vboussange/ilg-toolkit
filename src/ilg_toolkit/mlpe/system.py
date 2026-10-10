@@ -3,6 +3,7 @@
 from typing import NamedTuple
 
 import jax.numpy as jnp
+from jax import Array
 from jax.scipy.linalg import cho_solve
 
 # A conservative precision bound protects incomplete/bipartite endpoint systems.
@@ -22,16 +23,16 @@ def endpoint_sums(values, left, right, weights, n_populations):
 class PopulationSystem(NamedTuple):
     """Factor of I + (u/d) Z.T Z and its observed endpoint representation."""
 
-    left: object
-    right: object
-    weights: object
-    factor: object
-    unit: object
-    residual: object
-    count: object
-    logdet: object
-    valid: object
-    identifiable: object
+    left: Array
+    right: Array
+    weights: Array
+    factor: Array
+    unit: Array
+    residual: Array
+    pair_count: Array
+    logdet: Array
+    valid: Array
+    identifiable: Array
 
     def residual_components(self, values):
         """Positive representation for B.T V^-1 C; stable against subtraction."""
@@ -55,6 +56,7 @@ def population_system(left, right, *, n_populations, unit, residual, weights, dt
     ``residual`` already includes the caller's explicitly declared jitter.
     Masked indices are sanitized and never used to index a sampling unit.
     """
+    unit, residual = jnp.asarray(unit, dtype=dtype), jnp.asarray(residual, dtype=dtype)
     left, right = jnp.asarray(left, dtype=jnp.int32), jnp.asarray(right, dtype=jnp.int32)
     valid_endpoints = jnp.all(
         (~weights)

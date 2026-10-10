@@ -106,7 +106,11 @@ def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian()
         4 * np.log(2 * np.pi) + np.linalg.slogdet(v)[1] + residual @ np.linalg.solve(v, residual)
     )
     with jax.enable_x64():
-        kwargs = dict(
+        mean, covariance, factor = mlpe_effect_posterior(
+            scores,
+            y,
+            left,
+            right,
             n_populations=4,
             fixed_effects=jnp.asarray(beta),
             raw_variances=jnp.asarray(raw),
@@ -114,8 +118,18 @@ def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian()
             score_scale=scores.std(ddof=1),
             jitter=1e-7,
         )
-        mean, covariance, factor = mlpe_effect_posterior(scores, y, left, right, **kwargs)
-        nll = mlpe_ml_negative_log_likelihood(scores, y, left, right, **kwargs)
+        nll = mlpe_ml_negative_log_likelihood(
+            scores,
+            y,
+            left,
+            right,
+            n_populations=4,
+            fixed_effects=jnp.asarray(beta),
+            raw_variances=jnp.asarray(raw),
+            score_center=scores.mean(),
+            score_scale=scores.std(ddof=1),
+            jitter=1e-7,
+        )
         mean, covariance, factor = map(np.asarray, (mean, covariance, factor))
     np.testing.assert_allclose(mean, expected_mean, atol=1e-12)
     np.testing.assert_allclose(covariance, expected_covariance, atol=1e-12)

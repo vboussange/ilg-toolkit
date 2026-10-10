@@ -1,17 +1,19 @@
 """OOF eligibility checks actual target access and pools unique pairs once."""
 
+from typing import final
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from ilg_toolkit import (
+    CalibratedModel,
     Ensemble,
     EnsembleMember,
     ObservationPartition,
     PairwiseObservations,
     PopulationFold,
-    CalibratedModel,
     RegionBatch,
     TargetSpec,
     ensemble_member_identity,
@@ -22,6 +24,7 @@ from ilg_toolkit import (
 from ilg_toolkit.models import EmbeddingDistanceModel
 
 
+@final
 class ScalarEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
@@ -208,9 +211,7 @@ def test_failed_pending_and_unknown_access_members_are_explicit_in_coverage():
     assert unknown_result.exclusion_reasons[unknown.identity.member_id] == (
         "unknown_encoder_access",
     )
-    declared = replace(
-        unknown, model=replace(unknown.model, training_pairs={region.name: ()})
-    )
+    declared = replace(unknown, model=replace(unknown.model, training_pairs={region.name: ()}))
     declared_result = predict_out_of_fold(Ensemble((declared,)), region, [("c", "d")])
     assert declared_result.coverage == 1
 
@@ -247,18 +248,14 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
         old = next(label for label in region.sampling_unit_ids if label not in held)
         cross = ObservationPartition(region.name, ((held[0], old),), "calibration")
         training = member.fold.training[region.name]
-        recalibrated = member.model.recalibrate(
-            region, observations, partitions=(training, cross)
-        )
+        recalibrated = member.model.recalibrate(region, observations, partitions=(training, cross))
         changed = Ensemble((replace(member, model=recalibrated),))
         strict = predict_out_of_fold(changed, region, [held])
         partial = predict_out_of_fold(
             changed, region, [held], regime=EvaluationRegime(endpoint_regime="at_least_one_unseen")
         )
         own = ObservationPartition(region.name, (held,), "calibration")
-        contaminated = member.model.recalibrate(
-            region, observations, partitions=(training, own)
-        )
+        contaminated = member.model.recalibrate(region, observations, partitions=(training, own))
         forbidden = predict_out_of_fold(
             Ensemble((replace(member, model=contaminated),)),
             region,
@@ -446,9 +443,7 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
     np.testing.assert_array_equal(regional.eligible_counts, [0, 2])
     broken = replace(
         ensemble.members[0],
-        model=replace(
-            ensemble.members[0].model, encoder=ScalarEmbedding(jnp.asarray(np.nan))
-        ),
+        model=replace(ensemble.members[0].model, encoder=ScalarEmbedding(jnp.asarray(np.nan))),
     )
     partial = predict_out_of_fold(Ensemble((broken, ensemble.members[1])), region, [("c", "d")])
     np.testing.assert_array_equal(partial.eligible_counts, [1])
@@ -563,8 +558,7 @@ def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_o
     region = replace(region, features=np.array([0, 100, 1, 2]).reshape(1, 4, 1))
     target = TargetSpec("divergence", units="index", transform="log1p")
     members = tuple(
-        replace(member, model=replace(member.model, target=target))
-        for member in ensemble.members
+        replace(member, model=replace(member.model, target=target)) for member in ensemble.members
     )
     ensemble = Ensemble(members)
     expected = [np.expm1(1), np.expm1(4)]

@@ -1,6 +1,7 @@
 """Frozen model recalibration and regional transfer at the public seam."""
 
 from dataclasses import replace
+from typing import final
 
 import equinox as eqx
 import jax
@@ -8,16 +9,17 @@ import jax.numpy as jnp
 import numpy as np
 
 from ilg_toolkit import (
-    TrainingConfig,
     ObservationPartition,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
+    TrainingConfig,
     fit,
 )
 from ilg_toolkit.models import EmbeddingDistanceModel
 
 
+@final
 class ScalarEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
