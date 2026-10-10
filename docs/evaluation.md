@@ -2,8 +2,20 @@
 
 Deployment `ensemble.predict(region)` averages all members. Out-of-fold
 prediction selects members separately for each canonical `(region, unordered
-pair)` and reports coverage. Run `python examples/evaluation.py` for a synthetic
-fit and evaluation.
+pair)` and reports coverage. Run `python examples/ensemble.py` for the complete
+synthetic fit and prediction workflow.
+
+| Operation | Genetic information used for prediction | Evaluation requirement | Returned quantities |
+| --- | --- | --- | --- |
+| `ensemble.predict(region)` | Each member's saved calibration; population effects marginalised | Deployment; all requested members must be available | Original-scale mean, member values and descriptive SD |
+| `model.predict_known_effects(region, pairs)` | Saved posterior population effects | Explicit mode; accessed calibration targets cannot be OOF queries | Original-scale points, model-scale variance and access provenance |
+| `model.predict_with_support(...)` | Saved posterior plus exactly declared disjoint support targets | Explicit support partition; query targets remain separate | Conditional points, model-scale variance and support provenance |
+| `predict_out_of_fold(...)` | Only eligible members' marginal predictions by default | Nominal holdout and actual unseen endpoint access; own-query target forbidden | Unique-pair predictions, eligible counts, coverage and descriptive SD |
+| OOF with an explicit known/support `EvaluationRegime` | Stored effects or declared support, as selected | Same own-target rules; declared support endpoint policy retained | Conditional OOF points/coverage and separate per-member model variances |
+| `score_out_of_fold(prediction, observations)` | Reads original-scale query targets after predictions and eligibility are frozen | Scores each covered unique pair once | MSE, RMSE, MAE, covered-pair count and observed targets; no uncertainty interval |
+
+Numerical means, member values, spreads and conditional variances are JAX arrays.
+Coverage masks/counts and access/provenance records retain labelled host metadata.
 
 ```python
 from ilg_toolkit import evaluate_ensemble

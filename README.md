@@ -396,7 +396,7 @@ Continuation requires identical selected observations, landscapes, target and
 feature declarations, validation inputs and configuration; only the total epoch
 budget may increase. Include the same partitions and validation arguments when
 resuming. The state uses a legacy uint32 JAX random key; solver contexts are
-rebuilt from the declared solver settings. [Training checkpoints](docs/checkpoints.md)
+rebuilt from the declared solver settings. [Persistence operations](docs/persistence.md)
 describe atomic disk save/load, per-epoch checkpoint callbacks, and compatibility.
 
 Save a complete fitted model for inference in another process:
@@ -412,12 +412,12 @@ prediction = model.predict(prepared_query_region)
 The artifact retains feature and target contracts, solver settings, regional
 calibrations, population-effect posteriors and observation-use provenance.
 It supports the shipped U-Net and ResNet9 encoders and is separate from a
-resumable training checkpoint. See [the inference artifact contract](docs/inference-artifacts.md).
+resumable training checkpoint. See [the persistence guide](docs/persistence.md).
 
 ## Independent fold ensembles
 
-Run `python examples/ensemble.py` for actual independent U-Net/MLPE fits and
-`python examples/ensemble_averages.py` for known-output transform and graph checks.
+Run `python examples/ensemble.py` for independent U-Net/MLPE fits, deployment,
+known effects, declared support and eligible out-of-fold evaluation.
 
 ```python
 from ilg_toolkit import fit_ensemble
@@ -488,7 +488,7 @@ member checkpoints and an atomic run manifest. Resume with the same inputs and
 `resume=True` to skip compatible completed members and continue unfinished
 ones. An explicit larger total epoch budget continues completed members from
 their saved state. Missing, corrupt, incompatible or failed members remain
-explicit. See [ensemble persistence](docs/ensemble-persistence.md) for usage,
+explicit. See [persistence operations](docs/persistence.md) for usage,
 compatibility, callbacks and artifact composition.
 
 ## Out-of-fold evaluation
@@ -501,4 +501,4 @@ members are averaged before each unique region/pair contributes once to metrics.
 Coverage, member failures and exclusions remain explicit. Default prediction is
 marginal with both endpoints untouched; known effects and support conditioning
 require explicit regimes. See [the evaluation contract](docs/evaluation.md) and
-run `python examples/evaluation.py` for a synthetic fitted example.
+run `python examples/ensemble.py` for a synthetic fitted example.
