@@ -325,7 +325,9 @@ def predict_out_of_fold(
         raise ValueError("regime must be an EvaluationRegime")
     completed = [member for member in ensemble.members if member.status == "completed"]
     if completed:
-        inferred = completed[0].model.target
+        completed_model = completed[0].model
+        assert completed_model is not None  # Ensemble validates completed members.
+        inferred = completed_model.target
         if target is not None and target != inferred:
             raise ValueError("Declared evaluation target scale must match ensemble members")
         target = inferred
@@ -335,6 +337,7 @@ def predict_out_of_fold(
     supports = _support_inputs(support, regions, queries, target, regime)
     keys = tuple((name, pair) for name in sorted(queries) for pair in queries[name])
     member_ids = ensemble.expected_member_ids
+    assert member_ids is not None  # Ensemble normalizes its requested composition.
     by_id = {member.identity.member_id: member for member in ensemble.members}
     values = np.full((len(member_ids), len(keys)), np.nan)
     variances = None if regime.prediction_mode == "marginal" else np.full_like(values, np.nan)
@@ -342,7 +345,7 @@ def predict_out_of_fold(
     statuses = {member_id: by_id[member_id].status for member_id in member_ids}
     for row, member_id in enumerate(member_ids):
         member = by_id[member_id]
-        member_reasons = [None] * len(keys)
+        member_reasons: list[str | None] = [None] * len(keys)
         reasons[member_id] = member_reasons
         if member.status != "completed":
             member_reasons[:] = [f"member_{member.status}"] * len(keys)
@@ -350,11 +353,13 @@ def predict_out_of_fold(
                 "member", "Pending", "Member is pending"
             )
             continue
+        model = member.model
+        assert model is not None  # A completed member retains its inference model.
         access_records[member_id], provenance_records[member_id] = {}, {}
         for name, prepared in regions.items():
             columns = [index for index, (region_name, _) in enumerate(keys) if region_name == name]
             try:
-                access = _access(member.model, name, supports.get(name), regime)
+                access = _access(model, name, supports.get(name), regime)
                 access_records[member_id][name] = access
                 eligible = []
                 for column in columns:
@@ -367,7 +372,7 @@ def predict_out_of_fold(
                 if not eligible:
                     continue
                 predicted, model_variance, provenance = _member_predict(
-                    member.model,
+                    model,
                     prepared,
                     tuple(keys[column][1] for column in eligible),
                     regime,
@@ -376,6 +381,7 @@ def predict_out_of_fold(
                 )
                 values[row, eligible] = predicted
                 if model_variance is not None:
+                    assert variances is not None
                     variances[row, eligible] = model_variance
                 if provenance is not None:
                     provenance_records[member_id][name] = provenance
@@ -464,9 +470,13 @@ def evaluate_ensemble(
     """Predict from declared query identities, then score original-scale observations."""
     inputs = _normalize_inputs(region, observations, partitions)
     regions, queries, observed_by_region = {}, {}, {}
-    target = inputs[0][1].target
+    target = None
     for prepared, observed, partition in inputs:
-        if observed.target != target:
+        if observed is None:
+            raise ValueError("Evaluation scoring requires pairwise observations")
+        if target is None:
+            target = observed.target
+        elif observed.target != target:
             raise ValueError("Regional scoring targets must have identical scale contracts")
         if not set(observed.sampling_unit_ids).issubset(prepared.sampling_unit_ids):
             raise ValueError("Scoring observation labels require prepared query locations")

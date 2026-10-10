@@ -37,6 +37,7 @@ def test_direct_model_roundtrip_preserves_prepared_contract_and_predictions(tmp_
     assert restored.target == model.target
     assert restored.feature_names == model.feature_names
     assert restored.training_pairs == model.training_pairs
+    assert isinstance(restored.encoder, UNetEmbeddingDistance)
     assert restored.encoder.encoder1.dropout.p == 0.23
 
 
@@ -246,6 +247,7 @@ def test_model_precision_is_preserved_and_never_silently_truncated(tmp_path):
         model = CalibratedModel(model, TargetSpec("divergence"), feature_count=2)
         save_model(path, model)
         restored = load_model(path)
+        assert isinstance(restored.encoder, UNetEmbeddingDistance)
         assert restored.encoder.patch_embedding.weight.dtype == np.float64
         region, _, _, _ = problem()
         # This hand-constructed model has no named feature contract.
@@ -310,11 +312,16 @@ def test_numpy_numeric_config_values_survive_inference_and_checkpoint_reload(tmp
     )
 
     region, observations, _, _ = problem("numeric-config")
-    config = TrainingConfig(
-        epochs=0,
+    # Replacement calls the dataclass constructors with these NumPy inputs;
+    # retained fields are normalized to their declared Python scalar types.
+    config = replace(
+        TrainingConfig(epochs=0),
         learning_rate=np.float32(0.01),
-        solver=ResistanceSolverConfig(
-            rtol=np.float32(1e-6), atol=np.float32(1e-7), max_steps=np.int64(200)
+        solver=replace(
+            ResistanceSolverConfig(),
+            rtol=np.float32(1e-6),
+            atol=np.float32(1e-7),
+            max_steps=np.int64(200),
         ),
         mlpe_variance_floor=np.float32(1e-10),
         mlpe_jitter=np.float32(1e-8),
@@ -332,6 +339,7 @@ def test_numpy_numeric_config_values_survive_inference_and_checkpoint_reload(tmp
         restored.predict(region).values, fitted.model.predict(region).values
     )
     checkpoint = tmp_path / "numpy-config-checkpoint.ilg"
+    assert fitted.state is not None
     save_checkpoint(checkpoint, fitted.state)
     state = load_checkpoint(checkpoint)
     assert state.config == config
@@ -340,7 +348,8 @@ def test_numpy_numeric_config_values_survive_inference_and_checkpoint_reload(tmp
     calibrated = fitted.model.recalibrate(
         region,
         observations,
-        config=MLPEConfig(
+        config=replace(
+            MLPEConfig(),
             variance_floor=np.float32(1e-10),
             min_score_scale=np.float32(1e-12),
             jitter=np.float32(1e-8),

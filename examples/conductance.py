@@ -4,11 +4,11 @@ import jax
 import numpy as np
 
 from ilg_toolkit import (
-    TrainingConfig,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
+    TrainingConfig,
     fit,
 )
 from ilg_toolkit.models import ResNet9Conductance
