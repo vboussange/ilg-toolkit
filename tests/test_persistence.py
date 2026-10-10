@@ -249,7 +249,7 @@ def test_model_precision_is_preserved_and_never_silently_truncated(tmp_path):
         assert restored.encoder.patch_embedding.weight.dtype == np.float64
         region, _, _, _ = problem()
         # This hand-constructed model has no named feature contract.
-        region = replace(region, feature_names=None)
+        region = replace(region, features=region.feature_array, feature_names=None)
         np.testing.assert_array_equal(
             restored.landscape_scores(region), model.landscape_scores(region)
         )

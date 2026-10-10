@@ -233,13 +233,19 @@ def test_incompatible_regional_inputs_fail_before_optimization():
     cases = [
         ([regions[0], regions[0]], observations, None, "unique"),
         (
-            [replace(region, feature_names=None) for region in regions],
+            [
+                replace(region, features=region.feature_array, feature_names=None)
+                for region in regions
+            ],
             observations,
             None,
             "explicit feature_names",
         ),
         (
-            [regions[0], replace(regions[1], feature_names=("canopy",))],
+            [
+                regions[0],
+                replace(regions[1], features=regions[1].feature_array, feature_names=("canopy",)),
+            ],
             observations,
             None,
             "feature contracts",
@@ -265,7 +271,9 @@ def test_validation_on_another_region_requires_declared_feature_meanings():
     import pytest
 
     regions, observations = regions_and_observations()
-    regions = [replace(region, feature_names=None) for region in regions]
+    regions = [
+        replace(region, features=region.feature_array, feature_names=None) for region in regions
+    ]
     with pytest.raises(ValueError, match="explicit feature_names"):
         fit(
             regions[0],

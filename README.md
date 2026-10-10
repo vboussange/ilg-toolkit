@@ -22,7 +22,7 @@ benchmark, geospatial acquisition, or research-checkout dependency.
 
 ## Synthetic quickstart
 
-Run `python examples/quickstart.py` after installing. The complete in-memory
+Run `JAX_ENABLE_X64=true python examples/quickstart.py` after installing. The complete in-memory
 workflow is:
 
 ```python
@@ -65,6 +65,16 @@ locations are explicit integer `(row, column)` positions. Labels declare the
 matrix row/column identity and are aligned to the region before training.
 Fitting performs no coordinate conversion, normalization, FST conversion, or
 observation clipping. Query regions contain features and locations only.
+
+`RegionBatch.features` is a JAX-backed Coordax field with named `row`, `column`,
+and `feature` axes; `feature_array` exposes its canonical HWC device array.
+Pass a labelled Coordax field in any named-axis order to retain its declared
+coordinates. Feature labels must match `feature_names` in meaning and order;
+conflicting declarations raise. Plain prepared arrays remain accepted.
+Numerical model outputs and target transformations are JAX arrays. Original
+observations retain float64 precision on the host; fitting or transforming
+float64 targets requires explicit `JAX_ENABLE_X64=true`. Input construction
+does not change the global JAX precision setting.
 
 The initial model is the cleaned architecture's U-Net embedding-distance family.
 Its landscape scores are squared Euclidean distances between learned patch
