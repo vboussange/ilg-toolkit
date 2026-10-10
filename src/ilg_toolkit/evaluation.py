@@ -3,9 +3,17 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
+from .data import (
+    ObservationPartition,
+    PairwiseObservations,
+    RegionBatch,
+    TargetSpec,
+    _target_array,
+)
 from .ensemble import Ensemble, MemberFailure, _summarize_members
 from .training import _normalize_inputs
 
@@ -77,15 +85,17 @@ class OOFPrediction:
     Member SD is descriptive in original target units. Conditional member
     variances are retained separately on the transformed model scale; they do
     not include encoder, fixed-coefficient or variance-parameter uncertainty.
+    Numerical results are float64 JAX arrays. Coverage and target-access metadata
+    remain on the host.
     """
 
     keys: tuple[tuple[str, tuple[str, str]], ...]
-    values: np.ndarray
+    values: jax.Array
     target: TargetSpec
     regime: EvaluationRegime
     member_ids: tuple[str, ...]
-    member_values: np.ndarray
-    member_spread: np.ndarray
+    member_values: jax.Array
+    member_spread: jax.Array
     eligible_counts: np.ndarray
     covered_mask: np.ndarray
     exclusion_reasons: dict[str, tuple[str | None, ...]]
@@ -94,7 +104,7 @@ class OOFPrediction:
     prediction_failures: dict[str, dict[str, MemberFailure]]
     access: dict[str, dict[str, EvaluationAccess]]
     conditioning_provenance: dict = field(default_factory=dict)
-    member_model_variances: np.ndarray | None = None
+    member_model_variances: jax.Array | None = None
     scale: str = "original"
     variance_scale: str = "model"
     excluded_uncertainty: tuple[str, ...] = (
@@ -134,7 +144,7 @@ class OOFEvaluation:
     """Metrics after eligible means; each covered region/pair counts once."""
 
     predictions: OOFPrediction
-    observed_values: np.ndarray
+    observed_values: jax.Array
     n_pairs: int
     n_query_pairs: int
     coverage: float
@@ -401,12 +411,12 @@ def predict_out_of_fold(
         )
     return OOFPrediction(
         keys,
-        mean,
+        _target_array(mean),
         target,
         regime,
         member_ids,
-        values,
-        spread,
+        _target_array(values),
+        _target_array(spread),
         counts,
         covered,
         {member_id: tuple(items) for member_id, items in reasons.items()},
@@ -415,7 +425,7 @@ def predict_out_of_fold(
         prediction_failures,
         access_records,
         provenance_records,
-        variances,
+        None if variances is None else _target_array(variances),
     )
 
 
@@ -443,14 +453,17 @@ def score_out_of_fold(prediction: OOFPrediction, observations) -> OOFEvaluation:
             }
         )
     try:
-        targets = np.array([lookup[key] for key in prediction.keys], dtype=np.float64)
+        targets = _target_array(
+            np.array([lookup[key] for key in prediction.keys], dtype=np.float64)
+        )
     except KeyError as error:
         raise ValueError("Every requested query must have an observed scoring target") from error
     n = int(np.sum(prediction.covered_mask))
     if n:
         residual = prediction.values[prediction.covered_mask] - targets[prediction.covered_mask]
-        mse, mae = float(np.mean(residual**2)), float(np.mean(np.abs(residual)))
-        rmse = float(np.sqrt(mse))
+        squared_error = jnp.mean(residual**2)
+        mse, mae = float(squared_error), float(jnp.mean(jnp.abs(residual)))
+        rmse = float(jnp.sqrt(squared_error))
         if not np.isfinite([mse, mae, rmse]).all():
             raise FloatingPointError("Pooled original-scale evaluation metrics are nonfinite")
     else:

@@ -6,6 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from ilg_toolkit import (
     CalibratedModel,
@@ -72,6 +73,9 @@ def known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
 def test_label_free_eligible_predictions_average_first_and_score_each_pair_once():
     region, ensemble, target = known_ensemble()
     prediction = predict_out_of_fold(ensemble, region, [("d", "c"), ("a", "b"), ("c", "d")])
+    for values in (prediction.values, prediction.member_values, prediction.member_spread):
+        assert isinstance(values, jax.Array)
+        assert values.dtype == jnp.float64
     assert prediction.keys == (("alpine", ("a", "b")), ("alpine", ("c", "d")))
     np.testing.assert_array_equal(prediction.eligible_counts, [0, 2])
     np.testing.assert_array_equal(prediction.covered_mask, [False, True])
@@ -81,6 +85,8 @@ def test_label_free_eligible_predictions_average_first_and_score_each_pair_once(
     assert prediction.coverage == 0.5
     observations = PairwiseObservations.from_pairs([("a", "b"), ("c", "d")], [1, 3], target=target)
     evaluation = score_out_of_fold(prediction, observations)
+    assert isinstance(evaluation.observed_values, jax.Array)
+    assert evaluation.observed_values.dtype == jnp.float64
     assert evaluation.n_pairs == 1
     assert evaluation.n_query_pairs == 2
     assert evaluation.mse == 0.25
@@ -132,6 +138,14 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
             first.predictions.access[member.identity.member_id][region.name].calibration_pairs
             == head.calibration_pairs
         )
+
+
+def test_oof_float64_outputs_require_explicit_device_precision():
+    with jax.enable_x64(False):
+        region, ensemble, _ = known_ensemble()
+        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
+            predict_out_of_fold(ensemble, region, [("c", "d")])
+        assert jax.config.read("jax_enable_x64") is False
 
 
 def test_validation_selection_and_own_query_target_access_preclude_scoring():
@@ -371,6 +385,8 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
         )
         np.testing.assert_allclose(known.values, expected_known.values, atol=1e-12)
         assert known.member_model_variances is not None
+        assert isinstance(known.member_model_variances, jax.Array)
+        assert known.member_model_variances.dtype == jnp.float64
         np.testing.assert_allclose(
             known.member_model_variances[0], expected_known.model_variance, atol=1e-12
         )
