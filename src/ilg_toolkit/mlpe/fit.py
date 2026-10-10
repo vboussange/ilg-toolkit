@@ -246,6 +246,7 @@ def calibrate_mlpe(
         n_populations=len(population_ids),
         score_center=center,
         score_scale=scale,
+        min_score_scale=config.min_score_scale,
         variance_floor=0.0,
         jitter=config.jitter,
     )

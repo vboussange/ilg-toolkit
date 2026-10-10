@@ -92,3 +92,7 @@ All point predictions return $T^{-1}$ of the fitted mean in original units,
 without clipping. Under nonlinear $T$, this is not the expectation of the
 original random target. Conditional variance remains on the fitted model scale;
 ensemble member spread is a different descriptive quantity.
+
+The separate [experimental Wishart contract](statistics/wishart.md) records its
+likelihood assumptions and scoring derivation; its diagnostic does not enable
+Wishart training.

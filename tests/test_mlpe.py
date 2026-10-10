@@ -61,6 +61,22 @@ def test_marginal_prediction_retains_float64_jax_values_without_changing_global_
     np.testing.assert_allclose(query.values, [-0.49407802616878604, 2.4619456646531583], atol=1e-5)
 
 
+def test_calibration_honors_the_declared_score_scale_threshold():
+    from ilg_toolkit import MLPEConfig, MLPEError
+
+    scores = _R_SCORES * 1e-14
+    observations = reference_observations()
+    with pytest.raises(MLPEError, match="constant|ill-scaled"):
+        calibrate_mlpe(scores, observations, region_name="alpine")
+    head = calibrate_mlpe(
+        scores, observations, region_name="alpine", config=MLPEConfig(min_score_scale=1e-16)
+    )
+    np.testing.assert_allclose([head.intercept, head.slope], _R_FIXED, rtol=3e-5, atol=3e-6)
+    np.testing.assert_allclose(
+        [head.unit_variance, head.residual_variance], _R_VARIANCES, rtol=2e-4, atol=2e-6
+    )
+
+
 def test_differentiable_full_ml_matches_dense_incomplete_pair_oracle():
     import jax
     import jax.numpy as jnp
