@@ -66,8 +66,6 @@ def decode_tree_leaves(template, record, archive):
 
 def _template(record):
     require_fields(record, {"kind", "version", "constructor", "leaves"}, "Model")
-    if type(record["version"]) is not int or record["version"] != 1:
-        raise ArtifactError("Unsupported model codec version")
     constructors = {
         "unet_embedding": (
             UNetEmbeddingDistance,
@@ -82,17 +80,27 @@ def _template(record):
         raise ArtifactError(
             "Unsupported model architecture; only shipped UNet and ResNet9 are supported"
         )
+    version = record["version"]
+    resnet = record["kind"] == "resnet9_conductance"
+    if type(version) is not int or version not in ({1, 2} if resnet else {1}):
+        raise ArtifactError("Unsupported model codec version")
     cls, fields = constructors[record["kind"]]
+    if resnet and version == 2:
+        fields = fields | {"patch_batch_size"}
     options = record["constructor"]
     require_fields(options, fields, "Model constructor")
     for name in fields - {"dropout", "min_conductance"}:
         if type(options[name]) is not int or options[name] < 1:
             raise ArtifactError(f"Model constructor {name} must be a positive integer")
+    if resnet and version == 1:
+        # Version one predates the execution setting and always encoded all patches.
+        options = {**options, "patch_batch_size": None}
     # Shape-only initialization prevents allocation based on unchecked model dimensions.
     return eqx.filter_eval_shape(lambda: cls(**options, key=jax.random.PRNGKey(0)))
 
 
 def encode_encoder(model, arrays):
+    version = 1
     if type(model) is UNetEmbeddingDistance:
         area = model.patch_size**2
         inputs = model.patch_embedding.in_features
@@ -113,9 +121,17 @@ def encode_encoder(model, arrays):
             "patch_size": model.patch_size,
             "min_conductance": model.min_conductance,
         }
+        if model.patch_batch_size is not None:
+            version = 2
+            options["patch_batch_size"] = model.patch_batch_size
     else:
         raise ArtifactError("Unsupported custom model architecture; use a shipped UNet or ResNet9")
-    record = {"kind": kind, "version": 1, "constructor": options, "leaves": None}
+    record = {
+        "kind": kind,
+        "version": version,
+        "constructor": options,
+        "leaves": None,
+    }
     template = _template(record)
     if jax.tree_util.tree_structure(model) != jax.tree_util.tree_structure(template):
         raise ArtifactError("Model has unsupported static architecture changes")

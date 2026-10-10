@@ -118,6 +118,15 @@ resistance on a four-neighbour graph with mean endpoint conductances.
 scale. These are distinct outputs; accurate target predictions alone do not
 establish that a unique biological conductance surface has been recovered.
 
+For larger native-resolution rasters, set `ResNet9Conductance(...,
+patch_batch_size=32)` to bound the CNN activation batch and recompute activations
+during backward evaluation. The default `None` evaluates all patches together.
+This execution setting travels with the encoder through fitting, calibration,
+prediction, inference saves and training continuation. A positive per-call
+`conductance(..., patch_batch_size=...)` override takes precedence; an omitted
+override uses the stored setting. Patch resolution, resistance solver settings
+and statistical defaults remain explicit and independent of this memory choice.
+
 Graph solves require JAX float64 to be enabled explicitly before Python starts;
 CNN parameters and outputs remain float32. Configure `TrainingConfig(solver=ResistanceSolverConfig(
 rtol=1e-6, atol=1e-6, max_steps=1000, use_amg=False))` to choose convergence
