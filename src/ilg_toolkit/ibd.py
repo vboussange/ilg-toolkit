@@ -17,14 +17,13 @@ from scipy.optimize import minimize
 from .data import TargetSpec
 
 
-def _nonnegative_array(values: ArrayLike, name: str) -> np.ndarray:
-    array = np.asarray(values)
-    if not (np.issubdtype(array.dtype, np.integer) or np.issubdtype(array.dtype, np.floating)):
+def _nonnegative_array(values: ArrayLike, name: str) -> jax.Array:
+    array = jnp.asarray(values)
+    if not (jnp.issubdtype(array.dtype, jnp.integer) or jnp.issubdtype(array.dtype, jnp.floating)):
         raise ValueError(f"{name} must contain real numeric values")
-    array = np.asarray(array, dtype=np.float64)
-    if not np.isfinite(array).all() or (array < 0).any():
+    if not bool(jnp.isfinite(array).all()) or bool((array < 0).any()):
         raise ValueError(f"{name} must be finite and nonnegative")
-    return array
+    return array.astype(jnp.float64)
 
 
 def _validate_metadata(distance_units: str, target: TargetSpec) -> None:
@@ -48,7 +47,8 @@ class IBDModel:
     Geographic distances must be Euclidean separations in the declared units.
     Supply any conversion from raster positions before calling this boundary.
     Fitting compares predictions and targets using log1p; it does not transform
-    the returned predictions or learn a conductance surface.
+    the returned predictions or learn a conductance surface. Enable JAX float64
+    before creating inputs for fitting or prediction.
     """
 
     slope: float
@@ -71,6 +71,8 @@ class IBDModel:
         """Predict a vector or square matrix, retaining a structural zero diagonal."""
         if distance_units != self.distance_units:
             raise ValueError("Prediction distance_units must match the fitted model")
+        if not jax.config.read("jax_enable_x64"):
+            raise ValueError("IBD prediction requires JAX float64; enable x64 explicitly")
         array = _nonnegative_array(distances, "Prediction distances")
         if (
             not array.size
@@ -78,9 +80,7 @@ class IBDModel:
             or (array.ndim == 2 and array.shape[0] != array.shape[1])
         ):
             raise ValueError("Prediction distances must be a nonempty vector or square matrix")
-        if not jax.config.read("jax_enable_x64"):
-            raise ValueError("IBD prediction requires JAX float64; enable x64 explicitly")
-        values = self.slope * jnp.asarray(distances, dtype=jnp.float64) + self.intercept
+        values = self.slope * array + self.intercept
         if values.ndim == 2:
             diagonal = jnp.diag_indices(values.shape[0])
             values = values.at[diagonal].set(0)
@@ -100,6 +100,8 @@ class IBDModel:
     ) -> IBDModel:
         """Minimize the equal-weight mean of regional mean log1p squared errors."""
         _validate_metadata(distance_units, target)
+        if not jax.config.read("jax_enable_x64"):
+            raise ValueError("IBD fitting requires JAX float64; enable x64 explicitly")
         if (
             isinstance(max_iterations, (bool, np.bool_))
             or not isinstance(max_iterations, int)
@@ -125,16 +127,19 @@ class IBDModel:
                 raise ValueError(f"{name}: distance and target vectors must be aligned")
             vectors.append((distances, targets))
 
-        def objective(parameters: np.ndarray) -> tuple[float, np.ndarray]:
+        @jax.jit
+        @jax.value_and_grad
+        def loss(parameters):
             slope, intercept = parameters
-            losses, gradients = [], []
-            for distances, targets in vectors:
-                prediction = slope * distances + intercept
-                residual = np.log1p(prediction) - np.log1p(targets)
-                derivative = 2 * residual / (1 + prediction)
-                losses.append(np.mean(np.square(residual)))
-                gradients.append([np.mean(derivative * distances), np.mean(derivative)])
-            return float(np.mean(losses)), np.mean(gradients, axis=0)
+            losses = [
+                jnp.mean((jnp.log1p(slope * distances + intercept) - jnp.log1p(targets)) ** 2)
+                for distances, targets in vectors
+            ]
+            return jnp.mean(jnp.stack(losses))
+
+        def objective(parameters: np.ndarray) -> tuple[float, np.ndarray]:
+            value, gradient = loss(jnp.asarray(parameters))
+            return float(value), np.asarray(gradient)
 
         result = minimize(
             objective,
