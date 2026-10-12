@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from typing import NamedTuple, TypedDict, cast, final
+from typing import NamedTuple, cast, final
 
 import equinox as eqx
 import jax
@@ -15,12 +15,11 @@ from .data import ObservationPartition, PairwiseObservations, RegionBatch
 from .mlpe import (
     MLPEConfig,
     MLPEHead,
-    decode_mlpe_variances,
-    mlpe_effect_posterior,
+    finalize_mlpe_fit,
     mlpe_ml_negative_log_likelihood,
     profiled_mlpe_ml_fit,
-    sample_standardize_scores,
 )
+from .mlpe.likelihood import MLPEFit
 from .model import CalibratedModel
 from .models import ConductanceModel, EmbeddingDistanceModel
 from .resistance import ResistanceSolverContext, build_resistance_context
@@ -119,24 +118,6 @@ class _RegionalInput(NamedTuple):
     region: RegionBatch
     observations: PairwiseObservations
     partition: ObservationPartition | None
-
-
-class _MLPERefresh(NamedTuple):
-    nll: jax.Array
-    coefficients: jax.Array
-    score_center: jax.Array
-    score_scale: jax.Array
-    variances: jax.Array
-    posterior: tuple[jax.Array, jax.Array, jax.Array]
-
-
-class _MLPEArguments(TypedDict):
-    n_populations: int
-    raw_variances: jax.Array
-    variance_floor: float
-    jitter: float
-    score_center: jax.Array
-    score_scale: jax.Array
 
 
 @dataclass(frozen=True)
@@ -339,23 +320,17 @@ def _refresh_mlpe(
     *,
     config: TrainingConfig,
     context: ResistanceSolverContext | None = None,
-) -> _MLPERefresh:
+) -> MLPEFit:
     scores = _selected_scores(encoder, payload, context=context).astype(jnp.float64)
-    _, center, scale = sample_standardize_scores(scores)
-    options = _MLPEArguments(
+    return finalize_mlpe_fit(
+        scores,
+        payload.targets,
+        *payload.pairs,
         n_populations=len(payload.nodes),
         raw_variances=raw,
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
-        score_center=center,
-        score_scale=scale,
     )
-    nll, beta = profiled_mlpe_ml_fit(scores, payload.targets, *payload.pairs, **options)
-    posterior = mlpe_effect_posterior(
-        scores, payload.targets, *payload.pairs, fixed_effects=beta, **options
-    )
-    variances = jnp.stack(decode_mlpe_variances(raw, variance_floor=config.mlpe_variance_floor))
-    return _MLPERefresh(nll, beta, center, scale, variances, posterior)
 
 
 def _frozen_validation_loss(
@@ -620,23 +595,13 @@ def _refresh_heads(
                 f"{batch.region.name}: nonfinite MLPE calibration at epoch {epoch}; "
                 "check nonconstant scores, identifiable endpoints and variance conditioning"
             )
-        mean, covariance, factor = result.posterior
-        heads[batch.region.name] = MLPEHead(
+        heads[batch.region.name] = MLPEHead.from_fit(
+            result,
             region_name=batch.region.name,
             target=batch.observations.target,
             population_ids=batch.region.sampling_unit_ids,
-            score_center=float(result.score_center),
-            score_scale=float(result.score_scale),
-            intercept=float(result.coefficients[0]),
-            slope=float(result.coefficients[1]),
-            unit_variance=float(result.variances[0]),
-            residual_variance=float(result.variances[1]),
-            effect_mean=mean,
-            effect_covariance=covariance,
-            effect_precision_cholesky=factor,
             calibration_pairs=training_pairs[batch.region.name],
             calibration_roles=("training",) * len(batch.payload.targets),
-            ml_log_likelihood=-float(result.nll),
             config=MLPEConfig(variance_floor=config.mlpe_variance_floor, jitter=config.mlpe_jitter),
             optimizer_iterations=epoch,
             optimizer_message="Fixed-budget joint Adam; no variance convergence claim",

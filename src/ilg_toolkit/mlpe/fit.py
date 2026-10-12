@@ -13,7 +13,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 from ..data import ObservationPartition, PairwiseObservations, TargetSpec
-from .likelihood import mlpe_effect_posterior, profiled_mlpe_ml_fit
+from .likelihood import MLPEFit, finalize_mlpe_fit, profiled_mlpe_ml_fit
 
 
 class MLPEError(ValueError):
@@ -114,6 +114,45 @@ class MLPEHead(eqx.Module):
     optimizer_iterations: int
     optimizer_message: str
     converged: bool = True
+
+    @classmethod
+    def from_fit(
+        cls,
+        fit: MLPEFit,
+        *,
+        region_name: str,
+        target: TargetSpec,
+        population_ids: tuple[str, ...],
+        calibration_pairs: tuple[tuple[str, str], ...],
+        calibration_roles: tuple[str, ...],
+        config: MLPEConfig,
+        optimizer_iterations: int,
+        optimizer_message: str,
+        converged: bool = True,
+    ) -> "MLPEHead":
+        """Attach target, observation provenance and optimizer diagnostics to a fit."""
+        mean, covariance, factor = fit.posterior
+        return cls(
+            region_name=region_name,
+            target=target,
+            population_ids=population_ids,
+            score_center=float(fit.score_center),
+            score_scale=float(fit.score_scale),
+            intercept=float(fit.coefficients[0]),
+            slope=float(fit.coefficients[1]),
+            unit_variance=float(fit.variances[0]),
+            residual_variance=float(fit.variances[1]),
+            effect_mean=mean,
+            effect_covariance=covariance,
+            effect_precision_cholesky=factor,
+            calibration_pairs=calibration_pairs,
+            calibration_roles=calibration_roles,
+            ml_log_likelihood=-float(fit.nll),
+            config=config,
+            optimizer_iterations=optimizer_iterations,
+            optimizer_message=optimizer_message,
+            converged=converged,
+        )
 
     def __post_init__(self):
         scalars = (
@@ -255,11 +294,6 @@ def calibrate_mlpe(
         jitter=config.jitter,
     )
 
-    def profile(log_variances):
-        return profiled_mlpe_ml_fit(
-            *kernel_inputs, raw_variances=_raw_from_log_variances(log_variances), **kernel_options
-        )
-
     def objective(log_variances):
         value, gradient = _optimizer_value_and_gradient(
             jnp.asarray(log_variances), *kernel_inputs, **kernel_options
@@ -294,31 +328,21 @@ def calibrate_mlpe(
             "(eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= 0.01)"
         )
     result = min(candidates, key=lambda candidate: candidate.fun)
-    variances = jnp.exp(jnp.asarray(result.x))
     raw = _raw_from_log_variances(jnp.asarray(result.x))
-    nll, beta = profile(jnp.asarray(result.x))
-    mean, covariance, factor = mlpe_effect_posterior(
-        *kernel_inputs, fixed_effects=beta, raw_variances=raw, **kernel_options
-    )
-    if not all(bool(jnp.isfinite(value).all()) for value in (nll, beta, mean, covariance, factor)):
+    fit = finalize_mlpe_fit(*kernel_inputs, raw_variances=raw, **kernel_options)
+    # Retain the standalone optimizer's exact bounded-log variances. The
+    # inverse-softplus round trip can fall a few ulps below its declared floor.
+    fit = fit._replace(variances=jnp.exp(jnp.asarray(result.x)))
+    if not all(bool(jnp.isfinite(value).all()) for value in jax.tree.leaves(fit)):
         raise MLPEError("Fitted population-effect posterior is nonfinite")
-    return MLPEHead(
-        region_name,
-        observations.target,
-        population_ids,
-        center,
-        scale,
-        float(beta[0]),
-        float(beta[1]),
-        float(variances[0]),
-        float(variances[1]),
-        mean,
-        covariance,
-        factor,
-        pairs,
-        (role,) * len(pairs),
-        -float(nll),
-        config,
-        int(result.nit),
-        str(result.message),
+    return MLPEHead.from_fit(
+        fit,
+        region_name=region_name,
+        target=observations.target,
+        population_ids=population_ids,
+        calibration_pairs=pairs,
+        calibration_roles=(role,) * len(pairs),
+        config=config,
+        optimizer_iterations=int(result.nit),
+        optimizer_message=str(result.message),
     )
