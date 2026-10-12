@@ -239,7 +239,7 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
         region,
         observations,
         model=ScalarEmbedding(weight=jnp.asarray(1.0)),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
     ).model
     model = recalibrate(direct, region, observations)

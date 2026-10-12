@@ -2,6 +2,7 @@
 
 from typing import final
 
+import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -46,7 +47,7 @@ def embedding_problem(name="alpine", offset=0.0, seed=14):
     ids = tuple(f"unit-{i}" for i in range(6))
     region = RegionBatch(
         name,
-        features,
+        cx.field(features, "row", "column", "feature"),
         ids,
         np.array(list(np.ndindex(2, 3))),
         feature_names=("elevation", "canopy"),
@@ -304,7 +305,11 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver():
         features = np.array([[[0.0], [0.2], [0.8]], [[-0.3], [1.4], [-0.7]]])
         ids = tuple(f"population-{i}" for i in range(6))
         region = RegionBatch(
-            "graph", features, ids, np.array(list(np.ndindex(2, 3))), feature_names=("habitat",)
+            "graph",
+            cx.field(features, "row", "column", "feature"),
+            ids,
+            np.array(list(np.ndindex(2, 3))),
+            feature_names=("habitat",),
         )
         left, right = np.triu_indices(6, 1)
         scores = dense_graph_scores(np.exp(1.2 * region.feature_array[..., 0]), region.pixel_nodes)[
@@ -405,7 +410,10 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
         individual = replace(region, sampling_unit_kinds=("individual",) * 6)
         with pytest.raises(ValueError, match="individual"):
             fit(individual, observations, model=model, config=config)
-        constant_region = replace(region, features=np.ones_like(region.feature_array))
+        constant_region = replace(
+            region,
+            features=cx.field(np.ones_like(region.feature_array), "row", "column", "feature"),
+        )
         with pytest.raises(FloatingPointError, match="alpine.*nonfinite MLPE.*nonconstant scores"):
             fit(constant_region, observations, model=model, config=config)
         extreme = replace(config, mlpe_initial_variances=(1e12, 1e-9))
@@ -430,7 +438,11 @@ def test_continuation_rejects_changed_data_or_optimization_policy():
             fit(region, observations, state=result.state, model=result.state.encoder)
         with pytest.raises(ValueError, match="Continuation inputs"):
             fit(
-                replace(region, features=region.feature_array + 1), observations, state=result.state
+                replace(
+                    region, features=cx.field(region.feature_array + 1, "row", "column", "feature")
+                ),
+                observations,
+                state=result.state,
             )
         with pytest.raises(ValueError, match="Continuation inputs"):
             fit(
