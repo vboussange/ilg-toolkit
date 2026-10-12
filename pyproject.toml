@@ -1,6 +1,6 @@
 [project]
 name = "ilg-toolkit"
-version = "0.1.0"
+version = "0.0.1"
 description = "Reusable inverse landscape genetics training and prediction"
 authors = [{name = "Victor Boussange"}]
 readme = "README.md"

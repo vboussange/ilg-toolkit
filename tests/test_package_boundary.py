@@ -96,7 +96,7 @@ import ilg_toolkit as ilg
 from ilg_toolkit.models import UNetEmbeddingDistance
 for module in pkgutil.walk_packages(ilg.__path__, ilg.__name__ + '.'):
     importlib.import_module(module.name)
-assert importlib.metadata.version('ilg-toolkit') == '0.1.0'
+assert importlib.metadata.version('ilg-toolkit') == '0.0.1'
 assert importlib.util.find_spec('ilg_toolkit.experimental') is None
 assert not hasattr(ilg, 'diagnose_wishart')
 assert importlib.util.find_spec('ilg_toolkit._archive') is None
