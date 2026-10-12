@@ -59,12 +59,12 @@ class TrainingConfig:
     variances. Otherwise initialization uses training-target sample variance.
     """
 
+    objective: str
     epochs: int = 100
     learning_rate: float = 0.001
     seed: int = 0
     jit: bool = True
     solver: ResistanceSolverConfig = field(default_factory=ResistanceSolverConfig)
-    objective: str = "direct_log1p"
     mlpe_variance_floor: float = 1e-10
     mlpe_jitter: float = 0.0
     mlpe_initial_variances: tuple[float, float] | None = None

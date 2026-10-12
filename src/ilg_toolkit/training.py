@@ -24,7 +24,7 @@ from .mlpe import (
     sample_standardize_scores,
 )
 from .model import CalibratedModel
-from .models import ConductanceModel, EmbeddingDistanceModel, UNetEmbeddingDistance
+from .models import ConductanceModel, EmbeddingDistanceModel
 from .resistance import ResistanceSolverContext, build_resistance_context
 
 RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
@@ -108,7 +108,7 @@ class _TrainingPayload(NamedTuple):
 
     features: jax.Array
     nodes: jax.Array
-    pairs: tuple[np.ndarray, np.ndarray]
+    pairs: tuple[jax.Array, jax.Array]
     targets: jax.Array
 
 
@@ -159,7 +159,7 @@ def _prepared(
         raise ValueError(f"Expected a {role} partition, got {partition.role}")
     pairs, values = observations.aligned_pairs(region, partition)
     if objective == "direct_log1p" and (
-        observations.target.kind != "dissimilarity" or np.any(values < 0)
+        observations.target.kind != "dissimilarity" or jnp.any(values < 0)
     ):
         raise ValueError(
             "direct_log1p requires nonnegative dissimilarities; relatedness is unsupported"
@@ -174,16 +174,15 @@ def _prepared(
         if role == "training" and len(values) < 3:
             raise ValueError("MLPE training requires at least three observed pairs")
         if role == "training":
-            degree = np.bincount(np.concatenate(pairs), minlength=len(region.sampling_unit_ids))
+            degree = jnp.bincount(jnp.concatenate(pairs), length=len(region.sampling_unit_ids))
             if degree.max() <= 1:
                 raise ValueError("MLPE variances are unidentifiable: pairs share no endpoints")
+    targets = observations.target.forward(values)
     return _TrainingPayload(
-        features=jnp.asarray(region.feature_array),
-        nodes=jnp.asarray(region.pixel_nodes),
+        features=region.feature_array,
+        nodes=region.pixel_nodes,
         pairs=pairs,
-        targets=jnp.asarray(
-            observations.target.forward(values), dtype=jnp.float64 if objective == "mlpe" else None
-        ),
+        targets=targets.astype(jnp.float64) if objective == "mlpe" else targets,
     )
 
 
@@ -440,21 +439,18 @@ def _initial_raw_variances(batches: Sequence[_RegionalBatch], config: TrainingCo
     values = []
     for batch in batches:
         if config.mlpe_initial_variances is None:
-            variance = max(
-                float(np.var(np.asarray(batch.payload.targets), ddof=1)),
+            variance = jnp.maximum(
+                jnp.var(batch.payload.targets, ddof=1),
                 config.mlpe_variance_floor * 100,
             )
-            pair = (
-                max(variance / 4, config.mlpe_variance_floor * 10),
-                max(variance / 2, config.mlpe_variance_floor * 10),
-            )
+            pair = jnp.maximum(variance * jnp.asarray([0.25, 0.5]), config.mlpe_variance_floor * 10)
         else:
-            pair = config.mlpe_initial_variances
-        positive = np.asarray(pair) - config.mlpe_variance_floor
+            pair = jnp.asarray(config.mlpe_initial_variances, dtype=jnp.float64)
+        positive = pair - config.mlpe_variance_floor
         # log(expm1(x)) without overflowing for large user-supplied initial variances.
-        raw = positive + np.log(-np.expm1(-positive))
+        raw = positive + jnp.log(-jnp.expm1(-positive))
         values.append(raw)
-    return jnp.asarray(np.asarray(values), dtype=jnp.float64)
+    return jnp.stack(values)
 
 
 def _prepare_batches(
@@ -682,6 +678,9 @@ def fit(
     Validation only selects a model; learning rate and stopping use a fixed
     budget. MLPE explicitly requires enabled JAX float64.
 
+    Fresh fits require an explicit ``model`` encoder and a ``TrainingConfig``
+    declaring the objective. Continuation reuses these saved choices.
+
     ``state`` continues the latest optimizer/RNG trajectory on identical inputs.
     Only the total epoch budget may increase. The returned selected model
     and latest continuation state are separate when validation selects an earlier
@@ -695,9 +694,16 @@ def fit(
         raise ValueError("state must be a TrainingState returned by fit")
     if state is not None and model is not None:
         raise ValueError("A continuation state already contains its encoder; omit model")
+    if state is None:
+        if model is None:
+            raise ValueError("Fresh fitting requires an explicit model encoder")
+        if config is None:
+            raise ValueError("Fresh fitting requires an explicit TrainingConfig with objective")
+    else:
+        model = state.encoder
+        config = state.config if config is None else config
     if on_epoch is not None and not callable(on_epoch):
         raise ValueError("on_epoch must be callable or None")
-    config = config or (state.config if state is not None else TrainingConfig())
     if state is not None:
         old, new = asdict(state.config), asdict(config)
         old.pop("epochs")
@@ -737,18 +743,9 @@ def fit(
     if state is not None and state.data_identity != identity:
         raise ValueError("Continuation inputs, observations, target scale or partitions changed")
 
-    init_key, random_key = jax.random.split(jax.random.PRNGKey(config.seed))
-    if state is not None:
-        model, random_key = state.encoder, state.rng_key
-    elif model is None:
-        model = UNetEmbeddingDistance(
-            first_region.feature_array.shape[-1],
-            patch_size=1,
-            base_channels=8,
-            embedding_dim=4,
-            dropout=0,
-            key=init_key,
-        )
+    random_key = (
+        jax.random.split(jax.random.PRNGKey(config.seed))[1] if state is None else state.rng_key
+    )
     training_batches, validation_batches = _prepare_batches(
         training_inputs, validation_inputs, model, config
     )

@@ -8,6 +8,8 @@ from abc import abstractmethod
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
+from numpy.typing import ArrayLike
 
 from ..resistance import ResistanceSolverContext, effective_resistance
 from .common import pixel_to_patch_nodes, squared_embedding_distances
@@ -29,13 +31,14 @@ class ConductanceModel(eqx.Module):
 
     def resistance_and_conductance(
         self,
-        features: jax.Array,
-        pixel_nodes: jax.Array,
+        features: ArrayLike,
+        pixel_nodes: ArrayLike,
         *,
         context: ResistanceSolverContext | None = None,
         patch_batch_size: int | None = None,
     ) -> tuple[jax.Array, jax.Array]:
         """Return landscape scores and the conductance surface that induced them."""
+        features = jnp.asarray(features)
         surface = self.conductance(features, patch_batch_size=patch_batch_size)
         nodes = pixel_to_patch_nodes(
             pixel_nodes,
@@ -46,8 +49,8 @@ class ConductanceModel(eqx.Module):
 
     def predict_distances(
         self,
-        features: jax.Array,
-        pixel_nodes: jax.Array,
+        features: ArrayLike,
+        pixel_nodes: ArrayLike,
         *,
         context: ResistanceSolverContext | None = None,
         inference: bool = True,
@@ -79,14 +82,15 @@ class EmbeddingDistanceModel(eqx.Module):
 
     def predict_distances(
         self,
-        features: jax.Array,
-        pixel_nodes: jax.Array,
+        features: ArrayLike,
+        pixel_nodes: ArrayLike,
         *,
         inference: bool = True,
         key: jax.Array | None = None,
         patch_batch_size: int | None = None,
     ) -> jax.Array:
         """Return all pairwise squared embedding distances at row-major pixel nodes."""
+        features = jnp.asarray(features)
         grid = self.embedding_grid(
             features, inference=inference, key=key, patch_batch_size=patch_batch_size
         )

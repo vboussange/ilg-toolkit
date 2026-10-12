@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from numpy.typing import ArrayLike
 
 
-def patchify(features: jax.Array, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
+def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
     """Partition an HWC raster into non-overlapping channel-first patches."""
     raster = jnp.asarray(features)
     if raster.ndim != 3:
@@ -25,7 +26,7 @@ def patchify(features: jax.Array, patch_size: int) -> tuple[jax.Array, tuple[int
 
 
 def pixel_to_patch_nodes(
-    pixel_nodes: jax.Array,
+    pixel_nodes: ArrayLike,
     *,
     raster_shape: tuple[int, int],
     patch_size: int,
@@ -40,7 +41,7 @@ def pixel_to_patch_nodes(
     return rows * (width // patch_size) + columns
 
 
-def squared_embedding_distances(embeddings: jax.Array) -> jax.Array:
+def squared_embedding_distances(embeddings: ArrayLike) -> jax.Array:
     """Compute a stable matrix of squared Euclidean embedding distances."""
     embeddings = jnp.asarray(embeddings)
     squared_norm = jnp.sum(jnp.square(embeddings), axis=-1)
