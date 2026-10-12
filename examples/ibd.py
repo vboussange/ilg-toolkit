@@ -3,25 +3,25 @@
 Run with JAX_ENABLE_X64=true to retain double-precision fitted coefficients.
 """
 
-import numpy as np
+import jax.numpy as jnp
 
 from ilg_toolkit import IBDModel, TargetSpec
 
 # Raster positions alone have no physical units. Declare row/column pixel sizes
 # explicitly before computing Euclidean separation in metres.
-pixel_size_metres = np.array([20.0, 10.0])
+pixel_size_metres = jnp.array([20.0, 10.0])
 positions = {
-    "headwaters": np.array([[0, 0], [3, 0], [0, 4]]),
-    "lowlands": np.array([[0, 0], [1, 2], [4, 0], [3, 4]]),
+    "headwaters": jnp.array([[0, 0], [3, 0], [0, 4]]),
+    "lowlands": jnp.array([[0, 0], [1, 2], [4, 0], [3, 4]]),
 }
 distance_matrices = {}
 for name, grid_positions in positions.items():
     points_metres = grid_positions * pixel_size_metres
     displacement = points_metres[:, None, :] - points_metres[None, :, :]
-    distance_matrices[name] = np.linalg.norm(displacement, axis=-1)
+    distance_matrices[name] = jnp.linalg.norm(displacement, axis=-1)
 
 distances = {
-    name: matrix[np.triu_indices(len(matrix), k=1)] for name, matrix in distance_matrices.items()
+    name: matrix[jnp.triu_indices(len(matrix), k=1)] for name, matrix in distance_matrices.items()
 }
 targets = {name: 0.003 * values + 0.1 for name, values in distances.items()}
 model = IBDModel.fit(

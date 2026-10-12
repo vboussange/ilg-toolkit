@@ -1,5 +1,6 @@
 """Run from the checkout: JAX_ENABLE_X64=true python -m experiments.wishart."""
 
+import coordax as cx
 import jax
 import numpy as np
 from scipy.linalg import helmert
@@ -15,7 +16,9 @@ def main():
     labels = ("west", "east", "north", "south")
     region = RegionBatch(
         "synthetic-valley",
-        np.random.default_rng(4).normal(size=(8, 8, 2)),
+        cx.Field(
+            np.random.default_rng(4).normal(size=(8, 8, 2)), dims=("row", "column", "feature")
+        ),
         labels,
         np.array([[0, 0], [0, 7], [7, 0], [7, 7]]),
     )

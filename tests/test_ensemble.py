@@ -2,10 +2,12 @@
 
 from typing import final
 
+import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from test_mlpe_training import embedding_problem
 
 from ilg_toolkit import (
@@ -15,6 +17,7 @@ from ilg_toolkit import (
     TrainingConfig,
     TrainingState,
     fit_ensemble,
+    fit_ensemble_member,
     generate_population_folds,
 )
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
@@ -41,6 +44,65 @@ def completed_fit(member: EnsembleMember) -> tuple[CalibratedModel, FitResult, T
     return member.model, member.fit_result, member.fit_result.state
 
 
+def test_declared_seeds_initialize_readable_members_directly():
+    region, observations = embedding_problem()
+    folds = generate_population_folds(region, observations, n_folds=2, holdout_size=2, seed=47)
+    result = fit_ensemble(
+        region,
+        observations,
+        folds=folds,
+        initialization_seeds=(13, 29),
+        config=TrainingConfig(objective="mlpe", epochs=0),
+        model_factory=model_factory,
+    )
+    assert result.expected_member_ids == (
+        "fold-0000:seed=13",
+        "fold-0000:seed=29",
+        "fold-0001:seed=13",
+        "fold-0001:seed=29",
+    )
+    for member in result.members:
+        model, _, state = completed_fit(member)
+        expected = model_factory(jax.random.PRNGKey(member.identity.initialization_seed))
+        assert eqx.tree_equal(model.encoder, expected)
+        assert state.config.seed == member.identity.initialization_seed
+    assert len({id(completed_fit(member)[2].optimizer_state) for member in result.members}) == 4
+
+
+def test_fresh_ensemble_requires_factory_and_explicit_training_configuration():
+    region, observations = embedding_problem()
+    fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2)[0]
+    config = TrainingConfig(objective="mlpe", epochs=0)
+    with pytest.raises(TypeError, match="config"):
+        fit_ensemble(  # pyright: ignore[reportCallIssue]
+            region, observations, folds=[fold], model_factory=model_factory
+        )
+    with pytest.raises(ValueError, match="model_factory"):
+        fit_ensemble(region, observations, folds=[fold], config=config)
+    with pytest.raises(ValueError, match="config and model_factory"):
+        fit_ensemble_member(region, observations, fold=fold, initialization_seed=13, config=config)
+    with pytest.raises(ValueError, match="config and model_factory"):
+        fit_ensemble_member(
+            region, observations, fold=fold, initialization_seed=13, model_factory=model_factory
+        )
+
+
+def test_factory_cannot_silently_select_a_builtin_model():
+    region, observations = embedding_problem()
+    result = fit_ensemble(
+        region,
+        observations,
+        n_folds=1,
+        holdout_size=2,
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        model_factory=lambda key: None,  # pyright: ignore[reportArgumentType]
+    )
+    member = result.members[0]
+    assert member.status == "failed"
+    assert member.failure is not None and member.failure.stage == "initialization"
+    assert member.failure.error_type == "TypeError"
+
+
 def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_predictions():
     with jax.enable_x64():
         region, observations = embedding_problem()
@@ -59,7 +121,7 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
     assert len(result.members) == 4
     assert all(member.status == "completed" for member in result.members)
     assert len({member.identity.member_id for member in result.members}) == 4
-    assert len({member.identity.effective_seed for member in result.members}) == 4
+    assert {member.identity.initialization_seed for member in result.members} == {13, 29}
     assert len({id(state.optimizer_state) for _, _, state in fits}) == 4
     encoders = [model.encoder for model, _, _ in fits]
     assert all(isinstance(encoder, InitializedEmbedding) for encoder in encoders)
@@ -106,7 +168,7 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
         fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=23)[
             0
         ]
-        changed_values = observations.observed_values.copy()
+        changed_values = np.asarray(observations.observed_values).copy()
         for i, pair in enumerate(observations.observed_pairs):
             if set(pair) & set(fold.held_out_units[region.name]):
                 changed_values[i] += 100
@@ -129,7 +191,7 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
     baseline_model, baseline_fit, _ = completed_fit(baseline.members[0])
     perturbed_model, perturbed_fit, _ = completed_fit(perturbed.members[0])
     assert baseline_fit.history == perturbed_fit.history
-    assert baseline_model.calibrations == perturbed_model.calibrations
+    assert eqx.tree_equal(baseline_model.calibrations, perturbed_model.calibrations)
 
 
 def test_original_scale_known_outputs_are_averaged_after_inverse_transformation():
@@ -201,7 +263,7 @@ def test_failed_members_and_missing_composition_cannot_be_silently_dropped():
         holdout_size=2,
         fold_seed=47,
         initialization_seeds=(1, 2, 3),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
         model_factory=partly_broken_factory,
         on_member=outcomes.append,
     )
@@ -279,9 +341,6 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
             model_factory=model_factory,
         )
 
-        def cannot_initialize(key):
-            raise AssertionError("continuation must use checkpoint encoder")
-
         _, _, partial_state = completed_fit(partial)
         resumed = fit_ensemble_member(
             region,
@@ -289,9 +348,24 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
             fold=fold,
             initialization_seed=31,
             config=config,
-            model_factory=cannot_initialize,
             state=partial_state,
         )
+        retained = fit_ensemble_member(
+            region,
+            observations,
+            fold=fold,
+            initialization_seed=31,
+            state=partial_state,
+        )
+        assert eqx.tree_equal(completed_fit(retained)[2], partial_state)
+        with pytest.raises(ValueError, match="declared initialization_seed"):
+            fit_ensemble_member(
+                region,
+                observations,
+                fold=fold,
+                initialization_seed=32,
+                state=partial_state,
+            )
         assert resumed.status == complete.status == "completed"
         resumed_model, resumed_fit, resumed_state = completed_fit(resumed)
         complete_model, complete_fit, complete_state = completed_fit(complete)
@@ -335,9 +409,22 @@ def test_incompatible_scales_and_invalid_fold_membership_fail_clearly():
     region, observations = embedding_problem()
     fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2)[0]
     with pytest.raises(ValueError, match="fold_id.*unique"):
-        fit_ensemble(region, observations, folds=[fold, fold])
+        fit_ensemble(
+            region,
+            observations,
+            folds=[fold, fold],
+            config=TrainingConfig(objective="mlpe"),
+            model_factory=model_factory,
+        )
     with pytest.raises(ValueError, match="initialization_seeds.*unique"):
-        fit_ensemble(region, observations, folds=[fold], initialization_seeds=(1, 1))
+        fit_ensemble(
+            region,
+            observations,
+            folds=[fold],
+            initialization_seeds=(1, 1),
+            config=TrainingConfig(objective="mlpe"),
+            model_factory=model_factory,
+        )
 
 
 def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibrations():
@@ -386,7 +473,7 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
     with jax.enable_x64():
         region = RegionBatch(
             "graph",
-            np.ones((1, 4, 1)),
+            cx.field(np.ones((1, 4, 1)), "row", "column", "feature"),
             ("a", "b", "c", "d"),
             np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
         )
@@ -399,7 +486,10 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
                 {"graph": ObservationPartition("graph", (("c", "d"),), "query")},
             )
             model = CalibratedModel(
-                ConstantConductance(level=jnp.asarray(level)), TargetSpec("divergence"), 1
+                ConstantConductance(level=jnp.asarray(level)),
+                TargetSpec("divergence"),
+                1,
+                objective="direct_log1p",
             )
             members.append(
                 EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
@@ -408,7 +498,10 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
         prediction = ensemble.predict(region)
         summary = ensemble.conductance_surfaces(region)
         averaged_surface_model = CalibratedModel(
-            ConstantConductance(level=jnp.asarray(2.5)), TargetSpec("divergence"), 1
+            ConstantConductance(level=jnp.asarray(2.5)),
+            TargetSpec("divergence"),
+            1,
+            objective="direct_log1p",
         )
         surface_prediction = averaged_surface_model.predict(region)
     np.testing.assert_allclose(prediction.values[0, 1], 0.625, atol=1e-7)
@@ -444,7 +537,7 @@ def test_member_callback_failure_interrupts_before_starting_another_member():
             holdout_size=2,
             fold_seed=47,
             initialization_seeds=(1, 2),
-            config=TrainingConfig(epochs=0),
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
             model_factory=tracked_factory,
             on_member=interrupted_save,
         )
