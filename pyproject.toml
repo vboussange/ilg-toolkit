@@ -2,10 +2,11 @@
 name = "ilg-toolkit"
 version = "0.1.0"
 description = "Reusable inverse landscape genetics training and prediction"
+authors = [{name = "Victor Boussange"}]
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+license-files = ["LICENSE"]
 dependencies = [
   # Coordax imports coordax.testing at runtime, which imports Chex.
   "chex>=0.1.92,<0.2",
