@@ -6,6 +6,7 @@ from typing import TypedDict
 import coordax as cx
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -401,6 +402,20 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tm
         ),
         _FitOptions(region=replace(region, sampling_unit_ids=region.sampling_unit_ids[::-1])),
         _FitOptions(region=replace(region, sampling_unit_kinds=("individual",) * 6)),
+        _FitOptions(
+            region=replace(
+                region,
+                features=cx.field(
+                    jnp.asarray(region.feature_array, dtype=jnp.float64),
+                    "row",
+                    "column",
+                    "feature",
+                ),
+            )
+        ),
+        _FitOptions(
+            observations=replace(observations, values=observations.values.astype(jnp.float32))
+        ),
         _FitOptions(observations=changed_target),
         _FitOptions(
             partition=ObservationPartition(region.name, training.pairs[:-1], role="training")
