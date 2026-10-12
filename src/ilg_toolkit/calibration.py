@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 class AbstractCalibrationModule(eqx.Module):
     """Own the target contract and map selected landscape scores to genetic values."""
 
-    target: TargetSpec
+    target: eqx.AbstractVar[TargetSpec]
 
     @abstractmethod
     def predict(self, scores, pairs, *, region_name: str) -> jax.Array:
@@ -28,6 +28,8 @@ class AbstractCalibrationModule(eqx.Module):
 @final
 class DirectCalibrationModule(AbstractCalibrationModule):
     """Apply the declared inverse target transform without fitting another stage."""
+
+    target: TargetSpec
 
     def __post_init__(self):
         if not isinstance(self.target, TargetSpec):
@@ -45,6 +47,7 @@ class MLPECalibrationModule(AbstractCalibrationModule):
     installed relationship must agree with this module's authoritative target.
     """
 
+    target: TargetSpec
     regions: dict[str, RegionalMLPECalibration] = eqx.field(default_factory=dict)
 
     def __post_init__(self):

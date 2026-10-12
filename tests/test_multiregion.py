@@ -8,7 +8,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
+from ilg_toolkit import (
+    PairwiseObservations,
+    RegionBatch,
+    ResistanceSolverConfig,
+    TargetSpec,
+    TrainingConfig,
+    fit,
+)
 from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
 
 
@@ -91,6 +98,9 @@ def test_shared_embedding_update_matches_independent_equal_region_objective():
 class ScaledConductance(ConductanceModel):
     log_scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(
+        static=True, kw_only=True, default=ResistanceSolverConfig()
+    )
 
     def __init__(self, log_scale: jax.Array):
         self.log_scale = log_scale
