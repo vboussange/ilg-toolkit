@@ -1,21 +1,22 @@
 """Share one cleaned U-Net encoder across synthetic regions of different extents."""
 
+import coordax as cx
 import jax
-import numpy as np
+import jax.numpy as jnp
 
 from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 
 def synthetic_region(name, width, locations):
-    rows, columns = np.mgrid[:4, :width]
-    features = np.stack((rows / 4, columns / 6), axis=-1).astype(np.float32)
+    rows, columns = jnp.mgrid[:4, :width]
+    features = jnp.stack((rows / 4, columns / 6), axis=-1).astype(jnp.float32)
     identifiers = tuple(f"{name}-{index}" for index in range(len(locations)))
     return RegionBatch(
         name,
-        features,
+        cx.field(features, "row", "column", "feature"),
         identifiers,
-        np.asarray(locations),
+        jnp.asarray(locations),
         feature_names=("north_covariate", "east_covariate"),
     )
 
@@ -28,7 +29,7 @@ target = TargetSpec("synthetic divergence", units="index")
 observations = []
 for region in regions:
     endpoint_features = region.feature_array[tuple(region.grid_positions.T)]
-    dissimilarities = np.sum(
+    dissimilarities = jnp.sum(
         (endpoint_features[:, None] - endpoint_features[None, :]) ** 2, axis=-1
     )
     observations.append(
@@ -41,7 +42,7 @@ result = fit(
     regions,
     observations,
     model=model,
-    config=TrainingConfig(epochs=10, learning_rate=0.001, seed=4),
+    config=TrainingConfig(objective="direct_log1p", epochs=10, learning_rate=0.001, seed=4),
 )
 print("Selected shared encoder at epoch", result.selected_epoch)
 print("Per-region training objectives:", result.history[-1].training_by_region)

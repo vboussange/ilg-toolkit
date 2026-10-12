@@ -3,6 +3,7 @@
 from dataclasses import replace
 from typing import final
 
+import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -39,7 +40,7 @@ def problem(
     ids = tuple(f"population-{index}" for index in range(6))
     region = RegionBatch(
         name,
-        features,
+        cx.field(features, "row", "column", "feature"),
         ids,
         np.array(list(np.ndindex(2, 3))),
         feature_names=("east_covariate", "canopy_covariate"),
@@ -67,7 +68,7 @@ def test_explicit_development_recalibration_keeps_encoder_and_prior_history_froz
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
         validation=(region, observations),
         validation_partition=validation,
@@ -104,7 +105,7 @@ def test_transfer_scores_are_label_free_and_each_region_requires_its_own_head():
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
     ).model
     calibrated = recalibrate(original, region, observations)
@@ -144,7 +145,7 @@ def test_default_recalibration_ignores_validation_targets_and_records_encoder_ac
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
         validation=(region, observations),
         validation_partition=validation,
@@ -173,7 +174,7 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
         region,
         observations,
         model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
     ).model
     assert region.feature_names is not None
@@ -182,7 +183,7 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
             model,
             replace(
                 region,
-                features=region.feature_array,
+                features=cx.field(region.feature_array, "row", "column", "feature"),
                 feature_names=tuple(reversed(region.feature_names)),
             ),
             observations,

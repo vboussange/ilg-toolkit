@@ -64,6 +64,7 @@ def _components(
     jitter,
     pair_mask,
 ):
+    scores, targets, raw_variances = map(jnp.asarray, (scores, targets, raw_variances))
     dtype = jnp.result_type(scores, targets, raw_variances, jnp.float32)
     scores = jnp.asarray(scores, dtype=dtype)
     targets = jnp.asarray(targets, dtype=dtype)

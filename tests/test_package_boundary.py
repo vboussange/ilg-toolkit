@@ -7,6 +7,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+import coordax as cx
+
 
 def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
     import jax
@@ -25,7 +27,7 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
 
     inference_region = RegionBatch(
         "independent",
-        np.arange(32).reshape(4, 4, 2) / 32,
+        cx.field(np.arange(32, dtype=np.float32).reshape(4, 4, 2) / 32, "row", "column", "feature"),
         ("a", "b"),
         np.array([[0, 0], [3, 3]]),
     )
@@ -38,7 +40,7 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
         model=UNetEmbeddingDistance(
             2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0.2, key=jax.random.key(1)
         ),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     ).model
     inference_artifact = tmp_path / "saved-model.ilg"
     save_model(inference_artifact, source_model)
@@ -50,7 +52,7 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
             inference_region,
             inference_observations,
             model=source_model.encoder,
-            config=TrainingConfig(epochs=1),
+            config=TrainingConfig(objective="direct_log1p", epochs=1),
             on_epoch=completed.append,
         )
         save_checkpoint(checkpoint_artifact, completed[0])
@@ -88,14 +90,18 @@ import sys
 sys.path[:0] = {json.dumps(library_paths)}
 import importlib, importlib.metadata, importlib.util, pkgutil
 import numpy as np
+import coordax as cx
+import jax
 import ilg_toolkit as ilg
+from ilg_toolkit.models import UNetEmbeddingDistance
 for module in pkgutil.walk_packages(ilg.__path__, ilg.__name__ + '.'):
     importlib.import_module(module.name)
 assert importlib.metadata.version('ilg-toolkit') == '0.1.0'
 assert importlib.util.find_spec('ilg_toolkit.experimental') is None
 assert not hasattr(ilg, 'diagnose_wishart')
 assert not any(name == 'deepilg' or name.startswith('deepilg.') for name in sys.modules)
-region = ilg.RegionBatch('independent', np.arange(32).reshape(4,4,2)/32,
+region = ilg.RegionBatch('independent',
+    cx.field(np.arange(32, dtype=np.float32).reshape(4,4,2)/32, 'row', 'column', 'feature'),
     ('a','b'), np.array([[0,0],[3,3]]))
 reloaded = ilg.load_model({str(inference_artifact)!r})
 np.testing.assert_allclose(reloaded.predict(region).values, {expected_inference!r},
@@ -107,7 +113,10 @@ continued = ilg.fit(region, obs, state=state)
 assert continued.state.epoch == 1
 np.testing.assert_allclose(continued.model.predict(region).values, {expected_continued!r},
     rtol=1e-6, atol=1e-7)
-result = ilg.fit(region, obs, config=ilg.TrainingConfig(epochs=0))
+result = ilg.fit(region, obs,
+    model=UNetEmbeddingDistance(2, patch_size=1, base_channels=2, embedding_dim=2,
+        key=jax.random.key(2)),
+    config=ilg.TrainingConfig(objective="direct_log1p", epochs=0))
 assert np.isfinite(result.model.predict(region).values).all()
 assert result.model.predict(region).target.units == 'index'
 assert ilg.__file__.startswith({str(installation)!r})
