@@ -11,12 +11,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._archive import ArtifactError
 from .config import ResistanceSolverConfig
 from .data import TargetSpec
 from .mlpe import MLPEConfig, MLPEHead
 from .model import CalibratedModel
 from .models import ConductanceModel, EmbeddingDistanceModel
+
+
+class ArtifactError(ValueError):
+    """Unsupported, incomplete or structurally incompatible native artifact."""
 
 
 def _write_native(path, tree, *, kind, metadata):

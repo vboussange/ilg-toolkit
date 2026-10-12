@@ -1,7 +1,10 @@
 """Disk continuation checked through the public fit/checkpoint workflow."""
 
+from dataclasses import replace
 from typing import TypedDict
 
+import coordax as cx
+import equinox as eqx
 import jax
 import numpy as np
 import pytest
@@ -43,7 +46,13 @@ def checkpoint_problem(name="alpine", seed=14):
     features = rng.normal(size=(4, 4, 2)).astype(np.float32)
     positions = np.array([[0, 0], [0, 3], [1, 1], [2, 2], [3, 0], [3, 3]])
     ids = tuple(f"population-{i}" for i in range(len(positions)))
-    region = RegionBatch(name, features, ids, positions, feature_names=("elevation", "canopy"))
+    region = RegionBatch(
+        name,
+        cx.field(features, "row", "column", "feature"),
+        ids,
+        positions,
+        feature_names=("elevation", "canopy"),
+    )
     pairs = [(ids[i], ids[j]) for i, j in zip(*np.triu_indices(len(ids), 1), strict=True)]
     observations = PairwiseObservations.from_pairs(
         pairs,
@@ -65,34 +74,19 @@ def checkpoint_model():
     )
 
 
-def test_checkpoint_loader_retains_schema_one_model_state(tmp_path):
-    """Canonical Python state names continue to load the established disk format."""
-    import json
-    import zipfile
-
+def test_native_checkpoint_restores_latest_model_and_history(tmp_path):
     region, observations = checkpoint_problem()
     result = fit(
         region,
         observations,
         model=checkpoint_model(),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     assert result.state is not None
-    path = tmp_path / "schema-one-checkpoint.ilg"
+    path = tmp_path / "state.eqx"
     save_checkpoint(path, result.state)
-    with zipfile.ZipFile(path) as archive:
-        content = {name: archive.read(name) for name in archive.namelist()}
-    manifest = json.loads(content["manifest.json"])
-    assert manifest["schema"] == 1
-    payload = manifest["payload"]
-    # Only Python API names changed; the numeric checkpoint schema did not.
-    payload["latest_predictor"] = payload.pop("latest_model", payload.get("latest_predictor"))
-    payload["best_predictor"] = payload.pop("best_model", payload.get("best_predictor"))
-    content["manifest.json"] = json.dumps(manifest).encode()
-    with zipfile.ZipFile(path, "w") as archive:
-        for name, value in content.items():
-            archive.writestr(name, value)
-    restored = load_checkpoint(path)
+    restored = load_checkpoint(path, encoder=checkpoint_model())
+    assert restored.history == result.history
     assert restored.epoch == 0
     np.testing.assert_array_equal(
         restored.latest_model.predict(region).values, result.model.predict(region).values
@@ -100,30 +94,13 @@ def test_checkpoint_loader_retains_schema_one_model_state(tmp_path):
 
 
 def assert_same_state(actual, expected):
-    assert actual.history == expected.history
-    assert actual.epoch == expected.epoch
-    assert actual.step == expected.step
-    assert actual.selected_epoch == expected.selected_epoch
-    assert actual.best_loss == expected.best_loss
-    assert actual.selection == expected.selection
-    assert actual.data_identity == expected.data_identity
-    assert actual.schedule_state == expected.schedule_state
-    assert actual.stopping_state == expected.stopping_state
-    for left, right in zip(
-        jax.tree.leaves(
-            (actual.encoder, actual.raw_variances, actual.optimizer_state, actual.rng_key)
-        ),
-        jax.tree.leaves(
-            (expected.encoder, expected.raw_variances, expected.optimizer_state, expected.rng_key)
-        ),
-        strict=True,
-    ):
-        np.testing.assert_array_equal(left, right)
+    # Includes history, both calibrated models, posterior arrays, optimizer and RNG.
+    assert eqx.tree_equal(actual, expected)
 
 
 def test_direct_disk_resume_matches_uninterrupted_dropout_training(tmp_path):
     region, observations = checkpoint_problem()
-    config = TrainingConfig(epochs=3, seed=21, learning_rate=0.002)
+    config = TrainingConfig(objective="direct_log1p", epochs=3, seed=21, learning_rate=0.002)
     uninterrupted = fit(region, observations, model=checkpoint_model(), config=config)
     assert uninterrupted.state is not None
     path = tmp_path / "direct.ilg"
@@ -138,10 +115,8 @@ def test_direct_disk_resume_matches_uninterrupted_dropout_training(tmp_path):
     with pytest.raises(InterruptedError, match="synthetic interruption"):
         fit(region, observations, model=checkpoint_model(), config=config, on_epoch=interrupt)
     assert epochs == [0, 1]
-    restored = load_checkpoint(path)
+    restored = load_checkpoint(path, encoder=checkpoint_model())
     assert restored.epoch == 1
-    from dataclasses import replace
-
     with pytest.raises(ValueError, match="epoch budget"):
         fit(region, observations, state=restored, config=replace(config, epochs=2))
     resumed = fit(region, observations, state=restored, config=config)
@@ -156,8 +131,6 @@ def test_direct_disk_resume_matches_uninterrupted_dropout_training(tmp_path):
 
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
 def test_chunked_resnet_disk_resume_and_calibration_retain_execution_setting(tmp_path, objective):
-    from dataclasses import replace
-
     from test_conductance import dense_resistance
 
     from ilg_toolkit import load_model, save_model
@@ -166,7 +139,7 @@ def test_chunked_resnet_disk_resume_and_calibration_retain_execution_setting(tmp
     features = np.random.default_rng(4).normal(size=(8, 8, 2)).astype(np.float32)
     region = RegionBatch(
         "resnet-resume",
-        features,
+        cx.field(features, "row", "column", "feature"),
         ("south", "north", "west", "east"),
         np.array([[0, 0], [0, 7], [7, 0], [7, 7]]),
     )
@@ -183,7 +156,7 @@ def test_chunked_resnet_disk_resume_and_calibration_retain_execution_setting(tmp
         assert uninterrupted.state is not None and partial.state is not None
         path = tmp_path / "resnet.ilg"
         save_checkpoint(path, partial.state)
-        restored = load_checkpoint(path)
+        restored = load_checkpoint(path, encoder=encoder)
         for saved in (restored.encoder, restored.latest_model.encoder, restored.best_model.encoder):
             assert isinstance(saved, ResNet9Conductance)
             assert saved.patch_batch_size == 3
@@ -212,7 +185,7 @@ def test_chunked_resnet_disk_resume_and_calibration_retain_execution_setting(tmp
                 calibrated.conductance_surface(region), resumed.model.conductance_surface(region)
             )
             save_model(path, calibrated)
-            loaded = load_model(path)
+            loaded = load_model(path, encoder=encoder)
             assert isinstance(loaded.encoder, ResNet9Conductance)
             assert loaded.encoder.patch_batch_size == 3
             np.testing.assert_array_equal(
@@ -221,8 +194,6 @@ def test_chunked_resnet_disk_resume_and_calibration_retain_execution_setting(tmp
 
 
 def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp_path):
-    from dataclasses import replace
-
     from ilg_toolkit import ObservationPartition
 
     problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
@@ -263,7 +234,7 @@ def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp
         assert partial.state is not None
         path = tmp_path / "mlpe.ilg"
         save_checkpoint(path, partial.state)
-        restored = load_checkpoint(path)
+        restored = load_checkpoint(path, encoder=checkpoint_model())
         assert_same_state(restored, partial.state)
         assert restored.latest_model.calibrations == partial.latest_model.calibrations
         assert restored.best_model.calibrations == partial.best_model.calibrations
@@ -288,8 +259,6 @@ def test_shared_mlpe_disk_resume_preserves_nuisance_heads_and_selected_model(tmp
 
 
 def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(tmp_path):
-    from dataclasses import replace
-
     from ilg_toolkit import ObservationPartition
 
     problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
@@ -315,7 +284,7 @@ def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(tmp_pa
         assert partial.selected_epoch == 0
         path = tmp_path / "selected.ilg"
         save_checkpoint(path, partial.state)
-        restored = load_checkpoint(path)
+        restored = load_checkpoint(path, encoder=checkpoint_model())
         callbacks = []
         unchanged = fit(
             regions, observations, state=restored, on_epoch=callbacks.append, **arguments
@@ -340,12 +309,13 @@ def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(tmp_pa
 
 
 def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(tmp_path):
-    from dataclasses import replace
-
     with jax.enable_x64():
         region, observations = checkpoint_problem()
         result = fit(
-            region, observations, model=checkpoint_model(), config=TrainingConfig(epochs=0)
+            region,
+            observations,
+            model=checkpoint_model(),
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
         )
         assert result.state is not None
         changed_optimizer = jax.tree.map(
@@ -354,8 +324,8 @@ def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(tmp_path
         )
         path = tmp_path / "mixed-precision.ilg"
         save_checkpoint(path, replace(result.state, optimizer_state=changed_optimizer))
-        with pytest.raises(ValueError, match="[Oo]ptimizer.*dtype"):
-            load_checkpoint(path)
+        with pytest.raises(ValueError, match="dtype"):
+            load_checkpoint(path, encoder=checkpoint_model())
 
 
 def test_interrupted_replacement_retains_previous_complete_generation(tmp_path, monkeypatch):
@@ -364,7 +334,7 @@ def test_interrupted_replacement_retains_previous_complete_generation(tmp_path, 
 
     region, observations = checkpoint_problem()
     completed = []
-    config = TrainingConfig(epochs=1, seed=21, learning_rate=0.002)
+    config = TrainingConfig(objective="direct_log1p", epochs=1, seed=21, learning_rate=0.002)
     result = fit(
         region, observations, model=checkpoint_model(), config=config, on_epoch=completed.append
     )
@@ -384,7 +354,7 @@ def test_interrupted_replacement_retains_previous_complete_generation(tmp_path, 
             save_checkpoint(path, result.state)
     assert path.read_bytes() == original
     assert list(tmp_path.iterdir()) == [path]
-    restored = load_checkpoint(path)
+    restored = load_checkpoint(path, encoder=checkpoint_model())
     assert_same_state(restored, completed[0])
     continued = fit(region, observations, state=restored, config=config)
     assert continued.state is not None
@@ -392,18 +362,16 @@ def test_interrupted_replacement_retains_previous_complete_generation(tmp_path, 
 
 
 def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tmp_path):
-    from dataclasses import replace
-
     from ilg_toolkit import ObservationPartition, ResistanceSolverConfig
 
     region, observations = checkpoint_problem()
     training = ObservationPartition(region.name, observations.observed_pairs[:-2], role="training")
-    config = TrainingConfig(epochs=1, seed=21, learning_rate=0.002)
+    config = TrainingConfig(objective="direct_log1p", epochs=1, seed=21, learning_rate=0.002)
     result = fit(region, observations, model=checkpoint_model(), config=config, partition=training)
     assert result.state is not None
     path = tmp_path / "compatible.ilg"
     save_checkpoint(path, result.state)
-    state = load_checkpoint(path)
+    state = load_checkpoint(path, encoder=checkpoint_model())
     base = _FitOptions(
         region=region,
         observations=observations,
@@ -411,23 +379,28 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tm
         config=replace(config, epochs=2),
         partition=training,
     )
-    changed_labels = PairwiseObservations.from_pairs(
-        observations.observed_pairs,
-        observations.observed_values + 0.1,
-        target=observations.target,
-        sampling_unit_ids=region.sampling_unit_ids,
-    )
     changed_target = replace(observations, target=TargetSpec("different target", units="index"))
     changes: list[_FitOptions] = [
-        _FitOptions(region=replace(region, features=region.feature_array + 0.1)),
         _FitOptions(
             region=replace(
-                region, features=region.feature_array, feature_names=("canopy", "elevation")
+                region,
+                features=cx.field(
+                    np.concatenate([region.feature_array, region.feature_array], axis=0),
+                    "row",
+                    "column",
+                    "feature",
+                ),
             )
         ),
-        _FitOptions(region=replace(region, grid_positions=region.grid_positions[::-1])),
+        _FitOptions(
+            region=replace(
+                region,
+                features=cx.field(region.feature_array, "row", "column", "feature"),
+                feature_names=("canopy", "elevation"),
+            )
+        ),
+        _FitOptions(region=replace(region, sampling_unit_ids=region.sampling_unit_ids[::-1])),
         _FitOptions(region=replace(region, sampling_unit_kinds=("individual",) * 6)),
-        _FitOptions(observations=changed_labels),
         _FitOptions(observations=changed_target),
         _FitOptions(
             partition=ObservationPartition(region.name, training.pairs[:-1], role="training")
@@ -450,64 +423,133 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tm
     assert extended.state.epoch == 2
 
 
-def test_checkpoint_load_refuses_incomplete_schema_runtime_and_progress(tmp_path):
-    import json
-    import zipfile
-
+def test_same_shape_measurement_edits_are_the_callers_responsibility(tmp_path):
     region, observations = checkpoint_problem()
-    callbacks = []
     result = fit(
         region,
         observations,
         model=checkpoint_model(),
-        config=TrainingConfig(epochs=0),
-        on_epoch=callbacks.append,
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     assert result.state is not None
-    assert [state.epoch for state in callbacks] == [0]
-    original = tmp_path / "complete.ilg"
-    save_checkpoint(original, result.state)
-    with zipfile.ZipFile(original) as archive:
-        entries = {name: archive.read(name) for name in archive.namelist()}
-
-    def corrupt(name, change, message):
-        manifest = json.loads(entries["manifest.json"])
-        change(manifest)
-        path = tmp_path / name
-        with zipfile.ZipFile(path, "w") as archive:
-            for entry, content in entries.items():
-                archive.writestr(
-                    entry, json.dumps(manifest) if entry == "manifest.json" else content
-                )
-        with pytest.raises(ValueError, match=message):
-            load_checkpoint(path)
-
-    corrupt("version.ilg", lambda m: m["payload"].update(checkpoint_version=2), "schema")
-    corrupt("missing.ilg", lambda m: m["payload"].pop("best_predictor"), "incomplete")
-    corrupt("runtime.ilg", lambda m: m["payload"]["resume_runtime"].update(jax="0.0"), "runtime")
-    corrupt("progress.ilg", lambda m: m["payload"].update(step=1), "progress")
-    corrupt("history.ilg", lambda m: m["payload"].update(history=[]), "history")
-    corrupt("kind.ilg", lambda m: m.update(kind="model"), "training_checkpoint")
+    path = tmp_path / "unchanged-structure.eqx"
+    save_checkpoint(path, result.state)
+    state = load_checkpoint(path, encoder=checkpoint_model())
+    changed_region = replace(
+        region,
+        features=cx.field(region.feature_array + 0.1, "row", "column", "feature"),
+        grid_positions=region.grid_positions[::-1],
+    )
+    changed_observations = PairwiseObservations.from_pairs(
+        observations.observed_pairs,
+        observations.observed_values + 0.1,
+        target=observations.target,
+        sampling_unit_ids=region.sampling_unit_ids,
+    )
+    callbacks = []
+    resumed = fit(changed_region, changed_observations, state=state, on_epoch=callbacks.append)
+    assert resumed.state is not None
+    assert callbacks == []
+    assert_same_state(resumed.state, state)
 
 
-def test_checkpoint_requires_calibration_for_every_training_region(tmp_path):
-    from dataclasses import replace
-
+def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(tmp_path):
     from ilg_toolkit import ArtifactError
 
     region, observations = checkpoint_problem()
-    other = replace(region, name="second-region")
+    result = fit(
+        region,
+        observations,
+        model=checkpoint_model(),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
+    )
+    assert result.state is not None
+    path = tmp_path / "incompatible.eqx"
+    save_checkpoint(path, result.state)
+    with pytest.raises(ArtifactError, match="encoder template"):
+        load_checkpoint(
+            path,
+            encoder=UNetEmbeddingDistance(
+                2,
+                patch_size=1,
+                base_channels=4,
+                embedding_dim=2,
+                dropout=0.2,
+                key=jax.random.key(8),
+            ),
+        )
+    path.write_bytes(path.read_bytes()[:-20])
+    with pytest.raises(ArtifactError, match="encoder template"):
+        load_checkpoint(path, encoder=checkpoint_model())
+
+
+def test_mlpe_checkpoint_requires_original_precision_without_changing_global_settings(tmp_path):
+    from ilg_toolkit import ArtifactError
+
     with jax.enable_x64():
+        region, observations = checkpoint_problem()
         result = fit(
-            (region, other),
-            (observations, observations),
+            region,
+            observations,
             model=checkpoint_model(),
-            config=TrainingConfig(epochs=0, objective="mlpe"),
+            config=TrainingConfig(objective="mlpe", epochs=0),
         )
         assert result.state is not None
-        partial = replace(
-            result.model, calibrations={region.name: result.model.calibrations[region.name]}
-        )
-        state = replace(result.state, latest_model=partial, best_model=partial)
-        with pytest.raises(ArtifactError, match="missing regional MLPE calibration"):
-            save_checkpoint(tmp_path / "incomplete-calibration.ilg", state)
+        path = tmp_path / "precision.eqx"
+        save_checkpoint(path, result.state)
+    with jax.enable_x64(False):
+        with pytest.raises(ArtifactError, match="JAX_ENABLE_X64"):
+            load_checkpoint(path, encoder=checkpoint_model())
+        assert not jax.config.read("jax_enable_x64")
+
+
+def test_individual_ensemble_member_disk_resume_uses_a_custom_encoder(tmp_path):
+    from test_mlpe_training import WeightedEmbedding
+
+    from ilg_toolkit import fit_ensemble_member, generate_population_folds
+
+    region, observations = checkpoint_problem()
+    fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)[0]
+    config = TrainingConfig(objective="direct_log1p", epochs=2, learning_rate=0.002)
+
+    def factory(key):
+        return WeightedEmbedding(jax.random.normal(key, (2,)) * 0.1)
+
+    uninterrupted = fit_ensemble_member(
+        region,
+        observations,
+        config=config,
+        fold=fold,
+        initialization_seed=13,
+        model_factory=factory,
+    )
+    path = tmp_path / "fold-0-seed-13.eqx"
+    partial = fit_ensemble_member(
+        region,
+        observations,
+        config=replace(config, epochs=1),
+        on_epoch=lambda identity, state: save_checkpoint(path, state),
+        fold=fold,
+        initialization_seed=13,
+        model_factory=factory,
+    )
+    assert partial.status == uninterrupted.status == "completed"
+    state = load_checkpoint(path, encoder=factory(jax.random.PRNGKey(13)))
+    resumed = fit_ensemble_member(
+        region,
+        observations,
+        config=config,
+        state=state,
+        fold=fold,
+        initialization_seed=13,
+        model_factory=factory,
+    )
+    assert resumed.status == "completed"
+    assert resumed.identity == uninterrupted.identity
+    assert resumed.fit_result is not None and uninterrupted.fit_result is not None
+    assert resumed.fit_result.state is not None and uninterrupted.fit_result.state is not None
+    assert_same_state(resumed.fit_result.state, uninterrupted.fit_result.state)
+    assert resumed.model is not None and uninterrupted.model is not None
+    np.testing.assert_array_equal(
+        resumed.model.predict(region).values, uninterrupted.model.predict(region).values
+    )

@@ -421,7 +421,7 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
             fit(region, observations, model=model, config=extreme)
 
 
-def test_continuation_rejects_changed_data_or_optimization_policy():
+def test_continuation_rejects_changed_optimization_policy():
     from dataclasses import replace
 
     import pytest
@@ -436,25 +436,6 @@ def test_continuation_rejects_changed_data_or_optimization_policy():
             fit(region, observations, state=result.state, config=replace(config, learning_rate=0.1))
         with pytest.raises(ValueError, match="already contains"):
             fit(region, observations, state=result.state, model=result.state.encoder)
-        with pytest.raises(ValueError, match="Continuation inputs"):
-            fit(
-                replace(
-                    region, features=cx.field(region.feature_array + 1, "row", "column", "feature")
-                ),
-                observations,
-                state=result.state,
-            )
-        with pytest.raises(ValueError, match="Continuation inputs"):
-            fit(
-                region,
-                PairwiseObservations.from_pairs(
-                    observations.observed_pairs,
-                    observations.observed_values + 1,
-                    target=observations.target,
-                    sampling_unit_ids=region.sampling_unit_ids,
-                ),
-                state=result.state,
-            )
 
 
 def test_shared_likelihood_gradient_weights_regions_equally_with_unequal_pair_counts():
