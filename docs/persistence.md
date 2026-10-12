@@ -1,47 +1,78 @@
-# Save predictions or continue training
+# Save a calibrated model or continue one fit
 
-Choose an artifact by the operation you need after loading:
-
-| Operation | Write / read | Preserved state | Inputs needed afterward |
-| --- | --- | --- | --- |
-| Predict with one fitted model | `save_model` / `load_model` | Selected encoder, regional calibration/posterior, feature and target contracts, solver settings, target-access provenance | Prepared query region; no genetic query targets or model template |
-| Continue one fit | `save_checkpoint` / `load_checkpoint`, then `fit(state=...)` | Latest encoder, nuisance parameters, Adam moments/count, RNG, history, configuration and separately selected best model | Same training/validation inputs and partitions |
-| Deploy an ensemble | `save_ensemble` / `load_ensemble` | Every requested identity, fold and outcome, with each completed `member.model` | Prepared query region; no checkpoints or training observations |
-| Continue an ensemble run | `fit_ensemble_run(..., resume=True)` | Atomic manifest referring to independent member checkpoints and selected models | Complete run directory and same accessed training/validation inputs |
-
-All operations use the public `ilg_toolkit` boundary. The consolidated
-[`examples/ensemble.py`](../examples/ensemble.py) demonstrates independently fitted
-members, deployment, known effects, declared support and eligible OOF evaluation.
+`save_model` stores the selected encoder, regional genetic calibration and
+population-effect posterior, feature and target contracts, solver settings, and
+observation-use provenance. The artifact supports prediction without training
+measurements. `save_checkpoint` stores the latest optimization state and selected
+best model for continuation; see below.
 
 ## Export predictions
 
+Loading requires a caller-supplied encoder with the exact full configuration used
+for training. Construct the same class with the same static settings, including
+patch size, minimum conductance, patch batching, dropout and custom activation
+choices. Its initial parameter values may differ: saved numerical leaves replace
+them.
+
 ```python
-from ilg_toolkit import load_model, save_model, load_ensemble, save_ensemble
+import jax
+from ilg_toolkit import load_model, save_model
+from ilg_toolkit.models import ResNet9Conductance
 
 save_model("model.ilg", result.model)
-model = load_model("model.ilg")
+encoder_template = ResNet9Conductance(
+    2,
+    patch_size=4,
+    min_conductance=0.02,
+    patch_batch_size=3,
+    key=jax.random.key(0),
+)
+model = load_model("model.ilg", encoder=encoder_template)
 prediction = model.predict(prepared_query_region)
-
-save_ensemble("ensemble.ilg", ensemble)
-restored = load_ensemble("ensemble.ilg")
-prediction = restored.predict(prepared_query_region)
 ```
 
-Loading does not refit calibration. Regional posterior effects, target transforms,
-actual training/validation/calibration access and constructor settings travel with
-the encoder. Query regions supply HWC features, native row/column grid locations,
-and matching feature meanings/order; preparation and normalization remain the
-caller's responsibility. Raw landscape scores work in compatible transfer regions;
-MLPE target prediction requires an explicit regional head. Explicit recalibration
-of `member.model` is retained when exporting an ensemble. Inference reloads have
-`member.fit_result is None` and contain no optimizer continuation state.
+This example assumes the fitted encoder uses the shown settings. Matching leaf
+shapes cannot establish matching static configuration; keeping that configuration
+is the caller's responsibility. Compatible custom Equinox encoders use the same
+save/load operations without registration or a toolkit-specific codec.
 
-Ensemble deployment averages each member's predictions **after** genetic
-calibration and target inversion. It requires all requested members; failed and
-pending outcomes remain explicit. Member SD is descriptive, in original target
-units. Conditional MLPE predictive variance remains separate on the transformed
-model scale. See [evaluation](evaluation.md) for eligible OOF aggregation and
-[conditioning](mlpe-conditioning.md) for known-effect and supplied-support access.
+Loading does not refit calibration. Regional normalization, coefficients,
+variances, posterior quantities, population identities and actual
+training/validation/calibration access are retained. Marginal, known-effect and
+support-conditioned predictions preserve their scientific meaning. A model may
+have calibration heads for only some regions: landscape scores remain available
+in compatible regions, while MLPE genetic prediction requires an explicit
+regional head. See [conditioning](mlpe-conditioning.md) and
+[evaluation](evaluation.md) for prediction and eligibility rules.
+
+Query regions supply a Coordax field with named row, column and feature dimensions,
+sampling-unit locations, and matching feature meanings/order. Raw landscape and
+genetic measurements are not embedded in inference artifacts. Save individual
+ensemble members with these same operations and assemble the desired in-memory
+ensemble in an ordinary script; [examples/ensemble.py](../examples/ensemble.py)
+demonstrates the ensemble workflow.
+
+## Inference format and precision
+
+An inference file contains a short JSON header followed by native Equinox leaves
+of the actual `CalibratedModel`. The header holds nonnumerical contracts and the
+structure needed to construct that module around the supplied encoder. Learned
+coefficients and posterior arrays remain ordinary numerical leaves. There is no
+architecture registry, separate numerical payload, content checksum, pickle or
+exact runtime-version gate. Historical ZIP-based `.ilg` inference artifacts are
+unsupported.
+
+Equinox checks numerical leaf compatibility with the caller's template. Invalid
+headers, truncated leaves and representative structural incompatibilities raise
+`ArtifactError`. Keep the original precision: artifacts with 64-bit JAX real or
+integer arrays, or complex128 arrays, require `JAX_ENABLE_X64=true` or an active
+`jax.enable_x64()` context when loading. Enable x64 before creating or converting
+inputs when those measurements need float64 precision; enabling it later cannot
+recover information already rounded. Loading never changes global JAX precision.
+
+Saves write and flush a temporary file in the destination directory, then replace
+the destination atomically. An interrupted replacement preserves the preceding
+complete model. The destination's parent directory must already exist.
 
 ## Continue one fit
 
@@ -77,79 +108,3 @@ zero-budget fit invokes the callback once; a continuation with no further update
 invokes it zero times. Saving at the end with `save_checkpoint(path, result.state)`
 is also supported. The checkpoint retains latest and best state together, so
 validation selection does not replace the trajectory used for continuation.
-
-## Continue independent ensemble members
-
-```python
-from ilg_toolkit import TrainingConfig, fit_ensemble_run
-
-with jax.enable_x64():
-    ensemble = fit_ensemble_run(
-        "training-run", region, observations,
-        n_folds=2, holdout_size=2, fold_seed=47,
-        initialization_seeds=(13, 29),
-        config=TrainingConfig(objective="mlpe", epochs=30),
-    )
-    ensemble = fit_ensemble_run("training-run", region, observations, resume=True)
-```
-
-Use one writer per run directory. A fresh call refuses an existing manifest.
-Resume validates the complete saved composition and referenced artifacts before
-training. It skips compatible members already at budget and continues unfinished
-members from their own latest state. An explicit larger total budget continues
-previously completed members. Fold definitions, initialization identities,
-accessed data and configuration must agree. Factories initialize pending members
-only; their model family, constructor settings, leaf shapes/dtypes and dynamic
-architecture settings must match the run.
-
-Each complete epoch writes an immutable member generation before atomic
-replacement of `run.ilg` publishes its reference. Completed outcomes also reference
-the selected inference model, verified against the checkpoint's best model.
-`on_epoch(identity, state)` runs after durable epoch publication;
-`on_member(member)` runs after durable outcome publication, including skipped
-members. Callback errors interrupt execution. Initialization and fit failures are
-recorded with diagnostics, and later requested members still run. Resume retains
-those failures; start a separate run for a changed retry request.
-
-Missing, corrupt or incompatible references raise `ArtifactError` naming the
-member before work resumes. A failed publication preserves the preceding complete
-manifest and its generations. Unreferenced files may remain after interruption;
-resume never guesses a replacement. Keep every referenced generation for
-continuation. References are restricted to the run's `members` directory and
-checked against traversal and symlink escapes.
-
-## Format, compatibility and precision
-
-The four artifact kinds use schema-one ZIP archives with strict finite JSON
-metadata and numeric NPY arrays; no pickle or arbitrary class imports. Loaders
-validate kinds, schemas, codec versions, leaf paths/count/shapes/dtypes, declared
-array digests and complete composition. Missing, extra, duplicate or malformed
-content raises `ArtifactError`. Integrity checks detect damage, not authorship.
-Saves write a same-directory temporary archive, flush it, then atomically replace
-the destination. A failed save preserves the preceding complete generation.
-Single-file destinations require an existing parent directory; saved runs create
-their directories.
-
-Codecs support the exact shipped `UNetEmbeddingDistance` and `ResNet9Conductance`
-classes with stateless GroupNorm. Unsupported custom architectures, architecture
-modifications or mutable model state require explicit future codecs. Inference
-artifacts may contain heads for only selected regions; checkpoints require heads
-for every MLPE training region.
-
-ResNet9 retains its optional `patch_batch_size` execution setting in models,
-checkpoints and saved runs. Default unbatched models keep the historical ResNet
-codec version 1 metadata; explicitly configured positive batch sizes use version
-2. Both load strictly under archive schema 1. A version 1 ResNet loads with
-`patch_batch_size=None`. Continuation uses the saved encoder and its batch size;
-it rejects a replacement model supplied alongside the continuation state.
-
-Array dtypes are preserved. Float64 JAX leaves require `JAX_ENABLE_X64=true` or an
-active `jax.enable_x64()` context when loading; silent truncation is refused.
-MLPE fitting and exact checkpoint continuation require the saved explicit
-precision setting. Exact resume also requires the recorded Python/numerical
-library versions, backend and device kind/count under deterministic execution;
-incompatible runtimes are refused. Solver contexts are rebuilt from configuration.
-Inference reconstruction verifies architecture and numerical contracts without
-promising identical outputs across future runtimes or devices. Matching
-deterministic CPU round trips check numeric-array identity and prediction
-agreement; installed-wheel comparisons also check floating-point tolerances.
