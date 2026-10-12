@@ -77,11 +77,11 @@ def test_explicit_development_recalibration_keeps_encoder_and_prior_history_froz
 
     calibrated = recalibrate(result.model, region, observations, config=MLPEConfig(jitter=1e-7))
     assert calibrated.objective == "mlpe"
-    assert calibrated.encoder is result.model.encoder
+    assert eqx.tree_equal(calibrated.encoder, result.model.encoder)
     assert calibrated.calibrations[region.name].calibration_pairs == training.pairs
     assert set(calibrated.calibrations[region.name].calibration_roles) == {"training"}
     developed = recalibrate(calibrated, region, observations, partitions=(training, validation))
-    assert developed.encoder is calibrated.encoder
+    assert eqx.tree_equal(developed.encoder, calibrated.encoder)
     assert developed.calibrations[region.name].config is calibrated.calibrations[region.name].config
     assert result.history is history
     assert result.model.objective == "direct_log1p"
@@ -122,8 +122,10 @@ def test_transfer_scores_are_label_free_and_each_region_requires_its_own_head():
         new_region.name, observations.observed_pairs, role="calibration"
     )
     transferred = calibrated.recalibrate(new_region, new_observations, partitions=development)
-    assert transferred.encoder is calibrated.encoder
-    assert transferred.calibrations[region.name] is calibrated.calibrations[region.name]
+    assert eqx.tree_equal(transferred.encoder, calibrated.encoder)
+    assert eqx.tree_equal(
+        transferred.calibrations[region.name], calibrated.calibrations[region.name]
+    )
     np.testing.assert_array_equal(
         transferred.predict(region).values, calibrated.predict(region).values
     )

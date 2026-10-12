@@ -1,5 +1,6 @@
 """Prediction seam: independently condition the joint observation Gaussian."""
 
+import equinox as eqx
 import numpy as np
 import pytest
 from mlpe_reference import _R_SCORES
@@ -289,7 +290,7 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
     )
     np.testing.assert_allclose(result.model_values, expected_mean, atol=1e-10)
     np.testing.assert_allclose(result.model_variance, expected_variance, atol=1e-10)
-    assert model.encoder is direct.encoder
+    assert eqx.tree_equal(model.encoder, direct.encoder)
     assert result.provenance.support_pairs == tuple(
         tuple(sorted(pair)) for pair in support.observed_pairs
     )

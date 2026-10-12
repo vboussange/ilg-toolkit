@@ -3,7 +3,7 @@
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import NamedTuple, TypedDict, cast
 
 import equinox as eqx
@@ -41,8 +41,7 @@ Encoder = ConductanceModel | EmbeddingDistanceModel
 Parameters = tuple[Encoder, jax.Array | None]
 
 
-@dataclass(frozen=True)
-class EpochRecord:
+class EpochRecord(eqx.Module):
     """Inference objectives after an update; zero is initialization.
 
     The aggregate is the arithmetic mean of regional, per-pair means.
@@ -51,12 +50,11 @@ class EpochRecord:
     epoch: int
     training_loss: float
     validation_loss: float | None = None
-    training_by_region: dict[str, float] = field(default_factory=dict)
-    validation_by_region: dict[str, float] = field(default_factory=dict)
+    training_by_region: dict[str, float] = eqx.field(default_factory=dict)
+    validation_by_region: dict[str, float] = eqx.field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class FitResult:
+class FitResult(eqx.Module):
     """Selected shared model and regional optimization history."""
 
     model: CalibratedModel
@@ -77,8 +75,7 @@ class FitResult:
         return self.model
 
 
-@dataclass(frozen=True)
-class TrainingState:
+class TrainingState(eqx.Module):
     """Explicit in-memory continuation state; checkpoints add serialization separately.
 
     The encoder, variance parameters and Adam state describe the latest epoch.
@@ -102,8 +99,8 @@ class TrainingState:
     best_loss: float
     selection: str
     model_state: object = None
-    schedule_state: dict = field(default_factory=dict)
-    stopping_state: dict = field(default_factory=dict)
+    schedule_state: dict = eqx.field(default_factory=dict)
+    stopping_state: dict = eqx.field(default_factory=dict)
 
 
 class _TrainingPayload(NamedTuple):
@@ -638,7 +635,7 @@ def _refresh_heads(
                 f"{batch.region.name}: nonfinite MLPE calibration at epoch {epoch}; "
                 "check nonconstant scores, identifiable endpoints and variance conditioning"
             )
-        mean, covariance, factor = (np.asarray(array) for array in result.posterior)
+        mean, covariance, factor = result.posterior
         heads[batch.region.name] = MLPEHead(
             region_name=batch.region.name,
             target=batch.observations.target,
@@ -649,9 +646,9 @@ def _refresh_heads(
             slope=float(result.coefficients[1]),
             unit_variance=float(result.variances[0]),
             residual_variance=float(result.variances[1]),
-            effect_mean=tuple(mean.tolist()),
-            effect_covariance=tuple(map(tuple, covariance.tolist())),
-            effect_precision_cholesky=tuple(map(tuple, factor.tolist())),
+            effect_mean=mean,
+            effect_covariance=covariance,
+            effect_precision_cholesky=factor,
             calibration_pairs=training_pairs[batch.region.name],
             calibration_roles=("training",) * len(batch.payload.targets),
             ml_log_likelihood=-float(result.nll),
