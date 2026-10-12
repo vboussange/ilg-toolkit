@@ -43,7 +43,7 @@ from .mlpe import (
 )
 from .model import CalibratedModel, PairPrediction, Prediction
 from .persistence import ArtifactError, load_model, save_model
-from .training import EpochRecord, FitResult, TrainingState, fit
+from .training import EpochRecord, TrainingState, fit
 
 __all__ = [
     "IBDModel",
@@ -82,7 +82,6 @@ __all__ = [
     "predict_known_effects",
     "EpochRecord",
     "TrainingConfig",
-    "FitResult",
     "TrainingState",
     "PairwiseObservations",
     "ObservationPartition",

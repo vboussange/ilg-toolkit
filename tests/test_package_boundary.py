@@ -114,7 +114,7 @@ obs = ilg.PairwiseObservations.from_matrix(('a','b'), [[0,.3],[.3,0]],
     target=ilg.TargetSpec('synthetic', units='index'))
 state = ilg.load_checkpoint({str(checkpoint_artifact)!r}, encoder=encoder)
 continued = ilg.fit(region, obs, state=state)
-assert continued.state.epoch == 1
+assert continued.epoch == 1
 np.testing.assert_allclose(continued.model.predict(region).values, {expected_continued!r},
     rtol=1e-6, atol=1e-7)
 result = ilg.fit(region, obs,
