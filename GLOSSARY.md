@@ -4,6 +4,45 @@ Inverse landscape genetics: learning relationships between landscapes and pairwi
 
 ## Language
 
+**Region batch**:
+The prepared landscape features and sampling-unit locations for one region, independent of genetic observations.
+_Avoid_: Prepared region, when naming this input boundary.
+
+**Training configuration**:
+The explicit optimization budget and numerical settings supplied as `TrainingConfig`.
+_Avoid_: FitConfig, when naming this public configuration.
+
+**Landscape genetics model**:
+A distance model composed with genetic calibration, retaining feature meanings,
+target semantics and the observations used for training and selection.
+_Avoid_: Encoder, when referring to the complete genetic prediction model.
+
+**Distance model**:
+A relationship deriving pairwise landscape separation from prepared features and
+sampling-unit locations without genetic observations. Effective resistance and
+squared embedding distance are supported forms of landscape separation.
+_Avoid_: Genetic predictor, when the relationship has no genetic calibration.
+
+**Calibration module**:
+The authoritative target contract and relationship mapping landscape scores to
+genetic predictions. Direct calibration applies the declared inverse target
+transform. MLPE calibration selects a fitted relationship for the query region.
+
+**Regional MLPE calibration**:
+One region's fitted relationship between landscape scores and genetic targets,
+including population dependence, uncertainty and observation-use provenance.
+_Avoid_: Complete model, when referring only to one regional relationship.
+
+**Resistance calculation**:
+Effective resistance between sampling-unit nodes in a conductance graph, computed
+by `effective_resistance`. `ResistanceSolverConfig` declares numerical settings;
+`ResistanceSolverContext` holds a reusable solver for one graph shape.
+_Avoid_: Distance solver, when referring specifically to resistance computation.
+
+**Isolation by distance (IBD)**:
+A reference relationship between geographic separation and genetic dissimilarity, independent of landscape resistance.
+_Avoid_: IBR, when referring to the geographic-distance baseline.
+
 **Fold ensemble**:
 A collection of fitted models trained using different sampling-unit partitions of the same dataset.
 _Avoid_: Fold-averaged model, when referring to the collection rather than an aggregate prediction.
@@ -31,6 +70,11 @@ _Avoid_: Dataset, when referring to one region within a multi-region study.
 **Landscape score**:
 A model-derived measure of separation between two sampling units based on their landscape, before any genetic calibration.
 _Avoid_: Genetic prediction, when the score has not been related to the genetic target scale.
+
+**Genetic prediction**:
+An estimated genetic relationship for an identified pair of sampling units in a
+region, expressed in the declared target's original units. Its matrix representation
+does not imply predictions for unrequested pairs or a joint uncertainty model.
 
 **Genetic calibration**:
 The relationship between landscape scores and genetic observations on the declared target scale. This relationship may differ between regions.

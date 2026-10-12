@@ -1,0 +1,44 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: "true"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install toolkit and declared development dependencies
+        run: uv sync --extra dev
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+      - name: Lint
+        run: uv run --no-sync ruff check .
+      - name: Check types
+        run: uv run --no-sync pyright
+      - name: Test public workflows and installed wheel
+        run: uv run --no-sync pytest
+      - name: Run synthetic examples and research reference
+        run: |
+          for example in examples/*.py; do uv run --no-sync python "$example"; done
+          uv run --no-sync python -m experiments.wishart
+      - name: Build source distribution and wheel
+        run: uv run --no-sync python -m build
