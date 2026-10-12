@@ -91,16 +91,16 @@ def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_t
     with pytest.raises(ValueError, match="explicit.*TrainingConfig"):
         fit(region, observations, model=encoder)
     initial = fit(region, observations, model=encoder, config=config)
-    assert initial.state is not None
-    continued = fit(region, observations, state=initial.state)
+
+    continued = fit(region, observations, state=initial)
     assert continued.history == initial.history
-    assert continued.state is not None
-    assert continued.state.config == config
+
+    assert continued.config == config
     np.testing.assert_array_equal(
         continued.model.predict(region).values, initial.model.predict(region).values
     )
     with pytest.raises(ValueError, match="omit model"):
-        fit(region, observations, state=initial.state, model=encoder)
+        fit(region, observations, state=initial, model=encoder)
 
 
 def test_encoder_distance_boundary_accepts_array_like_rasters_and_nodes():

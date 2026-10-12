@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from typing import NamedTuple, TypedDict, cast, final
+from typing import NamedTuple, cast, final
 
 import equinox as eqx
 import jax
@@ -15,12 +15,11 @@ from .data import ObservationPartition, PairwiseObservations, RegionBatch
 from .mlpe import (
     MLPEConfig,
     MLPEHead,
-    decode_mlpe_variances,
-    mlpe_effect_posterior,
+    finalize_mlpe_fit,
     mlpe_ml_negative_log_likelihood,
     profiled_mlpe_ml_fit,
-    sample_standardize_scores,
 )
+from .mlpe.likelihood import MLPEFit
 from .model import CalibratedModel
 from .models import AbstractDistanceModel
 from .resistance import ResistanceSolverContext
@@ -36,7 +35,7 @@ PartitionCollection = (
     | None
 )
 Encoder = AbstractDistanceModel
-Parameters = tuple[Encoder, jax.Array | None]
+Parameters = tuple[Encoder, dict[str, jax.Array] | None]
 
 
 @final
@@ -54,38 +53,18 @@ class EpochRecord(eqx.Module):
 
 
 @final
-class FitResult(eqx.Module):
-    """Selected shared model and regional optimization history."""
-
-    model: CalibratedModel
-    history: tuple[EpochRecord, ...]
-    selected_epoch: int
-    selection: str
-    region_names: tuple[str, ...] = ()
-    state: "TrainingState | None" = None
-
-    @property
-    def latest_model(self) -> CalibratedModel:
-        """CalibratedModel at the last update, including when validation chose an earlier one."""
-        return self.model if self.state is None else self.state.latest_model
-
-    @property
-    def best_model(self) -> CalibratedModel:
-        """The model selected by the declared selection policy."""
-        return self.model
-
-
-@final
 class TrainingState(eqx.Module):
-    """Explicit in-memory continuation state; checkpoints add serialization separately.
+    """Complete fitting result and continuation state, returned directly by ``fit``.
 
     The latest model, variance parameters and Adam state describe the latest
-    epoch. ``best_model`` retains its own encoder and heads. Progress derives
+    epoch. ``model`` selects ``best_model``, which retains its own encoder and
+    regional calibrations. MLPE ``raw_variances`` maps each region identity to
+    its two nuisance parameters; direct fits use ``None``. Progress derives
     from history, and the input contract records structure rather than values.
     RNG uses a serializable legacy uint32 key.
     """
 
-    raw_variances: jax.Array | None
+    raw_variances: dict[str, jax.Array] | None
     optimizer_state: optax.OptState
     rng_key: jax.Array
     config: TrainingConfig
@@ -94,6 +73,11 @@ class TrainingState(eqx.Module):
     latest_model: CalibratedModel
     best_model: CalibratedModel
     selected_epoch: int
+
+    @property
+    def model(self) -> CalibratedModel:
+        """The model selected by the declared validation or final-epoch policy."""
+        return self.best_model
 
     @property
     def encoder(self) -> Encoder:
@@ -136,31 +120,12 @@ class _RegionalInput(NamedTuple):
     partition: ObservationPartition | None
 
 
-class _MLPERefresh(NamedTuple):
-    nll: jax.Array
-    coefficients: jax.Array
-    score_center: jax.Array
-    score_scale: jax.Array
-    variances: jax.Array
-    posterior: tuple[jax.Array, jax.Array, jax.Array]
-
-
-class _MLPEArguments(TypedDict):
-    n_populations: int
-    raw_variances: jax.Array
-    variance_floor: float
-    jitter: float
-    score_center: jax.Array
-    score_scale: jax.Array
-
-
 @dataclass(frozen=True)
 class _RegionalBatch:
     """Keep each region's observations and solver state separate from its shared encoder."""
 
     region: RegionBatch
     observations: PairwiseObservations
-    partition: ObservationPartition | None
     payload: _TrainingPayload
     context: ResistanceSolverContext | None = None
 
@@ -290,14 +255,13 @@ def _joint_loss(
     parameters: Parameters,
     payload: _TrainingPayload,
     *,
-    objective: str,
-    region_index: int,
+    region_name: str,
     config: TrainingConfig,
     context: ResistanceSolverContext | None = None,
     key: jax.Array | None = None,
 ) -> jax.Array:
     encoder, raw_variances = parameters
-    if objective == "direct_log1p":
+    if config.objective == "direct_log1p":
         return _regional_loss(encoder, payload, context=context, inference=False, key=key)
     assert raw_variances is not None
     scores = _selected_scores(encoder, payload, context=context, inference=False, key=key).astype(
@@ -308,7 +272,7 @@ def _joint_loss(
         payload.targets,
         *payload.pairs,
         n_populations=len(payload.nodes),
-        raw_variances=raw_variances[region_index],
+        raw_variances=raw_variances[region_name],
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
     )
@@ -319,8 +283,7 @@ def _joint_value_and_grad(
     parameters: Parameters,
     payload: _TrainingPayload,
     *,
-    objective: str,
-    region_index: int,
+    region_name: str,
     config: TrainingConfig,
     context: ResistanceSolverContext | None = None,
     key: jax.Array | None = None,
@@ -328,8 +291,7 @@ def _joint_value_and_grad(
     value, gradient = eqx.filter_value_and_grad(_joint_loss)(
         parameters,
         payload,
-        objective=objective,
-        region_index=region_index,
+        region_name=region_name,
         config=config,
         context=context,
         key=key,
@@ -353,23 +315,17 @@ def _refresh_mlpe(
     *,
     config: TrainingConfig,
     context: ResistanceSolverContext | None = None,
-) -> _MLPERefresh:
+) -> MLPEFit:
     scores = _selected_scores(encoder, payload, context=context).astype(jnp.float64)
-    _, center, scale = sample_standardize_scores(scores)
-    options = _MLPEArguments(
+    return finalize_mlpe_fit(
+        scores,
+        payload.targets,
+        *payload.pairs,
         n_populations=len(payload.nodes),
         raw_variances=raw,
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
-        score_center=center,
-        score_scale=scale,
     )
-    nll, beta = profiled_mlpe_ml_fit(scores, payload.targets, *payload.pairs, **options)
-    posterior = mlpe_effect_posterior(
-        scores, payload.targets, *payload.pairs, fixed_effects=beta, **options
-    )
-    variances = jnp.stack(decode_mlpe_variances(raw, variance_floor=config.mlpe_variance_floor))
-    return _MLPERefresh(nll, beta, center, scale, variances, posterior)
 
 
 def _frozen_validation_loss(
@@ -435,8 +391,10 @@ def _input_contract(
     }
 
 
-def _initial_raw_variances(batches: Sequence[_RegionalBatch], config: TrainingConfig) -> jax.Array:
-    values = []
+def _initial_raw_variances(
+    batches: Sequence[_RegionalBatch], config: TrainingConfig
+) -> dict[str, jax.Array]:
+    values = {}
     for batch in batches:
         if config.mlpe_initial_variances is None:
             variance = jnp.maximum(
@@ -449,8 +407,8 @@ def _initial_raw_variances(batches: Sequence[_RegionalBatch], config: TrainingCo
         positive = pair - config.mlpe_variance_floor
         # log(expm1(x)) without overflowing for large user-supplied initial variances.
         raw = positive + jnp.log(-jnp.expm1(-positive))
-        values.append(raw)
-    return jnp.stack(values)
+        values[batch.region.name] = raw
+    return values
 
 
 def _prepare_batches(
@@ -469,7 +427,7 @@ def _prepare_batches(
         if shape not in contexts:
             contexts[shape] = encoder.prepare(region.feature_array)
         context = contexts[shape]
-        return _RegionalBatch(region, observations, partition, payload, context)
+        return _RegionalBatch(region, observations, payload, context)
 
     training = tuple(make_batch(inputs, "training") for inputs in training_inputs)
     validation = tuple(make_batch(inputs, "validation") for inputs in validation_inputs)
@@ -551,7 +509,6 @@ def _evaluate_regions(
     parameters: Parameters,
     batches: Sequence[_RegionalBatch],
     heads: Mapping[str, MLPEHead],
-    region_indices: Mapping[str, int],
     config: TrainingConfig,
     epoch: int,
 ) -> tuple[float, dict[str, float]]:
@@ -572,7 +529,7 @@ def _evaluate_regions(
             value = _checked_call(
                 validate,
                 encoder,
-                raw_variances[region_indices[batch.region.name]],
+                raw_variances[batch.region.name],
                 moments,
                 batch.payload,
                 config=config,
@@ -612,11 +569,11 @@ def _refresh_heads(
     assert raw_variances is not None
     refresh = _compiled_refresh if config.jit else _refresh_mlpe
     heads, losses = {}, {}
-    for index, batch in enumerate(batches):
+    for batch in batches:
         result = _checked_call(
             refresh,
             encoder,
-            raw_variances[index],
+            raw_variances[batch.region.name],
             batch.payload,
             config=config,
             context=batch.context,
@@ -629,23 +586,13 @@ def _refresh_heads(
                 f"{batch.region.name}: nonfinite MLPE calibration at epoch {epoch}; "
                 "check nonconstant scores, identifiable endpoints and variance conditioning"
             )
-        mean, covariance, factor = result.posterior
-        heads[batch.region.name] = MLPEHead(
+        heads[batch.region.name] = MLPEHead.from_fit(
+            result,
             region_name=batch.region.name,
             target=batch.observations.target,
             population_ids=batch.region.sampling_unit_ids,
-            score_center=float(result.score_center),
-            score_scale=float(result.score_scale),
-            intercept=float(result.coefficients[0]),
-            slope=float(result.coefficients[1]),
-            unit_variance=float(result.variances[0]),
-            residual_variance=float(result.variances[1]),
-            effect_mean=mean,
-            effect_covariance=covariance,
-            effect_precision_cholesky=factor,
             calibration_pairs=training_pairs[batch.region.name],
             calibration_roles=("training",) * len(batch.payload.targets),
-            ml_log_likelihood=-float(result.nll),
             config=MLPEConfig(variance_floor=config.mlpe_variance_floor, jitter=config.mlpe_jitter),
             optimizer_iterations=epoch,
             optimizer_message="Fixed-budget joint Adam; no variance convergence claim",
@@ -666,7 +613,7 @@ def fit(
     validation_partition: PartitionCollection = None,
     state: TrainingState | None = None,
     on_epoch: Callable[[TrainingState], None] | None = None,
-) -> FitResult:
+) -> TrainingState:
     """Fit a shared encoder with direct log1p-MSE or full-ML regional MLPE.
 
     Each Adam update averages sequential regional gradients, normalized by pair
@@ -683,9 +630,10 @@ def fit(
     Resume checks structure and declared contracts, not measurement contents;
     keeping landscapes, locations and genetic measurements unchanged is the
     caller's responsibility.
-    Only the total epoch budget may increase. The returned selected model
-    and latest continuation state are separate when validation selects an earlier
-    epoch. Validation never consumes training random keys.
+    Only the total epoch budget may increase. The returned complete state exposes
+    the selected model through ``model`` and retains both ``latest_model`` and
+    ``best_model`` when validation selects an earlier epoch. Validation never
+    consumes training random keys.
 
     ``on_epoch`` receives complete latest/best state after initialization and each
     completed update. It may save a checkpoint; exceptions propagate. A resumed
@@ -758,7 +706,6 @@ def fit(
     training_batches, validation_batches = _prepare_batches(
         training_inputs, validation_inputs, model, config
     )
-    region_indices = {batch.region.name: i for i, batch in enumerate(training_batches)}
 
     raw_variances = (
         state.raw_variances
@@ -803,8 +750,6 @@ def fit(
     latest = state.latest_model if state is not None else None
     selected_epoch = state.selected_epoch if state is not None else 0
     best_loss = state.best_loss if state is not None else float("inf")
-    names = tuple(batch.region.name for batch in training_batches)
-    selection = "final" if validation is None else "validation"
 
     def continuation() -> TrainingState:
         assert latest is not None and selected is not None
@@ -827,13 +772,12 @@ def fit(
             keys = jax.random.split(update_key, len(training_batches))
             accumulated = None
             # Complete each regional backward pass before retaining the next.
-            for i, (batch, key) in enumerate(zip(training_batches, keys, strict=True)):
+            for batch, key in zip(training_batches, keys, strict=True):
                 _, gradient = _checked_call(
                     gradient_function,
                     parameters,
                     batch.payload,
-                    objective=config.objective,
-                    region_index=i,
+                    region_name=batch.region.name,
                     config=config,
                     context=batch.context,
                     key=key,
@@ -867,14 +811,12 @@ def fit(
             )
         else:
             training_loss, regional_training = _evaluate_regions(
-                parameters, training_batches, heads, region_indices, config, epoch
+                parameters, training_batches, heads, config, epoch
             )
         validation_loss, regional_validation = (
             (None, {})
             if not validation_batches
-            else _evaluate_regions(
-                parameters, validation_batches, heads, region_indices, config, epoch
-            )
+            else _evaluate_regions(parameters, validation_batches, heads, config, epoch)
         )
         history.append(
             EpochRecord(
@@ -887,6 +829,4 @@ def fit(
             best_loss = training_loss if validation_loss is None else validation_loss
         if on_epoch is not None:
             on_epoch(continuation())
-    final_state = continuation()
-    assert selected is not None
-    return FitResult(selected, tuple(history), selected_epoch, selection, names, final_state)
+    return continuation()

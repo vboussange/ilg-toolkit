@@ -52,7 +52,7 @@ def load_checkpoint(path, *, encoder: AbstractDistanceModel) -> TrainingState:
             latest = _model_template(metadata["latest_model"], encoder)
             best = _model_template(metadata["best_model"], encoder)
             raw = (
-                jnp.zeros((len(latest.training_pairs), 2), dtype=jnp.float64)
+                {name: jnp.zeros(2, dtype=jnp.float64) for name in latest.training_pairs}
                 if config.objective == "mlpe"
                 else None
             )

@@ -116,8 +116,9 @@ numerical results.
 `on_epoch(state)` runs after initialization at epoch zero and after each complete
 update, evaluation and model selection. Callback exceptions propagate. A fresh
 zero-budget fit invokes the callback once; a continuation with no further updates
-invokes it zero times. Saving at the end with `save_checkpoint(path, result.state)`
-is also supported. The checkpoint retains latest encoder/nuisance parameters,
+invokes it zero times. Saving at the end with `save_checkpoint(path, result)`
+is also supported: `fit` returns `TrainingState` directly, with the selected model
+exposed as `.model`. The checkpoint retains latest encoder/nuisance parameters,
 optimizer and random state, declared configuration, history and selected best
 model together. Validation selection preserves the earlier best model while
 continuation follows the latest optimizer trajectory. Individual ensemble members

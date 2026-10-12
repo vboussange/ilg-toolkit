@@ -1,6 +1,6 @@
 """MLPE fitting checked through the accepted public synthetic workflow seam."""
 
-from typing import final
+from typing import cast, final
 
 import coordax as cx
 import equinox as eqx
@@ -29,7 +29,7 @@ class WeightedEmbedding(EmbeddingDistanceModel):
         return features * jnp.exp(self.log_weights)
 
 
-def adam_moments(state: TrainingState) -> tuple[WeightedEmbedding, jax.Array]:
+def adam_moments(state: TrainingState) -> tuple[WeightedEmbedding, dict[str, jax.Array]]:
     """Expose Adam's public first moments after checking their parameter structure."""
     assert isinstance(state.optimizer_state, tuple)
     adam = state.optimizer_state[0]
@@ -37,8 +37,10 @@ def adam_moments(state: TrainingState) -> tuple[WeightedEmbedding, jax.Array]:
     assert isinstance(adam.mu, tuple)
     encoder, variances = adam.mu
     assert isinstance(encoder, WeightedEmbedding)
-    assert isinstance(variances, jax.Array)
-    return encoder, variances
+    assert isinstance(variances, dict)
+    assert all(isinstance(name, str) for name in variances)
+    assert all(isinstance(value, jax.Array) for value in variances.values())
+    return encoder, cast(dict[str, jax.Array], variances)
 
 
 def embedding_problem(name="alpine", offset=0.0, seed=14):
@@ -89,8 +91,8 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
                 mlpe_initial_variances=(0.05, 0.1),
             ),
         )
-        assert result.state is not None
-        assert result.state.raw_variances is not None
+
+        assert result.raw_variances is not None
         prediction = result.model.predict(region)
         scores = result.model.landscape_scores(region)
     assert result.history[-1].training_loss < result.history[0].training_loss - 0.1
@@ -106,7 +108,7 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
     left, right = np.triu_indices(6, 1)
     np.testing.assert_allclose(head.score_center, np.mean(scores[left, right]), atol=1e-12)
     np.testing.assert_allclose(head.score_scale, np.std(scores[left, right], ddof=1), atol=1e-12)
-    assert result.state.epoch == result.selected_epoch == 20
+    assert result.epoch == result.selected_epoch == 20
     assert set(head.calibration_roles) == {"training"}
 
 
@@ -169,13 +171,13 @@ def test_joint_adam_update_matches_dense_finite_difference_objective(jit):
                 mlpe_initial_variances=(0.05, 0.1),
             ),
         )
-        assert result.state is not None
-        assert result.state.raw_variances is not None
-        assert isinstance(result.state.encoder, WeightedEmbedding)
-        actual = np.concatenate((result.state.encoder.log_weights, result.state.raw_variances[0]))
+
+        assert result.raw_variances is not None
+        assert isinstance(result.encoder, WeightedEmbedding)
+        actual = np.concatenate((result.encoder.log_weights, result.raw_variances[region.name]))
         np.testing.assert_allclose(actual, expected, atol=1e-10)
-        moment = adam_moments(result.state)
-        actual_moment = np.concatenate((moment[0].log_weights, moment[1][0]))
+        moment = adam_moments(result)
+        actual_moment = np.concatenate((moment[0].log_weights, moment[1][region.name]))
         np.testing.assert_allclose(actual_moment, 0.1 * gradient, rtol=1e-7, atol=1e-10)
         scores = np.asarray(result.model.landscape_scores(region))[left, right]
     head = result.model.calibrations[region.name]
@@ -225,18 +227,17 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         ]
         scores = np.asarray(runs[0].latest_model.landscape_scores(region))
     first, second = runs
-    assert first.state is not None
-    assert second.state is not None
-    assert isinstance(first.state.encoder, WeightedEmbedding)
-    assert isinstance(second.state.encoder, WeightedEmbedding)
-    assert first.state.raw_variances is not None
-    assert second.state.raw_variances is not None
+
+    assert isinstance(first.encoder, WeightedEmbedding)
+    assert isinstance(second.encoder, WeightedEmbedding)
+    assert first.raw_variances is not None
+    assert second.raw_variances is not None
     assert [r.training_loss for r in first.history] == [r.training_loss for r in second.history]
-    np.testing.assert_array_equal(first.state.encoder.log_weights, second.state.encoder.log_weights)
-    np.testing.assert_array_equal(first.state.raw_variances, second.state.raw_variances)
+    np.testing.assert_array_equal(first.encoder.log_weights, second.encoder.log_weights)
+    assert eqx.tree_equal(first.raw_variances, second.raw_variances)
     assert first.latest_model.calibrations == second.latest_model.calibrations
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
-    assert first.state.rng_key.dtype == np.uint32
+    assert first.rng_key.dtype == np.uint32
     head = first.latest_model.calibrations[region.name]
     assert set(head.calibration_pairs) == set(train_partition.pairs)
     assert first.latest_model.validation_pairs[region.name] == query_partition.pairs
@@ -271,16 +272,17 @@ def test_shared_mlpe_fit_has_one_encoder_and_separate_regional_heads():
                 mlpe_initial_variances=(0.05, 0.1),
             ),
         )
-        assert result.state is not None
-        assert result.state.raw_variances is not None
+        assert isinstance(result, TrainingState)
+        assert result.raw_variances is not None
         assert result.history[-1].training_loss < result.history[0].training_loss - 0.1
         for region in regions:
             assert np.isfinite(result.model.predict(region).values).all()
-    assert result.state.raw_variances.shape == (2, 2)
+    assert set(result.raw_variances) == {"alpine", "valley"}
+    assert all(raw.shape == (2,) for raw in result.raw_variances.values())
     assert result.region_names == ("alpine", "valley")
     heads = result.model.calibrations
     assert heads["valley"].intercept - heads["alpine"].intercept > 2
-    assert not np.array_equal(result.state.raw_variances[0], result.state.raw_variances[1])
+    assert not np.array_equal(result.raw_variances["alpine"], result.raw_variances["valley"])
     assert result.history[-1].training_loss == np.mean(
         list(result.history[-1].training_by_region.values())
     )
@@ -334,8 +336,8 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver():
                 mlpe_initial_variances=(0.02, 0.05),
             ),
         )
-        assert result.state is not None
-        assert result.state.raw_variances is not None
+
+        assert result.raw_variances is not None
         assert result.history[-1].training_loss < result.history[0].training_loss - 0.2
         assert isinstance(result.model.encoder, CovariateConductance)
         assert float(result.model.encoder.weight) > 0.6
@@ -355,32 +357,32 @@ def test_in_memory_continuation_preserves_optimizer_rng_and_selected_heads():
         config = TrainingConfig(objective="mlpe", epochs=6, seed=31, learning_rate=0.03)
         model = WeightedEmbedding(jnp.zeros(2))
         uninterrupted = fit(region, observations, model=model, config=config)
-        assert uninterrupted.state is not None
-        assert uninterrupted.state.raw_variances is not None
+
+        assert uninterrupted.raw_variances is not None
         partial = fit(region, observations, model=model, config=replace(config, epochs=2))
-        assert partial.state is not None
-        assert partial.state.raw_variances is not None
-        resumed = fit(region, observations, state=partial.state, config=config)
-        assert resumed.state is not None
-        assert resumed.state.raw_variances is not None
+
+        assert partial.raw_variances is not None
+        resumed = fit(region, observations, state=partial, config=config)
+
+        assert resumed.raw_variances is not None
     assert resumed.history == uninterrupted.history
     assert resumed.model.calibrations == uninterrupted.model.calibrations
     assert resumed.selected_epoch == uninterrupted.selected_epoch == 6
     for expected, actual in zip(
         jax.tree.leaves(
             (
-                uninterrupted.state.encoder,
-                uninterrupted.state.raw_variances,
-                uninterrupted.state.optimizer_state,
-                uninterrupted.state.rng_key,
+                uninterrupted.encoder,
+                uninterrupted.raw_variances,
+                uninterrupted.optimizer_state,
+                uninterrupted.rng_key,
             )
         ),
         jax.tree.leaves(
             (
-                resumed.state.encoder,
-                resumed.state.raw_variances,
-                resumed.state.optimizer_state,
-                resumed.state.rng_key,
+                resumed.encoder,
+                resumed.raw_variances,
+                resumed.optimizer_state,
+                resumed.rng_key,
             )
         ),
         strict=True,
@@ -430,12 +432,12 @@ def test_continuation_rejects_changed_optimization_policy():
         region, observations = embedding_problem()
         config = TrainingConfig(objective="mlpe", epochs=1)
         result = fit(region, observations, model=WeightedEmbedding(jnp.zeros(2)), config=config)
-        assert result.state is not None
-        assert result.state.raw_variances is not None
+
+        assert result.raw_variances is not None
         with pytest.raises(ValueError, match="configuration"):
-            fit(region, observations, state=result.state, config=replace(config, learning_rate=0.1))
+            fit(region, observations, state=result, config=replace(config, learning_rate=0.1))
         with pytest.raises(ValueError, match="already contains"):
-            fit(region, observations, state=result.state, model=result.state.encoder)
+            fit(region, observations, state=result, model=result.encoder)
 
 
 def test_shared_likelihood_gradient_weights_regions_equally_with_unequal_pair_counts():
@@ -483,9 +485,11 @@ def test_shared_likelihood_gradient_weights_regions_equally_with_unequal_pair_co
                 learning_rate=0.02,
             ),
         )
-        assert result.state is not None
-        assert result.state.raw_variances is not None
-        moment = adam_moments(result.state)
-        actual_moment = np.concatenate((moment[0].log_weights, np.asarray(moment[1]).ravel()))
+
+        assert result.raw_variances is not None
+        moment = adam_moments(result)
+        actual_moment = np.concatenate(
+            (moment[0].log_weights, np.concatenate([moment[1][region.name] for region in regions]))
+        )
     np.testing.assert_allclose(result.history[0].training_loss, objective(initial), atol=1e-12)
     np.testing.assert_allclose(actual_moment, 0.1 * gradient, rtol=1e-7, atol=1e-10)

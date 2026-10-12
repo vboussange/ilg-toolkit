@@ -280,8 +280,7 @@ def test_shared_conductance_fit_rebuilds_solver_on_native_reload_and_resume(tmp_
     first = fit(regions, observations, model=encoder, config=replace(config, epochs=1))
     model_path, checkpoint_path = tmp_path / "model.ilg", tmp_path / "checkpoint.ilg"
     save_model(model_path, first.model)
-    assert first.state is not None
-    save_checkpoint(checkpoint_path, first.state)
+    save_checkpoint(checkpoint_path, first)
     template = PointConductance(jnp.array(9.0))
     restored_model = load_model(model_path, encoder=template)
     restored_state = load_checkpoint(checkpoint_path, encoder=template)
@@ -292,9 +291,8 @@ def test_shared_conductance_fit_rebuilds_solver_on_native_reload_and_resume(tmp_
     assert template.solver_config == ResistanceSolverConfig()
     continued = fit(regions[::-1], observations[::-1], state=restored_state, config=config)
     assert continued.history[-1].training_loss < continued.history[0].training_loss
-    assert continued.state is not None and uninterrupted.state is not None
     for actual, expected in zip(
-        jax.tree.leaves(continued.state), jax.tree.leaves(uninterrupted.state), strict=True
+        jax.tree.leaves(continued), jax.tree.leaves(uninterrupted), strict=True
     ):
         if isinstance(actual, jax.Array):
             np.testing.assert_array_equal(actual, expected)

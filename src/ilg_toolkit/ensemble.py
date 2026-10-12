@@ -12,7 +12,7 @@ from .config import TrainingConfig
 from .data import ObservationPartition, RegionBatch, TargetSpec
 from .model import CalibratedModel, Prediction
 from .models import AbstractDistanceModel
-from .training import FitResult, TrainingState, _normalize_inputs, fit
+from .training import TrainingState, _normalize_inputs, fit
 
 
 @dataclass(frozen=True)
@@ -185,7 +185,7 @@ class EnsembleMember:
     fold: PopulationFold
     status: str
     model: CalibratedModel | None = None
-    fit_result: FitResult | None = None
+    training_state: TrainingState | None = None
     failure: MemberFailure | None = None
 
     def __post_init__(self):
