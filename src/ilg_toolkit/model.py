@@ -152,7 +152,35 @@ class LandscapeGeneticsModel(eqx.Module):
         return calibrate(self, region, observations, partitions=partitions, config=config)
 
     def predict_known_effects(self, region: RegionBatch, pairs) -> MLPEConditionalPrediction:
-        """Predict explicit labelled pairs using stored regional population effects."""
+        """Predict conditional genetic points using saved MLPE population effects.
+
+        This explicit deployment operation applies no OOF holdout rule. Saved
+        calibration targets remain actual access; populations absent from the
+        posterior receive independent prior effects. No query targets are read.
+
+        Args:
+            region: Prepared query features and locations matching this model's
+                feature contract and regional population MLPE calibration.
+            pairs: Nonempty unique unordered labelled pairs with located
+                endpoints, retaining caller order/orientation. Self-pairs and
+                reversed duplicates are rejected.
+
+        Returns:
+            ``MLPEConditionalPrediction`` composing original-scale points
+            ``(m,)`` and full region sampling-unit order, model-scale means and
+            predictive variances ``(m,)``, variance components and actual access
+            provenance. Variance includes effect-posterior, residual and jitter
+            contributions, excluding distance-model, coefficient and variance-
+            parameter uncertainty. Nonlinear inverse-transformed means are not
+            original-scale expectations. Conditional calculations use scoped
+            float64; resistance scores require enabled x64. Global precision,
+            model parameters and stored posterior remain unchanged.
+
+        Raises:
+            ValueError: Regional MLPE calibration, population kinds, feature
+                contract, pairs or numerical posterior are incompatible.
+            FloatingPointError: Distance or inverse target calculations fail.
+        """
         head = self._regional_head(region)
         pairs = tuple(pairs)
         scores = _scores_for_pairs(self.landscape_scores(region), region, pairs)
@@ -169,10 +197,42 @@ class LandscapeGeneticsModel(eqx.Module):
         *,
         support_partition: ObservationPartition,
     ) -> MLPEConditionalPrediction:
-        """Predict disjoint queries using only declared support genetic observations.
+        """Condition saved MLPE effects on declared support, then predict queries.
 
-        The prepared region supplies locations for every support and query endpoint.
-        This operation leaves the distance model and stored regional calibration unchanged.
+        Support supplies additional measured targets; query targets are never
+        inputs. This deployment operation imposes no endpoint holdout rule. It
+        leaves distance parameters, regional calibration and saved effect
+        posterior unchanged; returned provenance records the additional access.
+
+        Args:
+            region: Prepared features and locations for every support/query
+                endpoint, matching the feature contract and regional population
+                MLPE calibration.
+            pairs: Nonempty unique unordered query pairs with located endpoints;
+                caller order/orientation is retained. Queries must be disjoint
+                from support identities, including reversed pairs.
+            support_observations: Original-scale ``PairwiseObservations`` with
+                the calibrated ``TargetSpec`` and exactly the declared support
+                measurements. No calibration pair may be consumed again.
+            support_partition: Matching regional ``ObservationPartition`` with
+                role ``"support"`` and exactly the measured support identities.
+
+        Returns:
+            ``MLPEConditionalPrediction`` composing original-scale query points
+            ``(m,)`` and full region matrix order, model-scale means/variances
+            ``(m,)``, variance components and calibration/support provenance.
+            Conditioning holds distance parameters, coefficients and variances
+            fixed; reported variance includes effect-posterior, residual and
+            jitter contributions only. Nonlinear inverse-transformed means are
+            not original-scale expectations. Conditional calculations use scoped
+            float64 without changing global precision; resistance requires
+            explicitly enabled x64 before score calculation.
+
+        Raises:
+            ValueError: Features, regional calibration, population kinds, pair
+                labels, support target/role/set, calibration reuse, support/query
+                separation or numerical posterior are incompatible.
+            FloatingPointError: Distance or inverse target calculations fail.
         """
         head = self._regional_head(region)
         pairs = tuple(pairs)

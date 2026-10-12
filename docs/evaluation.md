@@ -1,114 +1,201 @@
-# Eligibility-aware ensemble evaluation
+# Predicting and evaluating a fold ensemble
 
-Deployment `ensemble.predict(region)` averages all members. Out-of-fold
-prediction selects members separately for each canonical `(region, unordered
-pair)` and reports coverage. Run `python examples/ensemble.py` for the complete
-synthetic fit and prediction workflow.
+A fold ensemble contains independent fitted `LandscapeGeneticsModel` members.
+Each member composes a distance model with a genetic calibration module and
+retains the targets used for training, validation-based selection and calibration.
+A population fold declares which sampling units were held out. Genetic
+observations are unordered pairs of those units; identical labels in different
+regions identify different pairs.
 
-| Operation | Information access | Endpoint / target requirement | Outputs and coverage | Uncertainty |
-| --- | --- | --- | --- | --- |
-| `ensemble.predict(region)` | Saved calibration; effects marginalised | Prepared locations; no query targets or holdout requirement | Original-scale mean and member values; all requested members required | Descriptive member SD |
-| `model.predict_known_effects(region, pairs)` | Saved effect posterior | Prepared locations; no query targets; deployment may reuse calibration endpoints | Original-scale conditional points and access provenance | Separate model-scale predictive variance |
-| `model.predict_with_support(...)` | Saved posterior and declared support targets | Support-role partition; support and query pairs disjoint | Conditional points and support provenance | Separate model-scale predictive variance |
-| `predict_out_of_fold(...)` | Eligible members' marginal predictions by default | Held-out endpoints also unseen in actual target access; own-query target forbidden | Unique-pair means, member values, counts and coverage | Descriptive member SD |
-| OOF with known/support `EvaluationRegime` | Saved effects or declared support | Same own-target rule; explicit endpoint and support policies | Conditional OOF values, access and coverage | Member SD and separate per-member model variances |
-| `score_out_of_fold(prediction, observations)` | Query targets read after predictions are fixed | Matching original-scale targets; each covered unique pair counted once | MSE, RMSE, MAE, covered count and observed targets | No interval inferred |
+**Deployment prediction** uses every requested member to predict genetic points
+at prepared locations. It makes no claim that endpoints or targets were held
+out. **Out-of-fold (OOF) prediction** selects contributors separately for each
+query pair, using both nominal endpoint holdout and the member's actual target
+access. **Scoring** subsequently compares those fixed points with measured query
+targets. Keeping these steps separate makes the information boundary explicit.
 
-Ordinary model results are pair-oriented `Prediction` objects. Conditional and
-deployment ensemble records compose them as `.prediction`; member diagnostics
-remain separate. OOF records compose one common prediction per region in
-`.predictions`. Their flat `.keys` and `.values` derive from those regional points
-in canonical region/pair order, aligned with member-output columns. Use a common
-prediction's `.as_matrix()` for explicit matrix representation.
+Run the complete synthetic workflow from the repository root:
 
-Ordinary/direct and OOF numerical arrays follow configured JAX precision.
-Standalone MLPE/conditioning and ensemble aggregation use scoped float64;
-resistance and joint MLPE fitting require explicitly enabled x64. Matrix
-conversion and OOF flat views retain stored precision without changing the
-global setting. Enable x64 before constructing measurements requiring float64.
-Coverage masks/counts and access/provenance records retain labelled host metadata.
-
-```python
-from ilg_toolkit import evaluate_ensemble
-
-result = evaluate_ensemble(ensemble, region, observations, partitions=query_partition)
-print(result.n_pairs, result.n_query_pairs, result.coverage)
-print(result.mse, result.rmse, result.mae)
-print(result.predictions.eligible_counts)
+```sh
+JAX_PLATFORMS=cpu python examples/ensemble.py
 ```
 
-`partitions` accepts query-role partitions aligned with the single/shared regional
-input contract. Omit it to consider every measured pair: training and other
-ineligible pairs remain present with zero coverage. Missing observations stay
-absent. Canonical query identities are unique, including reversed duplicates
-supplied to the label-free API. Several eligible predictions are averaged before
-a covered pair contributes **once** to pooled metrics. Pooled metrics weight each
-covered pair equally, independently of the equal-region training loss.
+The script creates all features, locations and measurements, fits two independent
+MLPE members, compares deployment with eligible OOF prediction, prints coverage,
+and conditions on declared support before scoring separate queries. It enables
+x64 in an explicit scope and needs no study data. Its final section demonstrates
+caller-owned individual checkpoint continuation.
 
-## Predict before reading query targets
+## Choose what information prediction may use
+
+A query pair names endpoints whose target is to be predicted. A support pair
+provides a measured target explicitly allowed to condition population effects.
+Training, validation-selection and calibration pairs have already supplied
+information to a member. Giving a pair a query role does not erase earlier access.
+
+| Operation | Information used | Holdout requirement | Result |
+| --- | --- | --- | --- |
+| `ensemble.predict(region, pairs=None)` | Every member's saved marginal calibration; MLPE effect means are zero | None | `EnsemblePrediction`: original-scale mean points, all member points and descriptive SD |
+| `model.predict_known_effects(region, pairs)` | Saved regional MLPE effect posterior | None for this deployment call | `MLPEConditionalPrediction`: points, model-scale means/variance and access provenance |
+| `model.predict_with_support(region, pairs, support_observations, support_partition=...)` | Saved posterior plus exactly declared support targets | None for this deployment call; support/query identities must be disjoint | Conditional points, model-scale variance and calibration/support provenance |
+| `predict_out_of_fold(ensemble, region, pairs, ...)` | Only eligible members; marginal by default, conditional only by explicit regime | Endpoint and actual-access rules below; own-query target always forbidden | Regional points, member outputs, coverage, access and visible failures |
+| `score_out_of_fold(prediction, observations)` | Measured query targets after prediction is fixed | Uses the supplied prediction's eligibility and coverage | Covered-pair MSE, RMSE and MAE |
+| `evaluate_ensemble(ensemble, region, observations, ...)` | Extracts identities/metadata, predicts without query measurements, then scores | Same OOF rules | `OOFEvaluation` convenience result |
+
+These operations do not refit or mutate models. Support conditioning returns a
+conditional result without altering the saved posterior. Deployment requires
+all requested members to succeed; OOF can retain partial coverage with failures
+reported. MLPE genetic prediction requires explicit calibration for the query
+region even when the distance model can already compute its landscape scores.
+
+## Holdout and actual access must agree
+
+`EvaluationRegime()` defaults to `prediction_mode="marginal"` and
+`endpoint_regime="both_unseen"`. For each member and region, a qualifying endpoint
+must be in both of these sets:
+
+1. The member fold's nominal held-out sampling units.
+2. Units untouched by actual distance-model training, validation-based selection
+   and regional MLPE calibration targets; strict support policy also removes
+   endpoints touched by declared support.
+
+Both query endpoints must qualify by default. Set
+`endpoint_regime="at_least_one_unseen"` to require one. It must be the **same
+endpoint** that satisfies holdout and non-access: a calibrated holdout cannot be
+substituted by a nominal training endpoint that happens to be unused.
+
+The query pair's own target is forbidden under every regime, including
+`at_least_one_unseen`, known effects and permissive support. Its use for training,
+validation selection, calibration or support excludes that member. Pair reversal
+does not change identity. `OOFPrediction.access[member_id][region_name]` records
+these actual pair sets and calibration roles. A regional MLPE fit can list a
+held-out population with a prior-only effect; membership in `population_ids`
+alone does not mean its targets were accessed. Calling `calibrate` can change
+eligibility because the current regional fit's calibration access is retained.
+
+Fitting records training and selection access automatically. A manually
+constructed model with entirely empty `training_pairs={}` has unknown
+distance-model access and is excluded conservatively. A genuinely untrained
+model can truthfully declare `training_pairs={region.name: ()}`. This declaration
+must describe actual history; validation and calibration access must also remain
+truthful.
+
+## Predict first, score afterward
+
+The following calls assume fitted `ensemble`, prepared `region`, a nonempty
+labelled `query_pairs` selection, and measured `observations`:
 
 ```python
 from ilg_toolkit import predict_out_of_fold, score_out_of_fold
 
-prediction = predict_out_of_fold(ensemble, region, [("population-a", "population-b")])
+prediction = predict_out_of_fold(ensemble, region, query_pairs)
+# Prediction is now fixed. Query measurements enter only this scoring call.
 result = score_out_of_fold(prediction, observations)
+print(result.n_pairs, result.n_query_pairs, result.coverage)
+print(result.mse, result.rmse, result.mae)
 ```
 
-The prediction operation accepts prepared locations and labelled pairs without
-query genetic observations. For several regions, supply prepared regions and a
-pair mapping keyed by region name. It predicts only eligible pairs; unrelated
-ineligible predictions cannot fail an inverse transformation first. Scoring reads
-original-scale targets afterward. Changing those targets can change metrics but
-cannot change previously generated predictions or eligibility.
+`predict_out_of_fold` takes no query observations or target values. It predicts
+only eligible pairs: an unrelated ineligible pair cannot first fail its genetic
+inverse transform. Changing scoring measurements can change errors but cannot
+change this prediction object, its access snapshots or eligibility.
 
-`OOFPrediction` retains canonical `keys`, original-scale `values`, `target`,
-`member_ids`, `member_values`, `eligible_member_ids`, `eligible_counts`,
-`covered_mask`, `coverage`, `coverage_status`, and descriptive `member_spread`
-(population SD, ddof=0). Uncovered entries are NaN with zero counts. With no
-coverage, metrics are `None`; zero error is never invented. MSE has squared target
-units; RMSE, MAE and descriptive member SD have original target units.
+For convenience, `evaluate_ensemble(ensemble, region, observations,
+partitions=query_partition)` performs the two steps. Its optional partitions
+must have role `"query"`, match region names and select observed pairs. Omitting
+partitions requests every measured pair, including pairs with zero eligibility.
+Missing measurements stay absent. The convenience function reads measurements
+for scoring and target metadata, but passes only identities and metadata to the
+prediction stage.
 
-All requested members remain represented. `member_statuses`, `member_failures`,
-`prediction_failures` and per-member `exclusion_reasons` expose unavailable fits,
-pending members, numerical prediction errors and information-access exclusions.
-Other eligible members can still supply coverage, with these failures visible.
+### Single and shared regions
+
+| Input | One region | Shared regions |
+| --- | --- | --- |
+| `region` | `RegionBatch` | Nonempty sequence with unique names, or mapping keyed by each batch's name |
+| OOF `pairs` | Nonempty labelled pair iterable or matching query-role `ObservationPartition` | Mapping with exactly every query region name, each containing one such selection |
+| Scoring `observations` | `PairwiseObservations` | Mapping with exactly the prediction region names |
+| Convenience evaluation `observations` | `PairwiseObservations` | Aligned sequence in supplied region order or name-matching mapping |
+| Convenience evaluation `partitions` | Query-role partition, or `None` for all measured pairs | Aligned sequence/name-matching mapping, or `None` |
+| Support-mode `support` | `EvaluationSupport` | Mapping declaring every query region exactly |
+
+Every queried/support endpoint needs a location in its prepared region. Feature
+meanings/counts must match fitted members. All regions and scoring/support
+observations must share the identical `TargetSpec`: genetic meaning, kind, units
+and fitted transform. Name-matching mappings have exact key sets; extra or
+missing regions fail. Each query region needs at least one pair.
+
+OOF evaluation canonicalizes and deduplicates queries, including reversed or
+repeated input pairs. Its flat order is sorted region name, then
+lexicographically sorted endpoint labels and unordered pair identities. Ordinary
+`model.predict` and `ensemble.predict` preserve explicit caller order/orientation
+and **reject** duplicates, including reversals. Their omitted `pairs` requests
+all distinct pairs in region sampling-unit order. All operations reject self-pairs
+and unknown or malformed labels.
+
+## Read points, coverage and metrics
+
+Ordinary results use the common `Prediction`: `values` has shape `(m,)` in original
+`target.units`, aligned with `pairs`, `region_name`, `target` and
+`sampling_unit_ids`. Conditional and deployment ensemble results compose this as
+`.prediction`. OOF uses `.predictions[region_name]` for each regional record.
+Its flat `.keys` and `.values` derive from those records in canonical order.
+
+A common prediction's `.as_matrix(order=None)` explicitly represents stored
+points as a symmetric `(n, n)` JAX array. The default order is the full prepared
+query-region order; standalone MLPE results instead record query endpoints in
+first-appearance order. An explicit order must be unique and include every
+predicted endpoint; additional units are allowed. Unrequested off-diagonals are
+NaN. The zero diagonal is a structural **dissimilarity** convention, not fitted
+self-prediction; conversion refuses other target kinds without that convention.
+It computes no additional points, covariance or uncertainty transformation.
+
+For `k` requested members and `m` unique regional queries, `OOFPrediction` exposes:
+
+| Field | Shape / meaning |
+| --- | --- |
+| `member_ids`, `member_statuses` | Complete requested order and fitting statuses, including failed/pending members |
+| `member_values` | JAX `(k, m)` original-scale points; NaN where excluded or failed |
+| `eligible_counts`, `covered_mask` | Host NumPy `(m,)` successful finite contributor counts and `count > 0` mask |
+| `eligible_member_ids` | One tuple per unique query, naming successful contributors in member order |
+| `values`, `member_spread` | JAX `(m,)` mean points and descriptive population SD (ddof=0); NaN with no contributors |
+| `coverage`, `coverage_status` | Covered fraction and `"complete"`, `"partial"` or `"none"` |
+| `exclusion_reasons` | Member mapping to `m` reasons; `None` means successful contribution |
+| `member_failures` | Failed-fit and pending-member diagnostics |
+| `prediction_failures` | Member/region prediction diagnostics; completed fitting status is unchanged |
+| `access`, `conditioning_provenance` | Member/region actual-target snapshots and successful conditional provenance |
+| `member_model_variances` | `None` in marginal mode; conditional JAX `(k, m)` model-scale variance, NaN when unavailable |
+
+Counts refer to successful contributions, so a nominally eligible member with a
+prediction failure does not increase them. Exclusion reasons distinguish unknown
+access, own-query access, absent regional holdout, insufficient unseen holdouts,
+unavailable members and prediction failure. Every requested member stays visible;
+coverage can remain complete even if another member fails.
+
 If every member is unavailable, label-free prediction requires explicit
-`target=TargetSpec(...)`; the evaluation wrapper obtains that metadata from the
-observations. Incompatible target contracts fail clearly.
+`target=TargetSpec(...)` metadata to report uncovered points. `evaluate_ensemble`
+obtains it from observations. Invalid input forms, roles, labels, target contracts
+or support declarations raise `ValueError`. OOF records member-level numerical,
+unsupported-mode and provenance failures, allowing other members to contribute;
+deployment propagates failures. Nonfinite aggregate or metric arithmetic raises
+`FloatingPointError`.
 
-## Endpoint holdout and actual target access
+Scoring requires a measured original-scale target for **every** requested query,
+even uncovered ones; extra measurements are ignored. Several successful member
+points are averaged after each member's inverse transformation, then each
+covered unique region/pair contributes **once** to pooled metrics. Every covered
+pair has equal weight regardless of contributor count or region. This is separate
+from equal-region weighting during training.
 
-`EvaluationRegime()` defaults to marginal prediction and `both_unseen`.
-Eligibility counts query endpoints in the intersection of:
+`OOFEvaluation.observed_values` is `(m,)` in key order. `n_pairs` counts covered
+unique pairs, `n_query_pairs` counts all requested pairs, and `coverage` is their
+ratio. MSE has squared target units; RMSE and MAE have original units. Uncovered
+pairs do not contribute errors. At zero coverage, all three metrics are `None`:
+missing predictions never imply zero error.
 
-1. The member fold's nominal held-out sampling units for this region.
-2. Endpoints untouched by that member's actual encoder training, validation-based
-   selection and genetic calibration (and support, under the strict policy).
+## Explicit known effects and support
 
-Both endpoints must qualify by default. Set
-`EvaluationRegime(endpoint_regime="at_least_one_unseen")` to require one qualifying
-endpoint. It must be the **same** endpoint that is held out and remains unseen.
-A calibrated held-out endpoint cannot be replaced by an unused nominal training
-endpoint. The query pair's own target is forbidden under every regime, including
-validation selection and calibration access, even when the other endpoint would
-otherwise qualify. Region names are part of identity when labels repeat.
-
-The `access` snapshots retain training, validation, calibration and support pairs.
-MLPE `head.population_ids` can include held-out effects with independent priors;
-being listed there does not establish observed-target access. Explicit
-recalibration can make a formerly eligible member ineligible. Nominal query
-partitions alone never establish eligibility after additional target access.
-
-Fitted models record their access automatically. A manually constructed
-model with empty `training_pairs={}` has unknown encoder access and is
-excluded conservatively. A genuinely untrained encoder can explicitly declare
-`training_pairs={region.name: ()}`. This is a declaration of no target access,
-not a way to erase a fitted model's history. Validation and calibration access
-must likewise remain truthful.
-
-## Known effects and support conditioning
-
-Known effects require an explicit mode:
+Known-effect OOF uses the saved regional posterior only when explicitly requested:
 
 ```python
 from ilg_toolkit import EvaluationRegime
@@ -119,12 +206,11 @@ regime = EvaluationRegime(
 prediction = predict_out_of_fold(ensemble, region, query_pairs, regime=regime)
 ```
 
-Stored effects retain their actual calibration target access. A held-out
-population with a prior-only effect can remain eligible; known-effect mode does
-not silently relax endpoint or own-target rules.
+Stored calibration access still applies. An unseen population receives an
+independent prior effect; known effects do not silently relax endpoint or
+own-query rules. Direct calibration does not supply an MLPE effect posterior.
 
-Support prediction requires exactly declared support observations and a
-support-role partition, disjoint from all requested query pairs:
+Support conditioning consumes only an explicit declaration:
 
 ```python
 from ilg_toolkit import EvaluationSupport
@@ -136,25 +222,54 @@ regime = EvaluationRegime(
 prediction = predict_out_of_fold(
     ensemble, region, query_pairs, regime=regime, support=support
 )
+result = score_out_of_fold(prediction, observations)
 ```
 
-For several regions, map support declarations by region. Support observations
-must contain exactly the support partition. Supplying support without support
-mode, undeclared support, mismatched target metadata or support/query overlap
-fails explicitly. Each member also rejects reusing its calibration targets as
-support. Actual conditional provenance must match the declared mode and target
-access before its values can contribute.
+`support_partition` must have role `"support"` and the matching region name;
+measured support identities must equal it exactly. Support must be disjoint from
+**all** requested query identities, not only covered ones. Each member also
+rejects support that reuses its current calibration targets. Conditional access
+provenance must agree with the declared mode and pair/role sets before contributing.
+Supplying support outside support mode or omitting support in that mode fails.
 
-The default support endpoint policy, `unseen`, counts support endpoints as seen,
-so strict untouched queries may lose coverage. `allow_declared_support` explicitly
-reports conditional prediction: endpoint holdout is established from training,
-selection and calibration **before** disjoint support is consumed. It does not
-claim those endpoints remain untouched afterward. The own-query target remains
-forbidden, and the returned regime/access/provenance retain this distinction.
+The default `support_endpoint_policy="unseen"` counts support endpoints as seen,
+so strict untouched queries can lose coverage. `"allow_declared_support"` checks
+endpoint holdout against training/selection/calibration **before** consuming
+additional disjoint support. It explicitly evaluates conditional prediction and
+does not claim those endpoints remain untouched afterward. It is valid only in
+support mode, and the query's own target remains forbidden.
 
-`member_model_variances` retains conditional per-member variance separately on
-the transformed model scale. It includes effect posterior, residual and configured
-jitter variance, while excluding encoder, fixed-coefficient and variance-parameter
-uncertainty. Member disagreement is descriptive in original units; these outputs
-are not combined into a confidence interval or silently inverse-transformed into
-original-scale Gaussian uncertainty.
+## Keep scales, uncertainty and precision distinct
+
+Conditional `model_values` are transformed-scale means; `prediction.values` are
+their inverse-transformed points. A nonlinear inverse does not make these points
+original-scale expectations; there is no bias correction. Saved marginal MLPE
+points use zero population-effect means. Signed MLPE points are not clipped.
+
+Conditional predictive variance includes population-effect posterior uncertainty,
+independent residual variance and configured jitter, in **squared transformed
+model units**. Distance-model parameters, fixed coefficients and variance
+parameters are held fixed, so their uncertainty is excluded. OOF retains these
+variances per member and never manufactures an aggregate statistical variance.
+`member_spread` describes member disagreement in original target units; it is
+neither conditional variance nor a confidence interval. Marginal variance is
+unreported (`None`), not zero. No operation silently inverse-transforms variance
+into original-scale Gaussian uncertainty or interprets pair variances as a joint
+covariance.
+
+Precision depends on the operation:
+
+- Ordinary/direct predictions and OOF output arrays follow configured JAX
+  precision, including supported float32 workflows. Scoring target conversion
+  and metric arithmetic also follow that policy; metrics are returned as Python
+  floats. Configure sufficient precision before creating input measurements.
+- Standalone MLPE calibration/marginal prediction, conditional posterior
+  calculations and ensemble aggregation use scoped float64. Enclosing OOF arrays
+  retain configured precision when storing those member outputs.
+- Effective resistance calculations and joint MLPE training require explicitly
+  enabled x64; enable it before those operations. Scoped later promotion cannot
+  restore precision already lost when constructing observations.
+- Matrix conversion and OOF flat views retain stored array precision, including
+  standalone float64 points after their scope ends. These operations do not
+  silently change global JAX precision. Labels/provenance remain host records;
+  coverage counts and masks are host NumPy metadata.
