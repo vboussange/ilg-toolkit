@@ -364,7 +364,7 @@ def test_interrupted_replacement_retains_previous_complete_generation(tmp_path, 
 
 
 def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tmp_path):
-    from ilg_toolkit import ObservationPartition, ResistanceSolverConfig
+    from ilg_toolkit import ObservationPartition
 
     region, observations = checkpoint_problem()
     training = ObservationPartition(region.name, observations.observed_pairs[:-2], role="training")
@@ -425,7 +425,6 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(tm
             partition=ObservationPartition(region.name, training.pairs, role="calibration")
         ),
         _FitOptions(config=replace(config, epochs=2, learning_rate=0.003)),
-        _FitOptions(config=replace(config, epochs=2, solver=ResistanceSolverConfig(rtol=1e-8))),
         _FitOptions(config=replace(config, epochs=0)),
         _FitOptions(model=checkpoint_model()),
     ]

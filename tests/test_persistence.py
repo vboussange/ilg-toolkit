@@ -228,7 +228,14 @@ def test_conductance_reload_preserves_surface_scores_and_solver_settings(tmp_pat
 
     def encoder(seed):
         return ResNet9Conductance(
-            2, patch_size=4, min_conductance=0.02, patch_batch_size=3, key=jax.random.key(seed)
+            2,
+            patch_size=4,
+            min_conductance=0.02,
+            patch_batch_size=3,
+            solver_config=ResistanceSolverConfig(rtol=1e-9, atol=1e-10)
+            if seed == 3
+            else ResistanceSolverConfig(),
+            key=jax.random.key(seed),
         )
 
     model = CalibratedModel(
@@ -236,7 +243,6 @@ def test_conductance_reload_preserves_surface_scores_and_solver_settings(tmp_pat
         TargetSpec("divergence"),
         feature_count=2,
         feature_names=region.feature_names,
-        solver_config=ResistanceSolverConfig(rtol=1e-9, atol=1e-10),
         objective="direct_log1p",
     )
     path = tmp_path / "conductance.ilg"
@@ -247,8 +253,9 @@ def test_conductance_reload_preserves_surface_scores_and_solver_settings(tmp_pat
     )
     np.testing.assert_array_equal(restored.landscape_scores(region), model.landscape_scores(region))
     np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
-    assert restored.solver_config == model.solver_config
     assert isinstance(restored.encoder, ResNet9Conductance)
+    assert isinstance(model.encoder, ResNet9Conductance)
+    assert restored.encoder.solver_config == model.encoder.solver_config
     assert restored.encoder.patch_batch_size == 3
     assert restored.encoder.min_conductance == 0.02
 

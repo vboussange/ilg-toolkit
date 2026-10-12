@@ -32,7 +32,11 @@ observations = PairwiseObservations.from_matrix(
     target=TargetSpec("synthetic dissimilarity", units="index"),
 )
 encoder = ResNet9Conductance(
-    in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(6)
+    in_channels=2,
+    patch_size=4,
+    min_conductance=1e-6,
+    solver_config=ResistanceSolverConfig(rtol=1e-8),
+    key=jax.random.key(6),
 )
 result = fit(
     region,
@@ -42,7 +46,6 @@ result = fit(
         objective="direct_log1p",
         epochs=4,
         learning_rate=0.001,
-        solver=ResistanceSolverConfig(rtol=1e-8),
     ),
 )
 print("Training loss:", result.history[0].training_loss, "->", result.history[-1].training_loss)

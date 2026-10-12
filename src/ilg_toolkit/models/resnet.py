@@ -10,7 +10,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ..config import validate_patch_batch_size
+from ..config import ResistanceSolverConfig, validate_patch_batch_size
 from .base import ConductanceModel
 from .common import patchify
 
@@ -69,6 +69,7 @@ class ResNet9Conductance(ConductanceModel):
         patch_size: int = 4,
         min_conductance: float = 1e-6,
         patch_batch_size: int | None = None,
+        solver_config: ResistanceSolverConfig | None = None,
         key: jax.Array,
     ):
         if (
@@ -82,6 +83,9 @@ class ResNet9Conductance(ConductanceModel):
         if not math.isfinite(min_conductance) or min_conductance <= 0:
             raise ValueError("min_conductance must be finite and positive")
         validate_patch_batch_size(patch_batch_size)
+        solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
+        if not isinstance(solver_config, ResistanceSolverConfig):
+            raise TypeError("solver_config must be a ResistanceSolverConfig")
         keys = jax.random.split(key, 8)
         self.conv1 = eqx.nn.Conv2d(in_channels, 64, 3, padding=1, dtype=jnp.float32, key=keys[0])
         self.norm1 = eqx.nn.GroupNorm(8, 64, dtype=jnp.float32)
@@ -95,6 +99,7 @@ class ResNet9Conductance(ConductanceModel):
         self.patch_size = patch_size
         self.min_conductance = min_conductance
         self.patch_batch_size = patch_batch_size
+        self.solver_config = solver_config
 
     def encode_patch(self, patch: jax.Array) -> jax.Array:
         """Return softplus(logit) plus the explicit positive conductance floor."""

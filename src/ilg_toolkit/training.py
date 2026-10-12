@@ -21,8 +21,8 @@ from .mlpe import (
 )
 from .mlpe.likelihood import MLPEFit
 from .model import CalibratedModel
-from .models import ConductanceModel, EmbeddingDistanceModel
-from .resistance import ResistanceSolverContext, build_resistance_context
+from .models import AbstractDistanceModel
+from .resistance import ResistanceSolverContext
 
 RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
 ObservationCollection = (
@@ -34,7 +34,7 @@ PartitionCollection = (
     | Mapping[str, ObservationPartition | None]
     | None
 )
-Encoder = ConductanceModel | EmbeddingDistanceModel
+Encoder = AbstractDistanceModel
 Parameters = tuple[Encoder, dict[str, jax.Array] | None]
 
 
@@ -245,14 +245,9 @@ def _selected_scores(
     inference: bool = True,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    if isinstance(encoder, ConductanceModel):
-        scores = encoder.predict_distances(
-            payload.features, payload.nodes, context=context, inference=inference, key=key
-        )
-    else:
-        scores = encoder.predict_distances(
-            payload.features, payload.nodes, inference=inference, key=key
-        )
+    scores = encoder.predict_distances(
+        payload.features, payload.nodes, context=context, inference=inference, key=key
+    )
     return scores[payload.pairs]
 
 
@@ -423,20 +418,15 @@ def _prepare_batches(
     config: TrainingConfig,
 ) -> tuple[tuple[_RegionalBatch, ...], tuple[_RegionalBatch, ...]]:
     """Prepare independent regional targets and reuse graph-shape solver contexts."""
-    contexts: dict[tuple[int, int], ResistanceSolverContext] = {}
+    contexts: dict[tuple[int, int], ResistanceSolverContext | None] = {}
 
     def make_batch(inputs: _RegionalInput, role: str) -> _RegionalBatch:
         region, observations, partition = inputs
         payload = _prepared(region, observations, partition, role=role, objective=config.objective)
-        context = None
-        if isinstance(encoder, ConductanceModel):
-            height, width = region.feature_array.shape[:2]
-            if height % encoder.patch_size or width % encoder.patch_size:
-                raise ValueError("Raster dimensions must be divisible by model patch_size")
-            shape = (height // encoder.patch_size, width // encoder.patch_size)
-            if shape not in contexts:
-                contexts[shape] = build_resistance_context(shape, config.solver)
-            context = contexts[shape]
+        shape = (region.feature_array.shape[0], region.feature_array.shape[1])
+        if shape not in contexts:
+            contexts[shape] = encoder.prepare(region.feature_array)
+        context = contexts[shape]
         return _RegionalBatch(region, observations, payload, context)
 
     training = tuple(make_batch(inputs, "training") for inputs in training_inputs)
@@ -491,7 +481,8 @@ def _checked_call[T](
             f"{batch.region.name}: {training_config.objective} calculation failed "
             f"at epoch {epoch}; "
             f"check finite scores, gradients, score variation, identifiable pair endpoints "
-            f"and variance conditioning; solver={training_config.solver}. {error}"
+            f"and variance conditioning; "
+            f"solver={batch.context.config if batch.context is not None else None}. {error}"
         ) from error
 
 
@@ -615,7 +606,7 @@ def fit(
     region: RegionCollection,
     observations: ObservationCollection,
     *,
-    model: ConductanceModel | EmbeddingDistanceModel | None = None,
+    model: AbstractDistanceModel | None = None,
     config: TrainingConfig | None = None,
     validation: tuple[RegionCollection, ObservationCollection] | None = None,
     partition: PartitionCollection = None,
@@ -748,7 +739,6 @@ def fit(
             first_observations.target,
             first_region.feature_array.shape[-1],
             feature_names=first_region.feature_names,
-            solver_config=config.solver,
             objective=config.objective,
             calibrations=heads,
             training_pairs=training_pairs,

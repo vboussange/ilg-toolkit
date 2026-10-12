@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from copy import copy
 from dataclasses import asdict
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from .config import ResistanceSolverConfig
 from .data import TargetSpec
 from .mlpe import MLPEConfig, MLPEHead
 from .model import CalibratedModel
-from .models import ConductanceModel, EmbeddingDistanceModel
+from .models import AbstractDistanceModel, ConductanceModel
 
 
 class ArtifactError(ValueError):
@@ -26,7 +27,7 @@ def _write_native(path, tree, *, kind, metadata):
     """Atomically replace a header and native leaves; retain the previous file on failure."""
     header = {
         "format": "ilg-toolkit-equinox",
-        "version": 1,
+        "version": 2,
         "kind": kind,
         "requires_x64": any(
             isinstance(value, jax.Array)
@@ -63,7 +64,7 @@ def _read_header(stream, *, kind):
         not isinstance(header, dict)
         or header.get("format") != "ilg-toolkit-equinox"
         or type(header.get("version")) is not int
-        or header["version"] != 1
+        or header["version"] != 2
     ):
         raise ArtifactError("Unsupported native Equinox artifact format or version")
     if header.get("kind") != kind:
@@ -81,7 +82,11 @@ def _model_metadata(model):
         "target": asdict(model.target),
         "feature_count": model.feature_count,
         "feature_names": model.feature_names,
-        "solver_config": asdict(model.solver_config),
+        "distance_solver": (
+            asdict(model.encoder.solver_config)
+            if isinstance(model.encoder, ConductanceModel)
+            else None
+        ),
         "objective": model.objective,
         "training_pairs": model.training_pairs,
         "validation_pairs": model.validation_pairs,
@@ -127,6 +132,14 @@ def _head_template(name, metadata, target):
 
 def _model_template(metadata, encoder):
     target = TargetSpec(**metadata["target"])
+    solver_settings = metadata["distance_solver"]
+    if isinstance(encoder, ConductanceModel):
+        if solver_settings is None:
+            raise ArtifactError("Saved distance model requires a non-conductance template")
+        encoder = copy(encoder)
+        object.__setattr__(encoder, "solver_config", ResistanceSolverConfig(**solver_settings))
+    elif solver_settings is not None:
+        raise ArtifactError("Saved conductance model requires a conductance template")
     return CalibratedModel(
         encoder,
         target,
@@ -134,7 +147,6 @@ def _model_template(metadata, encoder):
         feature_names=(
             None if metadata["feature_names"] is None else tuple(metadata["feature_names"])
         ),
-        solver_config=ResistanceSolverConfig(**metadata["solver_config"]),
         objective=metadata["objective"],
         training_pairs=metadata["training_pairs"],
         validation_pairs=metadata["validation_pairs"],
@@ -152,12 +164,14 @@ def save_model(path, model: CalibratedModel) -> None:
     _write_native(path, model, kind="model", metadata=_model_metadata(model))
 
 
-def load_model(path, *, encoder: ConductanceModel | EmbeddingDistanceModel) -> CalibratedModel:
+def load_model(path, *, encoder: AbstractDistanceModel) -> CalibratedModel:
     """Load native leaves into the caller's exact full encoder configuration.
 
     The caller supplies the encoder class, static settings and compatible leaves.
     Saved leaves replace its numerical values. Static settings cannot be inferred
-    from numerical shapes and remain the caller's responsibility.
+    from numerical shapes and remain the caller's responsibility. Saved conductance
+    solver settings override the template's policy; derived contexts are rebuilt
+    for each later operation.
     """
     try:
         with Path(path).open("rb") as stream:
