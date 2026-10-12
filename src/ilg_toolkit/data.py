@@ -305,8 +305,8 @@ class PairwiseObservations:
         )
         matrix = matrix.at[jnp.diag_indices(len(region.sampling_unit_ids))].set(0)
         lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-        order = [lookup[label] for label in self.sampling_unit_ids]
-        return matrix.at[jnp.ix_(jnp.asarray(order), jnp.asarray(order))].set(self.values)
+        order = jnp.asarray([lookup[label] for label in self.sampling_unit_ids])
+        return matrix.at[jnp.ix_(order, order)].set(self.values)
 
     def aligned_pairs(self, region: RegionBatch, partition: ObservationPartition | None = None):
         """Return observed index pairs and measurements in the prepared unit order."""
