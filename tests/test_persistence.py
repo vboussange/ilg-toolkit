@@ -1,5 +1,7 @@
 """Inference artifacts preserve public predictions using a caller encoder template."""
 
+from typing import final
+
 import coordax as cx
 import jax
 import jax.numpy as jnp
@@ -83,6 +85,7 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(tmp_p
     from ilg_toolkit import ObservationPartition
     from ilg_toolkit.models import EmbeddingDistanceModel
 
+    @final
     class ScaledEmbedding(EmbeddingDistanceModel):
         log_weights: jax.Array
         patch_size: int = eqx.field(static=True, default=1)
@@ -183,6 +186,7 @@ def test_model_reload_refuses_jax_precision_truncation(tmp_path, saved_dtype, te
     from ilg_toolkit import ArtifactError, CalibratedModel
     from ilg_toolkit.models import EmbeddingDistanceModel
 
+    @final
     class CustomEmbedding(EmbeddingDistanceModel):
         weight: jax.Array
         patch_size: int = eqx.field(static=True, default=1)

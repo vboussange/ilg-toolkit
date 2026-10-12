@@ -110,7 +110,7 @@ class ResNet9Conductance(ConductanceModel):
         return jax.nn.softplus(self.output(values).squeeze()) + self.min_conductance
 
     def conductance(self, features: jax.Array, *, patch_batch_size: int | None = None) -> jax.Array:
-        """Return the patch-grid conductance surface for one HWC raster.
+        """Return the patch-grid conductance surface from row, column, feature data.
 
         An omitted override uses the constructor's patch_batch_size. None at
         construction encodes the complete region without checkpointing. A positive
@@ -121,7 +121,9 @@ class ResNet9Conductance(ConductanceModel):
             patch_batch_size = self.patch_batch_size
         validate_patch_batch_size(patch_batch_size)
         if features.ndim != 3 or features.shape[-1] != self.conv1.weight.shape[1]:
-            raise ValueError(f"Expected HWC features with {self.conv1.weight.shape[1]} channels")
+            raise ValueError(
+                f"Expected row, column, feature data with {self.conv1.weight.shape[1]} features"
+            )
         patches, grid_shape = patchify(features, self.patch_size)
         if patch_batch_size is None:
             return eqx.filter_vmap(self.encode_patch)(patches).reshape(grid_shape)

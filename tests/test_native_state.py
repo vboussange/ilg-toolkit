@@ -1,6 +1,7 @@
 """Native domain-tree persistence and continuation through the public workflow."""
 
 from dataclasses import replace
+from typing import final
 
 import coordax as cx
 import equinox as eqx
@@ -19,6 +20,7 @@ from ilg_toolkit import (
 from ilg_toolkit.models import EmbeddingDistanceModel
 
 
+@final
 class ScaledEmbedding(EmbeddingDistanceModel):
     log_weights: jax.Array
     patch_size: int = eqx.field(static=True, default=1)

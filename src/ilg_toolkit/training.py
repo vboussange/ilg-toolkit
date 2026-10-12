@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
-from typing import NamedTuple, TypedDict, cast
+from typing import NamedTuple, TypedDict, cast, final
 
 import equinox as eqx
 import jax
@@ -39,6 +39,7 @@ Encoder = ConductanceModel | EmbeddingDistanceModel
 Parameters = tuple[Encoder, jax.Array | None]
 
 
+@final
 class EpochRecord(eqx.Module):
     """Inference objectives after an update; zero is initialization.
 
@@ -52,6 +53,7 @@ class EpochRecord(eqx.Module):
     validation_by_region: dict[str, float] = eqx.field(default_factory=dict)
 
 
+@final
 class FitResult(eqx.Module):
     """Selected shared model and regional optimization history."""
 
@@ -73,6 +75,7 @@ class FitResult(eqx.Module):
         return self.model
 
 
+@final
 class TrainingState(eqx.Module):
     """Explicit in-memory continuation state; checkpoints add serialization separately.
 

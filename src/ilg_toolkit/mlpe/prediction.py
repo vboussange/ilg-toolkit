@@ -1,6 +1,7 @@
 """Explicit population-effect prediction without query genetic observations."""
 
 from dataclasses import dataclass
+from typing import final
 
 import equinox as eqx
 import jax
@@ -24,6 +25,7 @@ class MLPEPredictionProvenance:
     unseen_effect_policy: str = "independent_prior"
 
 
+@final
 class MLPEConditionalPrediction(eqx.Module):
     """Inverse-transformed means and model-scale variance for new observations.
 
@@ -161,6 +163,7 @@ def predict_known_effects(head: MLPEHead, scores, pairs) -> MLPEConditionalPredi
     )
 
 
+@final
 class MLPESupportConditioner(eqx.Module):
     """A regional posterior updated only from declared support observations.
 

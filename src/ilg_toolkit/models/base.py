@@ -27,7 +27,7 @@ class ConductanceModel(eqx.Module):
 
     @abstractmethod
     def conductance(self, features: jax.Array, *, patch_batch_size: int | None = None) -> jax.Array:
-        """Return a positive 2D patch-grid surface for one HWC feature raster."""
+        """Return a positive patch-grid surface from row, column, feature data."""
 
     def resistance_and_conductance(
         self,
@@ -78,7 +78,7 @@ class EmbeddingDistanceModel(eqx.Module):
         key: jax.Array | None = None,
         patch_batch_size: int | None = None,
     ) -> jax.Array:
-        """Return an HWC grid of embeddings."""
+        """Return embeddings with row, column and embedding dimensions."""
 
     def predict_distances(
         self,
