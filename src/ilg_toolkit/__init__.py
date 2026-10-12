@@ -16,10 +16,7 @@ from .ensemble import (
     ensemble_member_identity,
     fit_ensemble,
     fit_ensemble_member,
-    fit_ensemble_run,
     generate_population_folds,
-    load_ensemble,
-    save_ensemble,
 )
 from .evaluation import (
     EvaluationAccess,
@@ -50,9 +47,6 @@ from .training import EpochRecord, FitResult, TrainingState, fit
 
 __all__ = [
     "IBDModel",
-    "fit_ensemble_run",
-    "load_ensemble",
-    "save_ensemble",
     "EvaluationAccess",
     "EvaluationRegime",
     "EvaluationSupport",

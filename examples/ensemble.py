@@ -1,10 +1,14 @@
 """Independent synthetic fits: deployment, known effects, support and OOF coverage."""
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 import coordax as cx
 import jax
 import numpy as np
 
 from ilg_toolkit import (
+    Ensemble,
     EvaluationRegime,
     EvaluationSupport,
     ObservationPartition,
@@ -14,17 +18,48 @@ from ilg_toolkit import (
     TrainingConfig,
     evaluate_ensemble,
     fit_ensemble,
+    fit_ensemble_member,
+    load_checkpoint,
     predict_out_of_fold,
+    save_checkpoint,
     score_out_of_fold,
 )
 from ilg_toolkit.models import UNetEmbeddingDistance
 
 
 def model_factory(key):
-    # Every invocation initializes a new model from its member-specific key.
+    # Each member receives jax.random.PRNGKey(its declared initialization seed).
     return UNetEmbeddingDistance(
         2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=key
     )
+
+
+def continue_members(directory, region, observations, folds, config):
+    """A caller script chooses filenames and retains the same inputs and folds."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    members = []
+    for fold in folds:
+        for seed in (13, 29):
+            checkpoint = directory / f"{fold.fold_id}-seed-{seed}.eqx"
+            # Supply the exact encoder configuration; loading restores its leaves.
+            state = (
+                load_checkpoint(checkpoint, encoder=model_factory(jax.random.PRNGKey(seed)))
+                if checkpoint.exists()
+                else None
+            )
+            member = fit_ensemble_member(
+                region,
+                observations,
+                fold=fold,
+                initialization_seed=seed,
+                config=config,
+                model_factory=model_factory,
+                state=state,
+                on_epoch=lambda identity, current, path=checkpoint: save_checkpoint(path, current),
+            )
+            members.append(member)
+    return Ensemble(tuple(members))
 
 
 with jax.enable_x64():
@@ -117,3 +152,17 @@ with jax.enable_x64():
     print("Conditional OOF coverage, RMSE:", conditional.coverage, conditional_score.rmse)
     print("Per-member predictive variance stays on the log1p model scale:")
     print(conditional.member_model_variances)
+
+    # Checkpoints belong to this script. Increasing the total budget continues
+    # each latest optimizer/RNG state while preserving its selected best model.
+    folds = tuple({member.fold.fold_id: member.fold for member in ensemble.members}.values())
+    with TemporaryDirectory() as directory:
+        continue_members(
+            directory, region, observations, folds, TrainingConfig(objective="mlpe", epochs=0)
+        )
+        continued = continue_members(
+            directory, region, observations, folds, TrainingConfig(objective="mlpe", epochs=1)
+        )
+        if continued.failures:
+            raise RuntimeError(continued.failures)
+        print("Individually continued members:", continued.expected_member_ids)
