@@ -99,16 +99,20 @@ for module in pkgutil.walk_packages(ilg.__path__, ilg.__name__ + '.'):
 assert importlib.metadata.version('ilg-toolkit') == '0.1.0'
 assert importlib.util.find_spec('ilg_toolkit.experimental') is None
 assert not hasattr(ilg, 'diagnose_wishart')
+assert importlib.util.find_spec('ilg_toolkit._archive') is None
+assert importlib.util.find_spec('ilg_toolkit._codecs') is None
 assert not any(name == 'deepilg' or name.startswith('deepilg.') for name in sys.modules)
 region = ilg.RegionBatch('independent',
     cx.field(np.arange(32, dtype=np.float32).reshape(4,4,2)/32, 'row', 'column', 'feature'),
     ('a','b'), np.array([[0,0],[3,3]]))
-reloaded = ilg.load_model({str(inference_artifact)!r})
+encoder = UNetEmbeddingDistance(2, patch_size=1, base_channels=2, embedding_dim=2,
+    dropout=0.2, key=jax.random.key(0))
+reloaded = ilg.load_model({str(inference_artifact)!r}, encoder=encoder)
 np.testing.assert_allclose(reloaded.predict(region).values, {expected_inference!r},
     rtol=1e-6, atol=1e-7)
 obs = ilg.PairwiseObservations.from_matrix(('a','b'), [[0,.3],[.3,0]],
     target=ilg.TargetSpec('synthetic', units='index'))
-state = ilg.load_checkpoint({str(checkpoint_artifact)!r})
+state = ilg.load_checkpoint({str(checkpoint_artifact)!r}, encoder=encoder)
 continued = ilg.fit(region, obs, state=state)
 assert continued.state.epoch == 1
 np.testing.assert_allclose(continued.model.predict(region).values, {expected_continued!r},
