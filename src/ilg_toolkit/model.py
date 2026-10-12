@@ -1,6 +1,7 @@
 """Label-free landscape scoring and explicit target-scale predictions."""
 
 from collections.abc import Sequence
+from typing import final
 
 import equinox as eqx
 import jax
@@ -14,6 +15,7 @@ from .models import ConductanceModel, EmbeddingDistanceModel
 from .resistance import build_resistance_context
 
 
+@final
 class Prediction(eqx.Module):
     """Pairwise predictions with their sampling-unit order and declared scale."""
 
@@ -23,6 +25,7 @@ class Prediction(eqx.Module):
     scale: str = "original"
 
 
+@final
 class PairPrediction(eqx.Module):
     """Marginal predictions for explicit labelled pairs in the requested order."""
 
@@ -33,6 +36,7 @@ class PairPrediction(eqx.Module):
     scale: str = "original"
 
 
+@final
 class CalibratedModel(eqx.Module):
     """Frozen landscape encoder with explicit direct or regional MLPE prediction.
 

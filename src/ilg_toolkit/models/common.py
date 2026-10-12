@@ -8,10 +8,10 @@ from numpy.typing import ArrayLike
 
 
 def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
-    """Partition an HWC raster into non-overlapping channel-first patches."""
+    """Partition row, column, feature data into non-overlapping feature-first patches."""
     raster = jnp.asarray(features)
     if raster.ndim != 3:
-        raise ValueError(f"Expected features with shape (H, W, C), got {raster.shape}")
+        raise ValueError(f"Expected features with shape (row, column, feature), got {raster.shape}")
     if patch_size <= 0:
         raise ValueError("patch_size must be positive")
     height, width, channels = raster.shape

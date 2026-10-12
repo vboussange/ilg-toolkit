@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from functools import partial
 from numbers import Real
+from typing import final
 
 import equinox as eqx
 import jax
@@ -73,6 +74,7 @@ class MLPEConfig:
         object.__setattr__(self, "jitter", float(self.jitter))
 
 
+@final
 class MLPEPrediction(eqx.Module):
     """Marginal pair means on declared original and fitted target scales.
 
@@ -89,6 +91,7 @@ class MLPEPrediction(eqx.Module):
     scale: str = "original"
 
 
+@final
 class MLPEHead(eqx.Module):
     """Complete regional calibration with auditable observation identities."""
 
