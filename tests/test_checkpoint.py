@@ -1,7 +1,7 @@
 """Disk continuation checked through the public fit/checkpoint workflow."""
 
 from dataclasses import replace
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import coordax as cx
 import equinox as eqx
@@ -453,7 +453,7 @@ def test_same_shape_measurement_edits_are_the_callers_responsibility(tmp_path):
     changed_region = replace(
         region,
         features=cx.field(region.feature_array + 0.1, "row", "column", "feature"),
-        grid_positions=region.grid_positions[::-1],
+        grid_positions=cast(jax.Array, region.grid_positions)[::-1],
     )
     changed_observations = PairwiseObservations.from_pairs(
         observations.observed_pairs,
