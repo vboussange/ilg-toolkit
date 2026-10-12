@@ -44,7 +44,7 @@ def continue_members(directory, region, observations, folds, config):
             checkpoint = directory / f"{fold.fold_id}-seed-{seed}.eqx"
             # Supply the exact encoder configuration; loading restores its leaves.
             state = (
-                load_checkpoint(checkpoint, encoder=model_factory(jax.random.PRNGKey(seed)))
+                load_checkpoint(checkpoint, distance_model=model_factory(jax.random.PRNGKey(seed)))
                 if checkpoint.exists()
                 else None
             )

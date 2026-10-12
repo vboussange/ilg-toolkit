@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
 
 from ..data import ObservationPartition, PairwiseObservations, TargetSpec
-from .fit import MLPEError, MLPEHead
+from .fit import MLPEError, RegionalMLPECalibration
 
 
 @dataclass(frozen=True)
@@ -140,7 +140,9 @@ def _predict(head, scores, pairs, population_ids, mean, covariance, provenance):
     )
 
 
-def predict_known_effects(head: MLPEHead, scores, pairs) -> MLPEConditionalPrediction:
+def predict_known_effects(
+    head: RegionalMLPECalibration, scores, pairs
+) -> MLPEConditionalPrediction:
     """Use saved effects for known populations and independent priors for unseen ones.
 
     This operation is explicit; ordinary ``head.predict_marginal`` retains zero
@@ -171,7 +173,7 @@ class MLPESupportConditioner(eqx.Module):
     later, without targets, and must be disjoint from all support pairs.
     """
 
-    head: MLPEHead
+    head: RegionalMLPECalibration
     population_ids: tuple[str, ...]
     effect_mean: jax.Array
     effect_covariance: jax.Array
@@ -206,7 +208,7 @@ def _condition_posterior(mean, covariance, residual, left, right, noise):
 
 @jax.enable_x64()
 def condition_on_support(
-    head: MLPEHead,
+    head: RegionalMLPECalibration,
     support_scores,
     support_observations: PairwiseObservations,
     *,

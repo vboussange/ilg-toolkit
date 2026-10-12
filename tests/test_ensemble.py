@@ -11,8 +11,10 @@ import pytest
 from test_mlpe_training import embedding_problem
 
 from ilg_toolkit import (
-    CalibratedModel,
+    DirectCalibrationModule,
     EnsembleMember,
+    LandscapeGeneticsModel,
+    MLPECalibrationModule,
     TrainingConfig,
     TrainingState,
     fit_ensemble,
@@ -35,7 +37,7 @@ def model_factory(key):
     return InitializedEmbedding(log_weights=jax.random.normal(key, (2,)) * 0.1)
 
 
-def completed_fit(member: EnsembleMember) -> tuple[CalibratedModel, TrainingState]:
+def completed_fit(member: EnsembleMember) -> tuple[LandscapeGeneticsModel, TrainingState]:
     assert member.status == "completed"
     assert member.model is not None
     assert member.training_state is not None
@@ -62,7 +64,7 @@ def test_declared_seeds_initialize_readable_members_directly():
     for member in result.members:
         model, state = completed_fit(member)
         expected = model_factory(jax.random.PRNGKey(member.identity.initialization_seed))
-        assert eqx.tree_equal(model.encoder, expected)
+        assert eqx.tree_equal(model.distance_model, expected)
         assert state.config.seed == member.identity.initialization_seed
     assert len({id(completed_fit(member)[1].optimizer_state) for member in result.members}) == 4
 
@@ -121,7 +123,7 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
     assert len({member.identity.member_id for member in result.members}) == 4
     assert {member.identity.initialization_seed for member in result.members} == {13, 29}
     assert len({id(state.optimizer_state) for _, state in fits}) == 4
-    encoders = [model.encoder for model, _ in fits]
+    encoders = [model.distance_model for model, _ in fits]
     assert all(isinstance(encoder, InitializedEmbedding) for encoder in encoders)
     weights = []
     for encoder in encoders:
@@ -135,7 +137,8 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
     for member in result.members:
         model, fitted = completed_fit(member)
         assert fitted.history[-1].training_loss < fitted.history[0].training_loss
-        head = model.calibrations[region.name]
+        assert isinstance(model.calibration, MLPECalibrationModule)
+        head = model.calibration.regions[region.name]
         heldout = set(member.fold.held_out_units[region.name])
         assert not any(heldout & set(pair) for pair in head.calibration_pairs)
         assert model.validation_pairs == {}
@@ -189,7 +192,9 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
     baseline_model, baseline_fit = completed_fit(baseline.members[0])
     perturbed_model, perturbed_fit = completed_fit(perturbed.members[0])
     assert baseline_fit.history == perturbed_fit.history
-    assert eqx.tree_equal(baseline_model.calibrations, perturbed_model.calibrations)
+    assert isinstance(baseline_model.calibration, MLPECalibrationModule)
+    assert isinstance(perturbed_model.calibration, MLPECalibrationModule)
+    assert eqx.tree_equal(baseline_model.calibration.regions, perturbed_model.calibration.regions)
 
 
 def test_original_scale_known_outputs_are_averaged_after_inverse_transformation():
@@ -308,7 +313,8 @@ def test_explicit_validation_retains_selection_target_access_on_every_member():
     model, fitted = completed_fit(member)
     assert model.validation_pairs[region.name] == validation[region.name].pairs
     assert fitted.selection == "validation"
-    assert len(model.calibrations[region.name].calibration_pairs) == 6
+    assert isinstance(model.calibration, MLPECalibrationModule)
+    assert len(model.calibration.regions[region.name].calibration_pairs) == 6
 
 
 def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitialize():
@@ -441,11 +447,17 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
     member = result.members[0]
     model, state = completed_fit(member)
     assert state.region_names == ("alpine", "valley")
-    assert set(model.calibrations) == {"alpine", "valley"}
+    assert isinstance(model.calibration, MLPECalibrationModule)
+    assert set(model.calibration.regions) == {"alpine", "valley"}
     assert state.raw_variances is not None
     assert set(state.raw_variances) == {"alpine", "valley"}
     assert state.history[-1].training_loss < state.history[0].training_loss
-    assert model.calibrations["valley"].intercept - model.calibrations["alpine"].intercept > 2
+    assert isinstance(model.calibration, MLPECalibrationModule)
+    assert (
+        model.calibration.regions["valley"].intercept
+        - model.calibration.regions["alpine"].intercept
+        > 2
+    )
 
 
 @final
@@ -459,9 +471,9 @@ class ConstantConductance(ConductanceModel):
 
 def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
     from ilg_toolkit import (
-        CalibratedModel,
         Ensemble,
         EnsembleMember,
+        LandscapeGeneticsModel,
         ObservationPartition,
         PopulationFold,
         RegionBatch,
@@ -484,11 +496,11 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
                 {"graph": ObservationPartition("graph", (("a", "b"),), "training")},
                 {"graph": ObservationPartition("graph", (("c", "d"),), "query")},
             )
-            model = CalibratedModel(
+            model = LandscapeGeneticsModel(
                 ConstantConductance(level=jnp.asarray(level)),
-                TargetSpec("divergence"),
+                DirectCalibrationModule(TargetSpec("divergence")),
                 1,
-                objective="direct_log1p",
+                training_objective="direct_log1p",
             )
             members.append(
                 EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
@@ -496,11 +508,11 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
         ensemble = Ensemble(tuple(members))
         prediction = ensemble.predict(region)
         summary = ensemble.conductance_surfaces(region)
-        averaged_surface_model = CalibratedModel(
+        averaged_surface_model = LandscapeGeneticsModel(
             ConstantConductance(level=jnp.asarray(2.5)),
-            TargetSpec("divergence"),
+            DirectCalibrationModule(TargetSpec("divergence")),
             1,
-            objective="direct_log1p",
+            training_objective="direct_log1p",
         )
         surface_prediction = averaged_surface_model.predict(region)
     np.testing.assert_allclose(prediction.values[0, 1], 0.625, atol=1e-7)

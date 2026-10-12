@@ -10,7 +10,7 @@ import numpy as np
 
 from .config import TrainingConfig
 from .data import ObservationPartition, RegionBatch, TargetSpec
-from .model import CalibratedModel, Prediction
+from .model import LandscapeGeneticsModel, Prediction
 from .models import AbstractDistanceModel
 from .training import TrainingState, _normalize_inputs, fit
 
@@ -184,7 +184,7 @@ class EnsembleMember:
     identity: MemberIdentity
     fold: PopulationFold
     status: str
-    model: CalibratedModel | None = None
+    model: LandscapeGeneticsModel | None = None
     training_state: TrainingState | None = None
     failure: MemberFailure | None = None
 
@@ -198,7 +198,7 @@ class EnsembleMember:
         if self.status not in {"completed", "failed", "pending"}:
             raise ValueError("Member status must be completed, failed or pending")
         if self.status == "completed" and (
-            not isinstance(self.model, CalibratedModel) or self.failure is not None
+            not isinstance(self.model, LandscapeGeneticsModel) or self.failure is not None
         ):
             raise ValueError("A completed member requires a model and no failure")
         if self.status == "failed" and (self.failure is None or self.model is not None):
@@ -458,7 +458,7 @@ def fit_ensemble_member(
         result = fit(
             regions,
             observed,
-            model=model,
+            distance_model=model,
             config=config,
             partition=fold.training,
             validation=validation,

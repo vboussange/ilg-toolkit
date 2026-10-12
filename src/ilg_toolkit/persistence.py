@@ -12,10 +12,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .calibration import DirectCalibrationModule, MLPECalibrationModule
 from .config import ResistanceSolverConfig
 from .data import TargetSpec
-from .mlpe import MLPEConfig, MLPEHead
-from .model import CalibratedModel
+from .mlpe import MLPEConfig, RegionalMLPECalibration
+from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel, ConductanceModel
 
 
@@ -27,7 +28,7 @@ def _write_native(path, tree, *, kind, metadata):
     """Atomically replace a header and native leaves; retain the previous file on failure."""
     header = {
         "format": "ilg-toolkit-equinox",
-        "version": 2,
+        "version": 3,
         "kind": kind,
         "requires_x64": any(
             isinstance(value, jax.Array)
@@ -64,7 +65,7 @@ def _read_header(stream, *, kind):
         not isinstance(header, dict)
         or header.get("format") != "ilg-toolkit-equinox"
         or type(header.get("version")) is not int
-        or header["version"] != 2
+        or header["version"] != 3
     ):
         raise ArtifactError("Unsupported native Equinox artifact format or version")
     if header.get("kind") != kind:
@@ -78,28 +79,37 @@ def _read_header(stream, *, kind):
 
 def _model_metadata(model):
     """Nonnumerical contracts and tree structure; learned values remain native leaves."""
+    if isinstance(model.calibration, DirectCalibrationModule):
+        calibration = {"kind": "direct"}
+    elif isinstance(model.calibration, MLPECalibrationModule):
+        calibration = {
+            "kind": "mlpe",
+            "regions": {
+                name: {
+                    "population_ids": value.population_ids,
+                    "calibration_pairs": value.calibration_pairs,
+                    "calibration_roles": value.calibration_roles,
+                    "config": asdict(value.config),
+                    "optimizer_message": value.optimizer_message,
+                }
+                for name, value in model.calibration.regions.items()
+            },
+        }
+    else:
+        raise ArtifactError("Native persistence requires a direct or MLPE calibration module")
     return {
         "target": asdict(model.target),
         "feature_count": model.feature_count,
         "feature_names": model.feature_names,
         "distance_solver": (
-            asdict(model.encoder.solver_config)
-            if isinstance(model.encoder, ConductanceModel)
+            asdict(model.distance_model.solver_config)
+            if isinstance(model.distance_model, ConductanceModel)
             else None
         ),
-        "objective": model.objective,
+        "training_objective": model.training_objective,
         "training_pairs": model.training_pairs,
         "validation_pairs": model.validation_pairs,
-        "calibrations": {
-            name: {
-                "population_ids": head.population_ids,
-                "calibration_pairs": head.calibration_pairs,
-                "calibration_roles": head.calibration_roles,
-                "config": asdict(head.config),
-                "optimizer_message": head.optimizer_message,
-            }
-            for name, head in model.calibrations.items()
-        },
+        "calibration": calibration,
     }
 
 
@@ -107,7 +117,7 @@ def _head_template(name, metadata, target):
     config = MLPEConfig(**metadata["config"])
     population_ids = tuple(metadata["population_ids"])
     count = len(population_ids)
-    return MLPEHead(
+    return RegionalMLPECalibration(
         region_name=name,
         target=target,
         population_ids=population_ids,
@@ -130,44 +140,55 @@ def _head_template(name, metadata, target):
     )
 
 
-def _model_template(metadata, encoder):
+def _model_template(metadata, distance_model):
     target = TargetSpec(**metadata["target"])
     solver_settings = metadata["distance_solver"]
-    if isinstance(encoder, ConductanceModel):
+    if isinstance(distance_model, ConductanceModel):
         if solver_settings is None:
             raise ArtifactError("Saved distance model requires a non-conductance template")
-        encoder = copy(encoder)
-        object.__setattr__(encoder, "solver_config", ResistanceSolverConfig(**solver_settings))
+        distance_model = copy(distance_model)
+        object.__setattr__(
+            distance_model, "solver_config", ResistanceSolverConfig(**solver_settings)
+        )
     elif solver_settings is not None:
         raise ArtifactError("Saved conductance model requires a conductance template")
-    return CalibratedModel(
-        encoder,
-        target,
+    saved_calibration = metadata["calibration"]
+    if saved_calibration["kind"] == "direct":
+        calibration = DirectCalibrationModule(target)
+    elif saved_calibration["kind"] == "mlpe":
+        calibration = MLPECalibrationModule(
+            target,
+            {
+                name: _head_template(name, regional, target)
+                for name, regional in saved_calibration["regions"].items()
+            },
+        )
+    else:
+        raise ArtifactError("Unsupported calibration module in native artifact")
+    return LandscapeGeneticsModel(
+        distance_model,
+        calibration,
         metadata["feature_count"],
         feature_names=(
             None if metadata["feature_names"] is None else tuple(metadata["feature_names"])
         ),
-        objective=metadata["objective"],
+        training_objective=metadata["training_objective"],
         training_pairs=metadata["training_pairs"],
         validation_pairs=metadata["validation_pairs"],
-        calibrations={
-            name: _head_template(name, head, target)
-            for name, head in metadata["calibrations"].items()
-        },
     )
 
 
-def save_model(path, model: CalibratedModel) -> None:
-    """Atomically save a calibrated model, including compatible custom encoders."""
-    if not isinstance(model, CalibratedModel):
-        raise ArtifactError("save_model requires a fitted CalibratedModel")
+def save_model(path, model: LandscapeGeneticsModel) -> None:
+    """Atomically save a calibrated model, including compatible custom distance models."""
+    if not isinstance(model, LandscapeGeneticsModel):
+        raise ArtifactError("save_model requires a fitted LandscapeGeneticsModel")
     _write_native(path, model, kind="model", metadata=_model_metadata(model))
 
 
-def load_model(path, *, encoder: AbstractDistanceModel) -> CalibratedModel:
-    """Load native leaves into the caller's exact full encoder configuration.
+def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGeneticsModel:
+    """Load native leaves into the caller's exact full distance model configuration.
 
-    The caller supplies the encoder class, static settings and compatible leaves.
+    The caller supplies the distance model class, static settings and compatible leaves.
     Saved leaves replace its numerical values. Static settings cannot be inferred
     from numerical shapes and remain the caller's responsibility. Saved conductance
     solver settings override the template's policy; derived contexts are rebuilt
@@ -176,11 +197,11 @@ def load_model(path, *, encoder: AbstractDistanceModel) -> CalibratedModel:
     try:
         with Path(path).open("rb") as stream:
             metadata = _read_header(stream, kind="model")
-            template = _model_template(metadata, encoder)
+            template = _model_template(metadata, distance_model)
             return eqx.tree_deserialise_leaves(stream, template)
     except (KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:
         if isinstance(error, ArtifactError):
             raise
         raise ArtifactError(
-            f"Cannot load model with the supplied encoder template: {error}"
+            f"Cannot load model with the supplied distance_model template: {error}"
         ) from error

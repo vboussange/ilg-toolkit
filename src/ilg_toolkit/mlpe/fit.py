@@ -92,7 +92,7 @@ class MLPEPrediction(eqx.Module):
 
 
 @final
-class MLPEHead(eqx.Module):
+class RegionalMLPECalibration(eqx.Module):
     """Complete regional calibration with auditable observation identities."""
 
     region_name: str
@@ -129,7 +129,7 @@ class MLPEHead(eqx.Module):
         optimizer_iterations: int,
         optimizer_message: str,
         converged: bool = True,
-    ) -> "MLPEHead":
+    ) -> "RegionalMLPECalibration":
         """Attach target, observation provenance and optimizer diagnostics to a fit."""
         mean, covariance, factor = fit.posterior
         return cls(
@@ -155,6 +155,8 @@ class MLPEHead(eqx.Module):
         )
 
     def __post_init__(self):
+        if not isinstance(self.target, TargetSpec) or self.target.kind != "dissimilarity":
+            raise MLPEError("Population MLPE requires a dissimilarity TargetSpec")
         scalars = (
             self.score_center,
             self.score_scale,
@@ -228,7 +230,7 @@ def calibrate_mlpe(
     region_name: str,
     partition: ObservationPartition | None = None,
     config: MLPEConfig | None = None,
-) -> MLPEHead:
+) -> RegionalMLPECalibration:
     """Fit full ML from scores aligned to ``observations.observed_pairs``.
 
     ``partition`` explicitly selects a subset and records its declared data role.
@@ -335,7 +337,7 @@ def calibrate_mlpe(
     fit = fit._replace(variances=jnp.exp(jnp.asarray(result.x)))
     if not all(bool(jnp.isfinite(value).all()) for value in jax.tree.leaves(fit)):
         raise MLPEError("Fitted population-effect posterior is nonfinite")
-    return MLPEHead.from_fit(
+    return RegionalMLPECalibration.from_fit(
         fit,
         region_name=region_name,
         target=observations.target,

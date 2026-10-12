@@ -101,7 +101,7 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
         result = fit(
             region,
             observations,
-            model=model,
+            distance_model=model,
             config=TrainingConfig(
                 objective="direct_log1p",
                 epochs=4,
@@ -109,8 +109,8 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
             ),
         )
         assert result.history[-1].training_loss < result.history[0].training_loss
-        assert isinstance(result.model.encoder, ResNet9Conductance)
-        assert result.model.encoder.patch_batch_size == 3
+        assert isinstance(result.model.distance_model, ResNet9Conductance)
+        assert result.model.distance_model.patch_batch_size == 3
         surface = result.model.conductance_surface(region)
         prediction = result.model.predict(region)
         assert isinstance(surface, jax.Array)
@@ -154,7 +154,7 @@ def test_failed_solver_reports_region_and_epoch_without_changing_solver():
             fit(
                 region,
                 observations,
-                model=PointConductance(
+                distance_model=PointConductance(
                     jnp.array(0.0),
                     solver_config=ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1),
                 ),
@@ -274,20 +274,20 @@ def test_shared_conductance_fit_rebuilds_solver_on_native_reload_and_resume(tmp_
             )
         )
     config = TrainingConfig(objective="direct_log1p", epochs=2, learning_rate=0.02)
-    uninterrupted = fit(regions, observations, model=encoder, config=config)
+    uninterrupted = fit(regions, observations, distance_model=encoder, config=config)
     from dataclasses import replace
 
-    first = fit(regions, observations, model=encoder, config=replace(config, epochs=1))
+    first = fit(regions, observations, distance_model=encoder, config=replace(config, epochs=1))
     model_path, checkpoint_path = tmp_path / "model.ilg", tmp_path / "checkpoint.ilg"
     save_model(model_path, first.model)
     save_checkpoint(checkpoint_path, first)
     template = PointConductance(jnp.array(9.0))
-    restored_model = load_model(model_path, encoder=template)
-    restored_state = load_checkpoint(checkpoint_path, encoder=template)
-    assert isinstance(restored_model.encoder, PointConductance)
-    assert isinstance(restored_state.encoder, PointConductance)
-    assert restored_model.encoder.solver_config == solver
-    assert restored_state.encoder.solver_config == solver
+    restored_model = load_model(model_path, distance_model=template)
+    restored_state = load_checkpoint(checkpoint_path, distance_model=template)
+    assert isinstance(restored_model.distance_model, PointConductance)
+    assert isinstance(restored_state.distance_model, PointConductance)
+    assert restored_model.distance_model.solver_config == solver
+    assert restored_state.distance_model.solver_config == solver
     assert template.solver_config == ResistanceSolverConfig()
     continued = fit(regions[::-1], observations[::-1], state=restored_state, config=config)
     assert continued.history[-1].training_loss < continued.history[0].training_loss

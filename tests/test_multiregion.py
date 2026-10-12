@@ -74,11 +74,11 @@ def test_shared_embedding_update_matches_independent_equal_region_objective():
         result = fit(
             regions,
             observations,
-            model=ScalarEmbedding(jnp.asarray(initial, dtype=jnp.float64)),
+            distance_model=ScalarEmbedding(jnp.asarray(initial, dtype=jnp.float64)),
             config=TrainingConfig(objective="direct_log1p", epochs=1, learning_rate=0.01),
         )
-        assert isinstance(result.model.encoder, ScalarEmbedding)
-        np.testing.assert_allclose(result.model.encoder.weight, expected, rtol=1e-8)
+        assert isinstance(result.model.distance_model, ScalarEmbedding)
+        np.testing.assert_allclose(result.model.distance_model.weight, expected, rtol=1e-8)
         np.testing.assert_allclose(
             result.history[0].training_loss, independent_objective(initial), rtol=1e-8
         )
@@ -165,11 +165,11 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
         result = fit(
             regions,
             observations,
-            model=ScaledConductance(jnp.asarray(initial, dtype=jnp.float64)),
+            distance_model=ScaledConductance(jnp.asarray(initial, dtype=jnp.float64)),
             config=TrainingConfig(objective="direct_log1p", epochs=1, learning_rate=0.01),
         )
-        assert isinstance(result.model.encoder, ScaledConductance)
-        np.testing.assert_allclose(result.model.encoder.log_scale, expected, rtol=1e-8)
+        assert isinstance(result.model.distance_model, ScaledConductance)
+        np.testing.assert_allclose(result.model.distance_model.log_scale, expected, rtol=1e-8)
         np.testing.assert_allclose(
             result.history[0].training_loss, independent_objective(initial), rtol=1e-8
         )
@@ -184,18 +184,18 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
 
 @final
 class StochasticEmbedding(EmbeddingDistanceModel):
-    encoder: ScalarEmbedding
+    distance_model: ScalarEmbedding
     patch_size: int = eqx.field(static=True, default=1)
 
     def __init__(self, weight: jax.Array):
-        self.encoder = ScalarEmbedding(weight)
+        self.distance_model = ScalarEmbedding(weight)
 
     @property
     def weight(self) -> jax.Array:
-        return self.encoder.weight
+        return self.distance_model.weight
 
     def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-        values = self.encoder.embedding_grid(
+        values = self.distance_model.embedding_grid(
             features, inference=inference, key=key, patch_batch_size=patch_batch_size
         )
         if inference:
@@ -210,7 +210,7 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory():
     regions, observations = regions_and_observations()
     config = TrainingConfig(objective="direct_log1p", epochs=3, seed=7)
     model = StochasticEmbedding(jnp.asarray(1.0, dtype=jnp.float32))
-    baseline = fit(regions, observations, model=model, config=config)
+    baseline = fit(regions, observations, distance_model=model, config=config)
     reversed_regions = {region.name: region for region in reversed(regions)}
     reversed_observations = {
         region.name: observed
@@ -220,17 +220,19 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory():
     validated = fit(
         reversed_regions,
         reversed_observations,
-        model=model,
+        distance_model=model,
         config=config,
         validation=(validation_region, observations[0]),
     )
     assert [epoch.training_by_region for epoch in baseline.history] == [
         epoch.training_by_region for epoch in validated.history
     ]
-    reordered = fit(reversed_regions, reversed_observations, model=model, config=config)
-    assert isinstance(baseline.model.encoder, StochasticEmbedding)
-    assert isinstance(reordered.model.encoder, StochasticEmbedding)
-    np.testing.assert_array_equal(baseline.model.encoder.weight, reordered.model.encoder.weight)
+    reordered = fit(reversed_regions, reversed_observations, distance_model=model, config=config)
+    assert isinstance(baseline.model.distance_model, StochasticEmbedding)
+    assert isinstance(reordered.model.distance_model, StochasticEmbedding)
+    np.testing.assert_array_equal(
+        baseline.model.distance_model.weight, reordered.model.distance_model.weight
+    )
 
 
 def test_incompatible_regional_inputs_fail_before_optimization():
@@ -285,7 +287,7 @@ def test_incompatible_regional_inputs_fail_before_optimization():
             fit(
                 supplied_regions,
                 supplied_observations,
-                model=model,
+                distance_model=model,
                 partition=supplied_partitions,
                 config=TrainingConfig(objective="direct_log1p", epochs=0),
             )
@@ -309,7 +311,7 @@ def test_validation_on_another_region_requires_declared_feature_meanings():
         fit(
             regions[0],
             observations[0],
-            model=ScalarEmbedding(jnp.asarray(1.0)),
+            distance_model=ScalarEmbedding(jnp.asarray(1.0)),
             validation=(regions[1], observations[1]),
             config=TrainingConfig(objective="direct_log1p", epochs=0),
         )

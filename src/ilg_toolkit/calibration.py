@@ -1,34 +1,99 @@
-"""Explicit regional genetic recalibration without encoder optimization."""
+"""Target-scale relationships and frozen regional genetic calibration."""
 
+from abc import abstractmethod
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, final
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 
-from .data import ObservationPartition, PairwiseObservations, RegionBatch
-from .mlpe import MLPEConfig, calibrate_mlpe
-from .model import CalibratedModel
+from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
+from .mlpe import MLPEConfig, RegionalMLPECalibration, calibrate_mlpe
+
+if TYPE_CHECKING:
+    from .model import LandscapeGeneticsModel
 
 
-def recalibrate(
-    model: CalibratedModel,
+class AbstractCalibrationModule(eqx.Module):
+    """Own the target contract and map selected landscape scores to genetic values."""
+
+    target: TargetSpec
+
+    @abstractmethod
+    def predict(self, scores, pairs, *, region_name: str) -> jax.Array:
+        """Return original-scale values for selected scores and labelled pairs."""
+
+
+@final
+class DirectCalibrationModule(AbstractCalibrationModule):
+    """Apply the declared inverse target transform without fitting another stage."""
+
+    def __post_init__(self):
+        if not isinstance(self.target, TargetSpec):
+            raise ValueError("Direct calibration requires a TargetSpec")
+
+    def predict(self, scores, pairs, *, region_name: str) -> jax.Array:
+        return self.target.inverse(scores)
+
+
+@final
+class MLPECalibrationModule(AbstractCalibrationModule):
+    """Select a fitted regional MLPE relationship; uncalibrated regions are refused.
+
+    ``regions`` maps region identities to standalone regional calibrations. Every
+    installed relationship must agree with this module's authoritative target.
+    """
+
+    regions: dict[str, RegionalMLPECalibration] = eqx.field(default_factory=dict)
+
+    def __post_init__(self):
+        if not isinstance(self.target, TargetSpec) or self.target.kind != "dissimilarity":
+            raise ValueError("Population MLPE requires a dissimilarity target")
+        regions = dict(self.regions)
+        if any(not isinstance(value, RegionalMLPECalibration) for value in regions.values()):
+            raise ValueError("MLPE regions require fitted RegionalMLPECalibration values")
+        if any(
+            name != value.region_name or value.target != self.target
+            for name, value in regions.items()
+        ):
+            raise ValueError(
+                "Regional calibration names and target contracts must match the module"
+            )
+        self.regions = regions
+
+    def for_region(self, region_name: str) -> RegionalMLPECalibration:
+        """Return a supported region's calibration, requiring explicit regional fitting."""
+        value = self.regions.get(region_name)
+        if value is None:
+            raise ValueError(
+                f"Region {region_name!r} has no MLPE calibration; calibrate it explicitly"
+            )
+        return value
+
+    def predict(self, scores, pairs, *, region_name: str) -> jax.Array:
+        return self.for_region(region_name).predict_marginal(scores, pairs).values
+
+
+def calibrate(
+    model: "LandscapeGeneticsModel",
     region: RegionBatch,
     observations: PairwiseObservations,
     *,
     partitions: ObservationPartition | Sequence[ObservationPartition] | None = None,
     config: MLPEConfig | None = None,
-) -> CalibratedModel:
-    """Fit or replace one regional MLPE head with explicitly declared data use.
+) -> "LandscapeGeneticsModel":
+    """Fit or replace a regional MLPE relationship with explicitly declared data use.
 
-    Without partitions only recorded encoder-training observations are selected.
+    Without partitions only recorded distance-model training observations are selected.
     Additional development observations require explicit training, validation,
     or calibration partitions. New regions therefore require a declared
     partition. Query and support roles cannot calibrate a model.
 
-    Returns an MLPE-mode model with the same encoder, existing regional
-    heads, and training/selection provenance. Prior fit histories and the input
-    model remain unchanged. This also provides an explicit conversion from
-    a direct model; ordinary direct prediction needs no MLPE head.
+    Returns a model with an MLPE calibration module and the frozen distance model,
+    retaining other MLPE regions and training/selection provenance. Converting a
+    direct module replaces it completely: only explicitly calibrated regions can
+    then predict genetic values. Prior training objectives and histories survive.
     """
     model._validate_region(region)
     if observations.target != model.target:
@@ -77,8 +142,13 @@ def recalibrate(
         [scores[lookup[a], lookup[b]] for a, b in observations.observed_pairs]
     )
     selected = ObservationPartition(region.name, tuple(roles), role="calibration")
-    if config is None and region.name in model.calibrations:
-        config = model.calibrations[region.name].config
+    regions = (
+        dict(model.calibration.regions)
+        if isinstance(model.calibration, MLPECalibrationModule)
+        else {}
+    )
+    if config is None and region.name in regions:
+        config = regions[region.name].config
     head = calibrate_mlpe(
         observed_scores, observations, region_name=region.name, partition=selected, config=config
     )
@@ -87,6 +157,7 @@ def recalibrate(
         head,
         tuple(roles[tuple(sorted(pair))] for pair in head.calibration_pairs),
     )
-    heads = dict(model.calibrations)
-    heads[region.name] = head
-    return eqx.tree_at(lambda value: (value.objective, value.calibrations), model, ("mlpe", heads))
+    regions[region.name] = head
+    return eqx.tree_at(
+        lambda value: value.calibration, model, MLPECalibrationModule(model.target, regions)
+    )

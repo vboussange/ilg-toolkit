@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .calibration import MLPECalibrationModule
 from .data import (
     ObservationPartition,
     PairwiseObservations,
@@ -233,9 +234,13 @@ def _support_inputs(support, regions, queries, target, regime):
 
 
 def _access(model, name, support, regime):
-    head = model.calibrations.get(name)
+    head = (
+        model.calibration.regions.get(name)
+        if isinstance(model.calibration, MLPECalibrationModule)
+        else None
+    )
     calibration = (
-        () if head is None else tuple(tuple(sorted(pair)) for pair in head.calibration_pairs)
+        () if head is None else tuple((min(a, b), max(a, b)) for a, b in head.calibration_pairs)
     )
     return EvaluationAccess(
         name,

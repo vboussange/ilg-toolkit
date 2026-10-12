@@ -9,13 +9,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from ilg_toolkit import (
+    MLPECalibrationModule,
     ObservationPartition,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
     TrainingConfig,
+    calibrate,
     fit,
-    recalibrate,
 )
 from ilg_toolkit.models import UNetEmbeddingDistance
 
@@ -41,10 +42,10 @@ observations = PairwiseObservations.from_matrix(
 result = fit(
     region,
     observations,
-    model=model,
+    distance_model=model,
     config=TrainingConfig(objective="direct_log1p", epochs=3, learning_rate=0.0001, seed=4),
 )
-calibrated = recalibrate(result.model, region, observations)
+calibrated = calibrate(result.model, region, observations)
 new_region = replace(
     region,
     name="new-catchment",
@@ -61,8 +62,15 @@ new_observations = PairwiseObservations.from_matrix(
 development = ObservationPartition(
     new_region.name, new_observations.observed_pairs, role="calibration"
 )
-transferred = calibrated.recalibrate(new_region, new_observations, partitions=development)
-assert eqx.tree_equal(transferred.encoder, calibrated.encoder)
-assert eqx.tree_equal(transferred.calibrations[region.name], calibrated.calibrations[region.name])
+transferred = calibrated.calibrate(new_region, new_observations, partitions=development)
+assert eqx.tree_equal(transferred.distance_model, calibrated.distance_model)
+assert isinstance(calibrated.calibration, MLPECalibrationModule)
+assert isinstance(transferred.calibration, MLPECalibrationModule)
+assert eqx.tree_equal(
+    transferred.calibration.regions[region.name], calibrated.calibration.regions[region.name]
+)
 print("Calibrated new-region predictions:\n", transferred.predict(new_region).values)
-print("Declared data roles:", set(transferred.calibrations[new_region.name].calibration_roles))
+assert isinstance(transferred.calibration, MLPECalibrationModule)
+print(
+    "Declared data roles:", set(transferred.calibration.regions[new_region.name].calibration_roles)
+)
