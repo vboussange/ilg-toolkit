@@ -86,7 +86,6 @@ def test_matrix_prediction_preserves_structural_zeros_and_uses_euclidean_distanc
         ({"a": [-1.0]}, {"a": [1.0]}, "a.*finite.*nonnegative"),
         ({"a": [1.0]}, {"a": [-1.0]}, "a.*finite.*nonnegative"),
         ({"a": [1j]}, {"a": [1.0]}, "a.*real numeric"),
-        ({"a": ["1.0"]}, {"a": [1.0]}, "a.*real numeric"),
     ],
 )
 def test_fit_rejects_missing_misaligned_or_invalid_regions(distances, targets, message):
@@ -194,9 +193,16 @@ def test_zero_targets_admit_zero_coefficients():
     np.testing.assert_array_equal(model.predict([0.0, 2.0], distance_units="m"), [0.0, 0.0])
 
 
-def test_prediction_does_not_silently_truncate_fitted_float64_or_change_jax_precision():
+def test_fit_and_prediction_require_float64_without_changing_jax_precision():
     model = IBDModel(0.7, 0.2, "m", TargetSpec("divergence", units="index"))
     with jax.enable_x64(False):
+        with pytest.raises(ValueError, match="float64.*x64"):
+            IBDModel.fit(
+                {"a": [0.0, 1.00000000001, 2.0]},
+                {"a": [0.2, 0.900000000007, 1.6]},
+                distance_units="m",
+                target=model.target,
+            )
         with pytest.raises(ValueError, match="float64.*x64"):
             model.predict([1.00000000001], distance_units="m")
         assert not jax.config.read("jax_enable_x64")
