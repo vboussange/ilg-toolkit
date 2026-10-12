@@ -7,6 +7,47 @@ from mlpe_reference import dense_profile
 from ilg_toolkit.mlpe import profiled_mlpe_ml_fit
 
 
+@pytest.mark.parametrize("jit", [False, True])
+def test_complete_mlpe_finalization_matches_incomplete_pair_dense_gaussian(jit):
+    import jax
+    import jax.numpy as jnp
+
+    from ilg_toolkit.mlpe import finalize_mlpe_fit
+
+    scores = np.array([0.2, 1.1, -0.3, 2.0])
+    targets = np.array([0.5, 0.1, 0.9, 0.3])
+    left, right = np.array([3, 0, 2, 0]), np.array([1, 2, 1, 1])
+    variances, jitter = np.array([0.6, 0.12]), 1e-7
+    expected_nll, beta = dense_profile(scores, targets, left, right, 4, variances, jitter=jitter)
+    design = np.column_stack((np.ones(4), (scores - scores.mean()) / scores.std(ddof=1)))
+    incidence = np.zeros((4, 4))
+    incidence[np.arange(4), left] = incidence[np.arange(4), right] = 1
+    covariance = variances[0] * incidence @ incidence.T + (variances[1] + jitter) * np.eye(4)
+    residual = targets - design @ beta
+    expected_mean = variances[0] * incidence.T @ np.linalg.solve(covariance, residual)
+    expected_covariance = variances[0] * np.eye(4) - variances[
+        0
+    ] ** 2 * incidence.T @ np.linalg.solve(covariance, incidence)
+    with jax.enable_x64():
+        raw = jnp.log(jnp.expm1(jnp.asarray(variances) - 1e-10))
+
+        def finalize():
+            return finalize_mlpe_fit(
+                scores, targets, left, right, n_populations=4, raw_variances=raw, jitter=jitter
+            )
+
+        result = jax.jit(finalize)() if jit else finalize()
+    mean, posterior, factor = result.posterior
+    assert result.nll == pytest.approx(expected_nll, abs=1e-12)
+    np.testing.assert_allclose(result.coefficients, beta, atol=1e-12)
+    np.testing.assert_allclose(result.variances, variances, atol=1e-15)
+    assert result.score_center == pytest.approx(scores.mean(), abs=1e-15)
+    assert result.score_scale == pytest.approx(scores.std(ddof=1), abs=1e-15)
+    np.testing.assert_allclose(mean, expected_mean, atol=1e-12)
+    np.testing.assert_allclose(posterior, expected_covariance, atol=1e-12)
+    np.testing.assert_allclose(factor @ factor.T @ posterior, np.eye(4), atol=1e-12)
+
+
 def test_masked_pairs_are_absent_from_likelihood_and_score_standardization_under_jit():
     import jax
     import jax.numpy as jnp

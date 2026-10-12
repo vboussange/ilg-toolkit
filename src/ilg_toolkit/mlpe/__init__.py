@@ -3,6 +3,7 @@
 from .fit import MLPEConfig, MLPEError, MLPEHead, MLPEPrediction, calibrate_mlpe
 from .likelihood import (
     decode_mlpe_variances,
+    finalize_mlpe_fit,
     mlpe_effect_posterior,
     mlpe_ml_negative_log_likelihood,
     pair_incidence_matrix,
@@ -29,6 +30,7 @@ __all__ = [
     "calibrate_mlpe",
     "condition_on_support",
     "decode_mlpe_variances",
+    "finalize_mlpe_fit",
     "mlpe_effect_posterior",
     "mlpe_ml_negative_log_likelihood",
     "pair_incidence_matrix",
