@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -58,6 +59,7 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
         save_checkpoint(checkpoint_artifact, completed[0])
         expected_continued = continued_source.model.predict(inference_region).values.tolist()
     root = Path(__file__).resolve().parents[1]
+    expected_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     built = subprocess.run(
@@ -96,7 +98,7 @@ import ilg_toolkit as ilg
 from ilg_toolkit.models import UNetEmbeddingDistance
 for module in pkgutil.walk_packages(ilg.__path__, ilg.__name__ + '.'):
     importlib.import_module(module.name)
-assert importlib.metadata.version('ilg-toolkit') == '0.0.1'
+assert importlib.metadata.version('ilg-toolkit') == {expected_version!r}
 assert importlib.util.find_spec('ilg_toolkit.experimental') is None
 assert not hasattr(ilg, 'diagnose_wishart')
 assert importlib.util.find_spec('ilg_toolkit._archive') is None

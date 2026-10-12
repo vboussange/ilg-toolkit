@@ -198,6 +198,21 @@ optionally increase the total epoch budget. Same-shape measurement changes are
 not detected automatically. See [saving and continuation](docs/persistence.md)
 for caller-template loading, atomic replacement and complete examples.
 
+## Releases
+
+To release a new version, update `project.version` in `pyproject.toml` and merge
+the change into `main`. The Release workflow builds a wheel and source archive,
+runs the full test suite against each installed distribution in a separate
+environment with the optional AMG dependencies, and then creates an annotated
+`v<version>` tag and a GitHub release with both files and generated release notes.
+Publishing requires both distribution test runs to pass.
+
+Existing GitHub releases are skipped. If the tag already exists, its source is
+built and tested without moving the tag; this supports the initial `v0.0.1` tag.
+Failed runs can be retried from Actions → Release → Run workflow on `main`.
+Releases use the repository's automatic GitHub token; no PyPI token is required,
+and packages are not published to PyPI.
+
 ## Development and license
 
 ```bash
