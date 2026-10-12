@@ -428,7 +428,7 @@ def _input_contract(
                 "sampling_unit_kinds": list(region.sampling_unit_kinds or ()),
                 "feature_shape": list(region.feature_array.shape),
                 "feature_dtype": str(region.feature_array.dtype),
-                "position_dtype": str(region.grid_positions.dtype),
+                "position_dtype": str(cast(jax.Array, region.grid_positions).dtype),
                 "observation_dtype": str(observations.values.dtype),
             }
             for region, observations, _ in inputs
@@ -498,14 +498,16 @@ def _prepare_batches(
         locations = dict(
             zip(
                 training_batch.region.sampling_unit_ids,
-                training_batch.region.grid_positions,
+                cast(jax.Array, training_batch.region.grid_positions),
                 strict=True,
             )
         )
         if any(
             label in locations and not np.array_equal(locations[label], position)
             for label, position in zip(
-                batch.region.sampling_unit_ids, batch.region.grid_positions, strict=True
+                batch.region.sampling_unit_ids,
+                cast(jax.Array, batch.region.grid_positions),
+                strict=True,
             )
         ):
             raise ValueError("Sampling-unit locations disagree within the same region")

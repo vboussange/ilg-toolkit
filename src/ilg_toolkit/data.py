@@ -7,6 +7,7 @@ import coordax as cx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from numpy.typing import ArrayLike
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,7 @@ class RegionBatch:
     name: str
     features: cx.Field
     sampling_unit_ids: tuple[str, ...]
-    grid_positions: jax.Array | np.ndarray
+    grid_positions: ArrayLike
     feature_names: tuple[str, ...] | None = None
     sampling_unit_kinds: tuple[str, ...] | None = None
 

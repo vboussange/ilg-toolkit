@@ -1,5 +1,7 @@
 """Share one cleaned U-Net encoder across synthetic regions of different extents."""
 
+from typing import cast
+
 import coordax as cx
 import jax
 import jax.numpy as jnp
@@ -28,7 +30,7 @@ regions = [
 target = TargetSpec("synthetic divergence", units="index")
 observations = []
 for region in regions:
-    endpoint_features = region.feature_array[tuple(region.grid_positions.T)]
+    endpoint_features = region.feature_array[tuple(cast(jax.Array, region.grid_positions).T)]
     dissimilarities = jnp.sum(
         (endpoint_features[:, None] - endpoint_features[None, :]) ** 2, axis=-1
     )

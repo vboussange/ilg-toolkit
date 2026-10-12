@@ -19,24 +19,26 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: pip
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+        with:
+          enable-cache: true
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
           package-manager-cache: false
       - name: Install toolkit and declared development dependencies
-        run: python -m pip install -e '.[dev]'
+        run: uv sync --extra dev
       - name: Check formatting
-        run: ruff format --check .
+        run: uv run --no-sync ruff format --check .
       - name: Lint
-        run: ruff check .
+        run: uv run --no-sync ruff check .
       - name: Check types
-        run: pyright
+        run: uv run --no-sync pyright
       - name: Test public workflows and installed wheel
-        run: pytest
+        run: uv run --no-sync pytest
       - name: Run synthetic examples and research reference
         run: |
-          for example in examples/*.py; do python "$example"; done
-          python -m experiments.wishart
+          for example in examples/*.py; do uv run --no-sync python "$example"; done
+          uv run --no-sync python -m experiments.wishart
       - name: Build source distribution and wheel
-        run: python -m build
+        run: uv run --no-sync python -m build
