@@ -1,6 +1,6 @@
 """Public prepared-input and fit/predict contracts from the approved spec seam."""
 
-from typing import final
+from typing import cast, final
 
 import coordax as cx
 import equinox as eqx
@@ -30,12 +30,83 @@ class LinearEmbedding(EmbeddingDistanceModel):
 def problem() -> tuple[RegionBatch, TargetSpec, LinearEmbedding]:
     region = RegionBatch(
         "anywhere",
-        np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]),
+        cx.field(np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]), "row", "column", "feature"),
         ("unit/7", "unit/20", "unit/99"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
     target = TargetSpec("pair dissimilarity", units="index")
     return region, target, LinearEmbedding(jnp.asarray(0.7))
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_observation_dtype_and_absent_pairs_survive_matrix_pair_and_region_alignment(dtype):
+    region, target, _ = problem()
+    measurements = jnp.asarray([0.123456789012345], dtype=dtype)
+    paired = PairwiseObservations.from_pairs([("unit/20", "unit/7")], measurements, target=target)
+    matrix = PairwiseObservations.from_matrix(
+        ("unit/20", "unit/7"),
+        jnp.asarray([[0, measurements[0]], [measurements[0], 0]], dtype=dtype),
+        target=target,
+    )
+    for observations in (paired, matrix):
+        assert isinstance(observations.values, jax.Array)
+        assert observations.values.dtype == observations.observed_values.dtype == dtype
+        aligned = observations.aligned_values(region)
+        assert isinstance(aligned, jax.Array)
+        assert aligned.dtype == dtype
+        assert float(aligned[0, 1]) == float(measurements[0])
+        assert bool(jnp.isnan(aligned[0, 2]))
+        np.testing.assert_array_equal(jnp.diag(aligned), 0)
+
+
+def test_region_requires_named_features_and_normalizes_numpy_data_without_narrowing():
+    from dataclasses import replace
+
+    region, _, _ = problem()
+    with pytest.raises(TypeError, match="coordax.Field"):
+        replace(region, features=cast(cx.Field, region.feature_array))
+    features = np.array([[[0.123456789012345, 2.0], [1.0, 3.0], [2.0, 4.0]]])
+    field = cx.field(features, "row", "column", "feature")
+    assert isinstance(field.data, np.ndarray)
+    normalized = replace(region, features=field, grid_positions=[[0, 0], [0, 1], [0, 2]])
+    assert isinstance(normalized.feature_array, jax.Array)
+    assert normalized.feature_array.dtype == jnp.float64
+    np.testing.assert_array_equal(normalized.feature_array, features)
+    np.testing.assert_array_equal(normalized.pixel_nodes, [0, 1, 2])
+    with pytest.raises(ValueError, match="integer"):
+        replace(region, grid_positions=np.array([[0, 0], [0, 1.5], [0, 2]]))
+    with pytest.raises(ValueError, match="outside"):
+        replace(region, grid_positions=[[0, 0], [0, 1], [0, 3]])
+
+
+def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_them():
+    region, target, encoder = problem()
+    observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [0.5], target=target)
+    omitted = {}
+    with pytest.raises(TypeError, match="objective"):
+        TrainingConfig(**omitted)
+    config = TrainingConfig(objective="direct_log1p", epochs=0)
+    with pytest.raises(ValueError, match="explicit.*model|explicit.*encoder"):
+        fit(region, observations, config=config)
+    with pytest.raises(ValueError, match="explicit.*TrainingConfig"):
+        fit(region, observations, model=encoder)
+    initial = fit(region, observations, model=encoder, config=config)
+    assert initial.state is not None
+    continued = fit(region, observations, state=initial.state)
+    assert continued.history == initial.history
+    assert continued.state is not None
+    assert continued.state.config == config
+    np.testing.assert_array_equal(
+        continued.model.predict(region).values, initial.model.predict(region).values
+    )
+    with pytest.raises(ValueError, match="omit model"):
+        fit(region, observations, state=initial.state, model=encoder)
+
+
+def test_encoder_distance_boundary_accepts_array_like_rasters_and_nodes():
+    encoder = LinearEmbedding(jnp.asarray(1.0))
+    scores = encoder.predict_distances([[[0.0], [1.0], [2.0]]], [0, 1, 2])
+    np.testing.assert_array_equal(scores, [[0, 1, 4], [1, 0, 1], [4, 1, 0]])
 
 
 def test_labelled_raster_axes_normalize_without_changing_feature_meaning():
@@ -44,7 +115,7 @@ def test_labelled_raster_axes_normalize_without_changing_feature_meaning():
 
     region, target, model = problem()
     names = ("elevation", "canopy")
-    plain = replace(region, features=region.feature_array, feature_names=names)
+    plain = replace(region, feature_names=names)
     field = cx.field(
         plain.feature_array,
         cx.LabeledAxis("row", np.array([100])),
@@ -55,8 +126,15 @@ def test_labelled_raster_axes_normalize_without_changing_feature_meaning():
     observations = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20"), ("unit/20", "unit/99")], [0.4, 0.6], target=target
     )
-    expected = fit(plain, observations, model=model, config=TrainingConfig(epochs=1)).model
-    actual = fit(labelled, observations, model=model, config=TrainingConfig(epochs=1)).model
+    expected = fit(
+        plain, observations, model=model, config=TrainingConfig(objective="direct_log1p", epochs=1)
+    ).model
+    actual = fit(
+        labelled,
+        observations,
+        model=model,
+        config=TrainingConfig(objective="direct_log1p", epochs=1),
+    ).model
     assert isinstance(labelled.features, cx.Field)
     assert labelled.features.dims == ("row", "column", "feature")
     row_axis = labelled.features.axes["row"]
@@ -73,7 +151,9 @@ def test_public_landscape_and_target_predictions_return_jax_values():
     region, _, model = problem()
     target = TargetSpec("divergence", units="index", transform="log1p")
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [0.5], target=target)
-    fitted = fit(region, observations, model=model, config=TrainingConfig(epochs=0)).model
+    fitted = fit(
+        region, observations, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0)
+    ).model
     scores = fitted.landscape_scores(region)
     prediction = fitted.predict(region)
     selected = fitted.predict_pairs(region, [("unit/20", "unit/7")])
@@ -87,29 +167,41 @@ def test_public_landscape_and_target_predictions_return_jax_values():
     np.testing.assert_array_equal(np.diag(prediction.values), 0)
 
 
-def test_precise_observations_require_explicit_device_precision_without_toggling_it():
+@pytest.mark.parametrize("enable_x64", [False, True])
+def test_array_like_observations_and_targets_follow_configured_precision(enable_x64):
     precise = 0.123456789012345
-    with jax.enable_x64(False):
+    with jax.enable_x64(enable_x64):
         region, target, model = problem()
-        assert isinstance(region.feature_array, jax.Array)
-        assert isinstance(region.grid_positions, jax.Array)
-        observations = PairwiseObservations.from_pairs(
-            [("unit/7", "unit/20")], [precise], target=target
+        dtype = jnp.float64 if enable_x64 else jnp.float32
+        expected = precise if enable_x64 else float(np.float32(precise))
+        predictions = []
+        for values in ([precise], np.array([precise]), jnp.asarray([precise])):
+            observations = PairwiseObservations.from_pairs(
+                [("unit/7", "unit/20")], values, target=target
+            )
+            assert observations.values.dtype == dtype
+            assert float(observations.observed_values[0]) == expected
+            for transformed in (target.forward(values), target.inverse(values)):
+                assert isinstance(transformed, jax.Array)
+                assert transformed.dtype == dtype
+                assert float(transformed[0]) == expected
+            fitted = fit(
+                region,
+                observations,
+                model=model,
+                config=TrainingConfig(objective="direct_log1p", epochs=0),
+            )
+            predictions.append(fitted.model.predict(region).values)
+        np.testing.assert_array_equal(predictions[0], predictions[1])
+        np.testing.assert_array_equal(predictions[0], predictions[2])
+        assert jax.config.read("jax_enable_x64") is enable_x64
+
+        integer_observations = PairwiseObservations.from_pairs(
+            [("unit/7", "unit/20")], [1], target=target, sampling_unit_ids=region.sampling_unit_ids
         )
-        assert observations.observed_values[0] == precise
-        assert jax.config.read("jax_enable_x64") is False
-        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
-            target.forward(observations.observed_values)
-        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
-            target.inverse(np.array([precise]))
-        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
-            fit(region, observations, model=model, config=TrainingConfig(epochs=0))
-        assert jax.config.read("jax_enable_x64") is False
-    with jax.enable_x64():
-        transformed = target.forward(observations.observed_values)
-        assert isinstance(transformed, jax.Array)
-        assert transformed.dtype == jnp.float64
-        assert float(transformed[0]) == precise
+        assert integer_observations.values.dtype == dtype
+        assert bool(jnp.isnan(integer_observations.values[0, 2]))
+        assert float(integer_observations.observed_values[0]) == 1.0
 
 
 def test_coordinate_declarations_reject_unknown_axes_and_conflicting_feature_labels():
@@ -145,8 +237,12 @@ def test_equivalent_matrix_and_pair_inputs_train_equivalent_models():
         [4, 1, 1],
         target=target,
     )
-    left = fit(region, matrix, model=model, config=TrainingConfig(epochs=2))
-    right = fit(region, pairs, model=model, config=TrainingConfig(epochs=2))
+    left = fit(
+        region, matrix, model=model, config=TrainingConfig(objective="direct_log1p", epochs=2)
+    )
+    right = fit(
+        region, pairs, model=model, config=TrainingConfig(objective="direct_log1p", epochs=2)
+    )
     np.testing.assert_allclose(
         left.model.predict(region).values, right.model.predict(region).values, rtol=1e-6
     )
@@ -165,7 +261,7 @@ def test_incomplete_pairs_remain_absent_through_fitting():
         region,
         observations,
         model=LinearEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     assert observations.observed_pairs == (("unit/7", "unit/20"),)
     assert np.isnan(observations.values[0, 2])
@@ -184,7 +280,7 @@ def test_explicit_transform_returns_original_units_and_separate_landscape_scores
         region,
         observations,
         model=LinearEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     prediction = result.model.predict(region)
     assert result.history[0].training_loss < 1e-12
@@ -210,7 +306,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership()
         region,
         observations,
         model=model,
-        config=TrainingConfig(epochs=0),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
         validation=(region, observations),
         validation_partition=validation,
@@ -221,16 +317,28 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership()
             region,
             observations,
             model=model,
-            config=TrainingConfig(epochs=0),
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
             validation=(region, observations),
         )
     wrong_region = ObservationPartition("somewhere-else", training.pairs)
     with pytest.raises(ValueError, match="region"):
-        fit(region, observations, model=model, partition=wrong_region)
+        fit(
+            region,
+            observations,
+            model=model,
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            partition=wrong_region,
+        )
     incomplete = PairwiseObservations.from_pairs(training.pairs, [1], target=target)
     absent = ObservationPartition(region.name, (("unit/7", "unit/99"),))
     with pytest.raises(ValueError, match="unobserved"):
-        fit(region, incomplete, model=model, partition=absent)
+        fit(
+            region,
+            incomplete,
+            model=model,
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            partition=absent,
+        )
 
 
 def test_feature_order_and_sampling_unit_kinds_are_explicit():
@@ -245,17 +353,28 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit():
         sampling_unit_kinds=("individual", "population", "individual"),
     )
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
-    result = fit(region, observations, model=model, config=TrainingConfig(epochs=0))
+    result = fit(
+        region, observations, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0)
+    )
     assert region.sampling_unit_kinds == ("individual", "population", "individual")
     assert result.model.feature_names == ("elevation", "canopy")
-    swapped = replace(region, features=region.feature_array, feature_names=("canopy", "elevation"))
+    swapped = replace(
+        region,
+        features=cx.field(region.feature_array, "row", "column", "feature"),
+        feature_names=("canopy", "elevation"),
+    )
     with pytest.raises(ValueError, match="feature.*order|feature.*contract"):
         result.model.predict(swapped)
     relatedness = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20")], [-0.2], target=TargetSpec("relatedness", kind="relatedness")
     )
     with pytest.raises(ValueError, match="nonnegative dissimilarities"):
-        fit(region, relatedness, model=model)
+        fit(
+            region,
+            relatedness,
+            model=model,
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
+        )
 
 
 def test_invalid_observations_and_partitions_fail_at_the_public_boundary():
@@ -275,7 +394,7 @@ def test_invalid_observations_and_partitions_fail_at_the_public_boundary():
             PairwiseObservations.from_pairs(pairs, values, target=target, sampling_unit_ids=labels)
     unknown = PairwiseObservations.from_pairs([("unit/7", "missing")], [1], target=target)
     with pytest.raises(ValueError, match="outside region"):
-        fit(region, unknown, model=model)
+        fit(region, unknown, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0))
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
     for partition, message in [
         (ObservationPartition(region.name, (("unit/7", "missing"),)), "endpoints"),
@@ -285,7 +404,13 @@ def test_invalid_observations_and_partitions_fail_at_the_public_boundary():
         ),
     ]:
         with pytest.raises(ValueError, match=message):
-            fit(region, observations, model=model, partition=partition)
+            fit(
+                region,
+                observations,
+                model=model,
+                config=TrainingConfig(objective="direct_log1p", epochs=0),
+                partition=partition,
+            )
     with pytest.raises(ValueError, match="nonempty"):
         ObservationPartition(region.name, ())
     with pytest.raises(ValueError, match="unique"):
