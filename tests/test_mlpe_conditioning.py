@@ -6,6 +6,7 @@ import pytest
 from mlpe_reference import _R_SCORES
 from test_mlpe import reference_observations
 
+from ilg_toolkit import MLPECalibrationModule
 from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
 
 
@@ -228,8 +229,8 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
         ObservationPartition,
         PairwiseObservations,
         TrainingConfig,
+        calibrate,
         fit,
-        recalibrate,
     )
 
     region, observations, _, _ = problem("conditioned-landscape")
@@ -238,12 +239,13 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
     direct = fit(
         region,
         observations,
-        model=ScalarEmbedding(weight=jnp.asarray(1.0)),
+        distance_model=ScalarEmbedding(weight=jnp.asarray(1.0)),
         config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
     ).model
-    model = recalibrate(direct, region, observations)
-    head = model.calibrations[region.name]
+    model = calibrate(direct, region, observations)
+    assert isinstance(model.calibration, MLPECalibrationModule)
+    head = model.calibration.regions[region.name]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict_known_effects(region, pairs)
     scores = model.landscape_scores(region)
@@ -290,7 +292,7 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
     )
     np.testing.assert_allclose(result.model_values, expected_mean, atol=1e-10)
     np.testing.assert_allclose(result.model_variance, expected_variance, atol=1e-10)
-    assert eqx.tree_equal(model.encoder, direct.encoder)
+    assert eqx.tree_equal(model.distance_model, direct.distance_model)
     assert result.provenance.support_pairs == tuple(
         tuple(sorted(pair)) for pair in support.observed_pairs
     )

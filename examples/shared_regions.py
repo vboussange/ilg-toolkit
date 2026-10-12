@@ -43,7 +43,7 @@ model = UNetEmbeddingDistance(
 result = fit(
     regions,
     observations,
-    model=model,
+    distance_model=model,
     config=TrainingConfig(objective="direct_log1p", epochs=10, learning_rate=0.001, seed=4),
 )
 print("Selected shared encoder at epoch", result.selected_epoch)

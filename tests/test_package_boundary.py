@@ -37,7 +37,7 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
     source_model = fit(
         inference_region,
         inference_observations,
-        model=UNetEmbeddingDistance(
+        distance_model=UNetEmbeddingDistance(
             2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0.2, key=jax.random.key(1)
         ),
         config=TrainingConfig(objective="direct_log1p", epochs=0),
@@ -51,7 +51,7 @@ def test_built_package_runs_public_workflow_outside_source_tree(tmp_path):
         continued_source = fit(
             inference_region,
             inference_observations,
-            model=source_model.encoder,
+            distance_model=source_model.distance_model,
             config=TrainingConfig(objective="direct_log1p", epochs=1),
             on_epoch=completed.append,
         )
@@ -107,18 +107,18 @@ region = ilg.RegionBatch('independent',
     ('a','b'), np.array([[0,0],[3,3]]))
 encoder = UNetEmbeddingDistance(2, patch_size=1, base_channels=2, embedding_dim=2,
     dropout=0.2, key=jax.random.key(0))
-reloaded = ilg.load_model({str(inference_artifact)!r}, encoder=encoder)
+reloaded = ilg.load_model({str(inference_artifact)!r}, distance_model=encoder)
 np.testing.assert_allclose(reloaded.predict(region).values, {expected_inference!r},
     rtol=1e-6, atol=1e-7)
 obs = ilg.PairwiseObservations.from_matrix(('a','b'), [[0,.3],[.3,0]],
     target=ilg.TargetSpec('synthetic', units='index'))
-state = ilg.load_checkpoint({str(checkpoint_artifact)!r}, encoder=encoder)
+state = ilg.load_checkpoint({str(checkpoint_artifact)!r}, distance_model=encoder)
 continued = ilg.fit(region, obs, state=state)
 assert continued.epoch == 1
 np.testing.assert_allclose(continued.model.predict(region).values, {expected_continued!r},
     rtol=1e-6, atol=1e-7)
 result = ilg.fit(region, obs,
-    model=UNetEmbeddingDistance(2, patch_size=1, base_channels=2, embedding_dim=2,
+    distance_model=UNetEmbeddingDistance(2, patch_size=1, base_channels=2, embedding_dim=2,
         key=jax.random.key(2)),
     config=ilg.TrainingConfig(objective="direct_log1p", epochs=0))
 assert np.isfinite(result.model.predict(region).values).all()

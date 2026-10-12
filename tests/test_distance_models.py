@@ -6,6 +6,7 @@ import coordax as cx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from ilg_toolkit import (
     PairwiseObservations,
@@ -37,7 +38,10 @@ class CustomDistance(AbstractDistanceModel):
         return self.scale**2 * (values[:, None] - values[None, :]) ** 2
 
 
-def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels(tmp_path):
+@pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
+def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels(
+    tmp_path, objective
+):
     region = RegionBatch(
         "custom",
         cx.field(np.array([[[0.0], [1.0], [3.0]]]), "row", "column", "feature"),
@@ -52,13 +56,13 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
     state = fit(
         region,
         observations,
-        model=CustomDistance(jnp.array(1.0)),
-        config=TrainingConfig(objective="direct_log1p", epochs=3, learning_rate=0.1),
+        distance_model=CustomDistance(jnp.array(1.0)),
+        config=TrainingConfig(objective=objective, epochs=3, learning_rate=0.1),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     path = tmp_path / "custom.ilg"
     save_model(path, state.model)
-    restored = load_model(path, encoder=CustomDistance(jnp.array(0.0)))
+    restored = load_model(path, distance_model=CustomDistance(jnp.array(0.0)))
     np.testing.assert_array_equal(
         restored.landscape_scores(region), state.model.landscape_scores(region)
     )

@@ -64,11 +64,13 @@ def test_native_direct_model_and_training_state_round_trip_and_continue(tmp_path
             target=observations.target,
         ),
     )
-    partial = fit(region, observations, model=encoder, config=config, validation=validation)
+    partial = fit(
+        region, observations, distance_model=encoder, config=config, validation=validation
+    )
     template = fit(
         region,
         observations,
-        model=ScaledEmbedding(jnp.ones(2)),
+        distance_model=ScaledEmbedding(jnp.ones(2)),
         config=config,
         validation=validation,
     )
@@ -92,7 +94,7 @@ def test_native_direct_model_and_training_state_round_trip_and_continue(tmp_path
     uninterrupted = fit(
         region,
         observations,
-        model=ScaledEmbedding(jnp.zeros(2)),
+        distance_model=ScaledEmbedding(jnp.zeros(2)),
         config=replace(config, epochs=2),
         validation=validation,
     )
@@ -121,14 +123,14 @@ def test_native_mlpe_state_preserves_posterior_support_predictions_and_continuat
     partial = fit(
         region,
         observations,
-        model=ScaledEmbedding(jnp.zeros(2)),
+        distance_model=ScaledEmbedding(jnp.zeros(2)),
         config=config,
         partition=partition,
     )
     template = fit(
         region,
         observations,
-        model=ScaledEmbedding(jnp.asarray([0.8, -0.4])),
+        distance_model=ScaledEmbedding(jnp.asarray([0.8, -0.4])),
         config=config,
         partition=partition,
     )
@@ -167,7 +169,7 @@ def test_native_mlpe_state_preserves_posterior_support_predictions_and_continuat
     uninterrupted = fit(
         region,
         observations,
-        model=ScaledEmbedding(jnp.zeros(2)),
+        distance_model=ScaledEmbedding(jnp.zeros(2)),
         config=replace(config, epochs=2),
         partition=partition,
     )

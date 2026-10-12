@@ -10,17 +10,18 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
+from .calibration import DirectCalibrationModule, MLPECalibrationModule
 from .config import TrainingConfig
 from .data import ObservationPartition, PairwiseObservations, RegionBatch
 from .mlpe import (
     MLPEConfig,
-    MLPEHead,
+    RegionalMLPECalibration,
     finalize_mlpe_fit,
     mlpe_ml_negative_log_likelihood,
     profiled_mlpe_ml_fit,
 )
 from .mlpe.likelihood import MLPEFit
-from .model import CalibratedModel
+from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .resistance import ResistanceSolverContext
 
@@ -34,8 +35,7 @@ PartitionCollection = (
     | Mapping[str, ObservationPartition | None]
     | None
 )
-Encoder = AbstractDistanceModel
-Parameters = tuple[Encoder, dict[str, jax.Array] | None]
+Parameters = tuple[AbstractDistanceModel, dict[str, jax.Array] | None]
 
 
 @final
@@ -57,7 +57,7 @@ class TrainingState(eqx.Module):
     """Complete fitting result and continuation state, returned directly by ``fit``.
 
     The latest model, variance parameters and Adam state describe the latest
-    epoch. ``model`` selects ``best_model``, which retains its own encoder and
+    epoch. ``model`` selects ``best_model``, which retains its own distance model and
     regional calibrations. MLPE ``raw_variances`` maps each region identity to
     its two nuisance parameters; direct fits use ``None``. Progress derives
     from history, and the input contract records structure rather than values.
@@ -70,18 +70,18 @@ class TrainingState(eqx.Module):
     config: TrainingConfig
     input_contract: dict
     history: tuple[EpochRecord, ...]
-    latest_model: CalibratedModel
-    best_model: CalibratedModel
+    latest_model: LandscapeGeneticsModel
+    best_model: LandscapeGeneticsModel
     selected_epoch: int
 
     @property
-    def model(self) -> CalibratedModel:
+    def model(self) -> LandscapeGeneticsModel:
         """The model selected by the declared validation or final-epoch policy."""
         return self.best_model
 
     @property
-    def encoder(self) -> Encoder:
-        return self.latest_model.encoder
+    def distance_model(self) -> AbstractDistanceModel:
+        return self.latest_model.distance_model
 
     @property
     def epoch(self) -> int:
@@ -122,7 +122,7 @@ class _RegionalInput(NamedTuple):
 
 @dataclass(frozen=True)
 class _RegionalBatch:
-    """Keep each region's observations and solver state separate from its shared encoder."""
+    """Keep each region's observations and solver state separate from its shared distance_model."""
 
     region: RegionBatch
     observations: PairwiseObservations
@@ -226,26 +226,28 @@ def _normalize_inputs(
 
 
 def _regional_loss(
-    encoder: Encoder,
+    distance_model: AbstractDistanceModel,
     payload: _TrainingPayload,
     *,
     context: ResistanceSolverContext | None = None,
     inference: bool = True,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    predictions = _selected_scores(encoder, payload, context=context, inference=inference, key=key)
+    predictions = _selected_scores(
+        distance_model, payload, context=context, inference=inference, key=key
+    )
     return jnp.mean(jnp.square(jnp.log1p(predictions) - jnp.log1p(payload.targets)))
 
 
 def _selected_scores(
-    encoder: Encoder,
+    distance_model: AbstractDistanceModel,
     payload: _TrainingPayload,
     *,
     context: ResistanceSolverContext | None = None,
     inference: bool = True,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    scores = encoder.predict_distances(
+    scores = distance_model.predict_distances(
         payload.features, payload.nodes, context=context, inference=inference, key=key
     )
     return scores[payload.pairs]
@@ -260,13 +262,13 @@ def _joint_loss(
     context: ResistanceSolverContext | None = None,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    encoder, raw_variances = parameters
+    distance_model, raw_variances = parameters
     if config.objective == "direct_log1p":
-        return _regional_loss(encoder, payload, context=context, inference=False, key=key)
+        return _regional_loss(distance_model, payload, context=context, inference=False, key=key)
     assert raw_variances is not None
-    scores = _selected_scores(encoder, payload, context=context, inference=False, key=key).astype(
-        jnp.float64
-    )
+    scores = _selected_scores(
+        distance_model, payload, context=context, inference=False, key=key
+    ).astype(jnp.float64)
     nll, _ = profiled_mlpe_ml_fit(
         scores,
         payload.targets,
@@ -309,14 +311,14 @@ def _joint_value_and_grad(
 
 
 def _refresh_mlpe(
-    encoder: Encoder,
+    distance_model: AbstractDistanceModel,
     raw: jax.Array,
     payload: _TrainingPayload,
     *,
     config: TrainingConfig,
     context: ResistanceSolverContext | None = None,
 ) -> MLPEFit:
-    scores = _selected_scores(encoder, payload, context=context).astype(jnp.float64)
+    scores = _selected_scores(distance_model, payload, context=context).astype(jnp.float64)
     return finalize_mlpe_fit(
         scores,
         payload.targets,
@@ -329,7 +331,7 @@ def _refresh_mlpe(
 
 
 def _frozen_validation_loss(
-    encoder: Encoder,
+    distance_model: AbstractDistanceModel,
     raw: jax.Array,
     moments: tuple[jax.Array, jax.Array, jax.Array],
     payload: _TrainingPayload,
@@ -337,7 +339,7 @@ def _frozen_validation_loss(
     config: TrainingConfig,
     context: ResistanceSolverContext | None = None,
 ) -> jax.Array:
-    scores = _selected_scores(encoder, payload, context=context).astype(jnp.float64)
+    scores = _selected_scores(distance_model, payload, context=context).astype(jnp.float64)
     center, scale, beta = moments
     nll = mlpe_ml_negative_log_likelihood(
         scores,
@@ -414,7 +416,7 @@ def _initial_raw_variances(
 def _prepare_batches(
     training_inputs: Sequence[_RegionalInput],
     validation_inputs: Sequence[_RegionalInput],
-    encoder: Encoder,
+    distance_model: AbstractDistanceModel,
     config: TrainingConfig,
 ) -> tuple[tuple[_RegionalBatch, ...], tuple[_RegionalBatch, ...]]:
     """Prepare independent regional targets and reuse graph-shape solver contexts."""
@@ -425,7 +427,7 @@ def _prepare_batches(
         payload = _prepared(region, observations, partition, role=role, objective=config.objective)
         shape = (region.feature_array.shape[0], region.feature_array.shape[1])
         if shape not in contexts:
-            contexts[shape] = encoder.prepare(region.feature_array)
+            contexts[shape] = distance_model.prepare(region.feature_array)
         context = contexts[shape]
         return _RegionalBatch(region, observations, payload, context)
 
@@ -508,7 +510,7 @@ def _apply_gradient(
 def _evaluate_regions(
     parameters: Parameters,
     batches: Sequence[_RegionalBatch],
-    heads: Mapping[str, MLPEHead],
+    heads: Mapping[str, RegionalMLPECalibration],
     config: TrainingConfig,
     epoch: int,
 ) -> tuple[float, dict[str, float]]:
@@ -516,7 +518,7 @@ def _evaluate_regions(
     evaluate = _compiled_loss if config.jit else _regional_loss
     validate = _compiled_validation if config.jit else _frozen_validation_loss
     values = {}
-    encoder, raw_variances = parameters
+    distance_model, raw_variances = parameters
     for batch in batches:
         if config.objective == "mlpe":
             assert raw_variances is not None
@@ -528,7 +530,7 @@ def _evaluate_regions(
             )
             value = _checked_call(
                 validate,
-                encoder,
+                distance_model,
                 raw_variances[batch.region.name],
                 moments,
                 batch.payload,
@@ -541,7 +543,7 @@ def _evaluate_regions(
         else:
             value = _checked_call(
                 evaluate,
-                encoder,
+                distance_model,
                 batch.payload,
                 context=batch.context,
                 batch=batch,
@@ -563,16 +565,16 @@ def _refresh_heads(
     training_pairs: Mapping[str, tuple[tuple[str, str], ...]],
     config: TrainingConfig,
     epoch: int,
-) -> tuple[dict[str, MLPEHead], float, dict[str, float]]:
+) -> tuple[dict[str, RegionalMLPECalibration], float, dict[str, float]]:
     """Refresh fitted regional moments, GLS coefficients and effect posteriors together."""
-    encoder, raw_variances = parameters
+    distance_model, raw_variances = parameters
     assert raw_variances is not None
     refresh = _compiled_refresh if config.jit else _refresh_mlpe
     heads, losses = {}, {}
     for batch in batches:
         result = _checked_call(
             refresh,
-            encoder,
+            distance_model,
             raw_variances[batch.region.name],
             batch.payload,
             config=config,
@@ -586,7 +588,7 @@ def _refresh_heads(
                 f"{batch.region.name}: nonfinite MLPE calibration at epoch {epoch}; "
                 "check nonconstant scores, identifiable endpoints and variance conditioning"
             )
-        heads[batch.region.name] = MLPEHead.from_fit(
+        heads[batch.region.name] = RegionalMLPECalibration.from_fit(
             result,
             region_name=batch.region.name,
             target=batch.observations.target,
@@ -606,7 +608,7 @@ def fit(
     region: RegionCollection,
     observations: ObservationCollection,
     *,
-    model: AbstractDistanceModel | None = None,
+    distance_model: AbstractDistanceModel | None = None,
     config: TrainingConfig | None = None,
     validation: tuple[RegionCollection, ObservationCollection] | None = None,
     partition: PartitionCollection = None,
@@ -614,16 +616,16 @@ def fit(
     state: TrainingState | None = None,
     on_epoch: Callable[[TrainingState], None] | None = None,
 ) -> TrainingState:
-    """Fit a shared encoder with direct log1p-MSE or full-ML regional MLPE.
+    """Fit a shared distance model with direct log1p-MSE or full-ML regional MLPE.
 
     Each Adam update averages sequential regional gradients, normalized by pair
-    count. MLPE profiles signed GLS coefficients and updates the encoder and two
+    count. MLPE profiles signed GLS coefficients and updates the distance model and two
     regional variance parameters together. Updated training scores refresh the
     regional moments, coefficients and posterior before frozen-head validation.
     Validation only selects a model; learning rate and stopping use a fixed
     budget. MLPE explicitly requires enabled JAX float64.
 
-    Fresh fits require an explicit ``model`` encoder and a ``TrainingConfig``
+    Fresh fits require an explicit ``distance_model`` and a ``TrainingConfig``
     declaring the objective. Continuation reuses these saved choices.
 
     ``state`` continues the latest optimizer/RNG trajectory on identical inputs.
@@ -641,15 +643,17 @@ def fit(
     """
     if state is not None and not isinstance(state, TrainingState):
         raise ValueError("state must be a TrainingState returned by fit")
-    if state is not None and model is not None:
-        raise ValueError("A continuation state already contains its encoder; omit model")
+    if state is not None and distance_model is not None:
+        raise ValueError(
+            "A continuation state already contains its distance model; omit distance_model"
+        )
     if state is None:
-        if model is None:
-            raise ValueError("Fresh fitting requires an explicit model encoder")
+        if distance_model is None:
+            raise ValueError("Fresh fitting requires an explicit distance_model")
         if config is None:
             raise ValueError("Fresh fitting requires an explicit TrainingConfig with objective")
     else:
-        model = state.encoder
+        distance_model = state.distance_model
         config = state.config if config is None else config
     if on_epoch is not None and not callable(on_epoch):
         raise ValueError("on_epoch must be callable or None")
@@ -704,7 +708,7 @@ def fit(
         jax.random.split(jax.random.PRNGKey(config.seed))[1] if state is None else state.rng_key
     )
     training_batches, validation_batches = _prepare_batches(
-        training_inputs, validation_inputs, model, config
+        training_inputs, validation_inputs, distance_model, config
     )
 
     raw_variances = (
@@ -714,7 +718,7 @@ def fit(
         if config.objective == "mlpe"
         else None
     )
-    parameters = (model, raw_variances)
+    parameters = (distance_model, raw_variances)
     optimizer = optax.adam(config.learning_rate)
     optimizer_state = (
         state.optimizer_state
@@ -733,14 +737,17 @@ def fit(
     ):
         raise ValueError("Continuation training/validation pair partitions changed")
 
-    def make_model(heads: dict[str, MLPEHead]) -> CalibratedModel:
-        return CalibratedModel(
+    def make_model(heads: dict[str, RegionalMLPECalibration]) -> LandscapeGeneticsModel:
+        return LandscapeGeneticsModel(
             parameters[0],
-            first_observations.target,
+            (
+                MLPECalibrationModule(first_observations.target, heads)
+                if config.objective == "mlpe"
+                else DirectCalibrationModule(first_observations.target)
+            ),
             first_region.feature_array.shape[-1],
             feature_names=first_region.feature_names,
-            objective=config.objective,
-            calibrations=heads,
+            training_objective=config.objective,
             training_pairs=training_pairs,
             validation_pairs=validation_pairs,
         )
@@ -804,7 +811,7 @@ def fit(
                 epoch=epoch,
                 training_config=config,
             )
-        heads: dict[str, MLPEHead] = {}
+        heads: dict[str, RegionalMLPECalibration] = {}
         if config.objective == "mlpe":
             heads, training_loss, regional_training = _refresh_heads(
                 parameters, training_batches, training_pairs, config, epoch

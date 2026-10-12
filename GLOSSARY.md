@@ -12,10 +12,26 @@ _Avoid_: Prepared region, when naming this input boundary.
 The explicit optimization budget and numerical settings supplied as `TrainingConfig`.
 _Avoid_: FitConfig, when naming this public configuration.
 
-**Calibrated model**:
-A fitted landscape encoder together with the target-scale relationship and regional calibration needed for genetic prediction. Direct regression uses its declared target transform; MLPE uses explicit regional genetic calibration.
-The public API names this boundary `CalibratedModel`.
-_Avoid_: Predictor, when naming this fitted model boundary.
+**Landscape genetics model**:
+A distance model composed with genetic calibration, retaining feature meanings,
+target semantics and the observations used for training and selection.
+_Avoid_: Encoder, when referring to the complete genetic prediction model.
+
+**Distance model**:
+A relationship deriving pairwise landscape separation from prepared features and
+sampling-unit locations without genetic observations. Effective resistance and
+squared embedding distance are supported forms of landscape separation.
+_Avoid_: Genetic predictor, when the relationship has no genetic calibration.
+
+**Calibration module**:
+The authoritative target contract and relationship mapping landscape scores to
+genetic predictions. Direct calibration applies the declared inverse target
+transform. MLPE calibration selects a fitted relationship for the query region.
+
+**Regional MLPE calibration**:
+One region's fitted relationship between landscape scores and genetic targets,
+including population dependence, uncertainty and observation-use provenance.
+_Avoid_: Complete model, when referring only to one regional relationship.
 
 **Resistance calculation**:
 Effective resistance between sampling-unit nodes in a conductance graph, computed

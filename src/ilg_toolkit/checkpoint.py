@@ -1,4 +1,4 @@
-"""Atomic native Equinox continuation checkpoints with caller encoder templates."""
+"""Atomic native Equinox continuation checkpoints with caller distance-model templates."""
 
 from dataclasses import asdict
 from pathlib import Path
@@ -20,7 +20,7 @@ from .training import EpochRecord, TrainingState
 
 
 def save_checkpoint(path, state: TrainingState) -> None:
-    """Atomically save the actual latest/best state, including custom encoders.
+    """Atomically save the actual latest/best state, including custom distance models.
 
     ``fit(..., on_epoch=lambda state: save_checkpoint(path, state))`` saves after
     every complete epoch. A failed replacement leaves the prior file intact.
@@ -37,8 +37,8 @@ def save_checkpoint(path, state: TrainingState) -> None:
     _write_native(path, state, kind="training_checkpoint", metadata=metadata)
 
 
-def load_checkpoint(path, *, encoder: AbstractDistanceModel) -> TrainingState:
-    """Restore native state using the exact full encoder configuration and precision.
+def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingState:
+    """Restore native state using the exact full distance model configuration and precision.
 
     Continue with the original inputs and partitions. Only the total epoch budget
     may increase; unchanged measurements and execution conditions remain caller
@@ -49,15 +49,15 @@ def load_checkpoint(path, *, encoder: AbstractDistanceModel) -> TrainingState:
             metadata = _read_header(stream, kind="training_checkpoint")
             options = dict(metadata["config"])
             config = TrainingConfig(**options)
-            latest = _model_template(metadata["latest_model"], encoder)
-            best = _model_template(metadata["best_model"], encoder)
+            latest = _model_template(metadata["latest_model"], distance_model)
+            best = _model_template(metadata["best_model"], distance_model)
             raw = (
                 {name: jnp.zeros(2, dtype=jnp.float64) for name in latest.training_pairs}
                 if config.objective == "mlpe"
                 else None
             )
             optimizer_state = optax.adam(config.learning_rate).init(
-                eqx.filter((latest.encoder, raw), eqx.is_inexact_array)
+                eqx.filter((latest.distance_model, raw), eqx.is_inexact_array)
             )
             history_length = metadata["history_length"]
             if history_length < 1:
@@ -88,5 +88,5 @@ def load_checkpoint(path, *, encoder: AbstractDistanceModel) -> TrainingState:
         if isinstance(error, ArtifactError):
             raise
         raise ArtifactError(
-            f"Cannot load checkpoint with the supplied encoder template: {error}"
+            f"Cannot load checkpoint with the supplied distance_model template: {error}"
         ) from error

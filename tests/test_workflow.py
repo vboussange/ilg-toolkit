@@ -35,7 +35,7 @@ def test_fixed_budget_fit_improves_and_predicts_without_query_targets():
     result = fit(
         region,
         observations,
-        model=model,
+        distance_model=model,
         config=TrainingConfig(objective="direct_log1p", epochs=20, learning_rate=0.01, seed=3),
     )
     prediction = result.model.predict(region)
@@ -64,7 +64,7 @@ def test_validation_selects_model_without_refitting_on_validation_targets():
     result = fit(
         region,
         observations,
-        model=model,
+        distance_model=model,
         config=TrainingConfig(objective="direct_log1p", epochs=3, learning_rate=0.01),
         validation=(validation_region, validation),
     )
@@ -86,10 +86,16 @@ def test_observation_labels_are_aligned_and_signed_relatedness_is_refused():
         reverse, observations.values[::-1, ::-1], target=observations.target
     )
     first = fit(
-        region, observations, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0)
+        region,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     second = fit(
-        region, reordered, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0)
+        region,
+        reordered,
+        distance_model=model,
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     assert first.history[0].training_loss == second.history[0].training_loss
     signed = PairwiseObservations.from_matrix(
@@ -98,4 +104,9 @@ def test_observation_labels_are_aligned_and_signed_relatedness_is_refused():
         target=TargetSpec("relatedness", kind="relatedness"),
     )
     with pytest.raises(ValueError, match="nonnegative dissimilarities"):
-        fit(region, signed, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0))
+        fit(
+            region,
+            signed,
+            distance_model=model,
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
+        )

@@ -41,7 +41,7 @@ encoder = ResNet9Conductance(
 result = fit(
     region,
     observations,
-    model=encoder,
+    distance_model=encoder,
     config=TrainingConfig(
         objective="direct_log1p",
         epochs=4,

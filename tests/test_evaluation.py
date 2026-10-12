@@ -10,9 +10,11 @@ import numpy as np
 import pytest
 
 from ilg_toolkit import (
-    CalibratedModel,
+    DirectCalibrationModule,
     Ensemble,
     EnsembleMember,
+    LandscapeGeneticsModel,
+    MLPECalibrationModule,
     ObservationPartition,
     PairwiseObservations,
     PopulationFold,
@@ -38,7 +40,7 @@ class ScalarEmbedding(EmbeddingDistanceModel):
         return features * self.weight
 
 
-def completed_model(member: EnsembleMember) -> CalibratedModel:
+def completed_model(member: EnsembleMember) -> LandscapeGeneticsModel:
     assert member.model is not None
     return member.model
 
@@ -59,12 +61,12 @@ def known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
             {"alpine": ObservationPartition("alpine", (("a", "b"),), "training")},
             {"alpine": ObservationPartition("alpine", (("c", "d"),), "query")},
         )
-        model = CalibratedModel(
+        model = LandscapeGeneticsModel(
             ScalarEmbedding(jnp.asarray(weight)),
-            target,
+            DirectCalibrationModule(target),
             1,
             training_pairs={"alpine": (("a", "b"),)},
-            objective="direct_log1p",
+            training_objective="direct_log1p",
         )
         members.append(
             EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
@@ -131,7 +133,9 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
     np.testing.assert_array_equal(first.predictions.values, perturbed.predictions.values)
     assert first.mse != perturbed.mse
     for member in ensemble.members:
-        head = completed_model(member).calibrations[region.name]
+        calibration = completed_model(member).calibration
+        assert isinstance(calibration, MLPECalibrationModule)
+        head = calibration.regions[region.name]
         assert set(folds[0].held_out_units[region.name]).issubset(head.population_ids)
         assert not any(
             set(pair) & set(folds[0].held_out_units[region.name]) for pair in head.calibration_pairs
@@ -284,16 +288,16 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
         old = next(label for label in region.sampling_unit_ids if label not in held)
         cross = ObservationPartition(region.name, ((held[0], old),), "calibration")
         training = member.fold.training[region.name]
-        recalibrated = completed_model(member).recalibrate(
+        calibrated = completed_model(member).calibrate(
             region, observations, partitions=(training, cross)
         )
-        changed = Ensemble((replace(member, model=recalibrated),))
+        changed = Ensemble((replace(member, model=calibrated),))
         strict = predict_out_of_fold(changed, region, [held])
         partial = predict_out_of_fold(
             changed, region, [held], regime=EvaluationRegime(endpoint_regime="at_least_one_unseen")
         )
         own = ObservationPartition(region.name, ((held[0], held[1]),), "calibration")
-        contaminated = completed_model(member).recalibrate(
+        contaminated = completed_model(member).calibrate(
             region, observations, partitions=(training, own)
         )
         forbidden = predict_out_of_fold(
@@ -302,14 +306,14 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
             [held],
             regime=EvaluationRegime(endpoint_regime="at_least_one_unseen"),
         )
-    assert eqx.tree_equal(recalibrated.encoder, completed_model(member).encoder)
+    assert eqx.tree_equal(calibrated.distance_model, completed_model(member).distance_model)
     assert strict.coverage == 0
     assert partial.coverage == 1
     assert forbidden.coverage == 0
     assert forbidden.exclusion_reasons[member.identity.member_id] == ("query_target_accessed",)
 
 
-def test_recalibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_training_endpoint():
+def test_calibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_training_endpoint():
     from dataclasses import replace
 
     from test_ensemble import model_factory
@@ -353,7 +357,7 @@ def test_recalibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_tr
         )
         member = ensemble.members[0]
         assert member.status == "completed"
-        recalibrated = completed_model(member).recalibrate(
+        calibrated = completed_model(member).calibrate(
             region,
             observed,
             partitions=(
@@ -362,7 +366,7 @@ def test_recalibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_tr
             ),
         )
         result = predict_out_of_fold(
-            Ensemble((replace(member, model=recalibrated),)),
+            Ensemble((replace(member, model=calibrated),)),
             region,
             [query],
             regime=EvaluationRegime(endpoint_regime="at_least_one_unseen"),
@@ -491,7 +495,7 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
     broken = replace(
         ensemble.members[0],
         model=eqx.tree_at(
-            lambda model: model.encoder,
+            lambda model: model.distance_model,
             completed_model(ensemble.members[0]),
             ScalarEmbedding(jnp.asarray(np.nan)),
         ),
@@ -559,7 +563,9 @@ def test_reused_calibration_support_cannot_contribute_and_target_scales_must_mat
         region, observations, ensemble = fitted_member_problem()
         member = ensemble.members[0]
         held = member.fold.held_out_units[region.name]
-        reused = completed_model(member).calibrations[region.name].calibration_pairs[0]
+        calibration = completed_model(member).calibration
+        assert isinstance(calibration, MLPECalibrationModule)
+        reused = calibration.regions[region.name].calibration_pairs[0]
         values = {
             tuple(sorted(pair)): value
             for pair, value in zip(

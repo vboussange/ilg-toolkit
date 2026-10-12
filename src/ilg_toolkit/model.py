@@ -8,8 +8,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .calibration import AbstractCalibrationModule, MLPECalibrationModule
 from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
-from .mlpe import MLPEConditionalPrediction, MLPEHead
+from .mlpe import MLPEConditionalPrediction, RegionalMLPECalibration
 from .models import AbstractDistanceModel, ConductanceModel
 
 
@@ -35,43 +36,44 @@ class PairPrediction(eqx.Module):
 
 
 @final
-class CalibratedModel(eqx.Module):
-    """Frozen landscape encoder with explicit direct or regional MLPE prediction.
+class LandscapeGeneticsModel(eqx.Module):
+    """Compose landscape distances and an authoritative genetic calibration module.
 
-    The cleaned encoder families are stateless apart from their Equinox model
-    parameters. Recalibration retains that entire encoder unchanged. Recorded
-    pair access describes encoder training and validation-based selection; head
-    calibration retains its own independent pair identities and data roles.
+    ``distance_model`` derives scores without genetic observations. ``calibration``
+    owns the target and converts selected scores into genetic predictions. Frozen
+    calibration retains the entire distance model. Recorded pair access describes
+    distance-model training and validation selection; regional calibrations retain
+    their own pair identities and data roles. ``training_objective`` records the
+    actual fitting objective, or is ``None`` for a composition built without a fit;
+    it never selects inference behavior.
     """
 
-    encoder: AbstractDistanceModel
-    target: TargetSpec
+    distance_model: AbstractDistanceModel
+    calibration: AbstractCalibrationModule
     feature_count: int
     feature_names: tuple[str, ...] | None = None
-    objective: str = eqx.field(kw_only=True)
-    calibrations: dict[str, MLPEHead] = eqx.field(default_factory=dict)
+    training_objective: str | None = eqx.field(default=None, kw_only=True)
     training_pairs: dict[str, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
     validation_pairs: dict[str, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
 
     def __post_init__(self):
-        if self.objective not in {"direct_log1p", "mlpe"}:
-            raise ValueError("CalibratedModel objective must be direct_log1p or mlpe")
-        if self.objective == "mlpe" and self.target.kind != "dissimilarity":
-            raise ValueError("Population MLPE requires a dissimilarity target")
-        heads = dict(self.calibrations)
-        if any(not isinstance(head, MLPEHead) for head in heads.values()):
-            raise ValueError("Regional calibrations must contain fitted MLPEHead values")
-        if any(
-            name != head.region_name or head.target != self.target for name, head in heads.items()
-        ):
-            raise ValueError("Regional calibration names and target contracts must match the model")
-        self.calibrations = heads
+        if not isinstance(self.distance_model, AbstractDistanceModel):
+            raise TypeError("distance_model must implement AbstractDistanceModel")
+        if not isinstance(self.calibration, AbstractCalibrationModule):
+            raise TypeError("calibration must implement AbstractCalibrationModule")
+        if self.training_objective not in {None, "direct_log1p", "mlpe"}:
+            raise ValueError("Training objective provenance must be direct_log1p, mlpe or None")
         for name in ("training_pairs", "validation_pairs"):
             access = {
                 region: tuple(tuple(sorted(pair)) for pair in pairs)
                 for region, pairs in getattr(self, name).items()
             }
             setattr(self, name, access)
+
+    @property
+    def target(self) -> TargetSpec:
+        """The target contract owned by the calibration module."""
+        return self.calibration.target
 
     def _validate_region(self, region: RegionBatch):
         if region.feature_array.shape[-1] != self.feature_count:
@@ -84,33 +86,29 @@ class CalibratedModel(eqx.Module):
     def landscape_scores(self, region: RegionBatch) -> jax.Array:
         """Predict scores for prepared query locations without genetic observations."""
         self._validate_region(region)
-        context = self.encoder.prepare(region.feature_array)
-        values = self.encoder.predict_distances(
+        context = self.distance_model.prepare(region.feature_array)
+        values = self.distance_model.predict_distances(
             region.feature_array, region.pixel_nodes, context=context
         )
         if not bool(jnp.isfinite(values).all()) or bool((values < 0).any()):
-            raise FloatingPointError("Encoder produced nonfinite or negative distances")
+            raise FloatingPointError("Distance model produced nonfinite or negative distances")
         return values
 
     def conductance_surface(self, region: RegionBatch) -> jax.Array:
         """Expose a fitted conductance surface separately from genetic predictions."""
-        if not isinstance(self.encoder, ConductanceModel):
-            raise TypeError("This encoder does not produce a conductance surface")
+        if not isinstance(self.distance_model, ConductanceModel):
+            raise TypeError("This distance model does not produce a conductance surface")
         self._validate_region(region)
-        surface = self.encoder.conductance(region.feature_array)
+        surface = self.distance_model.conductance(region.feature_array)
         if not bool(jnp.all(jnp.isfinite(surface) & (surface > 0))):
-            raise FloatingPointError("Encoder produced nonfinite or nonpositive conductance")
+            raise FloatingPointError("Distance model produced nonfinite or nonpositive conductance")
         return surface
 
-    def _regional_head(self, region: RegionBatch) -> MLPEHead:
+    def _regional_head(self, region: RegionBatch) -> RegionalMLPECalibration:
         self._validate_region(region)
-        if self.objective != "mlpe":
+        if not isinstance(self.calibration, MLPECalibrationModule):
             raise ValueError("This operation requires an MLPE model")
-        head = self.calibrations.get(region.name)
-        if head is None:
-            raise ValueError(
-                f"Region {region.name!r} has no MLPE calibration; calibrate it explicitly"
-            )
+        head = self.calibration.for_region(region.name)
         kinds = region.sampling_unit_kinds
         assert kinds is not None
         if any(kind != "population" for kind in kinds):
@@ -153,20 +151,17 @@ class CalibratedModel(eqx.Module):
             raise ValueError(
                 "Pairs require distinct labels and unique unordered identities"
             ) from error
-        head = self._regional_head(region) if self.objective == "mlpe" else None
+        if isinstance(self.calibration, MLPECalibrationModule):
+            self._regional_head(region)
         scores = _scores_for_pairs(self.landscape_scores(region), region, pairs)
-        values = (
-            self.target.inverse(scores)
-            if head is None
-            else head.predict_marginal(scores, pairs).values
-        )
+        values = self.calibration.predict(scores, pairs, region_name=region.name)
         return PairPrediction(jnp.asarray(values), pairs, self.target, region.name)
 
-    def recalibrate(self, region: RegionBatch, observations, *, partitions=None, config=None):
-        """Return a new MLPE model while retaining this frozen encoder."""
-        from .calibration import recalibrate
+    def calibrate(self, region: RegionBatch, observations, *, partitions=None, config=None):
+        """Fit or replace regional MLPE calibration with this distance model frozen."""
+        from .calibration import calibrate
 
-        return recalibrate(self, region, observations, partitions=partitions, config=config)
+        return calibrate(self, region, observations, partitions=partitions, config=config)
 
     def predict_known_effects(self, region: RegionBatch, pairs) -> MLPEConditionalPrediction:
         """Predict explicit labelled pairs using stored regional population effects."""
@@ -186,7 +181,7 @@ class CalibratedModel(eqx.Module):
         """Predict disjoint queries using only declared support genetic observations.
 
         The prepared region supplies locations for every support and query endpoint.
-        This operation leaves the encoder and stored regional calibration unchanged.
+        This operation leaves the distance model and stored regional calibration unchanged.
         """
         head = self._regional_head(region)
         pairs = tuple(pairs)

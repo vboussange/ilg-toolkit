@@ -89,8 +89,8 @@ def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_t
     with pytest.raises(ValueError, match="explicit.*model|explicit.*encoder"):
         fit(region, observations, config=config)
     with pytest.raises(ValueError, match="explicit.*TrainingConfig"):
-        fit(region, observations, model=encoder)
-    initial = fit(region, observations, model=encoder, config=config)
+        fit(region, observations, distance_model=encoder)
+    initial = fit(region, observations, distance_model=encoder, config=config)
 
     continued = fit(region, observations, state=initial)
     assert continued.history == initial.history
@@ -99,8 +99,8 @@ def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_t
     np.testing.assert_array_equal(
         continued.model.predict(region).values, initial.model.predict(region).values
     )
-    with pytest.raises(ValueError, match="omit model"):
-        fit(region, observations, state=initial, model=encoder)
+    with pytest.raises(ValueError, match="omit distance_model"):
+        fit(region, observations, state=initial, distance_model=encoder)
 
 
 def test_encoder_distance_boundary_accepts_array_like_rasters_and_nodes():
@@ -127,12 +127,15 @@ def test_labelled_raster_axes_normalize_without_changing_feature_meaning():
         [("unit/7", "unit/20"), ("unit/20", "unit/99")], [0.4, 0.6], target=target
     )
     expected = fit(
-        plain, observations, model=model, config=TrainingConfig(objective="direct_log1p", epochs=1)
+        plain,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(objective="direct_log1p", epochs=1),
     ).model
     actual = fit(
         labelled,
         observations,
-        model=model,
+        distance_model=model,
         config=TrainingConfig(objective="direct_log1p", epochs=1),
     ).model
     assert isinstance(labelled.features, cx.Field)
@@ -152,7 +155,10 @@ def test_public_landscape_and_target_predictions_return_jax_values():
     target = TargetSpec("divergence", units="index", transform="log1p")
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [0.5], target=target)
     fitted = fit(
-        region, observations, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0)
+        region,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     ).model
     scores = fitted.landscape_scores(region)
     prediction = fitted.predict(region)
@@ -188,7 +194,7 @@ def test_array_like_observations_and_targets_follow_configured_precision(enable_
             fitted = fit(
                 region,
                 observations,
-                model=model,
+                distance_model=model,
                 config=TrainingConfig(objective="direct_log1p", epochs=0),
             )
             predictions.append(fitted.model.predict(region).values)
@@ -238,10 +244,16 @@ def test_equivalent_matrix_and_pair_inputs_train_equivalent_models():
         target=target,
     )
     left = fit(
-        region, matrix, model=model, config=TrainingConfig(objective="direct_log1p", epochs=2)
+        region,
+        matrix,
+        distance_model=model,
+        config=TrainingConfig(objective="direct_log1p", epochs=2),
     )
     right = fit(
-        region, pairs, model=model, config=TrainingConfig(objective="direct_log1p", epochs=2)
+        region,
+        pairs,
+        distance_model=model,
+        config=TrainingConfig(objective="direct_log1p", epochs=2),
     )
     np.testing.assert_allclose(
         left.model.predict(region).values, right.model.predict(region).values, rtol=1e-6
@@ -260,7 +272,7 @@ def test_incomplete_pairs_remain_absent_through_fitting():
     result = fit(
         region,
         observations,
-        model=LinearEmbedding(jnp.asarray(1.0)),
+        distance_model=LinearEmbedding(jnp.asarray(1.0)),
         config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     assert observations.observed_pairs == (("unit/7", "unit/20"),)
@@ -279,7 +291,7 @@ def test_explicit_transform_returns_original_units_and_separate_landscape_scores
     result = fit(
         region,
         observations,
-        model=LinearEmbedding(jnp.asarray(1.0)),
+        distance_model=LinearEmbedding(jnp.asarray(1.0)),
         config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     prediction = result.model.predict(region)
@@ -305,7 +317,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership()
     result = fit(
         region,
         observations,
-        model=model,
+        distance_model=model,
         config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
         validation=(region, observations),
@@ -316,7 +328,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership()
         fit(
             region,
             observations,
-            model=model,
+            distance_model=model,
             config=TrainingConfig(objective="direct_log1p", epochs=0),
             validation=(region, observations),
         )
@@ -325,7 +337,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership()
         fit(
             region,
             observations,
-            model=model,
+            distance_model=model,
             config=TrainingConfig(objective="direct_log1p", epochs=0),
             partition=wrong_region,
         )
@@ -335,7 +347,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership()
         fit(
             region,
             incomplete,
-            model=model,
+            distance_model=model,
             config=TrainingConfig(objective="direct_log1p", epochs=0),
             partition=absent,
         )
@@ -354,7 +366,10 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit():
     )
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
     result = fit(
-        region, observations, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0)
+        region,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
     )
     assert region.sampling_unit_kinds == ("individual", "population", "individual")
     assert result.model.feature_names == ("elevation", "canopy")
@@ -372,7 +387,7 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit():
         fit(
             region,
             relatedness,
-            model=model,
+            distance_model=model,
             config=TrainingConfig(objective="direct_log1p", epochs=0),
         )
 
@@ -394,7 +409,12 @@ def test_invalid_observations_and_partitions_fail_at_the_public_boundary():
             PairwiseObservations.from_pairs(pairs, values, target=target, sampling_unit_ids=labels)
     unknown = PairwiseObservations.from_pairs([("unit/7", "missing")], [1], target=target)
     with pytest.raises(ValueError, match="outside region"):
-        fit(region, unknown, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0))
+        fit(
+            region,
+            unknown,
+            distance_model=model,
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
+        )
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
     for partition, message in [
         (ObservationPartition(region.name, (("unit/7", "missing"),)), "endpoints"),
@@ -407,7 +427,7 @@ def test_invalid_observations_and_partitions_fail_at_the_public_boundary():
             fit(
                 region,
                 observations,
-                model=model,
+                distance_model=model,
                 config=TrainingConfig(objective="direct_log1p", epochs=0),
                 partition=partition,
             )

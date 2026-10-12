@@ -78,7 +78,7 @@ Eligibility counts query endpoints in the intersection of:
 Both endpoints must qualify by default. Set
 `EvaluationRegime(endpoint_regime="at_least_one_unseen")` to require one qualifying
 endpoint. It must be the **same** endpoint that is held out and remains unseen.
-A recalibrated held-out endpoint cannot be replaced by an unused nominal training
+A calibrated held-out endpoint cannot be replaced by an unused nominal training
 endpoint. The query pair's own target is forbidden under every regime, including
 validation selection and calibration access, even when the other endpoint would
 otherwise qualify. Region names are part of identity when labels repeat.

@@ -10,6 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from ilg_toolkit import (
+    DirectCalibrationModule,
+    MLPECalibrationModule,
     ObservationPartition,
     PairwiseObservations,
     RegionBatch,
@@ -61,13 +63,13 @@ def problem(
 
 
 def test_explicit_development_recalibration_keeps_encoder_and_prior_history_frozen():
-    from ilg_toolkit import recalibrate
+    from ilg_toolkit import calibrate
 
     region, observations, training, validation = problem()
     result = fit(
         region,
         observations,
-        model=ScalarEmbedding(jnp.asarray(1.0)),
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
         config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
         validation=(region, observations),
@@ -76,56 +78,135 @@ def test_explicit_development_recalibration_keeps_encoder_and_prior_history_froz
     history = result.history
     from ilg_toolkit import MLPEConfig
 
-    calibrated = recalibrate(result.model, region, observations, config=MLPEConfig(jitter=1e-7))
-    assert calibrated.objective == "mlpe"
-    assert eqx.tree_equal(calibrated.encoder, result.model.encoder)
-    assert calibrated.calibrations[region.name].calibration_pairs == training.pairs
-    assert set(calibrated.calibrations[region.name].calibration_roles) == {"training"}
-    developed = recalibrate(calibrated, region, observations, partitions=(training, validation))
-    assert eqx.tree_equal(developed.encoder, calibrated.encoder)
-    assert developed.calibrations[region.name].config is calibrated.calibrations[region.name].config
+    calibrated = calibrate(result.model, region, observations, config=MLPEConfig(jitter=1e-7))
+    assert isinstance(calibrated.calibration, MLPECalibrationModule)
+    assert calibrated.training_objective == "direct_log1p"
+    assert eqx.tree_equal(calibrated.distance_model, result.model.distance_model)
+    assert isinstance(calibrated.calibration, MLPECalibrationModule)
+    assert calibrated.calibration.regions[region.name].calibration_pairs == training.pairs
+    assert isinstance(calibrated.calibration, MLPECalibrationModule)
+    assert set(calibrated.calibration.regions[region.name].calibration_roles) == {"training"}
+    developed = calibrate(calibrated, region, observations, partitions=(training, validation))
+    assert eqx.tree_equal(developed.distance_model, calibrated.distance_model)
+    assert isinstance(calibrated.calibration, MLPECalibrationModule)
+    assert isinstance(developed.calibration, MLPECalibrationModule)
+    assert (
+        developed.calibration.regions[region.name].config
+        is calibrated.calibration.regions[region.name].config
+    )
     assert result.history is history
-    assert result.model.objective == "direct_log1p"
-    assert not result.model.calibrations
-    assert len(developed.calibrations[region.name].calibration_pairs) == 15
-    assert set(developed.calibrations[region.name].calibration_roles) == {"training", "validation"}
+    assert result.model.training_objective == "direct_log1p"
+    assert isinstance(result.model.calibration, DirectCalibrationModule)
+    assert isinstance(developed.calibration, MLPECalibrationModule)
+    assert len(developed.calibration.regions[region.name].calibration_pairs) == 15
+    assert isinstance(developed.calibration, MLPECalibrationModule)
+    assert set(developed.calibration.regions[region.name].calibration_roles) == {
+        "training",
+        "validation",
+    }
     assert not np.allclose(calibrated.predict(region).values, developed.predict(region).values)
     np.testing.assert_array_equal(
         developed.landscape_scores(region), calibrated.landscape_scores(region)
     )
 
 
+def test_composed_calibration_owns_inference_and_preserves_training_objective(tmp_path):
+    import pytest
+
+    from ilg_toolkit import (
+        DirectCalibrationModule,
+        LandscapeGeneticsModel,
+        MLPECalibrationModule,
+        calibrate,
+        load_model,
+        save_model,
+    )
+
+    region, observations, training, _ = problem()
+    state = fit(
+        region,
+        observations,
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        partition=training,
+    )
+    assert isinstance(state.model, LandscapeGeneticsModel)
+    assert isinstance(state.model.calibration, DirectCalibrationModule)
+    assert state.model.target is state.model.calibration.target
+    converted = calibrate(state.model, region, observations)
+    assert isinstance(converted.calibration, MLPECalibrationModule)
+    assert converted.training_objective == state.config.objective == "direct_log1p"
+    assert eqx.tree_equal(converted.distance_model, state.model.distance_model)
+    unseen = replace(region, name="unseen")
+    assert np.isfinite(state.model.predict(unseen).values).all()
+    with pytest.raises(ValueError, match="unseen.*no MLPE calibration"):
+        converted.predict(unseen)
+    path = tmp_path / "converted.ilg"
+    save_model(path, converted)
+    restored = load_model(path, distance_model=ScalarEmbedding(jnp.asarray(0.0)))
+    assert restored.training_objective == "direct_log1p"
+    assert restored.target == observations.target
+    np.testing.assert_array_equal(restored.predict(region).values, converted.predict(region).values)
+
+
+def test_regional_mlpe_installation_requires_matching_region_and_target_contracts():
+    import pytest
+
+    from ilg_toolkit import MLPEError, RegionalMLPECalibration
+
+    region, observations, training, _ = problem()
+    model = fit(
+        region,
+        observations,
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+        config=TrainingConfig(objective="mlpe", epochs=0),
+        partition=training,
+    ).model
+    assert isinstance(model.calibration, MLPECalibrationModule)
+    regional = model.calibration.for_region(region.name)
+    assert isinstance(regional, RegionalMLPECalibration)
+    assert regional.target == model.target == observations.target
+    with pytest.raises(ValueError, match="names and target contracts"):
+        MLPECalibrationModule(model.target, {"wrong-region": regional})
+    with pytest.raises(ValueError, match="names and target contracts"):
+        MLPECalibrationModule(TargetSpec("another target"), {region.name: regional})
+    with pytest.raises(MLPEError, match="dissimilarity TargetSpec"):
+        replace(regional, target=TargetSpec("relatedness", kind="relatedness"))
+
+
 def test_transfer_scores_are_label_free_and_each_region_requires_its_own_head():
     import pytest
 
-    from ilg_toolkit import recalibrate
+    from ilg_toolkit import calibrate
 
     region, observations, training, _ = problem()
     original = fit(
         region,
         observations,
-        model=ScalarEmbedding(jnp.asarray(1.0)),
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
         config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
     ).model
-    calibrated = recalibrate(original, region, observations)
+    calibrated = calibrate(original, region, observations)
     new_region = replace(region, name="unseen-catchment")
     scores = calibrated.landscape_scores(new_region)
     assert np.isfinite(scores).all()
     with pytest.raises(ValueError, match="unseen-catchment.*no MLPE calibration"):
         calibrated.predict(new_region)
     with pytest.raises(ValueError, match="declare a calibration partition"):
-        recalibrate(calibrated, new_region, observations)
+        calibrate(calibrated, new_region, observations)
     new_observations = PairwiseObservations.from_matrix(
         observations.sampling_unit_ids, observations.values * 2, target=observations.target
     )
     development = ObservationPartition(
         new_region.name, observations.observed_pairs, role="calibration"
     )
-    transferred = calibrated.recalibrate(new_region, new_observations, partitions=development)
-    assert eqx.tree_equal(transferred.encoder, calibrated.encoder)
+    transferred = calibrated.calibrate(new_region, new_observations, partitions=development)
+    assert eqx.tree_equal(transferred.distance_model, calibrated.distance_model)
+    assert isinstance(calibrated.calibration, MLPECalibrationModule)
+    assert isinstance(transferred.calibration, MLPECalibrationModule)
     assert eqx.tree_equal(
-        transferred.calibrations[region.name], calibrated.calibrations[region.name]
+        transferred.calibration.regions[region.name], calibrated.calibration.regions[region.name]
     )
     np.testing.assert_array_equal(
         transferred.predict(region).values, calibrated.predict(region).values
@@ -134,17 +215,18 @@ def test_transfer_scores_are_label_free_and_each_region_requires_its_own_head():
     assert not np.allclose(
         transferred.predict(region).values, transferred.predict(new_region).values
     )
-    assert new_region.name not in calibrated.calibrations
+    assert isinstance(calibrated.calibration, MLPECalibrationModule)
+    assert new_region.name not in calibrated.calibration.regions
 
 
 def test_default_recalibration_ignores_validation_targets_and_records_encoder_access():
-    from ilg_toolkit import recalibrate
+    from ilg_toolkit import calibrate
 
     region, observations, training, validation = problem()
     model = fit(
         region,
         observations,
-        model=ScalarEmbedding(jnp.asarray(1.0)),
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
         config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
         validation=(region, observations),
@@ -159,27 +241,27 @@ def test_default_recalibration_ignores_validation_targets_and_records_encoder_ac
     altered = PairwiseObservations.from_matrix(
         region.sampling_unit_ids, altered, target=observations.target
     )
-    original = recalibrate(model, region, observations)
-    changed = recalibrate(model, region, altered)
+    original = calibrate(model, region, observations)
+    changed = calibrate(model, region, altered)
     np.testing.assert_array_equal(original.predict(region).values, changed.predict(region).values)
 
 
 def test_recalibration_rejects_incompatible_features_roles_targets_and_individual_effects():
     import pytest
 
-    from ilg_toolkit import recalibrate
+    from ilg_toolkit import calibrate
 
     region, observations, training, _ = problem()
     model = fit(
         region,
         observations,
-        model=ScalarEmbedding(jnp.asarray(1.0)),
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
         config=TrainingConfig(objective="direct_log1p", epochs=0),
         partition=training,
     ).model
     assert region.feature_names is not None
     with pytest.raises(ValueError, match="feature contract"):
-        recalibrate(
+        calibrate(
             model,
             replace(
                 region,
@@ -194,21 +276,21 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
         target=TargetSpec("another target", units="fraction"),
     )
     with pytest.raises(ValueError, match="target meaning"):
-        recalibrate(model, region, incompatible)
+        calibrate(model, region, incompatible)
     for role in ("query", "support"):
         with pytest.raises(ValueError, match="query or support"):
-            recalibrate(
+            calibrate(
                 model,
                 region,
                 observations,
                 partitions=ObservationPartition(region.name, training.pairs, role=role),
             )
     with pytest.raises(ValueError, match="overlap"):
-        recalibrate(model, region, observations, partitions=(training, training))
+        calibrate(model, region, observations, partitions=(training, training))
     individuals = replace(region, sampling_unit_kinds=("individual",) + ("population",) * 5)
     with pytest.raises(ValueError, match="population sampling units"):
-        recalibrate(model, individuals, observations)
-    calibrated = recalibrate(model, region, observations)
+        calibrate(model, individuals, observations)
+    calibrated = calibrate(model, region, observations)
     assert np.isfinite(calibrated.landscape_scores(individuals)).all()
     with pytest.raises(ValueError, match="population sampling units"):
         calibrated.predict(individuals)

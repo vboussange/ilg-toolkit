@@ -17,7 +17,7 @@ The conductance workflow connects three quantities:
   separation between locations through the resulting movement graph. Resistance
   is a **landscape score**, before relating it to genetic measurements.
 - **Genetic calibration** relates landscape scores to the declared genetic
-  target scale. A **calibrated model** keeps the landscape model and this
+  target scale. A **landscape genetics model** composes the distance model and this
   relationship together for prediction.
 
 [JAX](https://docs.jax.dev/) supplies numerical arrays and differentiation.
@@ -74,13 +74,13 @@ observations = PairwiseObservations.from_matrix(
     [[0, 0.375, 0.5], [0.375, 0, 0.375], [0.5, 0.375, 0]],
     target=TargetSpec("synthetic genetic dissimilarity", units="index", transform="identity"),
 )
-encoder = ResNet9Conductance(
+distance_model = ResNet9Conductance(
     in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(6)
 )
 result = fit(
     region,
     observations,
-    model=encoder,
+    distance_model=distance_model,
     config=TrainingConfig(objective="direct_log1p", epochs=4, learning_rate=0.001),
 )
 print("Conductance surface:\n", result.model.conductance_surface(region))
@@ -94,7 +94,7 @@ sampling-unit labels. Query regions need only features and locations with the
 same feature meanings and order. `predict()` returns original target units;
 `predict_pairs(region, [("south", "east")])` requests selected pairs.
 
-Both the encoder and objective are required choices. Here `direct_log1p` minimizes
+Both the distance model and objective are required choices. Here `direct_log1p` minimizes
 mean squared differences after applying `log1p` to nonnegative scores and targets.
 This loss does not change the declared `identity` target transform. Conductance,
 resistance and genetic prediction remain separate outputs; a good genetic fit
@@ -116,6 +116,20 @@ between genetic pairs that share a sampled population. Selecting
 regional genetic calibration and population/residual variances. Calibration can
 also be fitted separately with a frozen landscape model. MLPE currently supports
 population dissimilarities; relatedness needs its own statistical model.
+
+Fitting returns a `TrainingState` whose selected `.model` is a
+`LandscapeGeneticsModel`. It composes `.distance_model` with `.calibration`:
+`DirectCalibrationModule` applies the declared inverse target transform, while
+`MLPECalibrationModule.regions` contains one `RegionalMLPECalibration` per fitted
+region. The complete model's `.target` comes from its calibration module.
+`calibrate(model, region, observations)` or `model.calibrate(...)` freezes the
+distance model and fits or replaces one regional MLPE relationship. It preserves
+other fitted MLPE regions and defaults to recorded training observations;
+development observations and new regions require explicit partitions.
+Converting a direct module to MLPE replaces it completely: genetic prediction
+then requires a regional calibration, including in previously supported regions.
+The saved `.training_objective` continues to record the original training
+objective; calibration determines inference independently of that provenance.
 
 The [statistical guide](docs/statistics.md) explains both objectives, target
 transforms and regional weighting. Missing observations can be supplied as
@@ -149,19 +163,19 @@ Run an example with `JAX_ENABLE_X64=true uv run python examples/<name>.py`.
 
 ## Save and continue
 
-The fitted `CalibratedModel` and its `TrainingState` are Equinox modules, meaning
+The fitted `LandscapeGeneticsModel` and its `TrainingState` are Equinox modules, meaning
 that learned numerical fields participate in native tree operations and leaf
-serialization. Save a model and load it with an encoder constructed using the
+serialization. Save a model and load it with a distance model constructed using the
 **same full configuration**:
 
 ```python
 from ilg_toolkit import load_model, save_model
 
 save_model("model.ilg", result.model)
-encoder_template = ResNet9Conductance(
+distance_model_template = ResNet9Conductance(
     in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(0)
 )
-restored = load_model("model.ilg", encoder=encoder_template)
+restored = load_model("model.ilg", distance_model=distance_model_template)
 print(restored.predict(region).values)
 ```
 
