@@ -7,8 +7,8 @@ import equinox as eqx
 import jax.numpy as jnp
 import optax
 
-from .config import ResistanceSolverConfig, TrainingConfig
-from .models import ConductanceModel, EmbeddingDistanceModel
+from .config import TrainingConfig
+from .models import AbstractDistanceModel
 from .persistence import (
     ArtifactError,
     _model_metadata,
@@ -37,7 +37,7 @@ def save_checkpoint(path, state: TrainingState) -> None:
     _write_native(path, state, kind="training_checkpoint", metadata=metadata)
 
 
-def load_checkpoint(path, *, encoder: ConductanceModel | EmbeddingDistanceModel) -> TrainingState:
+def load_checkpoint(path, *, encoder: AbstractDistanceModel) -> TrainingState:
     """Restore native state using the exact full encoder configuration and precision.
 
     Continue with the original inputs and partitions. Only the total epoch budget
@@ -48,7 +48,6 @@ def load_checkpoint(path, *, encoder: ConductanceModel | EmbeddingDistanceModel)
         with Path(path).open("rb") as stream:
             metadata = _read_header(stream, kind="training_checkpoint")
             options = dict(metadata["config"])
-            options["solver"] = ResistanceSolverConfig(**options["solver"])
             config = TrainingConfig(**options)
             latest = _model_template(metadata["latest_model"], encoder)
             best = _model_template(metadata["best_model"], encoder)
@@ -58,7 +57,7 @@ def load_checkpoint(path, *, encoder: ConductanceModel | EmbeddingDistanceModel)
                 else None
             )
             optimizer_state = optax.adam(config.learning_rate).init(
-                eqx.filter((encoder, raw), eqx.is_inexact_array)
+                eqx.filter((latest.encoder, raw), eqx.is_inexact_array)
             )
             history_length = metadata["history_length"]
             if history_length < 1:

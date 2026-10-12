@@ -16,6 +16,10 @@ from ilg_toolkit import (
     TargetSpec,
     TrainingConfig,
     fit,
+    load_checkpoint,
+    load_model,
+    save_checkpoint,
+    save_model,
 )
 from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 from ilg_toolkit.resistance import build_resistance_context, effective_resistance
@@ -88,7 +92,11 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
             target=TargetSpec("synthetic dissimilarity", units="index"),
         )
         model = ResNet9Conductance(
-            in_channels=2, patch_size=4, patch_batch_size=3, key=jax.random.key(6)
+            in_channels=2,
+            patch_size=4,
+            patch_batch_size=3,
+            solver_config=ResistanceSolverConfig(rtol=1e-8),
+            key=jax.random.key(6),
         )
         result = fit(
             region,
@@ -98,7 +106,6 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
                 objective="direct_log1p",
                 epochs=4,
                 learning_rate=0.001,
-                solver=ResistanceSolverConfig(rtol=1e-8),
             ),
         )
         assert result.history[-1].training_loss < result.history[0].training_loss
@@ -124,8 +131,9 @@ class PointConductance(ConductanceModel):
     log_scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
 
-    def __init__(self, log_scale: jax.Array):
+    def __init__(self, log_scale: jax.Array, *, solver_config=None):
         self.log_scale = log_scale
+        self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
 
     def conductance(self, features, *, patch_batch_size=None):
         return jnp.exp(self.log_scale) * features[..., 0]
@@ -146,11 +154,13 @@ def test_failed_solver_reports_region_and_epoch_without_changing_solver():
             fit(
                 region,
                 observations,
-                model=PointConductance(jnp.array(0.0)),
+                model=PointConductance(
+                    jnp.array(0.0),
+                    solver_config=ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1),
+                ),
                 config=TrainingConfig(
                     objective="direct_log1p",
                     epochs=0,
-                    solver=ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1),
                 ),
             )
 
@@ -236,3 +246,70 @@ def test_solver_rejects_silent_float64_truncation_and_invalid_terminals():
 def test_solver_settings_reject_invalid_options(options):
     with pytest.raises(ValueError, match="solver|tolerance"):
         ResistanceSolverConfig(**options)
+
+
+@pytest.mark.parametrize("use_amg", [False, True])
+def test_shared_conductance_fit_rebuilds_solver_on_native_reload_and_resume(tmp_path, use_amg):
+    if use_amg:
+        pytest.importorskip("amjax")
+        pytest.importorskip("pyamg")
+    solver = ResistanceSolverConfig(rtol=1e-9, atol=1e-11, max_steps=321, use_amg=use_amg)
+    encoder = PointConductance(jnp.array(0.0), solver_config=solver)
+    regions = []
+    observations = []
+    for name, shape in (("square", (2, 2)), ("rectangle", (2, 3))):
+        surface = np.linspace(0.8, 1.6, np.prod(shape)).reshape(shape)
+        region = RegionBatch(
+            name,
+            cx.field(surface[..., None], "row", "column", "feature"),
+            ("west", "north", "east"),
+            np.array([[0, 0], [0, shape[1] - 1], [shape[0] - 1, shape[1] - 1]]),
+            feature_names=("habitat",),
+        )
+        target = dense_resistance(2 * surface, np.asarray(region.pixel_nodes))
+        regions.append(region)
+        observations.append(
+            PairwiseObservations.from_matrix(
+                region.sampling_unit_ids, target, target=TargetSpec("divergence")
+            )
+        )
+    config = TrainingConfig(objective="direct_log1p", epochs=2, learning_rate=0.02)
+    uninterrupted = fit(regions, observations, model=encoder, config=config)
+    from dataclasses import replace
+
+    first = fit(regions, observations, model=encoder, config=replace(config, epochs=1))
+    model_path, checkpoint_path = tmp_path / "model.ilg", tmp_path / "checkpoint.ilg"
+    save_model(model_path, first.model)
+    assert first.state is not None
+    save_checkpoint(checkpoint_path, first.state)
+    template = PointConductance(jnp.array(9.0))
+    restored_model = load_model(model_path, encoder=template)
+    restored_state = load_checkpoint(checkpoint_path, encoder=template)
+    assert isinstance(restored_model.encoder, PointConductance)
+    assert isinstance(restored_state.encoder, PointConductance)
+    assert restored_model.encoder.solver_config == solver
+    assert restored_state.encoder.solver_config == solver
+    assert template.solver_config == ResistanceSolverConfig()
+    continued = fit(regions[::-1], observations[::-1], state=restored_state, config=config)
+    assert continued.history[-1].training_loss < continued.history[0].training_loss
+    assert continued.state is not None and uninterrupted.state is not None
+    for actual, expected in zip(
+        jax.tree.leaves(continued.state), jax.tree.leaves(uninterrupted.state), strict=True
+    ):
+        if isinstance(actual, jax.Array):
+            np.testing.assert_array_equal(actual, expected)
+        else:
+            assert actual == expected
+    for region in regions:
+        np.testing.assert_array_equal(
+            restored_model.landscape_scores(region), first.model.landscape_scores(region)
+        )
+        np.testing.assert_allclose(
+            continued.model.landscape_scores(region),
+            dense_resistance(
+                np.asarray(continued.model.conductance_surface(region)),
+                np.asarray(region.pixel_nodes),
+            ),
+            rtol=1e-8,
+            atol=1e-10,
+        )

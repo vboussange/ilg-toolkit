@@ -8,11 +8,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .config import ResistanceSolverConfig
 from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
 from .mlpe import MLPEConditionalPrediction, MLPEHead
-from .models import ConductanceModel, EmbeddingDistanceModel
-from .resistance import build_resistance_context
+from .models import AbstractDistanceModel, ConductanceModel
 
 
 @final
@@ -46,11 +44,10 @@ class CalibratedModel(eqx.Module):
     calibration retains its own independent pair identities and data roles.
     """
 
-    encoder: ConductanceModel | EmbeddingDistanceModel
+    encoder: AbstractDistanceModel
     target: TargetSpec
     feature_count: int
     feature_names: tuple[str, ...] | None = None
-    solver_config: ResistanceSolverConfig = eqx.field(default_factory=ResistanceSolverConfig)
     objective: str = eqx.field(kw_only=True)
     calibrations: dict[str, MLPEHead] = eqx.field(default_factory=dict)
     training_pairs: dict[str, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
@@ -87,19 +84,10 @@ class CalibratedModel(eqx.Module):
     def landscape_scores(self, region: RegionBatch) -> jax.Array:
         """Predict scores for prepared query locations without genetic observations."""
         self._validate_region(region)
-        if isinstance(self.encoder, ConductanceModel):
-            height, width = region.feature_array.shape[:2]
-            if height % self.encoder.patch_size or width % self.encoder.patch_size:
-                raise ValueError("Raster dimensions must be divisible by model patch_size")
-            context = build_resistance_context(
-                (height // self.encoder.patch_size, width // self.encoder.patch_size),
-                self.solver_config,
-            )
-            values = self.encoder.predict_distances(
-                region.feature_array, region.pixel_nodes, context=context
-            )
-        else:
-            values = self.encoder.predict_distances(region.feature_array, region.pixel_nodes)
+        context = self.encoder.prepare(region.feature_array)
+        values = self.encoder.predict_distances(
+            region.feature_array, region.pixel_nodes, context=context
+        )
         if not bool(jnp.isfinite(values).all()) or bool((values < 0).any()):
             raise FloatingPointError("Encoder produced nonfinite or negative distances")
         return values

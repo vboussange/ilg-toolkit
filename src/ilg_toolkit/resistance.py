@@ -21,6 +21,9 @@ class ResistanceSolverContext:
     graph_shape: tuple[int, int] = field(metadata={"static": True})
     solver: lx.AbstractLinearSolver
     solver_state: AMJaxCGSolverState | None = None
+    config: ResistanceSolverConfig = field(
+        default=ResistanceSolverConfig(), metadata={"static": True}
+    )
 
 
 def _require_x64():
@@ -54,14 +57,16 @@ def build_resistance_context(
     config = config or ResistanceSolverConfig()
     if not config.use_amg:
         return ResistanceSolverContext(
-            shape, lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps)
+            shape,
+            lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps),
+            config=config,
         )
     solver = AMJaxCGSolver(
         rtol=config.rtol, atol=config.atol, max_steps=config.max_steps, coarse_solver="pinv"
     )
     template = GridGraph(jnp.ones(shape, dtype=jnp.float64), fun=_mean_conductance)
     state = ResistanceDistance(solver=solver).init_preconditioner(template)
-    return ResistanceSolverContext(shape, solver, state)
+    return ResistanceSolverContext(shape, solver, state, config)
 
 
 def effective_resistance(

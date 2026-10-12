@@ -12,7 +12,9 @@ Loading requires a caller-supplied encoder with the exact full configuration use
 for training. Construct the same class with the same static settings, including
 patch size, minimum conductance, patch batching, dropout and custom activation
 choices. Its initial parameter values may differ: saved numerical leaves replace
-them.
+them. Conductance solver settings are owned by the distance model and restored
+from the artifact, overriding the template's solver policy. Shape-specific CG or
+AMG preparation is rebuilt when needed and is never saved with model parameters.
 
 ```python
 import jax
@@ -99,8 +101,9 @@ resuming. The default budget is the saved configuration. Only the total epoch
 budget may increase or stay equal; reducing the saved requested budget is rejected,
 including for an intermediate checkpoint. Input shapes and precision,
 sampling-unit identities/order/kinds, target meaning/units/transform, feature
-meanings/order, selected training/validation pairs, and optimization/solver settings
-must agree. Regional mapping order does not change this contract.
+meanings/order, selected training/validation pairs, and optimization settings must
+agree. The restored conductance model retains the saved solver policy. Regional
+mapping order does not change this contract.
 
 Keep the original landscape measurements, sampling locations and genetic values
 unchanged yourself. Checkpoints do not fingerprint these contents: same-shape edits

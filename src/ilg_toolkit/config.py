@@ -1,7 +1,7 @@
 """Explicit optimization options without study configuration."""
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from numbers import Integral, Real
 
 
@@ -64,7 +64,6 @@ class TrainingConfig:
     learning_rate: float = 0.001
     seed: int = 0
     jit: bool = True
-    solver: ResistanceSolverConfig = field(default_factory=ResistanceSolverConfig)
     mlpe_variance_floor: float = 1e-10
     mlpe_jitter: float = 0.0
     mlpe_initial_variances: tuple[float, float] | None = None

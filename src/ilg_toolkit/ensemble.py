@@ -11,7 +11,7 @@ import numpy as np
 from .config import TrainingConfig
 from .data import ObservationPartition, RegionBatch, TargetSpec
 from .model import CalibratedModel, Prediction
-from .models import ConductanceModel, EmbeddingDistanceModel
+from .models import AbstractDistanceModel
 from .training import FitResult, TrainingState, _normalize_inputs, fit
 
 
@@ -409,7 +409,7 @@ def fit_ensemble_member(
     fold: PopulationFold,
     initialization_seed: int,
     config: TrainingConfig | None = None,
-    model_factory: Callable[[jax.Array], ConductanceModel | EmbeddingDistanceModel] | None = None,
+    model_factory: Callable[[jax.Array], AbstractDistanceModel] | None = None,
     state: TrainingState | None = None,
     on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
 ) -> EnsembleMember:
@@ -452,8 +452,8 @@ def fit_ensemble_member(
         if state is None:
             assert model_factory is not None
             model = model_factory(jax.random.PRNGKey(identity.initialization_seed))
-            if not isinstance(model, (ConductanceModel, EmbeddingDistanceModel)):
-                raise TypeError("model_factory must return a distance or conductance encoder")
+            if not isinstance(model, AbstractDistanceModel):
+                raise TypeError("model_factory must return an AbstractDistanceModel")
         stage = "fit"
         result = fit(
             regions,
@@ -528,7 +528,7 @@ def fit_ensemble(
     query_regime: str = "both_unseen",
     initialization_seeds: Sequence[int] | None = None,
     config: TrainingConfig,
-    model_factory: Callable[[jax.Array], ConductanceModel | EmbeddingDistanceModel] | None = None,
+    model_factory: Callable[[jax.Array], AbstractDistanceModel] | None = None,
     member_states: Mapping[str, TrainingState] | None = None,
     on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
     on_member: Callable[[EnsembleMember], None] | None = None,
