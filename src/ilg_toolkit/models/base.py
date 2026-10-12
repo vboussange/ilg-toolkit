@@ -19,14 +19,15 @@ from .common import pixel_to_patch_nodes, squared_embedding_distances
 class AbstractDistanceModel(eqx.Module):
     """Derive landscape separation from features and locations without genetic labels.
 
-    Custom implementations implement ``predict_distances`` and accept the common
-    inference, random-key and preparation arguments. Preparation is local to an
-    operation and remains outside model parameters and JAX transformations.
+    Custom implementations implement ``prepare`` and ``predict_distances``,
+    accepting the common inference, random-key and preparation arguments.
+    Preparation returns ``None`` when no numerical setup is needed; otherwise it
+    is local to an operation, outside model parameters and JAX transformations.
     """
 
+    @abstractmethod
     def prepare(self, features: ArrayLike) -> ResistanceSolverContext | None:
-        """Prepare shape-dependent numerical work before scoring; default to none."""
-        return None
+        """Prepare shape-dependent numerical work before scoring, or return none."""
 
     @abstractmethod
     def predict_distances(
@@ -48,12 +49,12 @@ class ConductanceModel(AbstractDistanceModel):
     Initial encoders use stateless GroupNorm; their entire Equinox model is
     retained by training and prediction. ``inference`` and ``key`` provide the
     common distance model signature and are unused by this deterministic family.
+    Final implementations declare ``patch_size`` and immutable ``solver_config``
+    as static fields alongside their other fields and initialization.
     """
 
     patch_size: eqx.AbstractVar[int]
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, kw_only=True, default=ResistanceSolverConfig()
-    )
+    solver_config: eqx.AbstractVar[ResistanceSolverConfig]
 
     def prepare(self, features: ArrayLike) -> ResistanceSolverContext:
         """Build the model's solver for this post-patch graph outside JIT/grad."""
@@ -111,6 +112,10 @@ class EmbeddingDistanceModel(AbstractDistanceModel):
     """Encode a raster and measure squared Euclidean separation of node embeddings."""
 
     patch_size: eqx.AbstractVar[int]
+
+    def prepare(self, features: ArrayLike) -> None:
+        """Embedding distances need no shape-dependent numerical preparation."""
+        return None
 
     @abstractmethod
     def embedding_grid(

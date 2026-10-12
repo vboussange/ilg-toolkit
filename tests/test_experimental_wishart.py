@@ -17,7 +17,7 @@ from experiments.wishart import (
     heldout_log_likelihood,
     wishart_log_likelihood,
 )
-from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec
+from ilg_toolkit import PairwiseObservations, RegionBatch, ResistanceSolverConfig, TargetSpec
 from ilg_toolkit.models import ConductanceModel
 
 
@@ -138,6 +138,9 @@ def test_population_holdout_matches_independent_gaussian_regression_decompositio
 class UniformConductance(ConductanceModel):
     scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(
+        static=True, kw_only=True, default=ResistanceSolverConfig()
+    )
 
     def __init__(self, scale: jax.Array):
         self.scale = scale

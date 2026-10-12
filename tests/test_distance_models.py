@@ -24,6 +24,9 @@ from ilg_toolkit.models import AbstractDistanceModel
 class CustomDistance(AbstractDistanceModel):
     scale: jax.Array
 
+    def prepare(self, features):
+        return None
+
     def predict_distances(
         self,
         features,

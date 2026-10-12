@@ -14,6 +14,7 @@ from ilg_toolkit import (
     MLPECalibrationModule,
     PairwiseObservations,
     RegionBatch,
+    ResistanceSolverConfig,
     TargetSpec,
     TrainingConfig,
     fit,
@@ -309,6 +310,9 @@ def test_shared_mlpe_fit_has_one_encoder_and_separate_regional_heads():
 class CovariateConductance(ConductanceModel):
     weight: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(
+        static=True, kw_only=True, default=ResistanceSolverConfig()
+    )
 
     def __init__(self, weight: jax.Array):
         self.weight = weight

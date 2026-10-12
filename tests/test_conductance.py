@@ -130,6 +130,9 @@ class PointConductance(ConductanceModel):
 
     log_scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(
+        static=True, kw_only=True, default=ResistanceSolverConfig()
+    )
 
     def __init__(self, log_scale: jax.Array, *, solver_config=None):
         self.log_scale = log_scale

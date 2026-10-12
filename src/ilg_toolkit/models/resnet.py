@@ -61,6 +61,7 @@ class ResNet9Conductance(ConductanceModel):
     patch_size: int = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
     patch_batch_size: int | None = eqx.field(static=True)
+    solver_config: ResistanceSolverConfig = eqx.field(static=True)
 
     def __init__(
         self,

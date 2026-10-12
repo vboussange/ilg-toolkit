@@ -15,6 +15,7 @@ from ilg_toolkit import (
     EnsembleMember,
     LandscapeGeneticsModel,
     MLPECalibrationModule,
+    ResistanceSolverConfig,
     TrainingConfig,
     TrainingState,
     fit_ensemble,
@@ -470,6 +471,9 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
 class ConstantConductance(ConductanceModel):
     level: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(
+        static=True, kw_only=True, default=ResistanceSolverConfig()
+    )
 
     def conductance(self, features, *, patch_batch_size=None):
         return jnp.ones(features.shape[:2]) * self.level
