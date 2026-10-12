@@ -173,6 +173,15 @@ def ensemble_member_identity(fold_id: str, initialization_seed: int) -> MemberId
 
 @dataclass(frozen=True)
 class MemberFailure:
+    """A fitting, callback or prediction failure retained for caller inspection.
+
+    Attributes:
+        stage: Operation that failed, such as ``"fit"``, ``"prediction"`` or
+            ``"member"`` for an unavailable OOF member.
+        error_type: Exception class name, or ``"Pending"`` for a pending member.
+        message: Human-readable diagnostic; no failed member is silently dropped.
+    """
+
     stage: str
     error_type: str
     message: str
@@ -210,14 +219,25 @@ class EnsembleMember:
 
 @dataclass(frozen=True)
 class EnsemblePrediction:
-    """Equal-weight original-scale means and descriptive population SD (ddof=0).
+    """Deployment means over every member, after each target inverse transform.
+
+    This result imposes no holdout or actual-access eligibility rule. All members
+    must succeed. Numerical arrays use scoped float64 aggregation without
+    changing global JAX precision. No common model-scale mean, predictive
+    variance or covariance is inferred.
 
     Attributes:
-        prediction: Mean pair points and their shared identities and target.
-        member_ids: Requested member order, of length ``k``.
-        member_values: Original-scale member points of shape ``(k, m)``.
-        member_spread: Original-unit descriptive SD of shape ``(m,)``. This
-            is not statistical predictive variance or a covariance matrix.
+        prediction: Common ``Prediction`` with original-scale mean points
+            ``(m,)``, ordered/oriented pairs, region, target and full query-region
+            sampling-unit order. ``as_matrix()`` represents these points only.
+        member_ids: Complete requested member order, of length ``k``.
+        member_values: Finite original-scale member points ``(k, m)``, with rows
+            in ``member_ids`` order and columns in ``prediction.pairs`` order.
+            Each inverse transformation occurs before equal-weight averaging.
+        member_spread: Descriptive population SD (ddof=0) ``(m,)`` in original
+            target units. One member gives zero disagreement. This is neither
+            statistical predictive variance nor a confidence interval and
+            excludes within-member conditional variance.
     """
 
     prediction: Prediction
@@ -243,7 +263,28 @@ def aggregate_predictions(
     *,
     expected_member_ids: Sequence[str] | None = None,
 ) -> EnsemblePrediction:
-    """Average compatible predictions AFTER each member's inverse transformation."""
+    """Average aligned original-scale points with complete member composition.
+
+    Args:
+        predictions: Nonempty member-ID mapping to common ``Prediction``
+            records already inverse-transformed into original target units.
+            Regions, target contracts, ordered/oriented pairs, sampling-unit
+            matrix orders and finite vector shapes must agree exactly.
+        expected_member_ids: Optional unique complete member order. Defaults to
+            mapping insertion order. Missing or extra members are rejected,
+            rather than silently reducing the requested ensemble.
+
+    Returns:
+        ``EnsemblePrediction`` containing equal-weight original-scale means,
+        member values ``(k, m)`` and descriptive population SD ``(m,)``. Scoped
+        float64 aggregation leaves global JAX precision unchanged and performs
+        no additional prediction, calibration or model mutation.
+
+    Raises:
+        ValueError: Composition, labelled identities, targets, shapes or finite
+            member values are incompatible.
+        FloatingPointError: Aggregated mean or spread is nonfinite.
+    """
     if not predictions:
         raise ValueError("An ensemble aggregate requires at least one member prediction")
     ids = tuple(predictions) if expected_member_ids is None else tuple(expected_member_ids)
@@ -300,7 +341,23 @@ def _summarize_members(values):
 
 @dataclass(frozen=True)
 class Ensemble:
-    """All requested member outcomes; deployment prediction requires every member."""
+    """Retain complete requested outcomes for deployment and OOF evaluation.
+
+    Attributes:
+        members: Nonempty tuple of uniquely identified ``EnsembleMember``
+            outcomes, including completed, failed and pending fits. Completed
+            models must share target and feature contracts.
+        expected_member_ids: Unique complete requested member order. Defaults to
+            ``members`` order; explicit identities must match those outcomes
+            exactly. Deployment requires every member completed; OOF can report
+            partial coverage with failures retained.
+        failures: Derived member-ID mapping to recorded failed-fit diagnostics.
+            Pending fits and OOF prediction failures are reported separately.
+
+    Raises:
+        ValueError: Composition or completed models' target/feature contracts
+            are incompatible.
+    """
 
     members: tuple[EnsembleMember, ...]
     expected_member_ids: tuple[str, ...] | None = None
@@ -338,6 +395,7 @@ class Ensemble:
 
     @property
     def failures(self):
+        """Return failed-fit diagnostics keyed by member ID; omit pending fits."""
         return {
             member.identity.member_id: member.failure
             for member in self.members
@@ -360,7 +418,39 @@ class Ensemble:
         return models
 
     def predict(self, region: RegionBatch, pairs=None) -> EnsemblePrediction:
-        """Deployment marginal means, without query targets or eligibility filtering."""
+        """Predict marginal genetic points with every requested member.
+
+        Deployment has no endpoint holdout or actual-target-access requirement.
+        MLPE members use their region's marginal calibration, with population
+        effect means zero; direct members apply their target inverse transform.
+        Use ``predict_out_of_fold`` for eligibility-filtered evaluation.
+
+        Args:
+            region: One ``RegionBatch`` with located query units and features
+                matching each member's feature contract. MLPE members require
+                calibration for this region. No genetic query targets are used.
+            pairs: Optional nonempty iterable of distinct unordered labelled
+                pairs. Caller order/orientation is retained; self-pairs,
+                duplicates (including reversals) and unlocated labels fail.
+                ``None`` requests all distinct pairs in region sampling-unit
+                order. Selected distances are inverted only for requested pairs.
+
+        Returns:
+            ``EnsemblePrediction`` composing original-scale mean points and
+            full region matrix order, member values ``(k, m)`` and descriptive
+            original-unit SD ``(m,)``. Each member's inverse transform precedes
+            averaging. Aggregation uses scoped float64 without changing global
+            precision; resistance calculations require explicitly enabled x64.
+            No member is fitted or mutated and no query targets are read.
+
+        Raises:
+            RuntimeError: Any requested member is failed or pending.
+            ValueError: Features, regional calibration, pair selection or member
+                outputs are incompatible. Deployment propagates prediction
+                failures rather than returning partial composition.
+            FloatingPointError: A member prediction, target inverse or aggregate
+                produces invalid numerical values.
+        """
         models = self._completed()
         pairs = None if pairs is None else tuple(pairs)
         predictions = {

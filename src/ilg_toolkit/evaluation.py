@@ -1,4 +1,25 @@
-"""Label-free out-of-fold prediction, followed by unique-pair target scoring."""
+"""Predict held-out pairs without query targets, then score fixed predictions.
+
+Deployment prediction uses every ensemble member and imposes no holdout rule.
+Out-of-fold (OOF) prediction instead selects members for each region-qualified
+unordered pair: its own target must never have been consumed, and the required
+query endpoints must be both nominal fold holdouts and untouched by actual
+training, validation-based selection and calibration target access. Declared
+support targets also count as access under the default strict policy.
+
+``predict_out_of_fold`` accepts locations and pair identities, never query
+targets. ``score_out_of_fold`` subsequently reads measurements; ``evaluate_ensemble``
+combines these steps without passing those measurements to member predictors.
+Marginal prediction is the default. Known-effect prediction uses saved MLPE
+population effects; support prediction additionally consumes explicitly declared,
+disjoint support targets. Neither conditional mode relaxes own-query exclusion.
+
+Results contain original-target-scale points, coverage and visible member failures.
+Each unique covered region/pair receives equal metric weight after eligible member
+points are averaged. Conditional model-scale variance and descriptive original-unit
+member disagreement are separate diagnostics. See ``docs/evaluation.md`` for a
+complete synthetic workflow and the operation-specific precision contracts.
+"""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -21,12 +42,31 @@ from .training import _normalize_inputs
 
 @dataclass(frozen=True)
 class EvaluationRegime:
-    """Endpoint and target-access rules, separate from deployment prediction.
+    """Choose endpoint eligibility and marginal or conditional prediction.
 
-    ``unseen`` counts support endpoints as seen. ``allow_declared_support``
-    explicitly evaluates conditional prediction after the endpoint holdout was
-    established from encoder training/selection and calibration. Neither policy
-    permits using the query pair's own target.
+    A qualifying endpoint belongs to the member's nominal regional holdout and
+    has no actual training, validation-selection or calibration target access.
+    The query pair's own target is excluded in every mode, including support.
+    This configuration governs OOF evaluation, not deployment prediction.
+
+    Attributes:
+        endpoint_regime: ``"both_unseen"`` (default) requires two qualifying
+            endpoints; ``"at_least_one_unseen"`` requires one. Holdout and
+            untouched status must apply to the same endpoint.
+        prediction_mode: ``"marginal"`` (default) uses population effects
+            marginalised to zero. ``"known_effects"`` uses the saved regional
+            MLPE effect posterior. ``"support"`` conditions that posterior on
+            an explicit ``EvaluationSupport`` declaration. Conditional modes
+            require regional MLPE calibration and retain its access history.
+        support_endpoint_policy: ``"unseen"`` (default) counts support endpoints
+            as accessed before checking eligibility. ``"allow_declared_support"``
+            checks endpoint eligibility before disjoint declared support is
+            consumed and explicitly reports conditional prediction. It is valid
+            only with support mode; it never permits the query target as support.
+
+    Raises:
+        ValueError: A field is unsupported, or permissive support policy is used
+            outside support mode.
     """
 
     endpoint_regime: str = "both_unseen"
@@ -46,7 +86,25 @@ class EvaluationRegime:
 
 @dataclass(frozen=True)
 class EvaluationSupport:
-    """Exactly declared regional support targets, separate from query targets."""
+    """Declare every target that conditional prediction may consume as support.
+
+    Support is distinct from query measurements used only for scoring. The
+    evaluation call checks regional alignment, target compatibility and disjoint
+    query identities. Each member additionally rejects support already consumed
+    by its regional calibration; such member failures remain visible in OOF.
+
+    Attributes:
+        observations: Original-scale ``PairwiseObservations`` containing exactly
+            the measured support pairs, with the same ``TargetSpec`` as queries.
+            Its labelled universe may include units without support measurements.
+        partition: ``ObservationPartition`` with role ``"support"`` and the
+            query region's name. Its unordered pairs must equal the measured
+            support identities, including canonical treatment of reversals.
+
+    Raises:
+        ValueError: Inputs have incompatible types, the role is not support, or
+            the measured and declared support pair sets differ.
+    """
 
     observations: PairwiseObservations
     partition: ObservationPartition
@@ -67,7 +125,29 @@ class EvaluationSupport:
 
 @dataclass(frozen=True)
 class EvaluationAccess:
-    """Snapshot of actual regional target access used by one member."""
+    """Describe one member's actual target access in one query region.
+
+    Pair identities are unordered and region-qualified by ``region_name``.
+    Listed endpoints count as seen, except declared support under the explicitly
+    permissive support policy. MLPE population IDs with prior-only effects do
+    not themselves imply observed-target access.
+
+    Attributes:
+        region_name: Region to which all recorded pairs belong.
+        training_pairs: Targets used to fit the distance model.
+        validation_pairs: Targets used to select its fitted state.
+        calibration_pairs: Targets used by the current regional MLPE fit; empty
+            for direct calibration or a region without an MLPE fit.
+        calibration_roles: Observation-use role for each calibration pair,
+            aligned with ``calibration_pairs``.
+        support_pairs: Exactly declared support targets for this call; empty
+            outside support mode.
+        prediction_mode: ``"marginal"``, ``"known_effects"`` or ``"support"``.
+        encoder_access_declared: Whether the model declares distance-model
+            training access. An entirely empty ``training_pairs={}`` means
+            unknown access and is conservatively excluded. An untrained model
+            can truthfully declare ``training_pairs={region_name: ()}``.
+    """
 
     region_name: str
     training_pairs: tuple[tuple[str, str], ...]
@@ -81,13 +161,71 @@ class EvaluationAccess:
 
 @dataclass(frozen=True)
 class OOFPrediction:
-    """One row per canonical region/pair, with explicit eligibility and coverage.
+    """Eligible member points, original-scale means and per-pair coverage.
 
-    Member SD is descriptive in original target units. Conditional member
-    variances are retained separately on the transformed model scale; they do
-    not include encoder, fixed-coefficient or variance-parameter uncertainty.
-    Numerical results are JAX arrays using the configured precision. Coverage
-    and target-access metadata remain on the host.
+    Let ``k`` be the complete requested member count and ``m`` the number of
+    unique region/pair queries. Columns follow ``keys``: sorted region names,
+    then lexicographically sorted endpoint labels and pairs. Numerical arrays
+    follow configured JAX precision; labels, access records and NumPy coverage
+    metadata live on the host. No query targets are stored here.
+
+    Attributes:
+        predictions: Region-name mapping to common ``Prediction`` records.
+            Each contains original-scale mean values ``(m_region,)``, canonical
+            pairs, the shared target and the full prepared-region sampling-unit
+            order. Uncovered points are NaN. ``as_matrix()`` represents stored
+            points only, with missing off-diagonals and structural zero diagonal
+            for dissimilarities.
+        regime: Endpoint, prediction and support policies actually requested.
+        member_ids: Complete requested member order, length ``k``, including
+            failed and pending members.
+        member_values: JAX array ``(k, m)`` of original-scale points. A finite
+            entry is a successful contribution; excluded or failed entries are
+            NaN. Each member's target inverse precedes averaging.
+        member_spread: JAX vector ``(m,)`` of descriptive population SD
+            (ddof=0) over successful member points in original target units.
+            One contributor gives zero; no contributors gives NaN. This is
+            neither predictive variance nor a confidence interval.
+        eligible_counts: Host NumPy integer vector ``(m,)`` counting successful
+            finite contributions, not merely nominally eligible members.
+        covered_mask: Host NumPy boolean vector ``(m,)``, true where counts
+            exceed zero.
+        exclusion_reasons: Member-ID mapping to ``m`` reasons in column order.
+            ``None`` denotes success. Other entries include unknown training
+            access, own-target access, no regional holdout, insufficient unseen
+            holdouts, unavailable members and ``"prediction_failed"``.
+        member_statuses: Every requested member's ``"completed"``, ``"failed"``
+            or ``"pending"`` fitting status. Prediction failure does not alter
+            a completed fit's status.
+        member_failures: Unavailable-member diagnostics as ``MemberFailure``;
+            pending members receive a synthetic pending diagnostic.
+        prediction_failures: Member-ID then region-name mapping to prediction
+            failures, including numerical, unsupported-mode or provenance
+            failures. Other members may still provide coverage.
+        access: Member-ID then region-name mapping to ``EvaluationAccess``
+            snapshots, retained when that access was successfully obtained.
+        conditioning_provenance: Member-ID then region-name mapping to
+            successful ``MLPEPredictionProvenance`` records. Marginal mode has
+            no regional records; conditional records must agree with declared
+            calibration/support use.
+        member_model_variances: ``None`` for marginal mode (unreported, not zero).
+            Conditional modes return a JAX array ``(k, m)`` with per-member
+            effect-posterior plus residual and jitter predictive variance;
+            unavailable entries are NaN. No ensemble variance is inferred.
+        variance_scale: Always ``"model"``: variances use squared transformed
+            target units, separately from original-unit member disagreement.
+        excluded_uncertainty: Uncertainty excluded from conditional variance:
+            distance-model parameters (``"encoder"``), fixed-effect coefficients
+            and variance parameters.
+        keys: Derived ``m`` canonical ``(region_name, (left, right))`` identities.
+        values: Derived JAX vector ``(m,)`` of regional mean points in key order.
+        target: Shared genetic meaning, original units and fitted transform.
+        scale: Always ``"original"`` for point values.
+        eligible_member_ids: Tuple of ``m`` tuples naming successful contributors
+            in requested member order.
+        coverage: Fraction of unique queries with at least one contributor.
+        coverage_status: ``"complete"``, ``"partial"`` or ``"none"`` according
+            to the covered mask, independently of unavailable-member status.
     """
 
     predictions: dict[str, Prediction]
@@ -113,7 +251,7 @@ class OOFPrediction:
 
     @property
     def keys(self) -> tuple[tuple[str, tuple[str, str]], ...]:
-        """Canonical region/pair identities in member-output column order."""
+        """Return sorted region/pair identities in member-output column order."""
         return tuple(
             (name, pair)
             for name in sorted(self.predictions)
@@ -131,10 +269,12 @@ class OOFPrediction:
 
     @property
     def target(self) -> TargetSpec:
+        """Return the shared target meaning, original units and fitted transform."""
         return next(iter(self.predictions.values())).target
 
     @property
     def scale(self) -> str:
+        """Return ``"original"`` for the regional and derived point values."""
         return next(iter(self.predictions.values())).scale
 
     @property
@@ -150,10 +290,12 @@ class OOFPrediction:
 
     @property
     def coverage(self):
+        """Return the fraction of unique queries with a successful contributor."""
         return float(np.mean(self.covered_mask))
 
     @property
     def coverage_status(self):
+        """Return ``"complete"``, ``"partial"`` or ``"none"`` point coverage."""
         return (
             "complete"
             if self.covered_mask.all()
@@ -165,7 +307,27 @@ class OOFPrediction:
 
 @dataclass(frozen=True)
 class OOFEvaluation:
-    """Metrics after eligible means; each covered region/pair counts once."""
+    """Score fixed original-scale OOF means with equal covered-pair weights.
+
+    Aggregation precedes scoring: multiple member predictions do not multiply
+    a pair's metric weight. Regions with more covered pairs contribute more
+    pooled weight, independently of equal-region weighting during training.
+
+    Attributes:
+        predictions: The original ``OOFPrediction`` passed to scoring, retaining
+            all query identities, uncovered points, access and failures.
+        observed_values: JAX vector ``(m,)`` of original-scale measured targets
+            aligned with ``predictions.keys``, including uncovered queries.
+            Conversion and metric arithmetic follow configured JAX precision.
+        n_pairs: Number of covered unique region/pair identities scored.
+        n_query_pairs: Total requested unique identities, covered or uncovered.
+        coverage: ``n_pairs / n_query_pairs``.
+        mse: Mean squared error in squared original target units, or ``None``
+            when ``n_pairs == 0``.
+        rmse: Root mean squared error in original units, or ``None`` at zero
+            coverage.
+        mae: Mean absolute error in original units, or ``None`` at zero coverage.
+    """
 
     predictions: OOFPrediction
     observed_values: jax.Array
@@ -178,6 +340,7 @@ class OOFEvaluation:
 
 
 def _canonical_pairs(pairs, universe=None):
+    """Deduplicate evaluation identities; ordinary prediction rejects duplicates."""
     try:
         pairs = tuple(tuple(pair) for pair in pairs)
         if any(
@@ -258,6 +421,7 @@ def _support_inputs(support, regions, queries, target, regime):
 
 
 def _access(model, name, support, regime):
+    """Read the fitted model's access, rather than infer it from nominal folds."""
     head = (
         model.calibration.regions.get(name)
         if isinstance(model.calibration, MLPECalibrationModule)
@@ -279,6 +443,7 @@ def _access(model, name, support, regime):
 
 
 def _exclusion(pair, held_out, access, regime):
+    """Require the same endpoint to satisfy nominal holdout and actual non-access."""
     if not access.encoder_access_declared:
         return "unknown_encoder_access"
     consumed = (
@@ -299,6 +464,7 @@ def _exclusion(pair, held_out, access, regime):
 
 
 def _member_predict(model, region, pairs, regime, support, access):
+    """Accept conditional points only when returned access matches the declaration."""
     provenance = None
     variances = None
     if regime.prediction_mode == "marginal":
@@ -348,12 +514,60 @@ def predict_out_of_fold(
     support: EvaluationSupport | Mapping[str, EvaluationSupport] | None = None,
     target: TargetSpec | None = None,
 ) -> OOFPrediction:
-    """Predict labelled pairs with only eligible members; no query targets accepted.
+    """Predict query identities with eligible members before reading query targets.
 
-    Counts use endpoints that are BOTH nominally held out and actually unseen.
-    Encoder training, validation selection, calibration and declared support all
-    contribute target access. Failed/pending members and prediction errors remain
-    visible. Supply target metadata explicitly if every member is unavailable.
+    A member contributes only when the query's own target was never consumed and
+    the regime's required endpoints are both nominal regional holdouts and
+    untouched by actual training, validation-selection and calibration access.
+    Strict support policy also treats support endpoints as seen. These checks
+    apply separately to each unique region/pair, before its genetic prediction.
+    Only eligible pairs are calibrated or inverse-transformed, so unrequested or
+    excluded inverse-transform failures do not prevent valid selected points.
+
+    Args:
+        ensemble: ``Ensemble`` retaining every requested completed, failed or
+            pending member and its population fold. Completed members must
+            share target and feature contracts.
+        region: One ``RegionBatch``, a nonempty sequence with unique names, or a
+            mapping whose keys equal each batch's name. Each batch supplies
+            query/support locations and compatible feature meanings; no query
+            genetic measurements are needed.
+        pairs: For one region, a nonempty iterable of labelled pairs or matching
+            query-role ``ObservationPartition``. For shared regions, a mapping
+            from every region name to one such selection. Labels must identify
+            distinct located endpoints. Reversals and repeats are deduplicated;
+            output sorts region names and canonical unordered pair identities.
+            This differs from ordinary prediction, which rejects duplicates.
+        regime: ``EvaluationRegime``; ``None`` selects marginal prediction with
+            ``both_unseen`` endpoints and strict ``unseen`` support policy.
+            Known-effect/support modes require regional MLPE calibration.
+        support: Required only in support mode. Supply ``EvaluationSupport``
+            for one region, or a mapping declaring every query region exactly.
+            Each support target contract must match the ensemble; measured
+            support must equal its support-role partition and be disjoint from
+            all query identities. Calibration-target reuse fails per member.
+        target: Optional ``TargetSpec`` metadata, never query measurements.
+            Inferred from completed members when available, and must agree if
+            supplied. Required if every member is failed or pending.
+
+    Returns:
+        ``OOFPrediction`` with one common ``Prediction`` per region and aligned
+        member points ``(n_members, m)``, counts, access and visible failures.
+        Successful original-scale member points are equally averaged per query.
+        Uncovered values/spreads are NaN and counts are zero. OOF numerical
+        arrays follow configured JAX precision; standalone conditional operations
+        and aggregation use scoped float64, which does not change global policy.
+        Resistance prediction requires explicitly enabled x64. No model is
+        refitted or mutated and no query targets are read.
+
+    Raises:
+        ValueError: Composition, regime, regional/pair forms, labels, target
+            contracts or support declarations are incompatible; or all members
+            are unavailable without explicit target metadata. Per-member
+            prediction/provenance failures are recorded in the result instead.
+        FloatingPointError: Aggregating finite contributors produces nonfinite
+            mean or spread. Member numerical prediction failures are recorded
+            and can leave coverage from other members intact.
     """
     if not isinstance(ensemble, Ensemble):
         raise ValueError("Provide an Ensemble with its complete requested composition")
@@ -465,7 +679,36 @@ def predict_out_of_fold(
 
 
 def score_out_of_fold(prediction: OOFPrediction, observations) -> OOFEvaluation:
-    """Read query targets only after prediction; pool every unique covered pair once."""
+    """Score fixed OOF means once per covered unique region/pair.
+
+    Query targets enter only here; changing them cannot alter the supplied
+    predictions, access or coverage. Eligible original-scale member points have
+    already been averaged. Every covered pair has equal pooled metric weight,
+    irrespective of contributor count or region; uncovered pairs are retained
+    for coverage reporting and excluded from errors.
+
+    Args:
+        prediction: Original-scale ``OOFPrediction`` generated without query
+            targets, containing unique canonical region/pair identities.
+        observations: ``PairwiseObservations`` for a single prediction region,
+            or a mapping with exactly the prediction region names. Targets must
+            have the identical ``TargetSpec`` and contain every requested query,
+            even uncovered ones. Extra measured pairs are ignored; unmeasured
+            pairs are never filled with zeros.
+
+    Returns:
+        ``OOFEvaluation`` retaining the unchanged prediction object and aligned
+        original-scale measured targets ``(m,)``. MSE uses squared original
+        units; RMSE and MAE use original units. All three are ``None`` when no
+        query is covered. Target conversion and metric arithmetic follow the
+        configured JAX precision. No model, prediction or observations are
+        mutated, and no fitting or new prediction is performed.
+
+    Raises:
+        ValueError: Prediction scale/identities, regional observations or target
+            metadata are incompatible, or any query lacks a measured target.
+        FloatingPointError: Covered-pair metric arithmetic is nonfinite.
+    """
     if not isinstance(prediction, OOFPrediction) or prediction.scale != "original":
         raise ValueError("Provide original-scale OOFPrediction values")
     names = {name for name, _ in prediction.keys}
@@ -513,7 +756,52 @@ def evaluate_ensemble(
     regime: EvaluationRegime | None = None,
     support=None,
 ) -> OOFEvaluation:
-    """Predict from declared query identities, then score original-scale observations."""
+    """Generate eligible predictions, then score measured query targets.
+
+    This convenience operation extracts pair identities and target metadata from
+    observations, calls ``predict_out_of_fold`` without query measurements, then
+    calls ``score_out_of_fold``. Use those two calls explicitly to retain a fixed
+    prediction before reading or changing scoring targets. Endpoint and actual
+    target-access rules apply even when partitions call a pair a query.
+
+    Args:
+        ensemble: Complete requested ``Ensemble`` composition, including any
+            failed or pending outcomes.
+        region: One ``RegionBatch``, a nonempty sequence of uniquely named
+            batches, or a mapping keyed by matching region names.
+        observations: Original-scale ``PairwiseObservations`` for one region.
+            For shared regions, supply a sequence aligned with the supplied
+            region order or a mapping with exactly the region names. All targets
+            must have identical ``TargetSpec`` contracts and observation labels
+            must have prepared locations. Missing measurements remain absent.
+        partitions: Optional query-role ``ObservationPartition`` for one region,
+            or an aligned sequence/name-matching mapping for shared regions.
+            Each partition must select only observed pairs in its own region.
+            ``None`` requests every measured pair; ineligible pairs remain
+            present with zero coverage. A selected region needs at least one pair.
+        regime: ``EvaluationRegime``; ``None`` uses marginal, ``both_unseen``
+            prediction with strict support policy. Conditional modes require
+            regional MLPE calibration and retain actual target-access rules.
+        support: Support-mode ``EvaluationSupport`` for one region, or a mapping
+            covering every query region. It must declare exactly measured,
+            target-compatible support disjoint from all requested queries.
+            Omit outside support mode.
+
+    Returns:
+        ``OOFEvaluation`` with canonical unique-pair predictions, complete member
+        diagnostics and coverage, followed by equal covered-pair metrics on
+        original units. Several contributors are averaged before one pair is
+        scored. Zero coverage gives NaN points and ``None`` metrics. Precision
+        and failure reporting follow ``predict_out_of_fold`` and
+        ``score_out_of_fold``. No model is refitted or mutated.
+
+    Raises:
+        ValueError: Inputs cannot be aligned, labels/targets/roles are incompatible,
+            selected pairs lack observations, or query/support declarations are
+            invalid. Target metadata comes from observations even if all members
+            are unavailable; member prediction failures remain in the result.
+        FloatingPointError: Aggregate or scoring arithmetic is nonfinite.
+    """
     inputs = _normalize_inputs(region, observations, partitions)
     regions, queries, observed_by_region = {}, {}, {}
     target = None

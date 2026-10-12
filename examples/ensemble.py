@@ -1,4 +1,10 @@
-"""Independent synthetic fits: deployment, known effects, support and OOF coverage."""
+"""Run a complete synthetic deployment/OOF workflow without private data.
+
+From the repository root: ``JAX_PLATFORMS=cpu python examples/ensemble.py``.
+The explicit x64 scope supports joint MLPE fitting; predictions are fixed before
+query targets are supplied to scoring. Printed identities/counts expose exactly
+which pairs have coverage and what each uncertainty diagnostic means.
+"""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,7 +22,6 @@ from ilg_toolkit import (
     RegionBatch,
     TargetSpec,
     TrainingConfig,
-    evaluate_ensemble,
     fit_ensemble,
     fit_ensemble_member,
     load_checkpoint,
@@ -42,7 +47,7 @@ def continue_members(directory, region, observations, folds, config):
     for fold in folds:
         for seed in (13, 29):
             checkpoint = directory / f"{fold.fold_id}-seed-{seed}.eqx"
-            # Supply the exact encoder configuration; loading restores its leaves.
+            # Supply the exact distance-model architecture; loading restores its leaves.
             state = (
                 load_checkpoint(checkpoint, distance_model=model_factory(jax.random.PRNGKey(seed)))
                 if checkpoint.exists()
@@ -103,22 +108,50 @@ with jax.enable_x64():
     deployment = ensemble.predict(region)
     print("Independent members:", deployment.member_ids)
     print("Deployment averages every member AFTER inverse transformation; units: index")
+    print("Deployment pairs:", deployment.prediction.pairs)
     print(deployment.prediction.values)
     print("Descriptive member SD (separate from MLPE predictive variance):")
     print(deployment.member_spread)
 
-    # All measured pairs are requested. Only untouched held-out pairs get OOF coverage.
-    evaluation = evaluate_ensemble(ensemble, region, observations)
-    print("Fit/prediction failures:", ensemble.failures, evaluation.predictions.prediction_failures)
+    # Request identities only. No query measurements enter this prediction call.
+    oof = predict_out_of_fold(ensemble, region, observations.observed_pairs)
+    print("OOF region/pair, contributors, mean (NaN means uncovered):")
+    for identity, count, value in zip(oof.keys, oof.eligible_counts, oof.values, strict=True):
+        print(identity, int(count), float(value))
+    print("OOF coverage status:", oof.coverage_status)
+    print("Fit/prediction failures:", ensemble.failures, oof.prediction_failures)
+
+    # The prediction is fixed; only now supply measured query targets for errors.
+    evaluation = score_out_of_fold(oof, observations)
     print("OOF covered unique pairs:", evaluation.n_pairs, "of", evaluation.n_query_pairs)
-    print("OOF coverage, RMSE:", evaluation.coverage, evaluation.rmse)
+    print("OOF coverage, RMSE (index):", evaluation.coverage, evaluation.rmse)
+    print("Each covered pair is scored once after averaging its eligible member points.")
+    print("Training pairs stay present with zero coverage and do not contribute errors.")
+    assert oof.coverage_status == "partial"
+    assert evaluation.n_pairs == 1 and evaluation.n_query_pairs == 15
+
+    # Changing scoring targets changes errors, never this already fixed prediction.
+    shifted = PairwiseObservations.from_pairs(
+        observations.observed_pairs,
+        observations.observed_values + 1,
+        target=observations.target,
+        sampling_unit_ids=labels,
+    )
+    shifted_score = score_out_of_fold(oof, shifted)
+    assert shifted_score.predictions is oof
+    print("Same fixed prediction, shifted scoring-target RMSE:", shifted_score.rmse)
 
     member = ensemble.members[0]
     assert member.model is not None
     training_pair = member.fold.training[region.name].pairs[0]
     known = member.model.predict_known_effects(region, [training_pair])
     print("Known-effect deployment on a calibration pair:", known.prediction.values)
-    print("This pair is excluded from OOF evaluation because its target was accessed.")
+    excluded = predict_out_of_fold(ensemble, region, [training_pair])
+    excluded_score = score_out_of_fold(excluded, observations)
+    print("This pair is excluded from OOF because its own target was accessed:")
+    print(excluded.exclusion_reasons)
+    print("Zero-coverage points/metrics:", excluded.values, excluded_score.rmse)
+    assert excluded.coverage_status == "none" and excluded_score.rmse is None
 
     # Supply one new genetic measurement explicitly; the query's own target stays separate.
     held_out = member.fold.held_out_units[region.name]
@@ -136,6 +169,14 @@ with jax.enable_x64():
         support_observations,
         ObservationPartition(region.name, (support_pair,), role="support"),
     )
+    strict = predict_out_of_fold(
+        ensemble,
+        region,
+        member.fold.query[region.name].pairs,
+        support=support,
+        regime=EvaluationRegime(prediction_mode="support"),
+    )
+    print("Strict support counts its endpoints as seen; coverage:", strict.coverage)
     conditional = predict_out_of_fold(
         ensemble,
         region,
@@ -148,7 +189,10 @@ with jax.enable_x64():
     )
     # Query targets are read only at this separate scoring step.
     conditional_score = score_out_of_fold(conditional, observations)
+    print("Declared-support conditional OOF identities:", conditional.keys)
     print("Declared-support conditional OOF mean:", conditional.values)
+    print("Eligibility was checked before disjoint support; endpoints are now conditioned.")
+    assert strict.coverage == 0 and conditional.coverage == 1
     print("Conditional OOF coverage, RMSE:", conditional.coverage, conditional_score.rmse)
     print("Per-member predictive variance stays on the log1p model scale:")
     print(conditional.member_model_variances)
