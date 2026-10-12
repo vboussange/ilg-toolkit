@@ -103,7 +103,7 @@ with jax.enable_x64():
     deployment = ensemble.predict(region)
     print("Independent members:", deployment.member_ids)
     print("Deployment averages every member AFTER inverse transformation; units: index")
-    print(deployment.values)
+    print(deployment.prediction.values)
     print("Descriptive member SD (separate from MLPE predictive variance):")
     print(deployment.member_spread)
 
@@ -117,7 +117,7 @@ with jax.enable_x64():
     assert member.model is not None
     training_pair = member.fold.training[region.name].pairs[0]
     known = member.model.predict_known_effects(region, [training_pair])
-    print("Known-effect deployment on a calibration pair:", known.values)
+    print("Known-effect deployment on a calibration pair:", known.prediction.values)
     print("This pair is excluded from OOF evaluation because its target was accessed.")
 
     # Supply one new genetic measurement explicitly; the query's own target stays separate.

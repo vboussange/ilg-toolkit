@@ -8,7 +8,8 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
 
-from ..data import ObservationPartition, PairwiseObservations, TargetSpec
+from ..data import ObservationPartition, PairwiseObservations
+from ..prediction import Prediction
 from .fit import MLPEError, RegionalMLPECalibration
 
 
@@ -31,22 +32,18 @@ class MLPEConditionalPrediction(eqx.Module):
 
     ``model_variance`` includes population-effect posterior uncertainty and
     independent residual variance plus configured jitter. It treats the encoder,
-    fixed coefficients, and variance parameters as fixed. ``values`` is the
+    fixed coefficients, and variance parameters as fixed. ``prediction.values`` is the
     inverse transform of ``model_values``; a nonlinear transform does not make
     these original-scale expectations or turn the variance into original units.
     """
 
-    values: jax.Array
+    prediction: Prediction
     model_values: jax.Array
     model_variance: jax.Array
     effect_variance: jax.Array
     residual_variance: float
     jitter: float
-    pairs: tuple[tuple[str, str], ...]
-    target: TargetSpec
-    region_name: str
     provenance: MLPEPredictionProvenance
-    scale: str = "original"
     variance_scale: str = "model"
     variance_components: tuple[str, ...] = (
         "population_effect_posterior",
@@ -69,7 +66,7 @@ def _query(scores, pairs):
         pairs = tuple(tuple(pair) for pair in raw_pairs)
     except (TypeError, ValueError) as error:
         raise MLPEError("Query pairs must contain sampling-unit labels") from error
-    if scores.shape != (len(pairs),) or not bool(jnp.isfinite(scores).all()):
+    if not pairs or scores.shape != (len(pairs),) or not bool(jnp.isfinite(scores).all()):
         raise MLPEError("Query scores must be finite and aligned with labelled pairs")
     if any(
         len(pair) != 2
@@ -127,15 +124,18 @@ def _predict(head, scores, pairs, population_ids, mean, covariance, provenance):
         raise MLPEError("Conditional prediction produced nonfinite means or variances")
     values = head.target.inverse(model_values)
     return MLPEConditionalPrediction(
-        values,
+        Prediction(
+            values,
+            pairs,
+            head.region_name,
+            head.target,
+            tuple(dict.fromkeys(label for pair in pairs for label in pair)),
+        ),
         model_values,
         variance,
         effect_variance,
         head.residual_variance,
         head.config.jitter,
-        pairs,
-        head.target,
-        head.region_name,
         provenance,
     )
 

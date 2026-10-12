@@ -47,5 +47,9 @@ observations = PairwiseObservations.from_pairs(
 head = calibrate_mlpe(raw_scores, observations, region_name=region.name)
 prediction = head.predict_marginal(raw_scores, observations.observed_pairs)
 print("Landscape scores:", raw_scores[:4])
-print("Calibrated genetic predictions:", prediction.values[:4], prediction.target.units)
+print(
+    "Calibrated genetic predictions:",
+    prediction.prediction.values[:4],
+    prediction.prediction.target.units,
+)
 print("Signed fitted slope:", head.slope)

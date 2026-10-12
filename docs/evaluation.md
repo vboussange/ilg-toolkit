@@ -14,8 +14,18 @@ synthetic fit and prediction workflow.
 | OOF with known/support `EvaluationRegime` | Saved effects or declared support | Same own-target rule; explicit endpoint and support policies | Conditional OOF values, access and coverage | Member SD and separate per-member model variances |
 | `score_out_of_fold(prediction, observations)` | Query targets read after predictions are fixed | Matching original-scale targets; each covered unique pair counted once | MSE, RMSE, MAE, covered count and observed targets | No interval inferred |
 
-Numerical means, member values, spreads, conditional variances and scoring targets
-are float64 JAX arrays; enable JAX x64 explicitly before prediction.
+Ordinary model results are pair-oriented `Prediction` objects. Conditional and
+deployment ensemble records compose them as `.prediction`; member diagnostics
+remain separate. OOF records compose one common prediction per region in
+`.predictions`. Their flat `.keys` and `.values` derive from those regional points
+in canonical region/pair order, aligned with member-output columns. Use a common
+prediction's `.as_matrix()` for explicit matrix representation.
+
+Ordinary/direct and OOF numerical arrays follow configured JAX precision.
+Standalone MLPE/conditioning and ensemble aggregation use scoped float64;
+resistance and joint MLPE fitting require explicitly enabled x64. Matrix
+conversion and OOF flat views retain stored precision without changing the
+global setting. Enable x64 before constructing measurements requiring float64.
 Coverage masks/counts and access/provenance records retain labelled host metadata.
 
 ```python

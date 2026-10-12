@@ -130,10 +130,10 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
         assert isinstance(encoder, InitializedEmbedding)
         weights.append(tuple(np.asarray(encoder.log_weights)))
     assert len(set(weights)) == 4
-    np.testing.assert_allclose(prediction.values, member_values.mean(axis=0), atol=1e-12)
+    np.testing.assert_allclose(prediction.prediction.values, member_values.mean(axis=0), atol=1e-12)
     np.testing.assert_allclose(prediction.member_spread, member_values.std(axis=0), atol=1e-12)
     np.testing.assert_array_equal(prediction.member_values, member_values)
-    assert prediction.target.units == "index"
+    assert prediction.prediction.target.units == "index"
     for member in result.members:
         model, fitted = completed_fit(member)
         assert fitted.history[-1].training_loss < fitted.history[0].training_loss
@@ -187,7 +187,7 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
             region, changed, folds=[fold], config=config, model_factory=model_factory
         )
         np.testing.assert_array_equal(
-            baseline.predict(region).values, perturbed.predict(region).values
+            baseline.predict(region).prediction.values, perturbed.predict(region).prediction.values
         )
     baseline_model, baseline_fit = completed_fit(baseline.members[0])
     perturbed_model, perturbed_fit = completed_fit(perturbed.members[0])
@@ -201,25 +201,30 @@ def test_original_scale_known_outputs_are_averaged_after_inverse_transformation(
     from ilg_toolkit import Prediction, TargetSpec, aggregate_predictions
 
     target = TargetSpec("divergence", units="index", transform="log1p")
-    transformed = [
-        np.array([[0, np.log(2)], [np.log(2), 0]]),
-        np.array([[0, np.log(10)], [np.log(10), 0]]),
-    ]
+    transformed = [np.log(2), np.log(10)]
     with jax.enable_x64():
         predictions = {
-            str(i): Prediction(jnp.asarray(np.expm1(value)), ("a", "b"), target)
+            str(i): Prediction(
+                jnp.asarray([np.expm1(value)]), (("b", "a"),), "alpine", target, ("a", "b", "extra")
+            )
             for i, value in enumerate(transformed)
         }
         result = aggregate_predictions(predictions, expected_member_ids=("0", "1"))
     assert all(
         isinstance(value, jax.Array) and value.dtype == jnp.float64
-        for value in (result.values, result.member_values, result.member_spread)
+        for value in (result.prediction.values, result.member_values, result.member_spread)
     )
-    np.testing.assert_allclose(result.values, [[0, 5], [5, 0]], atol=1e-14)
-    np.testing.assert_allclose(result.member_spread, [[0, 4], [4, 0]], atol=1e-14)
-    assert not np.allclose(result.values, np.expm1(np.mean(transformed, axis=0)))
-    assert result.scale == "original"
-    assert result.target == target
+    np.testing.assert_allclose(result.prediction.values, [5], atol=1e-14)
+    np.testing.assert_allclose(result.member_spread, [4], atol=1e-14)
+    np.testing.assert_allclose(result.member_values, [[1], [9]], atol=1e-14)
+    np.testing.assert_allclose(
+        result.prediction.as_matrix(), [[0, 5, np.nan], [5, 0, np.nan], [np.nan, np.nan, 0]]
+    )
+    assert result.prediction.pairs == (("b", "a"),)
+    assert result.prediction.region_name == "alpine"
+    assert not np.allclose(result.prediction.values, np.expm1(np.mean(transformed)))
+    assert result.prediction.scale == "original"
+    assert result.prediction.target == target
 
 
 def test_original_scale_aggregation_preserves_large_finite_means_and_spreads():
@@ -232,16 +237,14 @@ def test_original_scale_aggregation_preserves_large_finite_means_and_spreads():
             ((-1e308, 1e308), 0, 1e308),
         ]:
             predictions = {
-                str(i): Prediction(jnp.asarray([[0, level], [level, 0]]), ("a", "b"), target)
+                str(i): Prediction(
+                    jnp.asarray([level]), (("a", "b"),), "alpine", target, ("a", "b")
+                )
                 for i, level in enumerate(levels)
             }
             result = aggregate_predictions(predictions)
-            np.testing.assert_allclose(
-                result.values, [[0, expected_mean], [expected_mean, 0]], rtol=1e-14
-            )
-            np.testing.assert_allclose(
-                result.member_spread, [[0, expected_spread], [expected_spread, 0]], rtol=1e-14
-            )
+            np.testing.assert_allclose(result.prediction.values, [expected_mean], rtol=1e-14)
+            np.testing.assert_allclose(result.member_spread, [expected_spread], rtol=1e-14)
 
 
 def test_failed_members_and_missing_composition_cannot_be_silently_dropped():
@@ -394,11 +397,14 @@ def test_incompatible_scales_and_invalid_fold_membership_fail_clearly():
     )
 
     target = TargetSpec("divergence", units="index")
-    first = Prediction(jnp.zeros((2, 2)), ("a", "b"), target)
+    first = Prediction(jnp.zeros(1), (("a", "b"),), "alpine", target, ("a", "b"))
+    with pytest.raises(ValueError, match="original-scale"):
+        replace(first, scale="model")
     for second in [
         replace(first, target=replace(target, units="percent")),
-        replace(first, scale="model"),
         replace(first, sampling_unit_ids=("b", "a")),
+        replace(first, pairs=(("b", "a"),)),
+        replace(first, region_name="other"),
     ]:
         with pytest.raises(ValueError, match="compatible.*scales|align sampling-unit"):
             aggregate_predictions({"first": first, "second": second})
@@ -515,15 +521,15 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean():
             training_objective="direct_log1p",
         )
         surface_prediction = averaged_surface_model.predict(region)
-    np.testing.assert_allclose(prediction.values[0, 1], 0.625, atol=1e-7)
+    np.testing.assert_allclose(prediction.prediction.as_matrix()[0, 1], 0.625, atol=1e-7)
     np.testing.assert_allclose(summary.values, 2.5, atol=1e-12)
     assert all(
         isinstance(value, jax.Array) and value.dtype == jnp.float64
         for value in (summary.values, summary.member_values, summary.member_spread)
     )
     np.testing.assert_allclose(summary.member_spread, 1.5, atol=1e-12)
-    np.testing.assert_allclose(surface_prediction.values[0, 1], 0.4, atol=1e-7)
-    assert not np.allclose(prediction.values, surface_prediction.values)
+    np.testing.assert_allclose(surface_prediction.as_matrix()[0, 1], 0.4, atol=1e-7)
+    assert not np.allclose(prediction.prediction.values, surface_prediction.values)
 
 
 def test_member_callback_failure_interrupts_before_starting_another_member():
@@ -601,7 +607,7 @@ def test_epoch_hook_interrupts_and_member_states_continue_the_exact_ensemble():
             member_states=checkpoints,
         )
         np.testing.assert_array_equal(
-            resumed.predict(region).values, complete.predict(region).values
+            resumed.predict(region).prediction.values, complete.predict(region).prediction.values
         )
     assert [completed_fit(member)[1].history for member in resumed.members] == [
         completed_fit(member)[1].history for member in complete.members

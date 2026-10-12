@@ -46,8 +46,9 @@ from .mlpe import (
     condition_on_support,
     predict_known_effects,
 )
-from .model import LandscapeGeneticsModel, PairPrediction, Prediction
+from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
+from .prediction import Prediction
 from .training import EpochRecord, TrainingState, fit
 
 __all__ = [
@@ -94,7 +95,6 @@ __all__ = [
     "PairwiseObservations",
     "ObservationPartition",
     "Prediction",
-    "PairPrediction",
     "LandscapeGeneticsModel",
     "RegionBatch",
     "ResistanceSolverConfig",

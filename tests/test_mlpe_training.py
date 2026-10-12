@@ -112,7 +112,7 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
     assert result.model.training_objective == "mlpe"
     assert prediction.target.units == "index"
     assert np.isfinite(prediction.values).all()
-    assert not np.allclose(prediction.values, scores)
+    assert not np.allclose(prediction.as_matrix(), scores)
     left, right = np.triu_indices(6, 1)
     np.testing.assert_allclose(head.score_center, np.mean(scores[left, right]), atol=1e-12)
     np.testing.assert_allclose(head.score_scale, np.std(scores[left, right], ddof=1), atol=1e-12)

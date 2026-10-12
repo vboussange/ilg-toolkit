@@ -15,6 +15,7 @@ from .data import (
     TargetSpec,
 )
 from .ensemble import Ensemble, MemberFailure, _summarize_members
+from .prediction import Prediction
 from .training import _normalize_inputs
 
 
@@ -89,9 +90,7 @@ class OOFPrediction:
     and target-access metadata remain on the host.
     """
 
-    keys: tuple[tuple[str, tuple[str, str]], ...]
-    values: jax.Array
-    target: TargetSpec
+    predictions: dict[str, Prediction]
     regime: EvaluationRegime
     member_ids: tuple[str, ...]
     member_values: jax.Array
@@ -105,13 +104,38 @@ class OOFPrediction:
     access: dict[str, dict[str, EvaluationAccess]]
     conditioning_provenance: dict = field(default_factory=dict)
     member_model_variances: jax.Array | None = None
-    scale: str = "original"
     variance_scale: str = "model"
     excluded_uncertainty: tuple[str, ...] = (
         "encoder",
         "fixed_effect_coefficients",
         "variance_parameters",
     )
+
+    @property
+    def keys(self) -> tuple[tuple[str, tuple[str, str]], ...]:
+        """Canonical region/pair identities in member-output column order."""
+        return tuple(
+            (name, pair)
+            for name in sorted(self.predictions)
+            for pair in self.predictions[name].pairs
+        )
+
+    @property
+    def values(self) -> jax.Array:
+        """Original-scale means in the same canonical order as ``keys``."""
+        values = [self.predictions[name].values for name in sorted(self.predictions)]
+        with jax.enable_x64(
+            jax.config.read("jax_enable_x64") or any(value.dtype == jnp.float64 for value in values)
+        ):
+            return jnp.concatenate(values)
+
+    @property
+    def target(self) -> TargetSpec:
+        return next(iter(self.predictions.values())).target
+
+    @property
+    def scale(self) -> str:
+        return next(iter(self.predictions.values())).scale
 
     @property
     def eligible_member_ids(self):
@@ -278,7 +302,7 @@ def _member_predict(model, region, pairs, regime, support, access):
     provenance = None
     variances = None
     if regime.prediction_mode == "marginal":
-        values = model.predict_pairs(region, pairs).values
+        values = model.predict(region, pairs).values
     else:
         if regime.prediction_mode == "known_effects":
             result = model.predict_known_effects(region, pairs)
@@ -288,10 +312,10 @@ def _member_predict(model, region, pairs, regime, support, access):
             )
         provenance = result.provenance
         if (
-            result.scale != "original"
-            or result.target != model.target
-            or result.region_name != region.name
-            or tuple(tuple(sorted(pair)) for pair in result.pairs) != pairs
+            result.prediction.scale != "original"
+            or result.prediction.target != model.target
+            or result.prediction.region_name != region.name
+            or tuple(tuple(sorted(pair)) for pair in result.prediction.pairs) != pairs
             or result.variance_scale != "model"
             or provenance.region_name != region.name
             or provenance.mode != regime.prediction_mode
@@ -303,7 +327,7 @@ def _member_predict(model, region, pairs, regime, support, access):
             raise ValueError(
                 "Conditional prediction target-access provenance differs from its declaration"
             )
-        values, variances = result.values, result.model_variance
+        values, variances = result.prediction.values, result.model_variance
     if values.shape != (len(pairs),) or not bool(jnp.isfinite(values).all()):
         raise FloatingPointError(
             "Member prediction must return aligned finite original-scale values"
@@ -414,10 +438,16 @@ def predict_out_of_fold(
         )
         mean = mean.at[column].set(member_mean.astype(mean.dtype))
         spread = spread.at[column].set(member_spread.astype(spread.dtype))
+    regional_predictions = {}
+    for name in sorted(queries):
+        columns = jnp.asarray(
+            [index for index, (region_name, _) in enumerate(keys) if region_name == name]
+        )
+        regional_predictions[name] = Prediction(
+            mean[columns], queries[name], name, target, regions[name].sampling_unit_ids
+        )
     return OOFPrediction(
-        keys,
-        mean,
-        target,
+        regional_predictions,
         regime,
         member_ids,
         values,

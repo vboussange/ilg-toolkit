@@ -13,6 +13,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 from ..data import ObservationPartition, PairwiseObservations, TargetSpec
+from ..prediction import Prediction
 from .likelihood import MLPEFit, finalize_mlpe_fit, profiled_mlpe_ml_fit
 
 
@@ -81,14 +82,16 @@ class MLPEPrediction(eqx.Module):
     Original-scale values inverse-transform the fitted Gaussian mean. For a
     nonlinear transform this is not the expectation of the original random
     target; no distributional mean correction is implied.
+
+    Attributes:
+        prediction: Original-scale points and pair identities. Matrix order is
+            distinct query endpoints in first-appearance order.
+        model_values: Fitted Gaussian mean vector, shape ``(m,)``, before the
+            inverse target transform. Marginal predictive variance is unreported.
     """
 
-    values: jax.Array
+    prediction: Prediction
     model_values: jax.Array
-    pairs: tuple[tuple[str, str], ...]
-    target: TargetSpec
-    region_name: str
-    scale: str = "original"
 
 
 @final
@@ -202,11 +205,14 @@ class RegionalMLPECalibration(eqx.Module):
         scores, pairs, _ = _query(scores, pairs)
         model_values = self.intercept + self.slope * (scores - self.score_center) / self.score_scale
         return MLPEPrediction(
-            self.target.inverse(model_values),
+            Prediction(
+                self.target.inverse(model_values),
+                pairs,
+                self.region_name,
+                self.target,
+                tuple(dict.fromkeys(label for pair in pairs for label in pair)),
+            ),
             model_values,
-            pairs,
-            self.target,
-            self.region_name,
         )
 
     def predict_known_effects(self, scores, pairs):

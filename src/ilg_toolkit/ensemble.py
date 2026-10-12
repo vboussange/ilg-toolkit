@@ -9,9 +9,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from .config import TrainingConfig
-from .data import ObservationPartition, RegionBatch, TargetSpec
-from .model import LandscapeGeneticsModel, Prediction
+from .data import ObservationPartition, RegionBatch
+from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
+from .prediction import Prediction
 from .training import TrainingState, _normalize_inputs, fit
 
 
@@ -209,15 +210,20 @@ class EnsembleMember:
 
 @dataclass(frozen=True)
 class EnsemblePrediction:
-    """Equal-weight original-scale means and descriptive population SD (ddof=0)."""
+    """Equal-weight original-scale means and descriptive population SD (ddof=0).
 
-    values: jax.Array
-    sampling_unit_ids: tuple[str, ...]
-    target: TargetSpec
+    Attributes:
+        prediction: Mean pair points and their shared identities and target.
+        member_ids: Requested member order, of length ``k``.
+        member_values: Original-scale member points of shape ``(k, m)``.
+        member_spread: Original-unit descriptive SD of shape ``(m,)``. This
+            is not statistical predictive variance or a covariance matrix.
+    """
+
+    prediction: Prediction
     member_ids: tuple[str, ...]
     member_values: jax.Array
     member_spread: jax.Array
-    scale: str = "original"
 
 
 @dataclass(frozen=True)
@@ -251,8 +257,14 @@ def aggregate_predictions(
         prediction = predictions[member_id]
         if prediction.target != first.target or prediction.scale != "original":
             raise ValueError("Ensemble predictions require compatible original target scales")
-        if prediction.sampling_unit_ids != first.sampling_unit_ids:
-            raise ValueError("Ensemble predictions must align sampling-unit identities and order")
+        if (
+            prediction.sampling_unit_ids != first.sampling_unit_ids
+            or prediction.pairs != first.pairs
+            or prediction.region_name != first.region_name
+        ):
+            raise ValueError(
+                "Ensemble predictions must align sampling-unit, pair and region identities"
+            )
         member_values = jnp.asarray(prediction.values, dtype=jnp.float64)
         if member_values.shape != first.values.shape or not bool(jnp.isfinite(member_values).all()):
             raise ValueError("Ensemble member predictions must have aligned finite values")
@@ -260,9 +272,7 @@ def aggregate_predictions(
     stacked = jnp.stack(values)
     mean, spread = _summarize_members(stacked)
     return EnsemblePrediction(
-        mean,
-        first.sampling_unit_ids,
-        first.target,
+        Prediction(mean, first.pairs, first.region_name, first.target, first.sampling_unit_ids),
         ids,
         stacked,
         spread,
@@ -349,10 +359,13 @@ class Ensemble:
             models[member.identity.member_id] = member.model
         return models
 
-    def predict(self, region: RegionBatch) -> EnsemblePrediction:
+    def predict(self, region: RegionBatch, pairs=None) -> EnsemblePrediction:
         """Deployment marginal means, without query targets or eligibility filtering."""
         models = self._completed()
-        predictions = {member_id: model.predict(region) for member_id, model in models.items()}
+        pairs = None if pairs is None else tuple(pairs)
+        predictions = {
+            member_id: model.predict(region, pairs) for member_id, model in models.items()
+        }
         return aggregate_predictions(predictions, expected_member_ids=self.expected_member_ids)
 
     def landscape_scores(self, region: RegionBatch) -> dict[str, jax.Array]:

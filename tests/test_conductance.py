@@ -119,8 +119,8 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
         assert surface.shape == (2, 2)
         assert np.all(np.isfinite(surface) & (surface > 0))
         expected = dense_resistance(surface, np.array([0, 1, 3]))
-        np.testing.assert_allclose(prediction.values, expected, atol=2e-6, rtol=2e-6)
-        np.testing.assert_allclose(result.model.landscape_scores(region), prediction.values)
+        np.testing.assert_allclose(prediction.as_matrix(), expected, atol=2e-6, rtol=2e-6)
+        np.testing.assert_allclose(result.model.landscape_scores(region), prediction.as_matrix())
         assert prediction.target.units == "index"
 
 

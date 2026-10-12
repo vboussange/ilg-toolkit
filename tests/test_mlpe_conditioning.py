@@ -47,10 +47,12 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
         head, observations.observed_pairs, _R_SCORES, observations.observed_values, pairs, scores
     )
     result = predict_known_effects(head, scores, pairs)
+    assert result.prediction.pairs == pairs
+    assert result.prediction.sampling_unit_ids == ("p01", "p02", "new", "p03", "other-new")
     assert all(
         isinstance(value, jax.Array) and value.dtype == np.float64
         for value in (
-            result.values,
+            result.prediction.values,
             result.model_values,
             result.model_variance,
             result.effect_variance,
@@ -86,7 +88,7 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated)
     assert all(
         isinstance(value, jax.Array) and value.dtype == np.float64
         for value in (
-            result.values,
+            result.prediction.values,
             result.model_values,
             result.model_variance,
             result.effect_variance,
@@ -165,20 +167,22 @@ def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
         [("new", "p01")],
         [0.2],
     )
-    np.testing.assert_allclose(result.values, np.expm1(expected_mean), atol=1e-10)
+    np.testing.assert_allclose(result.prediction.values, np.expm1(expected_mean), atol=1e-10)
     np.testing.assert_allclose(result.model_variance, expected_variance, atol=1e-11)
     np.testing.assert_allclose(
         result.model_variance, result.effect_variance + result.residual_variance + result.jitter
     )
-    assert result.scale == known.scale == "original"
+    assert result.prediction.scale == known.prediction.scale == "original"
     assert result.variance_scale == known.variance_scale == "model"
-    assert result.target == target
+    assert result.prediction.target == target
     assert set(result.excluded_uncertainty) == {
         "encoder",
         "fixed_effect_coefficients",
         "variance_parameters",
     }
-    assert result.values[0] != pytest.approx(np.expm1(expected_mean[0] + expected_variance[0] / 2))
+    assert result.prediction.values[0] != pytest.approx(
+        np.expm1(expected_mean[0] + expected_variance[0] / 2)
+    )
 
 
 def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibrated):
@@ -248,6 +252,8 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
     head = model.calibration.regions[region.name]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict_known_effects(region, pairs)
+    assert known.prediction.sampling_unit_ids == region.sampling_unit_ids
+    assert known.prediction.pairs == pairs
     scores = model.landscape_scores(region)
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
 
@@ -277,6 +283,8 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
         support,
         support_partition=ObservationPartition(region.name, support.observed_pairs, role="support"),
     )
+    assert result.prediction.sampling_unit_ids == region.sampling_unit_ids
+    assert result.prediction.pairs == pairs
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration_pairs + support.observed_pairs,

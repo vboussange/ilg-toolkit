@@ -44,11 +44,11 @@ def test_fixed_budget_fit_improves_and_predicts_without_query_targets():
     assert result.selection == "final"
     assert prediction.target.units == "index"
     assert prediction.target.transform == "identity"
-    assert prediction.values.shape == (4, 4)
-    assert np.all(np.isfinite(prediction.values))
-    np.testing.assert_allclose(prediction.values, prediction.values.T, atol=1e-6)
-    np.testing.assert_allclose(np.diag(prediction.values), 0, atol=1e-6)
-    np.testing.assert_allclose(result.model.landscape_scores(region), prediction.values)
+    assert prediction.as_matrix().shape == (4, 4)
+    assert np.all(np.isfinite(prediction.as_matrix()))
+    np.testing.assert_allclose(prediction.as_matrix(), prediction.as_matrix().T, atol=1e-6)
+    np.testing.assert_allclose(np.diag(prediction.as_matrix()), 0, atol=1e-6)
+    np.testing.assert_allclose(result.model.landscape_scores(region), prediction.as_matrix())
 
 
 def test_validation_selects_model_without_refitting_on_validation_targets():
@@ -74,7 +74,7 @@ def test_validation_selects_model_without_refitting_on_validation_targets():
     initial_loss = result.history[0].validation_loss
     assert final_loss is not None and initial_loss is not None
     assert final_loss > initial_loss
-    np.testing.assert_allclose(result.model.predict(region).values, initial, atol=1e-5)
+    np.testing.assert_allclose(result.model.predict(region).as_matrix(), initial, atol=1e-5)
 
 
 def test_observation_labels_are_aligned_and_signed_relatedness_is_refused():

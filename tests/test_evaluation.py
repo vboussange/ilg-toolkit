@@ -77,6 +77,13 @@ def known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
 def test_label_free_eligible_predictions_average_first_and_score_each_pair_once():
     region, ensemble, target = known_ensemble()
     prediction = predict_out_of_fold(ensemble, region, [("d", "c"), ("a", "b"), ("c", "d")])
+    assert tuple(prediction.predictions) == ("alpine",)
+    points = prediction.predictions["alpine"]
+    assert points.sampling_unit_ids == region.sampling_unit_ids
+    assert points.pairs == (("a", "b"), ("c", "d"))
+    assert points.region_name == "alpine"
+    assert np.isnan(points.as_matrix()[0, 1])
+    assert points.as_matrix()[2, 3] == 2.5
     for values in (prediction.values, prediction.member_values, prediction.member_spread):
         assert isinstance(values, jax.Array)
         assert values.dtype == jnp.float64
@@ -85,6 +92,10 @@ def test_label_free_eligible_predictions_average_first_and_score_each_pair_once(
     np.testing.assert_array_equal(prediction.covered_mask, [False, True])
     assert np.isnan(prediction.values[0])
     assert prediction.values[1] == 2.5
+    with jax.enable_x64(False):
+        assert prediction.values.dtype == jnp.float64
+        np.testing.assert_allclose(prediction.values, [np.nan, 2.5])
+        assert not jax.config.read("jax_enable_x64")
     assert prediction.member_spread[1] == 1.5
     assert prediction.coverage == 0.5
     observations = PairwiseObservations.from_pairs([("a", "b"), ("c", "d")], [1, 3], target=target)
@@ -398,7 +409,7 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
         expected_known = completed_model(member).predict_known_effects(
             region, [tuple(sorted(known_pair))]
         )
-        np.testing.assert_allclose(known.values, expected_known.values, atol=1e-12)
+        np.testing.assert_allclose(known.values, expected_known.prediction.values, atol=1e-12)
         assert known.member_model_variances is not None
         assert isinstance(known.member_model_variances, jax.Array)
         assert known.member_model_variances.dtype == jnp.float64
@@ -442,7 +453,7 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
         expected = completed_model(member).predict_with_support(
             region, [held], support_observed, support_partition=support.partition
         )
-        np.testing.assert_allclose(conditional.values, expected.values, atol=1e-12)
+        np.testing.assert_allclose(conditional.values, expected.prediction.values, atol=1e-12)
         assert conditional.member_model_variances is not None
         np.testing.assert_allclose(
             conditional.member_model_variances[0], expected.model_variance, atol=1e-12
@@ -492,6 +503,11 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
         Ensemble(tuple(members)), [region, valley], {"alpine": [("c", "d")], "valley": [("c", "d")]}
     )
     np.testing.assert_array_equal(regional.eligible_counts, [0, 2])
+    assert tuple(regional.predictions) == ("alpine", "valley")
+    assert regional.predictions["alpine"].region_name == "alpine"
+    assert regional.predictions["valley"].region_name == "valley"
+    assert np.isnan(regional.predictions["alpine"].values[0])
+    np.testing.assert_allclose(regional.predictions["valley"].values, [2.5])
     broken = replace(
         ensemble.members[0],
         model=eqx.tree_at(
@@ -542,7 +558,7 @@ def test_only_eligible_pairs_are_inverse_transformed():
         assert ensemble.members[0].status == "completed"
         with pytest.raises(ValueError, match="sqrt inverse"):
             ensemble.predict(region)  # unrelated (a,e) has score16 and fitted mean-4
-        marginal = completed_model(ensemble.members[0]).predict_pairs(region, [("d", "e")])
+        marginal = completed_model(ensemble.members[0]).predict(region, [("d", "e")])
         assert marginal.pairs == (("d", "e"),)
         assert marginal.target == target
         assert marginal.region_name == region.name
@@ -607,7 +623,7 @@ def test_reused_calibration_support_cannot_contribute_and_target_scales_must_mat
 def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_overflow():
     from dataclasses import replace
 
-    from ilg_toolkit import PairPrediction
+    from ilg_toolkit import Prediction
 
     region, ensemble, _ = known_ensemble()
     region = replace(
@@ -627,13 +643,17 @@ def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_o
         model = completed_model(member)
         with pytest.raises(FloatingPointError, match="inverse transformation"):
             model.predict(region)
-        selected = model.predict_pairs(region, [("d", "c")])
-        assert isinstance(selected, PairPrediction)
+        selected = model.predict(region, [("d", "c")])
+        assert isinstance(selected, Prediction)
         assert selected.pairs == (("d", "c"),)
         assert selected.target == target
         assert selected.region_name == region.name
         assert selected.scale == "original"
         np.testing.assert_allclose(selected.values, [value], rtol=1e-7)
+        matrix = selected.as_matrix()
+        assert matrix.shape == (4, 4)
+        assert np.isnan(matrix[0, 1])  # Its inverse transform would overflow.
+        np.testing.assert_allclose(matrix[3, 2], value, rtol=1e-7)
     out_of_fold = predict_out_of_fold(ensemble, region, [("a", "b"), ("c", "d")])
     np.testing.assert_array_equal(out_of_fold.eligible_counts, [0, 2])
     np.testing.assert_allclose(out_of_fold.values[1], np.mean(expected), rtol=1e-7)
@@ -646,4 +666,4 @@ def test_pair_queries_require_unique_distinct_labels_with_query_locations():
     model = completed_model(ensemble.members[0])
     for pairs in ([], [("a", "a")], [("a", "b"), ("b", "a")], [("a",)], ["ab"], [("a", "unknown")]):
         with pytest.raises(ValueError):
-            model.predict_pairs(region, pairs)
+            model.predict(region, pairs)

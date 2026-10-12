@@ -176,7 +176,7 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
         for region in regions:
             surface = result.model.conductance_surface(region)
             np.testing.assert_allclose(
-                result.model.predict(region).values,
+                result.model.predict(region).as_matrix(),
                 dense_graph_scores(surface, region.pixel_nodes),
                 rtol=1e-7,
             )
