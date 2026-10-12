@@ -13,7 +13,6 @@ from test_mlpe_training import embedding_problem
 from ilg_toolkit import (
     CalibratedModel,
     EnsembleMember,
-    FitResult,
     TrainingConfig,
     TrainingState,
     fit_ensemble,
@@ -36,12 +35,11 @@ def model_factory(key):
     return InitializedEmbedding(log_weights=jax.random.normal(key, (2,)) * 0.1)
 
 
-def completed_fit(member: EnsembleMember) -> tuple[CalibratedModel, FitResult, TrainingState]:
+def completed_fit(member: EnsembleMember) -> tuple[CalibratedModel, TrainingState]:
     assert member.status == "completed"
     assert member.model is not None
-    assert member.fit_result is not None
-    assert member.fit_result.state is not None
-    return member.model, member.fit_result, member.fit_result.state
+    assert member.training_state is not None
+    return member.model, member.training_state
 
 
 def test_declared_seeds_initialize_readable_members_directly():
@@ -62,11 +60,11 @@ def test_declared_seeds_initialize_readable_members_directly():
         "fold-0001:seed=29",
     )
     for member in result.members:
-        model, _, state = completed_fit(member)
+        model, state = completed_fit(member)
         expected = model_factory(jax.random.PRNGKey(member.identity.initialization_seed))
         assert eqx.tree_equal(model.encoder, expected)
         assert state.config.seed == member.identity.initialization_seed
-    assert len({id(completed_fit(member)[2].optimizer_state) for member in result.members}) == 4
+    assert len({id(completed_fit(member)[1].optimizer_state) for member in result.members}) == 4
 
 
 def test_fresh_ensemble_requires_factory_and_explicit_training_configuration():
@@ -117,13 +115,13 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
         )
         prediction = result.predict(region)
         fits = [completed_fit(member) for member in result.members]
-        member_values = np.stack([model.predict(region).values for model, _, _ in fits])
+        member_values = np.stack([model.predict(region).values for model, _ in fits])
     assert len(result.members) == 4
     assert all(member.status == "completed" for member in result.members)
     assert len({member.identity.member_id for member in result.members}) == 4
     assert {member.identity.initialization_seed for member in result.members} == {13, 29}
-    assert len({id(state.optimizer_state) for _, _, state in fits}) == 4
-    encoders = [model.encoder for model, _, _ in fits]
+    assert len({id(state.optimizer_state) for _, state in fits}) == 4
+    encoders = [model.encoder for model, _ in fits]
     assert all(isinstance(encoder, InitializedEmbedding) for encoder in encoders)
     weights = []
     for encoder in encoders:
@@ -135,7 +133,7 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
     np.testing.assert_array_equal(prediction.member_values, member_values)
     assert prediction.target.units == "index"
     for member in result.members:
-        model, fitted, _ = completed_fit(member)
+        model, fitted = completed_fit(member)
         assert fitted.history[-1].training_loss < fitted.history[0].training_loss
         head = model.calibrations[region.name]
         heldout = set(member.fold.held_out_units[region.name])
@@ -188,8 +186,8 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
         np.testing.assert_array_equal(
             baseline.predict(region).values, perturbed.predict(region).values
         )
-    baseline_model, baseline_fit, _ = completed_fit(baseline.members[0])
-    perturbed_model, perturbed_fit, _ = completed_fit(perturbed.members[0])
+    baseline_model, baseline_fit = completed_fit(baseline.members[0])
+    perturbed_model, perturbed_fit = completed_fit(perturbed.members[0])
     assert baseline_fit.history == perturbed_fit.history
     assert eqx.tree_equal(baseline_model.calibrations, perturbed_model.calibrations)
 
@@ -307,7 +305,7 @@ def test_explicit_validation_retains_selection_target_access_on_every_member():
             model_factory=model_factory,
         )
     member = result.members[0]
-    model, fitted, _ = completed_fit(member)
+    model, fitted = completed_fit(member)
     assert model.validation_pairs[region.name] == validation[region.name].pairs
     assert fitted.selection == "validation"
     assert len(model.calibrations[region.name].calibration_pairs) == 6
@@ -341,7 +339,7 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
             model_factory=model_factory,
         )
 
-        _, _, partial_state = completed_fit(partial)
+        _, partial_state = completed_fit(partial)
         resumed = fit_ensemble_member(
             region,
             observations,
@@ -357,7 +355,7 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
             initialization_seed=31,
             state=partial_state,
         )
-        assert eqx.tree_equal(completed_fit(retained)[2], partial_state)
+        assert eqx.tree_equal(completed_fit(retained)[1], partial_state)
         with pytest.raises(ValueError, match="declared initialization_seed"):
             fit_ensemble_member(
                 region,
@@ -367,12 +365,12 @@ def test_one_member_continuation_matches_uninterrupted_fit_and_does_not_reinitia
                 state=partial_state,
             )
         assert resumed.status == complete.status == "completed"
-        resumed_model, resumed_fit, resumed_state = completed_fit(resumed)
-        complete_model, complete_fit, complete_state = completed_fit(complete)
+        resumed_model, resumed_state = completed_fit(resumed)
+        complete_model, complete_state = completed_fit(complete)
         np.testing.assert_array_equal(
             resumed_model.predict(region).values, complete_model.predict(region).values
         )
-    assert resumed_fit.history == complete_fit.history
+    assert resumed_state.history == complete_state.history
     np.testing.assert_array_equal(resumed_state.rng_key, complete_state.rng_key)
 
 
@@ -441,11 +439,12 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
             model_factory=model_factory,
         )
     member = result.members[0]
-    model, fitted, state = completed_fit(member)
-    assert fitted.region_names == ("alpine", "valley")
+    model, state = completed_fit(member)
+    assert state.region_names == ("alpine", "valley")
     assert set(model.calibrations) == {"alpine", "valley"}
-    assert state.raw_variances is not None and state.raw_variances.shape == (2, 2)
-    assert fitted.history[-1].training_loss < fitted.history[0].training_loss
+    assert state.raw_variances is not None
+    assert set(state.raw_variances) == {"alpine", "valley"}
+    assert state.history[-1].training_loss < state.history[0].training_loss
     assert model.calibrations["valley"].intercept - model.calibrations["alpine"].intercept > 2
 
 

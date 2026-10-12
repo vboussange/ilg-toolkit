@@ -72,14 +72,14 @@ def test_native_direct_model_and_training_state_round_trip_and_continue(tmp_path
         config=config,
         validation=validation,
     )
-    assert partial.state is not None and template.state is not None
+
     assert partial.history[0].training_loss != template.history[0].training_loss
 
     model_path, state_path = tmp_path / "model.eqx", tmp_path / "state.eqx"
     eqx.tree_serialise_leaves(model_path, partial.model)
-    eqx.tree_serialise_leaves(state_path, partial.state)
+    eqx.tree_serialise_leaves(state_path, partial)
     model = eqx.tree_deserialise_leaves(model_path, template.model)
-    state = eqx.tree_deserialise_leaves(state_path, template.state)
+    state = eqx.tree_deserialise_leaves(state_path, template)
     np.testing.assert_array_equal(
         model.predict(region).values, partial.model.predict(region).values
     )
@@ -100,14 +100,14 @@ def test_native_direct_model_and_training_state_round_trip_and_continue(tmp_path
     np.testing.assert_array_equal(
         continued.model.predict(region).values, uninterrupted.model.predict(region).values
     )
-    assert continued.state is not None and uninterrupted.state is not None
+
     assert continued.selected_epoch == 0
     assert not np.array_equal(
         continued.latest_model.predict(region).values, continued.best_model.predict(region).values
     )
     for actual, expected in zip(
-        jax.tree.leaves((continued.state.optimizer_state, continued.state.rng_key)),
-        jax.tree.leaves((uninterrupted.state.optimizer_state, uninterrupted.state.rng_key)),
+        jax.tree.leaves((continued.optimizer_state, continued.rng_key)),
+        jax.tree.leaves((uninterrupted.optimizer_state, uninterrupted.rng_key)),
         strict=True,
     ):
         np.testing.assert_array_equal(actual, expected)
@@ -132,10 +132,10 @@ def test_native_mlpe_state_preserves_posterior_support_predictions_and_continuat
         config=config,
         partition=partition,
     )
-    assert partial.state is not None and template.state is not None
+
     path = tmp_path / "mlpe-state.eqx"
-    eqx.tree_serialise_leaves(path, partial.state)
-    state = eqx.tree_deserialise_leaves(path, template.state)
+    eqx.tree_serialise_leaves(path, partial)
+    state = eqx.tree_deserialise_leaves(path, template)
     query = observations.observed_pairs[-1:]
     expected = partial.model.predict_known_effects(region, query)
     actual = state.best_model.predict_known_effects(region, query)

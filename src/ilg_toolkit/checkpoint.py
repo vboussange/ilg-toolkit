@@ -53,12 +53,12 @@ def load_checkpoint(path, *, encoder: ConductanceModel | EmbeddingDistanceModel)
             latest = _model_template(metadata["latest_model"], encoder)
             best = _model_template(metadata["best_model"], encoder)
             raw = (
-                jnp.zeros((len(latest.training_pairs), 2), dtype=jnp.float64)
+                {name: jnp.zeros(2, dtype=jnp.float64) for name in latest.training_pairs}
                 if config.objective == "mlpe"
                 else None
             )
             optimizer_state = optax.adam(config.learning_rate).init(
-                eqx.filter((encoder, raw), eqx.is_inexact_array)
+                eqx.filter((latest.encoder, raw), eqx.is_inexact_array)
             )
             history_length = metadata["history_length"]
             if history_length < 1:
