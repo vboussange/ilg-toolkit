@@ -1,9 +1,9 @@
 """Explicit regional genetic recalibration without encoder optimization."""
 
 from collections.abc import Sequence
-from dataclasses import replace
 
-import numpy as np
+import equinox as eqx
+import jax.numpy as jnp
 
 from .data import ObservationPartition, PairwiseObservations, RegionBatch
 from .mlpe import MLPEConfig, calibrate_mlpe
@@ -73,8 +73,8 @@ def recalibrate(
             roles[pair] = partition.role
     scores = model.landscape_scores(region)
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-    observed_scores = np.asarray(
-        [scores[lookup[a], lookup[b]] for a, b in observations.observed_pairs], dtype=np.float64
+    observed_scores = jnp.asarray(
+        [scores[lookup[a], lookup[b]] for a, b in observations.observed_pairs]
     )
     selected = ObservationPartition(region.name, tuple(roles), role="calibration")
     if config is None and region.name in model.calibrations:
@@ -82,9 +82,11 @@ def recalibrate(
     head = calibrate_mlpe(
         observed_scores, observations, region_name=region.name, partition=selected, config=config
     )
-    head = replace(
-        head, calibration_roles=tuple(roles[tuple(sorted(pair))] for pair in head.calibration_pairs)
+    head = eqx.tree_at(
+        lambda value: value.calibration_roles,
+        head,
+        tuple(roles[tuple(sorted(pair))] for pair in head.calibration_pairs),
     )
     heads = dict(model.calibrations)
     heads[region.name] = head
-    return replace(model, objective="mlpe", calibrations=heads)
+    return eqx.tree_at(lambda value: (value.objective, value.calibrations), model, ("mlpe", heads))

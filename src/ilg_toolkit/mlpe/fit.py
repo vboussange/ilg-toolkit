@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from numbers import Real
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -72,8 +73,7 @@ class MLPEConfig:
         object.__setattr__(self, "jitter", float(self.jitter))
 
 
-@dataclass(frozen=True)
-class MLPEPrediction:
+class MLPEPrediction(eqx.Module):
     """Marginal pair means on declared original and fitted target scales.
 
     Original-scale values inverse-transform the fitted Gaussian mean. For a
@@ -89,8 +89,7 @@ class MLPEPrediction:
     scale: str = "original"
 
 
-@dataclass(frozen=True)
-class MLPEHead:
+class MLPEHead(eqx.Module):
     """Complete regional calibration with auditable observation identities."""
 
     region_name: str
@@ -102,9 +101,9 @@ class MLPEHead:
     slope: float
     unit_variance: float
     residual_variance: float
-    effect_mean: tuple[float, ...]
-    effect_covariance: tuple[tuple[float, ...], ...]
-    effect_precision_cholesky: tuple[tuple[float, ...], ...]
+    effect_mean: jax.Array = eqx.field(converter=jnp.asarray)
+    effect_covariance: jax.Array = eqx.field(converter=jnp.asarray)
+    effect_precision_cholesky: jax.Array = eqx.field(converter=jnp.asarray)
     calibration_pairs: tuple[tuple[str, str], ...]
     calibration_roles: tuple[str, ...]
     ml_log_likelihood: float
@@ -308,9 +307,9 @@ def calibrate_mlpe(
         float(beta[1]),
         float(variances[0]),
         float(variances[1]),
-        tuple(map(float, mean)),
-        tuple(map(tuple, np.asarray(covariance))),
-        tuple(map(tuple, np.asarray(factor))),
+        mean,
+        covariance,
+        factor,
         pairs,
         (role,) * len(pairs),
         -float(nll),

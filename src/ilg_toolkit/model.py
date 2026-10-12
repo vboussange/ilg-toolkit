@@ -1,8 +1,8 @@
 """Label-free landscape scoring and explicit target-scale predictions."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,8 +14,7 @@ from .models import ConductanceModel, EmbeddingDistanceModel
 from .resistance import build_resistance_context
 
 
-@dataclass(frozen=True)
-class Prediction:
+class Prediction(eqx.Module):
     """Pairwise predictions with their sampling-unit order and declared scale."""
 
     values: jax.Array
@@ -24,8 +23,7 @@ class Prediction:
     scale: str = "original"
 
 
-@dataclass(frozen=True)
-class PairPrediction:
+class PairPrediction(eqx.Module):
     """Marginal predictions for explicit labelled pairs in the requested order."""
 
     values: jax.Array
@@ -35,8 +33,7 @@ class PairPrediction:
     scale: str = "original"
 
 
-@dataclass(frozen=True)
-class CalibratedModel:
+class CalibratedModel(eqx.Module):
     """Frozen landscape encoder with explicit direct or regional MLPE prediction.
 
     The cleaned encoder families are stateless apart from their Equinox model
@@ -49,11 +46,11 @@ class CalibratedModel:
     target: TargetSpec
     feature_count: int
     feature_names: tuple[str, ...] | None = None
-    solver_config: ResistanceSolverConfig = field(default_factory=ResistanceSolverConfig)
-    objective: str = "direct_log1p"
-    calibrations: dict[str, MLPEHead] = field(default_factory=dict)
-    training_pairs: dict[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
-    validation_pairs: dict[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
+    solver_config: ResistanceSolverConfig = eqx.field(default_factory=ResistanceSolverConfig)
+    objective: str = eqx.field(kw_only=True)
+    calibrations: dict[str, MLPEHead] = eqx.field(default_factory=dict)
+    training_pairs: dict[str, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
+    validation_pairs: dict[str, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
 
     def __post_init__(self):
         if self.objective not in {"direct_log1p", "mlpe"}:
@@ -67,13 +64,13 @@ class CalibratedModel:
             name != head.region_name or head.target != self.target for name, head in heads.items()
         ):
             raise ValueError("Regional calibration names and target contracts must match the model")
-        object.__setattr__(self, "calibrations", heads)
+        self.calibrations = heads
         for name in ("training_pairs", "validation_pairs"):
             access = {
                 region: tuple(tuple(sorted(pair)) for pair in pairs)
                 for region, pairs in getattr(self, name).items()
             }
-            object.__setattr__(self, name, access)
+            setattr(self, name, access)
 
     def _validate_region(self, region: RegionBatch):
         if region.feature_array.shape[-1] != self.feature_count:
