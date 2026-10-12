@@ -35,7 +35,7 @@ def model_factory(key):
 
 
 def continue_members(directory, region, observations, folds, config):
-    """A caller script chooses filenames and retains the same inputs and folds."""
+    """Choose filenames and keep input measurements, locations and folds unchanged."""
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     members = []
@@ -157,9 +157,11 @@ with jax.enable_x64():
     # each latest optimizer/RNG state while preserving its selected best model.
     folds = tuple({member.fold.fold_id: member.fold for member in ensemble.members}.values())
     with TemporaryDirectory() as directory:
-        continue_members(
+        partial = continue_members(
             directory, region, observations, folds, TrainingConfig(objective="mlpe", epochs=0)
         )
+        if partial.failures:
+            raise RuntimeError(partial.failures)
         continued = continue_members(
             directory, region, observations, folds, TrainingConfig(objective="mlpe", epochs=1)
         )

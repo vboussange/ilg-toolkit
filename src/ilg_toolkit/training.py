@@ -1,7 +1,5 @@
 """In-memory fitting with sequential, equally weighted regional contributions."""
 
-import hashlib
-import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import NamedTuple, TypedDict, cast
@@ -78,29 +76,46 @@ class FitResult(eqx.Module):
 class TrainingState(eqx.Module):
     """Explicit in-memory continuation state; checkpoints add serialization separately.
 
-    The encoder, variance parameters and Adam state describe the latest epoch.
-    ``best_model`` retains its own encoder and heads. RNG uses a serializable
-    legacy uint32 key. The shipped encoders have no mutable model state.
+    The latest model, variance parameters and Adam state describe the latest
+    epoch. ``best_model`` retains its own encoder and heads. Progress derives
+    from history, and the input contract records structure rather than values.
+    RNG uses a serializable legacy uint32 key.
     """
 
-    encoder: Encoder
     raw_variances: jax.Array | None
     optimizer_state: optax.OptState
     rng_key: jax.Array
-    epoch: int
-    step: int
     config: TrainingConfig
-    region_names: tuple[str, ...]
-    data_identity: str
+    input_contract: dict
     history: tuple[EpochRecord, ...]
     latest_model: CalibratedModel
     best_model: CalibratedModel
     selected_epoch: int
-    best_loss: float
-    selection: str
-    model_state: object = None
-    schedule_state: dict = eqx.field(default_factory=dict)
-    stopping_state: dict = eqx.field(default_factory=dict)
+
+    @property
+    def encoder(self) -> Encoder:
+        return self.latest_model.encoder
+
+    @property
+    def epoch(self) -> int:
+        return self.history[-1].epoch
+
+    @property
+    def step(self) -> int:
+        return self.epoch
+
+    @property
+    def region_names(self) -> tuple[str, ...]:
+        return tuple(self.latest_model.training_pairs)
+
+    @property
+    def selection(self) -> str:
+        return "validation" if self.latest_model.validation_pairs else "final"
+
+    @property
+    def best_loss(self) -> float:
+        record = self.history[self.selected_epoch]
+        return record.training_loss if record.validation_loss is None else record.validation_loss
 
 
 class _TrainingPayload(NamedTuple):
@@ -401,38 +416,25 @@ def _labelled_pairs(batch: _RegionalBatch) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _fit_data_identity(
+def _input_contract(
     training_inputs: Sequence[_RegionalInput], validation_inputs: Sequence[_RegionalInput]
-) -> str:
-    """Hash the normalized landscapes, labelled measurements and selected roles."""
-    digest = hashlib.sha256()
-
-    def metadata(value):
-        digest.update(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
-
-    def array(value):
-        value = np.asarray(value)
-        metadata([str(value.dtype), value.shape])
-        digest.update(np.ascontiguousarray(value).tobytes())
-
-    for role, inputs in (("training", training_inputs), ("validation", validation_inputs)):
-        for region, observations, partition in inputs:
-            pairs, values = observations.aligned_pairs(region, partition)
-            metadata(
-                [
-                    role,
-                    region.name,
-                    region.sampling_unit_ids,
-                    region.sampling_unit_kinds,
-                    region.feature_names,
-                    asdict(observations.target),
-                ]
-            )
-            array(region.feature_array)
-            array(region.grid_positions)
-            array(pairs)
-            array(values)
-    return digest.hexdigest()
+) -> dict:
+    """Cheap resume structure; unchanged measurement contents remain caller responsibility."""
+    return {
+        role: [
+            {
+                "region_name": region.name,
+                "sampling_unit_ids": list(region.sampling_unit_ids),
+                "sampling_unit_kinds": list(region.sampling_unit_kinds or ()),
+                "feature_shape": list(region.feature_array.shape),
+                "feature_dtype": str(region.feature_array.dtype),
+                "position_dtype": str(region.grid_positions.dtype),
+                "observation_dtype": str(observations.values.dtype),
+            }
+            for region, observations, _ in inputs
+        ]
+        for role, inputs in (("training", training_inputs), ("validation", validation_inputs))
+    }
 
 
 def _initial_raw_variances(batches: Sequence[_RegionalBatch], config: TrainingConfig) -> jax.Array:
@@ -682,6 +684,9 @@ def fit(
     declaring the objective. Continuation reuses these saved choices.
 
     ``state`` continues the latest optimizer/RNG trajectory on identical inputs.
+    Resume checks structure and declared contracts, not measurement contents;
+    keeping landscapes, locations and genetic measurements unchanged is the
+    caller's responsibility.
     Only the total epoch budget may increase. The returned selected model
     and latest continuation state are separate when validation selects an earlier
     epoch. Validation never consumes training random keys.
@@ -739,9 +744,17 @@ def fit(
             raise ValueError("Regional training and validation feature channels must match")
         if prepared_region.feature_names != first_region.feature_names:
             raise ValueError("Regional feature contracts must match meanings and order")
-    identity = _fit_data_identity(training_inputs, validation_inputs)
-    if state is not None and state.data_identity != identity:
-        raise ValueError("Continuation inputs, observations, target scale or partitions changed")
+    input_contract = _input_contract(training_inputs, validation_inputs)
+    if state is not None:
+        if state.input_contract != input_contract:
+            raise ValueError(
+                "Continuation input shapes, precision or sampling-unit identities changed"
+            )
+        if (
+            state.latest_model.target != first_observations.target
+            or state.latest_model.feature_names != first_region.feature_names
+        ):
+            raise ValueError("Continuation target or feature meanings/order changed")
 
     random_key = (
         jax.random.split(jax.random.PRNGKey(config.seed))[1] if state is None else state.rng_key
@@ -771,6 +784,11 @@ def fit(
 
     training_pairs = {batch.region.name: _labelled_pairs(batch) for batch in training_batches}
     validation_pairs = {batch.region.name: _labelled_pairs(batch) for batch in validation_batches}
+    if state is not None and (
+        state.latest_model.training_pairs != training_pairs
+        or state.latest_model.validation_pairs != validation_pairs
+    ):
+        raise ValueError("Continuation training/validation pair partitions changed")
 
     def make_model(heads: dict[str, MLPEHead]) -> CalibratedModel:
         return CalibratedModel(
@@ -793,27 +811,18 @@ def fit(
     names = tuple(batch.region.name for batch in training_batches)
     selection = "final" if validation is None else "validation"
 
-    def continuation_at(epoch: int) -> TrainingState:
+    def continuation() -> TrainingState:
         assert latest is not None and selected is not None
         return TrainingState(
-            encoder=parameters[0],
             raw_variances=parameters[1],
             optimizer_state=optimizer_state,
             rng_key=random_key,
-            epoch=epoch,
-            step=epoch,
             config=config,
-            region_names=names,
-            data_identity=identity,
+            input_contract=input_contract,
             history=tuple(history),
             latest_model=latest,
             best_model=selected,
             selected_epoch=selected_epoch,
-            best_loss=best_loss,
-            selection=selection,
-            model_state=None,
-            schedule_state={"kind": "fixed", "learning_rate": config.learning_rate},
-            stopping_state={"kind": "fixed_budget", "epochs": config.epochs},
         )
 
     start_epoch = state.epoch + 1 if state is not None else 0
@@ -882,7 +891,7 @@ def fit(
             selected, selected_epoch = latest, epoch
             best_loss = training_loss if validation_loss is None else validation_loss
         if on_epoch is not None:
-            on_epoch(continuation_at(epoch))
-    continuation = continuation_at(config.epochs)
+            on_epoch(continuation())
+    final_state = continuation()
     assert selected is not None
-    return FitResult(selected, tuple(history), selected_epoch, selection, names, continuation)
+    return FitResult(selected, tuple(history), selected_epoch, selection, names, final_state)

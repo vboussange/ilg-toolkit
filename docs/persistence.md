@@ -52,15 +52,15 @@ ensemble members with these same operations and assemble the desired in-memory
 ensemble in an ordinary script; [examples/ensemble.py](../examples/ensemble.py)
 demonstrates the ensemble workflow.
 
-## Inference format and precision
+## Native format and precision
 
-An inference file contains a short JSON header followed by native Equinox leaves
-of the actual `CalibratedModel`. The header holds nonnumerical contracts and the
-structure needed to construct that module around the supplied encoder. Learned
+Each file contains a short JSON header followed by native Equinox leaves
+of the actual `CalibratedModel` or `TrainingState`. The header holds nonnumerical
+contracts and the structure needed to construct that module around the supplied encoder. Learned
 coefficients and posterior arrays remain ordinary numerical leaves. There is no
 architecture registry, separate numerical payload, content checksum, pickle or
 exact runtime-version gate. Historical ZIP-based `.ilg` inference artifacts are
-unsupported.
+unsupported, including old training checkpoints.
 
 Equinox checks numerical leaf compatibility with the caller's template. Invalid
 headers, truncated leaves and representative structural incompatibilities raise
@@ -86,25 +86,38 @@ with jax.enable_x64():
         region, observations, model=model, config=config,
         on_epoch=lambda state: save_checkpoint("training.ilg", state),
     )
-    state = load_checkpoint("training.ilg")
+    state = load_checkpoint("training.ilg", encoder=encoder_template)
     continued = fit(
         region, observations, state=state,
         config=replace(state.config, epochs=100),
     )
 ```
 
+Supply the exact encoder configuration used for this fit, just as for `load_model`.
 Include the original training/validation partitions and validation arguments when
 resuming. The default budget is the saved configuration. Only the total epoch
 budget may increase or stay equal; reducing the saved requested budget is rejected,
-including for an intermediate checkpoint. Selected measurements, landscapes,
-sampling-unit identities/locations/kinds, target and feature contracts, partitions,
-model overrides and other optimization/solver settings must agree. Equivalent
-regional mapping order does not change identity. Unaccessed query measurements do
-not determine continuation identity.
+including for an intermediate checkpoint. Input shapes and precision,
+sampling-unit identities/order/kinds, target meaning/units/transform, feature
+meanings/order, selected training/validation pairs, and optimization/solver settings
+must agree. Regional mapping order does not change this contract.
+
+Keep the original landscape measurements, sampling locations and genetic values
+unchanged yourself. Checkpoints do not fingerprint these contents: same-shape edits
+cannot be detected. Do not supply a replacement model to `fit(state=...)`; the
+checkpoint already contains its latest encoder. Exact deterministic continuation
+is expected under the same execution conditions. Changed library versions,
+devices or execution settings are not refused automatically, and may change
+numerical results.
 
 `on_epoch(state)` runs after initialization at epoch zero and after each complete
 update, evaluation and model selection. Callback exceptions propagate. A fresh
 zero-budget fit invokes the callback once; a continuation with no further updates
 invokes it zero times. Saving at the end with `save_checkpoint(path, result.state)`
-is also supported. The checkpoint retains latest and best state together, so
-validation selection does not replace the trajectory used for continuation.
+is also supported. The checkpoint retains latest encoder/nuisance parameters,
+optimizer and random state, declared configuration, history and selected best
+model together. Validation selection preserves the earlier best model while
+continuation follows the latest optimizer trajectory. Individual ensemble members
+use these same functions; `continue_members` in
+[examples/ensemble.py](../examples/ensemble.py) owns filenames and loops over folds
+and declared seeds without a toolkit-managed run directory.
