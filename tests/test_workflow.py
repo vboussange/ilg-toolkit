@@ -1,5 +1,6 @@
 """Public fitting/prediction seam accepted in the specification's Test Strategy."""
 
+import coordax as cx
 import jax
 import numpy as np
 
@@ -11,7 +12,7 @@ def synthetic_problem():
     features = np.arange(32, dtype=np.float32).reshape(4, 4, 2) / 32
     region = RegionBatch(
         name="arbitrary-catchment",
-        features=features,
+        features=cx.field(features, "row", "column", "feature"),
         sampling_unit_ids=("north", "east", "south", "west"),
         grid_positions=np.array([[0, 0], [0, 3], [3, 0], [3, 3]]),
         feature_names=("gradient", "texture"),
@@ -35,7 +36,7 @@ def test_fixed_budget_fit_improves_and_predicts_without_query_targets():
         region,
         observations,
         model=model,
-        config=TrainingConfig(epochs=20, learning_rate=0.01, seed=3),
+        config=TrainingConfig(objective="direct_log1p", epochs=20, learning_rate=0.01, seed=3),
     )
     prediction = result.model.predict(region)
     assert result.history[-1].training_loss < result.history[0].training_loss * 0.75
@@ -64,7 +65,7 @@ def test_validation_selects_model_without_refitting_on_validation_targets():
         region,
         observations,
         model=model,
-        config=TrainingConfig(epochs=3, learning_rate=0.01),
+        config=TrainingConfig(objective="direct_log1p", epochs=3, learning_rate=0.01),
         validation=(validation_region, validation),
     )
     assert result.selection == "validation"
@@ -84,8 +85,12 @@ def test_observation_labels_are_aligned_and_signed_relatedness_is_refused():
     reordered = PairwiseObservations.from_matrix(
         reverse, observations.values[::-1, ::-1], target=observations.target
     )
-    first = fit(region, observations, model=model, config=TrainingConfig(epochs=0))
-    second = fit(region, reordered, model=model, config=TrainingConfig(epochs=0))
+    first = fit(
+        region, observations, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0)
+    )
+    second = fit(
+        region, reordered, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0)
+    )
     assert first.history[0].training_loss == second.history[0].training_loss
     signed = PairwiseObservations.from_matrix(
         region.sampling_unit_ids,
@@ -93,4 +98,4 @@ def test_observation_labels_are_aligned_and_signed_relatedness_is_refused():
         target=TargetSpec("relatedness", kind="relatedness"),
     )
     with pytest.raises(ValueError, match="nonnegative dissimilarities"):
-        fit(region, signed, model=model, config=TrainingConfig(epochs=0))
+        fit(region, signed, model=model, config=TrainingConfig(objective="direct_log1p", epochs=0))

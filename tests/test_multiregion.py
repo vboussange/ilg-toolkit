@@ -2,6 +2,7 @@
 
 from typing import final
 
+import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -27,14 +28,14 @@ def regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObservat
     regions = [
         RegionBatch(
             "wide",
-            np.array([[[0.0], [1.0], [2.0]]]),
+            cx.field(np.array([[[0.0], [1.0], [2.0]]]), "row", "column", "feature"),
             ("a", "b", "c"),
             np.array([[0, 0], [0, 1], [0, 2]]),
             feature_names=("elevation",),
         ),
         RegionBatch(
             "short",
-            np.array([[[0.0], [2.0]]]),
+            cx.field(np.array([[[0.0], [2.0]]]), "row", "column", "feature"),
             ("x", "y"),
             np.array([[0, 0], [0, 1]]),
             feature_names=("elevation",),
@@ -74,7 +75,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective():
             regions,
             observations,
             model=ScalarEmbedding(jnp.asarray(initial, dtype=jnp.float64)),
-            config=TrainingConfig(epochs=1, learning_rate=0.01),
+            config=TrainingConfig(objective="direct_log1p", epochs=1, learning_rate=0.01),
         )
         assert isinstance(result.model.encoder, ScalarEmbedding)
         np.testing.assert_allclose(result.model.encoder.weight, expected, rtol=1e-8)
@@ -122,14 +123,14 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
         regions = [
             RegionBatch(
                 "large",
-                np.array([[[1.0], [2.0], [3.0]]]),
+                cx.field(np.array([[[1.0], [2.0], [3.0]]]), "row", "column", "feature"),
                 ("a", "b", "c"),
                 np.array([[0, 0], [0, 1], [0, 2]]),
                 feature_names=("covariate",),
             ),
             RegionBatch(
                 "small",
-                np.array([[[1.0], [3.0]]]),
+                cx.field(np.array([[[1.0], [3.0]]]), "row", "column", "feature"),
                 ("x", "y"),
                 np.array([[0, 0], [0, 1]]),
                 feature_names=("covariate",),
@@ -165,7 +166,7 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
             regions,
             observations,
             model=ScaledConductance(jnp.asarray(initial, dtype=jnp.float64)),
-            config=TrainingConfig(epochs=1, learning_rate=0.01),
+            config=TrainingConfig(objective="direct_log1p", epochs=1, learning_rate=0.01),
         )
         assert isinstance(result.model.encoder, ScaledConductance)
         np.testing.assert_allclose(result.model.encoder.log_scale, expected, rtol=1e-8)
@@ -207,7 +208,7 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory():
     from dataclasses import replace
 
     regions, observations = regions_and_observations()
-    config = TrainingConfig(epochs=3, seed=7)
+    config = TrainingConfig(objective="direct_log1p", epochs=3, seed=7)
     model = StochasticEmbedding(jnp.asarray(1.0, dtype=jnp.float32))
     baseline = fit(regions, observations, model=model, config=config)
     reversed_regions = {region.name: region for region in reversed(regions)}
@@ -245,7 +246,11 @@ def test_incompatible_regional_inputs_fail_before_optimization():
         ([regions[0], regions[0]], observations, None, "unique"),
         (
             [
-                replace(region, features=region.feature_array, feature_names=None)
+                replace(
+                    region,
+                    features=cx.field(region.feature_array, "row", "column", "feature"),
+                    feature_names=None,
+                )
                 for region in regions
             ],
             observations,
@@ -255,7 +260,11 @@ def test_incompatible_regional_inputs_fail_before_optimization():
         (
             [
                 regions[0],
-                replace(regions[1], features=regions[1].feature_array, feature_names=("canopy",)),
+                replace(
+                    regions[1],
+                    features=cx.field(regions[1].feature_array, "row", "column", "feature"),
+                    feature_names=("canopy",),
+                ),
             ],
             observations,
             None,
@@ -273,7 +282,13 @@ def test_incompatible_regional_inputs_fail_before_optimization():
     ]
     for supplied_regions, supplied_observations, supplied_partitions, message in cases:
         with pytest.raises(ValueError, match=message):
-            fit(supplied_regions, supplied_observations, model=model, partition=supplied_partitions)
+            fit(
+                supplied_regions,
+                supplied_observations,
+                model=model,
+                partition=supplied_partitions,
+                config=TrainingConfig(objective="direct_log1p", epochs=0),
+            )
 
 
 def test_validation_on_another_region_requires_declared_feature_meanings():
@@ -283,7 +298,12 @@ def test_validation_on_another_region_requires_declared_feature_meanings():
 
     regions, observations = regions_and_observations()
     regions = [
-        replace(region, features=region.feature_array, feature_names=None) for region in regions
+        replace(
+            region,
+            features=cx.field(region.feature_array, "row", "column", "feature"),
+            feature_names=None,
+        )
+        for region in regions
     ]
     with pytest.raises(ValueError, match="explicit feature_names"):
         fit(
@@ -291,5 +311,5 @@ def test_validation_on_another_region_requires_declared_feature_meanings():
             observations[0],
             model=ScalarEmbedding(jnp.asarray(1.0)),
             validation=(regions[1], observations[1]),
-            config=TrainingConfig(epochs=0),
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
         )

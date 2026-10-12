@@ -59,16 +59,14 @@ class MLPEConditionalPrediction(eqx.Module):
 
 
 def _query(scores, pairs):
+    scores = jnp.asarray(scores, dtype=jnp.float64)
     try:
-        scores = jnp.asarray(scores, dtype=jnp.float64)
         raw_pairs = tuple(pairs)
         if any(isinstance(pair, str) for pair in raw_pairs):
             raise ValueError("Each pair must contain two labels")
         pairs = tuple(tuple(pair) for pair in raw_pairs)
     except (TypeError, ValueError) as error:
-        raise MLPEError(
-            "Query scores and pairs must be numeric scores and labelled pairs"
-        ) from error
+        raise MLPEError("Query pairs must contain sampling-unit labels") from error
     if scores.shape != (len(pairs),) or not bool(jnp.isfinite(scores).all()):
         raise MLPEError("Query scores must be finite and aligned with labelled pairs")
     if any(
@@ -89,9 +87,9 @@ def _extend(head, population_ids, mean, covariance, pairs):
         dict.fromkeys(label for pair in pairs for label in pair if label not in population_ids)
     )
     n = len(population_ids)
-    extended_mean = jnp.zeros(n + len(extras), dtype=jnp.float64).at[:n].set(jnp.asarray(mean))
+    extended_mean = jnp.zeros(n + len(extras), dtype=jnp.float64).at[:n].set(mean)
     extended_covariance = jnp.eye(n + len(extras), dtype=jnp.float64) * head.unit_variance
-    extended_covariance = extended_covariance.at[:n, :n].set(jnp.asarray(covariance))
+    extended_covariance = extended_covariance.at[:n, :n].set(covariance)
     return population_ids + extras, extended_mean, extended_covariance
 
 
@@ -125,7 +123,7 @@ def _predict(head, scores, pairs, population_ids, mean, covariance, provenance):
     variance = effect_variance + head.residual_variance + head.config.jitter
     if not bool(jnp.isfinite(model_values).all() & jnp.isfinite(variance).all()):
         raise MLPEError("Conditional prediction produced nonfinite means or variances")
-    values = jnp.asarray(head.target.inverse(model_values))
+    values = head.target.inverse(model_values)
     return MLPEConditionalPrediction(
         values,
         model_values,
@@ -240,9 +238,7 @@ def condition_on_support(
         pairs,
     )
     left, right = _endpoints(pairs, labels)
-    residual = jnp.asarray(
-        support_observations.target.forward(support_observations.observed_values)
-    )
+    residual = support_observations.target.forward(support_observations.observed_values)
     residual -= head.intercept + head.slope * (scores - head.score_center) / head.score_scale
     d = head.residual_variance + head.config.jitter
     updated_mean, updated_covariance = _condition_posterior(

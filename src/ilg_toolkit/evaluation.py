@@ -12,7 +12,6 @@ from .data import (
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
-    _target_array,
 )
 from .ensemble import Ensemble, MemberFailure, _summarize_members
 from .training import _normalize_inputs
@@ -85,8 +84,8 @@ class OOFPrediction:
     Member SD is descriptive in original target units. Conditional member
     variances are retained separately on the transformed model scale; they do
     not include encoder, fixed-coefficient or variance-parameter uncertainty.
-    Numerical results are float64 JAX arrays. Coverage and target-access metadata
-    remain on the host.
+    Numerical results are JAX arrays using the configured precision. Coverage
+    and target-access metadata remain on the host.
     """
 
     keys: tuple[tuple[str, tuple[str, str]], ...]
@@ -300,13 +299,12 @@ def _member_predict(model, region, pairs, regime, support, access):
                 "Conditional prediction target-access provenance differs from its declaration"
             )
         values, variances = result.values, result.model_variance
-    values = np.asarray(values, dtype=np.float64)
-    if values.shape != (len(pairs),) or not np.isfinite(values).all():
+    if values.shape != (len(pairs),) or not bool(jnp.isfinite(values).all()):
         raise FloatingPointError(
             "Member prediction must return aligned finite original-scale values"
         )
     if variances is not None and (
-        np.shape(variances) != values.shape or not np.isfinite(variances).all()
+        variances.shape != values.shape or not bool(jnp.isfinite(variances).all())
     ):
         raise FloatingPointError("Conditional member model variance must be aligned and finite")
     return values, variances, provenance
@@ -349,8 +347,8 @@ def predict_out_of_fold(
     member_ids = ensemble.expected_member_ids
     assert member_ids is not None  # Ensemble normalizes its requested composition.
     by_id = {member.identity.member_id: member for member in ensemble.members}
-    values = np.full((len(member_ids), len(keys)), np.nan)
-    variances = None if regime.prediction_mode == "marginal" else np.full_like(values, np.nan)
+    values = jnp.full((len(member_ids), len(keys)), jnp.nan)
+    variances = None if regime.prediction_mode == "marginal" else jnp.full_like(values, jnp.nan)
     reasons, failures, prediction_failures, access_records, provenance_records = {}, {}, {}, {}, {}
     statuses = {member_id: by_id[member_id].status for member_id in member_ids}
     for row, member_id in enumerate(member_ids):
@@ -389,10 +387,10 @@ def predict_out_of_fold(
                     supports.get(name),
                     access,
                 )
-                values[row, eligible] = predicted
+                values = values.at[row, jnp.asarray(eligible)].set(predicted)
                 if model_variance is not None:
                     assert variances is not None
-                    variances[row, eligible] = model_variance
+                    variances = variances.at[row, jnp.asarray(eligible)].set(model_variance)
                 if provenance is not None:
                     provenance_records[member_id][name] = provenance
             except Exception as error:
@@ -402,21 +400,23 @@ def predict_out_of_fold(
                 for column in columns:
                     if member_reasons[column] is None:
                         member_reasons[column] = "prediction_failed"
-    counts = np.isfinite(values).sum(axis=0)
+    counts = np.asarray(jnp.isfinite(values).sum(axis=0))
     covered = counts > 0
-    mean, spread = np.full(len(keys), np.nan), np.full(len(keys), np.nan)
+    mean, spread = jnp.full(len(keys), jnp.nan), jnp.full(len(keys), jnp.nan)
     for column in np.flatnonzero(covered):
-        mean[column], spread[column] = _summarize_members(
-            values[np.isfinite(values[:, column]), column]
+        member_mean, member_spread = _summarize_members(
+            values[jnp.isfinite(values[:, column]), column]
         )
+        mean = mean.at[column].set(member_mean.astype(mean.dtype))
+        spread = spread.at[column].set(member_spread.astype(spread.dtype))
     return OOFPrediction(
         keys,
-        _target_array(mean),
+        mean,
         target,
         regime,
         member_ids,
-        _target_array(values),
-        _target_array(spread),
+        values,
+        spread,
         counts,
         covered,
         {member_id: tuple(items) for member_id, items in reasons.items()},
@@ -425,7 +425,7 @@ def predict_out_of_fold(
         prediction_failures,
         access_records,
         provenance_records,
-        None if variances is None else _target_array(variances),
+        variances,
     )
 
 
@@ -453,9 +453,7 @@ def score_out_of_fold(prediction: OOFPrediction, observations) -> OOFEvaluation:
             }
         )
     try:
-        targets = _target_array(
-            np.array([lookup[key] for key in prediction.keys], dtype=np.float64)
-        )
+        targets = jnp.asarray([lookup[key] for key in prediction.keys])
     except KeyError as error:
         raise ValueError("Every requested query must have an observed scoring target") from error
     n = int(np.sum(prediction.covered_mask))

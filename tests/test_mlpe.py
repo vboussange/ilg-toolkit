@@ -106,6 +106,17 @@ def test_differentiable_full_ml_matches_dense_incomplete_pair_oracle():
 
         nll, beta = objective(jnp.asarray(scores))
         np.testing.assert_allclose([nll, *beta], [expected_nll, *expected_beta], atol=1e-11)
+        array_like_nll, array_like_beta = profiled_mlpe_ml_fit(
+            scores.tolist(),
+            targets,
+            left.tolist(),
+            right,
+            n_populations=4,
+            raw_variances=raw.tolist(),
+        )
+        np.testing.assert_allclose(
+            [array_like_nll, *array_like_beta], [expected_nll, *expected_beta], atol=1e-11
+        )
         compiled = jax.jit(objective)(jnp.asarray(scores))
         np.testing.assert_allclose(compiled[0], nll, atol=1e-11)
         gradient = jax.grad(lambda values: objective(values)[0])(jnp.asarray(scores))

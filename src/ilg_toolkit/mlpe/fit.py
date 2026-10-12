@@ -129,15 +129,18 @@ class MLPEHead(eqx.Module):
         ) < self.config.variance_floor * (1 - 8 * np.finfo(float).eps):
             raise MLPEError("MLPE head requires valid score scale and positive bounded variances")
         n = len(self.population_ids)
-        mean, covariance = np.asarray(self.effect_mean), np.asarray(self.effect_covariance)
-        factor = np.asarray(self.effect_precision_cholesky)
+        mean, covariance, factor = (
+            self.effect_mean,
+            self.effect_covariance,
+            self.effect_precision_cholesky,
+        )
         if (
             mean.shape != (n,)
             or covariance.shape != (n, n)
             or factor.shape != (n, n)
-            or not np.isfinite(mean).all()
-            or not np.isfinite(covariance).all()
-            or not np.isfinite(factor).all()
+            or not bool(jnp.isfinite(mean).all())
+            or not bool(jnp.isfinite(covariance).all())
+            or not bool(jnp.isfinite(factor).all())
         ):
             raise MLPEError("MLPE head population-effect posterior must be finite and aligned")
         if (
@@ -155,7 +158,7 @@ class MLPEHead(eqx.Module):
         scores, pairs, _ = _query(scores, pairs)
         model_values = self.intercept + self.slope * (scores - self.score_center) / self.score_scale
         return MLPEPrediction(
-            jnp.asarray(self.target.inverse(model_values)),
+            self.target.inverse(model_values),
             model_values,
             pairs,
             self.target,
@@ -190,16 +193,16 @@ def calibrate_mlpe(
     Missing observations remain absent. This operation never updates an encoder.
     """
     config = MLPEConfig() if config is None else config
-    scores = np.asarray(scores, dtype=np.float64)
+    scores = jnp.asarray(scores, dtype=jnp.float64)
     pairs = observations.observed_pairs
-    targets = observations.observed_values
+    targets = jnp.asarray(observations.observed_values, dtype=jnp.float64)
     if not isinstance(region_name, str) or not region_name:
         raise MLPEError("region_name must be declared")
     if observations.target.kind != "dissimilarity":
         raise MLPEError(
             "Population MLPE supports declared dissimilarities; relatedness needs a model"
         )
-    if scores.shape != (len(pairs),) or not np.isfinite(scores).all():
+    if scores.shape != (len(pairs),) or not bool(jnp.isfinite(scores).all()):
         raise MLPEError("Calibration scores must be finite and aligned with observed_pairs")
     role = "calibration"
     if partition is not None:
@@ -210,29 +213,28 @@ def calibrate_mlpe(
         selected = set(partition.pairs)
         if not selected.issubset({tuple(sorted(pair)) for pair in pairs}):
             raise MLPEError("Calibration partition selects unobserved pairs")
-        mask = np.array([tuple(sorted(pair)) in selected for pair in pairs])
-        pairs = tuple(pair for pair, keep in zip(pairs, mask, strict=True) if keep)
+        selected_rows = tuple(tuple(sorted(pair)) in selected for pair in pairs)
+        pairs = tuple(pair for pair, keep in zip(pairs, selected_rows, strict=True) if keep)
+        mask = jnp.asarray(selected_rows)
         scores, targets = scores[mask], targets[mask]
         role = partition.role
     targets = observations.target.forward(targets)
     if len(pairs) < 3:
         raise MLPEError("MLPE fitting requires at least three observed pairs")
-    center, scale = float(np.mean(scores)), float(np.std(scores, ddof=1))
+    center, scale = float(jnp.mean(scores)), float(jnp.std(scores, ddof=1))
     if not math.isfinite(scale) or scale <= config.min_score_scale:
         raise MLPEError("Calibration scores are constant or ill-scaled; singular GLS design")
-    design = np.column_stack((np.ones(len(scores)), (scores - center) / scale))
-    if np.linalg.matrix_rank(design) != 2:
-        raise MLPEError("Calibration GLS design is singular")
+    design = jnp.column_stack((jnp.ones(len(scores)), (scores - center) / scale))
     observed = {endpoint for pair in pairs for endpoint in pair}
     population_ids = tuple(label for label in observations.sampling_unit_ids if label in observed)
     lookup = {label: index for index, label in enumerate(population_ids)}
-    left = np.asarray([lookup[a] for a, b in pairs], dtype=np.int32)
-    right = np.asarray([lookup[b] for a, b in pairs], dtype=np.int32)
-    if np.bincount(np.r_[left, right], minlength=len(population_ids)).max() <= 1:
+    left = jnp.asarray([lookup[a] for a, b in pairs], dtype=jnp.int32)
+    right = jnp.asarray([lookup[b] for a, b in pairs], dtype=jnp.int32)
+    if jnp.bincount(jnp.concatenate((left, right)), length=len(population_ids)).max() <= 1:
         raise MLPEError("MLPE variances are unidentifiable: observed pairs share no endpoints")
-    ols_beta = np.linalg.lstsq(design, targets, rcond=None)[0]
+    ols_beta = jnp.linalg.lstsq(design, targets, rcond=None)[0]
     response_variance = max(
-        float(np.var(targets - design @ ols_beta, ddof=1)), config.variance_floor * 100
+        float(jnp.var(targets - design @ ols_beta, ddof=1)), config.variance_floor * 100
     )
     bounds = [(math.log(config.variance_floor), math.log(max(response_variance * 1e6, 1e4)))] * 2
 
@@ -240,7 +242,7 @@ def calibrate_mlpe(
     # variances through the common softplus interface with no additional floor;
     # this preserves the exact lower bound without subtracting nearly equal
     # values or changing the joint trainer's raw-parameter policy.
-    kernel_inputs = tuple(jnp.asarray(value) for value in (scores, targets, left, right))
+    kernel_inputs = scores, targets, left, right
     kernel_options = dict(
         n_populations=len(population_ids),
         score_center=center,
@@ -289,13 +291,13 @@ def calibrate_mlpe(
             "(eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= 0.01)"
         )
     result = min(candidates, key=lambda candidate: candidate.fun)
-    variances = np.exp(result.x)
+    variances = jnp.exp(jnp.asarray(result.x))
     raw = _raw_from_log_variances(jnp.asarray(result.x))
     nll, beta = profile(jnp.asarray(result.x))
     mean, covariance, factor = mlpe_effect_posterior(
         *kernel_inputs, fixed_effects=beta, raw_variances=raw, **kernel_options
     )
-    if not all(np.isfinite(value).all() for value in (nll, beta, mean, covariance, factor)):
+    if not all(bool(jnp.isfinite(value).all()) for value in (nll, beta, mean, covariance, factor)):
         raise MLPEError("Fitted population-effect posterior is nonfinite")
     return MLPEHead(
         region_name,

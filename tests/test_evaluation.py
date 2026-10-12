@@ -2,6 +2,7 @@
 
 from typing import final
 
+import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -45,7 +46,7 @@ def completed_model(member: EnsembleMember) -> CalibratedModel:
 def known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
     region = RegionBatch(
         "alpine",
-        np.arange(4).reshape(1, 4, 1),
+        cx.field(np.arange(4).reshape(1, 4, 1), "row", "column", "feature"),
         ("a", "b", "c", "d"),
         np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
     )
@@ -63,6 +64,7 @@ def known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
             target,
             1,
             training_pairs={"alpine": (("a", "b"),)},
+            objective="direct_log1p",
         )
         members.append(
             EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
@@ -140,11 +142,12 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
         )
 
 
-def test_oof_float64_outputs_require_explicit_device_precision():
+def test_oof_values_follow_configured_precision_without_changing_it():
     with jax.enable_x64(False):
         region, ensemble, _ = known_ensemble()
-        with pytest.raises(RuntimeError, match="float64.*JAX_ENABLE_X64"):
-            predict_out_of_fold(ensemble, region, [("c", "d")])
+        prediction = predict_out_of_fold(ensemble, region, [("c", "d")])
+        assert prediction.values.dtype == jnp.float32
+        np.testing.assert_allclose(prediction.values, [2.5])
         assert jax.config.read("jax_enable_x64") is False
 
 
@@ -156,7 +159,11 @@ def test_validation_selection_and_own_query_target_access_preclude_scoring():
     region, ensemble, target = known_ensemble()
     contaminated = []
     for member in ensemble.members:
-        model = replace(completed_model(member), validation_pairs={region.name: (("d", "c"),)})
+        model = eqx.tree_at(
+            lambda model: model.validation_pairs,
+            completed_model(member),
+            {region.name: (("d", "c"),)},
+        )
         contaminated.append(replace(member, model=model))
     contaminated = Ensemble(tuple(contaminated))
     observed = PairwiseObservations.from_pairs([("c", "d")], [3], target=target)
@@ -187,10 +194,10 @@ def test_at_least_one_requires_the_same_endpoint_to_be_heldout_and_still_unseen(
     # would wrongly admit (b,c).
     members = []
     for member in ensemble.members:
-        model = replace(
+        model = eqx.tree_at(
+            lambda model: (model.training_pairs, model.validation_pairs),
             completed_model(member),
-            training_pairs={region.name: ()},
-            validation_pairs={region.name: (("a", "c"),)},
+            ({region.name: ()}, {region.name: (("a", "c"),)}),
         )
         members.append(replace(member, model=model))
     result = predict_out_of_fold(
@@ -227,14 +234,19 @@ def test_failed_pending_and_unknown_access_members_are_explicit_in_coverage():
     unavailable = predict_out_of_fold(Ensemble((pending,)), region, [("c", "d")], target=target)
     assert unavailable.coverage == 0
     assert unavailable.member_statuses[pending.identity.member_id] == "pending"
-    unknown = replace(first, model=replace(completed_model(first), training_pairs={}))
+    unknown = replace(
+        first, model=eqx.tree_at(lambda model: model.training_pairs, completed_model(first), {})
+    )
     unknown_result = predict_out_of_fold(Ensemble((unknown,)), region, [("c", "d")])
     assert unknown_result.coverage == 0
     assert unknown_result.exclusion_reasons[unknown.identity.member_id] == (
         "unknown_encoder_access",
     )
     declared = replace(
-        unknown, model=replace(completed_model(unknown), training_pairs={region.name: ()})
+        unknown,
+        model=eqx.tree_at(
+            lambda model: model.training_pairs, completed_model(unknown), {region.name: ()}
+        ),
     )
     declared_result = predict_out_of_fold(Ensemble((declared,)), region, [("c", "d")])
     assert declared_result.coverage == 1
@@ -290,7 +302,7 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
             [held],
             regime=EvaluationRegime(endpoint_regime="at_least_one_unseen"),
         )
-    assert recalibrated.encoder is completed_model(member).encoder
+    assert eqx.tree_equal(recalibrated.encoder, completed_model(member).encoder)
     assert strict.coverage == 0
     assert partial.coverage == 1
     assert forbidden.coverage == 0
@@ -362,7 +374,6 @@ def test_recalibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_tr
 
 
 def test_known_effects_and_support_require_explicit_modes_and_report_separate_variance():
-    import pytest
 
     from ilg_toolkit import EvaluationRegime, EvaluationSupport
 
@@ -467,9 +478,10 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
                 for name in ("alpine", "valley")
             },
         )
-        model = replace(
+        model = eqx.tree_at(
+            lambda model: model.training_pairs,
             completed_model(member),
-            training_pairs={"alpine": (("c", "d"),), "valley": (("a", "b"),)},
+            {"alpine": (("c", "d"),), "valley": (("a", "b"),)},
         )
         members.append(replace(member, fold=fold, model=model))
     regional = predict_out_of_fold(
@@ -478,8 +490,10 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
     np.testing.assert_array_equal(regional.eligible_counts, [0, 2])
     broken = replace(
         ensemble.members[0],
-        model=replace(
-            completed_model(ensemble.members[0]), encoder=ScalarEmbedding(jnp.asarray(np.nan))
+        model=eqx.tree_at(
+            lambda model: model.encoder,
+            completed_model(ensemble.members[0]),
+            ScalarEmbedding(jnp.asarray(np.nan)),
         ),
     )
     partial = predict_out_of_fold(Ensemble((broken, ensemble.members[1])), region, [("c", "d")])
@@ -492,14 +506,16 @@ def test_access_identity_includes_region_and_prediction_failures_remain_visible(
 
 
 def test_only_eligible_pairs_are_inverse_transformed():
-    import pytest
 
     from ilg_toolkit import TrainingConfig, fit_ensemble
 
     with jax.enable_x64():
         ids = ("a", "b", "c", "d", "e")
         region = RegionBatch(
-            "alpine", np.arange(5).reshape(1, 5, 1), ids, np.array([[0, i] for i in range(5)])
+            "alpine",
+            cx.field(np.arange(5).reshape(1, 5, 1), "row", "column", "feature"),
+            ids,
+            np.array([[0, i] for i in range(5)]),
         )
         target = TargetSpec("divergence", units="index", transform="sqrt")
         training_pairs = (("a", "b"), ("a", "c"), ("b", "c"))
@@ -536,8 +552,6 @@ def test_only_eligible_pairs_are_inverse_transformed():
 
 def test_reused_calibration_support_cannot_contribute_and_target_scales_must_match():
     from dataclasses import replace
-
-    import pytest
 
     from ilg_toolkit import EvaluationRegime, EvaluationSupport
 
@@ -587,15 +601,18 @@ def test_reused_calibration_support_cannot_contribute_and_target_scales_must_mat
 def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_overflow():
     from dataclasses import replace
 
-    import pytest
-
     from ilg_toolkit import PairPrediction
 
     region, ensemble, _ = known_ensemble()
-    region = replace(region, features=np.array([0, 100, 1, 2]).reshape(1, 4, 1))
+    region = replace(
+        region,
+        features=cx.field(np.array([0, 100, 1, 2]).reshape(1, 4, 1), "row", "column", "feature"),
+    )
     target = TargetSpec("divergence", units="index", transform="log1p")
     members = tuple(
-        replace(member, model=replace(completed_model(member), target=target))
+        replace(
+            member, model=eqx.tree_at(lambda model: model.target, completed_model(member), target)
+        )
         for member in ensemble.members
     )
     ensemble = Ensemble(members)
@@ -618,7 +635,6 @@ def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_o
 
 
 def test_pair_queries_require_unique_distinct_labels_with_query_locations():
-    import pytest
 
     region, ensemble, _ = known_ensemble()
     model = completed_model(ensemble.members[0])

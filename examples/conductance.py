@@ -1,7 +1,8 @@
 """Fit a tiny conductance graph: JAX_ENABLE_X64=true python examples/conductance.py."""
 
+import coordax as cx
 import jax
-import numpy as np
+import jax.numpy as jnp
 
 from ilg_toolkit import (
     PairwiseObservations,
@@ -15,9 +16,14 @@ from ilg_toolkit.models import ResNet9Conductance
 
 region = RegionBatch(
     name="synthetic-valley",
-    features=np.random.default_rng(4).normal(size=(8, 8, 2)).astype(np.float32),
+    features=cx.field(
+        jax.random.normal(jax.random.key(4), (8, 8, 2), dtype=jnp.float32),
+        "row",
+        "column",
+        "feature",
+    ),
     sampling_unit_ids=("south", "north", "east"),
-    grid_positions=np.array([[0, 0], [0, 7], [7, 7]]),
+    grid_positions=jnp.array([[0, 0], [0, 7], [7, 7]]),
 )
 # A 2x2 graph with conductance 2 has adjacent resistance 3/8 and opposite 1/2.
 observations = PairwiseObservations.from_matrix(
@@ -32,7 +38,12 @@ result = fit(
     region,
     observations,
     model=encoder,
-    config=TrainingConfig(epochs=4, learning_rate=0.001, solver=ResistanceSolverConfig(rtol=1e-8)),
+    config=TrainingConfig(
+        objective="direct_log1p",
+        epochs=4,
+        learning_rate=0.001,
+        solver=ResistanceSolverConfig(rtol=1e-8),
+    ),
 )
 print("Training loss:", result.history[0].training_loss, "->", result.history[-1].training_loss)
 # Neither operation requires genetic observations at the query locations.

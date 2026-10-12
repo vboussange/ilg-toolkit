@@ -2,6 +2,7 @@
 
 from typing import final
 
+import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -49,9 +50,15 @@ def test_actual_resistance_and_gradients_match_independent_laplacian(use_amg):
         surface = np.array([[1.0, 1.4], [0.8, 2.0]])
         nodes = np.array([3, 0, 1, 1])
         context = build_resistance_context(surface.shape, ResistanceSolverConfig(use_amg=use_amg))
-        actual = effective_resistance(jnp.asarray(surface), nodes, context=context)
+        actual = effective_resistance(surface, nodes, context=context)
         expected = dense_resistance(surface, nodes)
         np.testing.assert_allclose(actual, expected, atol=1e-8, rtol=1e-8)
+        np.testing.assert_allclose(
+            effective_resistance(surface.tolist(), nodes.tolist(), context=context),
+            expected,
+            atol=1e-8,
+            rtol=1e-8,
+        )
         gradient = jax.grad(
             lambda values: effective_resistance(values, nodes, context=context).sum()
         )(jnp.asarray(surface))
@@ -71,7 +78,7 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
         features = np.random.default_rng(4).normal(size=(8, 8, 2)).astype(np.float32)
         region = RegionBatch(
             "small-valley",
-            features,
+            cx.field(features, "row", "column", "feature"),
             ("south", "north", "east"),
             np.array([[0, 0], [0, 7], [7, 7]]),
         )
@@ -88,7 +95,10 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
             observations,
             model=model,
             config=TrainingConfig(
-                epochs=4, learning_rate=0.001, solver=ResistanceSolverConfig(rtol=1e-8)
+                objective="direct_log1p",
+                epochs=4,
+                learning_rate=0.001,
+                solver=ResistanceSolverConfig(rtol=1e-8),
             ),
         )
         assert result.history[-1].training_loss < result.history[0].training_loss
@@ -125,7 +135,7 @@ def test_failed_solver_reports_region_and_epoch_without_changing_solver():
     with jax.enable_x64():
         region = RegionBatch(
             "bad-solve",
-            np.linspace(0.1, 2, 12).reshape(3, 4, 1),
+            cx.field(np.linspace(0.1, 2, 12).reshape(3, 4, 1), "row", "column", "feature"),
             ("first", "last"),
             np.array([[0, 0], [2, 3]]),
         )
@@ -138,7 +148,9 @@ def test_failed_solver_reports_region_and_epoch_without_changing_solver():
                 observations,
                 model=PointConductance(jnp.array(0.0)),
                 config=TrainingConfig(
-                    epochs=0, solver=ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1)
+                    objective="direct_log1p",
+                    epochs=0,
+                    solver=ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1),
                 ),
             )
 
