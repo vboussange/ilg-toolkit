@@ -71,5 +71,10 @@ _Avoid_: Dataset, when referring to one region within a multi-region study.
 A model-derived measure of separation between two sampling units based on their landscape, before any genetic calibration.
 _Avoid_: Genetic prediction, when the score has not been related to the genetic target scale.
 
+**Genetic prediction**:
+An estimated genetic relationship for an identified pair of sampling units in a
+region, expressed in the declared target's original units. Its matrix representation
+does not imply predictions for unrequested pairs or a joint uncertainty model.
+
 **Genetic calibration**:
 The relationship between landscape scores and genetic observations on the declared target scale. This relationship may differ between regions.

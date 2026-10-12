@@ -49,4 +49,4 @@ result = fit(
 print("Selected shared encoder at epoch", result.selected_epoch)
 print("Per-region training objectives:", result.history[-1].training_by_region)
 for region in regions:
-    print(region.name, result.model.predict(region).values, result.model.target.units)
+    print(region.name, result.model.predict(region).as_matrix(), result.model.target.units)

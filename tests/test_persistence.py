@@ -134,7 +134,7 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(tmp_p
     query = (("population-4", "population-2"), ("population-5", "population-3"))
     before = model.predict_known_effects(region, query)
     after = restored.predict_known_effects(region, query)
-    np.testing.assert_array_equal(after.values, before.values)
+    np.testing.assert_array_equal(after.prediction.values, before.prediction.values)
     np.testing.assert_array_equal(after.model_variance, before.model_variance)
     assert after.provenance == before.provenance
     support = PairwiseObservations.from_pairs(
@@ -143,7 +143,7 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(tmp_p
     declared = ObservationPartition(region.name, support.observed_pairs, role="support")
     before = model.predict_with_support(region, query, support, support_partition=declared)
     after = restored.predict_with_support(region, query, support, support_partition=declared)
-    np.testing.assert_array_equal(after.values, before.values)
+    np.testing.assert_array_equal(after.prediction.values, before.prediction.values)
     np.testing.assert_array_equal(after.model_variance, before.model_variance)
     assert after.provenance == before.provenance
     assert isinstance(restored.calibration, MLPECalibrationModule)

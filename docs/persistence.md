@@ -31,6 +31,7 @@ distance_model_template = ResNet9Conductance(
 )
 model = load_model("model.ilg", distance_model=distance_model_template)
 prediction = model.predict(prepared_query_region)
+matrix = prediction.as_matrix()  # Explicit representation in query-region order.
 ```
 
 This example assumes the fitted distance model uses the shown settings. Matching leaf

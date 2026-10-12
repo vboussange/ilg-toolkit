@@ -141,7 +141,7 @@ def test_native_mlpe_state_preserves_posterior_support_predictions_and_continuat
     query = observations.observed_pairs[-1:]
     expected = partial.model.predict_known_effects(region, query)
     actual = state.best_model.predict_known_effects(region, query)
-    np.testing.assert_array_equal(actual.values, expected.values)
+    np.testing.assert_array_equal(actual.prediction.values, expected.prediction.values)
     np.testing.assert_array_equal(actual.model_variance, expected.model_variance)
     assert actual.provenance == expected.provenance
     assert state.history == partial.history
@@ -160,7 +160,7 @@ def test_native_mlpe_state_preserves_posterior_support_predictions_and_continuat
     actual = state.best_model.predict_with_support(
         region, query, support, support_partition=support_partition
     )
-    np.testing.assert_array_equal(actual.values, expected.values)
+    np.testing.assert_array_equal(actual.prediction.values, expected.prediction.values)
     np.testing.assert_array_equal(actual.model_variance, expected.model_variance)
 
     continued = fit(

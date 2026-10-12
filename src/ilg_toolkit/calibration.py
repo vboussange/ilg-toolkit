@@ -72,7 +72,7 @@ class MLPECalibrationModule(AbstractCalibrationModule):
         return value
 
     def predict(self, scores, pairs, *, region_name: str) -> jax.Array:
-        return self.for_region(region_name).predict_marginal(scores, pairs).values
+        return self.for_region(region_name).predict_marginal(scores, pairs).prediction.values
 
 
 def calibrate(

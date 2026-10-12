@@ -69,7 +69,7 @@ assert isinstance(transferred.calibration, MLPECalibrationModule)
 assert eqx.tree_equal(
     transferred.calibration.regions[region.name], calibrated.calibration.regions[region.name]
 )
-print("Calibrated new-region predictions:\n", transferred.predict(new_region).values)
+print("Calibrated new-region predictions:\n", transferred.predict(new_region).as_matrix())
 assert isinstance(transferred.calibration, MLPECalibrationModule)
 print(
     "Declared data roles:", set(transferred.calibration.regions[new_region.name].calibration_roles)

@@ -1,7 +1,7 @@
 """Label-free landscape scoring and explicit target-scale predictions."""
 
 from collections.abc import Sequence
-from typing import final
+from typing import cast, final
 
 import equinox as eqx
 import jax
@@ -12,27 +12,7 @@ from .calibration import AbstractCalibrationModule, MLPECalibrationModule
 from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
 from .mlpe import MLPEConditionalPrediction, RegionalMLPECalibration
 from .models import AbstractDistanceModel, ConductanceModel
-
-
-@final
-class Prediction(eqx.Module):
-    """Pairwise predictions with their sampling-unit order and declared scale."""
-
-    values: jax.Array
-    sampling_unit_ids: tuple[str, ...]
-    target: TargetSpec
-    scale: str = "original"
-
-
-@final
-class PairPrediction(eqx.Module):
-    """Marginal predictions for explicit labelled pairs in the requested order."""
-
-    values: jax.Array
-    pairs: tuple[tuple[str, str], ...]
-    target: TargetSpec
-    region_name: str
-    scale: str = "original"
+from .prediction import Prediction
 
 
 @final
@@ -115,37 +95,43 @@ class LandscapeGeneticsModel(eqx.Module):
             raise ValueError("Population MLPE prediction requires population sampling units")
         return head
 
-    def predict(self, region: RegionBatch) -> Prediction:
+    def predict(self, region: RegionBatch, pairs=None) -> Prediction:
         """Return original-scale predictions; MLPE uses the region's marginal head.
 
         No query targets are accepted. An unseen MLPE region requires explicit
         calibration even though its landscape scores can already be computed.
-        """
-        count = len(region.sampling_unit_ids)
-        left, right = np.triu_indices(count, 1)
-        pairs = tuple(
-            (region.sampling_unit_ids[i], region.sampling_unit_ids[j])
-            for i, j in zip(left, right, strict=True)
-        )
-        marginal = self.predict_pairs(region, pairs)
-        values = jnp.zeros((count, count), dtype=marginal.values.dtype)
-        values = values.at[left, right].set(marginal.values)
-        values = values.at[right, left].set(marginal.values)
-        return Prediction(values, region.sampling_unit_ids, self.target)
 
-    def predict_pairs(self, region: RegionBatch, pairs) -> PairPrediction:
-        """Predict a nonempty selection of unique pairs without query targets.
+        Args:
+            region: Query features and locations matching the model's feature
+                contract; no genetic observations are required.
+            pairs: Optional nonempty unique unordered pair selection. Values
+                retain caller order and orientation. Omission requests every
+                distinct pair in region order.
 
-        Preserve the requested order and orientation. Select landscape scores
-        before regional calibration or target inversion, so unrequested pairs
-        cannot cause an inverse-transform failure. MLPE predictions are marginal.
+        Returns:
+            Original-scale pair points retaining the full region sampling-unit
+            order. Use ``as_matrix()`` for explicit matrix representation.
+            Requested distances are selected before calibration or inverse
+            transformation, excluding unrequested transform failures.
+
+        Raises:
+            ValueError: Features, pair labels, locations or regional calibration
+                are incompatible, or pairs are empty, self-pairs or duplicates.
+            FloatingPointError: Distance prediction or inverse transformation
+                produces invalid numerical values.
         """
+        if pairs is None:
+            left, right = np.triu_indices(len(region.sampling_unit_ids), 1)
+            pairs = tuple(
+                (region.sampling_unit_ids[i], region.sampling_unit_ids[j])
+                for i, j in zip(left, right, strict=True)
+            )
         self._validate_region(region)
         try:
             raw_pairs = tuple(pairs)
             if any(isinstance(pair, str) for pair in raw_pairs):
                 raise ValueError("Each pair requires two labels")
-            pairs = tuple(tuple(pair) for pair in raw_pairs)
+            pairs = cast(tuple[tuple[str, str], ...], tuple(tuple(pair) for pair in raw_pairs))
             ObservationPartition(region.name, pairs, role="query")
         except (TypeError, ValueError) as error:
             raise ValueError(
@@ -155,7 +141,9 @@ class LandscapeGeneticsModel(eqx.Module):
             self._regional_head(region)
         scores = _scores_for_pairs(self.landscape_scores(region), region, pairs)
         values = self.calibration.predict(scores, pairs, region_name=region.name)
-        return PairPrediction(jnp.asarray(values), pairs, self.target, region.name)
+        return Prediction(
+            jnp.asarray(values), pairs, region.name, self.target, region.sampling_unit_ids
+        )
 
     def calibrate(self, region: RegionBatch, observations, *, partitions=None, config=None):
         """Fit or replace regional MLPE calibration with this distance model frozen."""
@@ -168,7 +156,10 @@ class LandscapeGeneticsModel(eqx.Module):
         head = self._regional_head(region)
         pairs = tuple(pairs)
         scores = _scores_for_pairs(self.landscape_scores(region), region, pairs)
-        return head.predict_known_effects(scores, pairs)
+        result = head.predict_known_effects(scores, pairs)
+        return eqx.tree_at(
+            lambda value: value.prediction.sampling_unit_ids, result, region.sampling_unit_ids
+        )
 
     def predict_with_support(
         self,
@@ -190,7 +181,10 @@ class LandscapeGeneticsModel(eqx.Module):
         conditioned = head.condition_on_support(
             support_scores, support_observations, partition=support_partition
         )
-        return conditioned.predict(_scores_for_pairs(scores, region, pairs), pairs)
+        result = conditioned.predict(_scores_for_pairs(scores, region, pairs), pairs)
+        return eqx.tree_at(
+            lambda value: value.prediction.sampling_unit_ids, result, region.sampling_unit_ids
+        )
 
 
 def _scores_for_pairs(

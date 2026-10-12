@@ -37,4 +37,4 @@ result = fit(
 )
 print("Conductance surface:\n", result.model.conductance_surface(region))
 print("Resistance landscape scores:\n", result.model.landscape_scores(region))
-print("Genetic predictions:\n", result.model.predict(region).values)
+print("Genetic predictions:\n", result.model.predict(region).as_matrix())

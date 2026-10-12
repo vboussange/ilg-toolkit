@@ -162,7 +162,7 @@ def test_public_landscape_and_target_predictions_return_jax_values():
     ).model
     scores = fitted.landscape_scores(region)
     prediction = fitted.predict(region)
-    selected = fitted.predict_pairs(region, [("unit/20", "unit/7")])
+    selected = fitted.predict(region, [("unit/20", "unit/7")])
     assert isinstance(scores, jax.Array)
     assert isinstance(prediction.values, jax.Array)
     assert isinstance(selected.values, jax.Array)
@@ -170,7 +170,7 @@ def test_public_landscape_and_target_predictions_return_jax_values():
     assert isinstance(target.inverse(jnp.array([0.5])), jax.Array)
     np.testing.assert_allclose(scores[0, 1], 0.49, rtol=1e-6)
     np.testing.assert_allclose(selected.values, [np.expm1(0.49)], rtol=1e-6)
-    np.testing.assert_array_equal(np.diag(prediction.values), 0)
+    np.testing.assert_array_equal(np.diag(prediction.as_matrix()), 0)
 
 
 @pytest.mark.parametrize("enable_x64", [False, True])
@@ -197,7 +197,9 @@ def test_array_like_observations_and_targets_follow_configured_precision(enable_
                 distance_model=model,
                 config=TrainingConfig(objective="direct_log1p", epochs=0),
             )
-            predictions.append(fitted.model.predict(region).values)
+            prediction = fitted.model.predict(region)
+            assert prediction.values.dtype == prediction.as_matrix().dtype == dtype
+            predictions.append(prediction.values)
         np.testing.assert_array_equal(predictions[0], predictions[1])
         np.testing.assert_array_equal(predictions[0], predictions[2])
         assert jax.config.read("jax_enable_x64") is enable_x64
@@ -279,7 +281,7 @@ def test_incomplete_pairs_remain_absent_through_fitting():
     assert np.isnan(observations.values[0, 2])
     assert result.history[0].training_loss == pytest.approx(0, abs=1e-14)
     # Unobserved pairs can still be predicted, but never become zero training targets.
-    np.testing.assert_allclose(result.model.predict(region).values[0, 2], 4)
+    np.testing.assert_allclose(result.model.predict(region).as_matrix()[0, 2], 4)
 
 
 def test_explicit_transform_returns_original_units_and_separate_landscape_scores():
@@ -299,7 +301,7 @@ def test_explicit_transform_returns_original_units_and_separate_landscape_scores
     assert prediction.scale == "original"
     assert prediction.target.transform == "log1p"
     assert prediction.target.units == "index"
-    np.testing.assert_allclose(prediction.values[0, 1], np.e - 1, rtol=1e-6)
+    np.testing.assert_allclose(prediction.as_matrix()[0, 1], np.e - 1, rtol=1e-6)
     np.testing.assert_allclose(result.model.landscape_scores(region)[0, 1], 1)
 
 

@@ -85,14 +85,21 @@ result = fit(
 )
 print("Conductance surface:\n", result.model.conductance_surface(region))
 print("Resistance landscape scores:\n", result.model.landscape_scores(region))
-print("Genetic predictions:\n", result.model.predict(region).values)
+prediction = result.model.predict(region)
+print("Genetic pair predictions:", prediction.pairs, prediction.values)
+print("Genetic prediction matrix:\n", prediction.as_matrix())
 ```
 
 `patch_size=4` turns this raster into a 2-by-2 conductance graph. Locations are
 integer `(row, column)` cell positions, and matrix rows/columns follow the given
 sampling-unit labels. Query regions need only features and locations with the
-same feature meanings and order. `predict()` returns original target units;
-`predict_pairs(region, [("south", "east")])` requests selected pairs.
+same feature meanings and order. `predict(region)` returns one original-scale
+value per distinct pair; `predict(region, [("south", "east")])` preserves the
+requested pair order and orientation. `prediction.as_matrix()` explicitly
+converts stored points into a symmetric matrix in full query-region order.
+Unrequested off-diagonal entries remain `NaN`; dissimilarity diagonals are
+structural zeros, not fitted self-pair predictions. An explicit unique matrix
+order may include additional units but must contain every predicted endpoint.
 
 Both the distance model and objective are required choices. Here `direct_log1p` minimizes
 mean squared differences after applying `log1p` to nonnegative scores and targets.
@@ -176,7 +183,7 @@ distance_model_template = ResNet9Conductance(
     in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(0)
 )
 restored = load_model("model.ilg", distance_model=distance_model_template)
-print(restored.predict(region).values)
+print(restored.predict(region).as_matrix())
 ```
 
 Initial template weights may differ; saved leaves replace them. Keeping static
