@@ -1,23 +1,12 @@
 """Prepared landscape inputs, separate from labelled genetic observations."""
 
 from dataclasses import dataclass
+from typing import cast
 
 import coordax as cx
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-
-def _target_array(values) -> jax.Array:
-    """Retain supplied precision when moving target arithmetic to the device."""
-    source = values if isinstance(values, jax.Array) else np.asarray(values)
-    dtype = np.dtype(source.dtype)
-    needs_x64 = (dtype.kind == "f" and dtype.itemsize > 4) or (
-        dtype.kind == "c" and dtype.itemsize > 8
-    )
-    if needs_x64 and not jax.config.read("jax_enable_x64"):
-        raise RuntimeError("Target values require float64: set JAX_ENABLE_X64=true before Python")
-    return jnp.asarray(source)
 
 
 @dataclass(frozen=True)
@@ -49,7 +38,7 @@ class TargetSpec:
 
     def forward(self, values) -> jax.Array:
         """Transform finite original observations, without automatic clipping."""
-        values = _target_array(values)
+        values = jnp.asarray(values)
         if not bool(jnp.isfinite(values).all()):
             raise ValueError("Observed target values must be finite")
         if self.transform != "identity" and (values < 0).any():
@@ -62,7 +51,7 @@ class TargetSpec:
 
     def inverse(self, values) -> jax.Array:
         """Return predictions on original measurement units."""
-        values = _target_array(values)
+        values = jnp.asarray(values)
         if self.transform == "sqrt" and (values < 0).any():
             raise ValueError("sqrt inverse requires nonnegative transformed predictions")
         if self.transform == "log1p":
@@ -76,14 +65,14 @@ class TargetSpec:
 
 @dataclass(frozen=True)
 class RegionBatch:
-    """HWC features and labelled sampling-unit locations in row/column grid coordinates.
+    """Named row, column and feature dimensions with labelled sampling-unit locations.
 
     Features are already prepared. This boundary performs no raster alignment,
     coordinate conversion, or implicit normalization.
     """
 
     name: str
-    features: cx.Field | jax.Array | np.ndarray
+    features: cx.Field
     sampling_unit_ids: tuple[str, ...]
     grid_positions: jax.Array | np.ndarray
     feature_names: tuple[str, ...] | None = None
@@ -91,43 +80,38 @@ class RegionBatch:
 
     def __post_init__(self):
         names = None if self.feature_names is None else tuple(self.feature_names)
-        axes = {}
-        if isinstance(self.features, cx.Field):
-            if self.features.ndim != 3 or set(self.features.dims) != {"row", "column", "feature"}:
-                raise ValueError("Labelled features require named axes row, column, feature")
-            field = self.features.order_as("row", "column", "feature")
-            axes = dict(field.axes)
-            coordinate = field.axes.get("feature")
-            if isinstance(coordinate, cx.LabeledAxis):
-                labels = tuple(coordinate.ticks.tolist())
-                if any(not isinstance(label, str) or not label for label in labels):
-                    raise ValueError("feature coordinates require nonempty string labels")
-                if names is not None and names != labels:
-                    raise ValueError(
-                        "Feature coordinates must match feature_names meanings and order"
-                    )
-                names = labels
-            raw_features = field.data
-        else:
-            raw_features = self.features
-        features = jnp.asarray(raw_features, dtype=jnp.float32)
+        if not isinstance(self.features, cx.Field):
+            raise TypeError("features must be a coordax.Field with named row, column, feature axes")
+        if self.features.ndim != 3 or set(self.features.dims) != {"row", "column", "feature"}:
+            raise ValueError("Labelled features require named axes row, column, feature")
+        field = self.features.order_as("row", "column", "feature")
+        axes = dict(field.axes)
+        coordinate = field.axes.get("feature")
+        if isinstance(coordinate, cx.LabeledAxis):
+            labels = tuple(coordinate.ticks.tolist())
+            if any(not isinstance(label, str) or not label for label in labels):
+                raise ValueError("feature coordinates require nonempty string labels")
+            if names is not None and names != labels:
+                raise ValueError("Feature coordinates must match feature_names meanings and order")
+            names = labels
+        features = jnp.asarray(field.data)
         ids = tuple(self.sampling_unit_ids)
-        positions = np.asarray(self.grid_positions)
+        positions = jnp.asarray(self.grid_positions)
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("Region name must be a nonempty string")
-        if features.ndim != 3 or min(features.shape) < 1 or not bool(jnp.isfinite(features).all()):
-            raise ValueError("features must be a finite nonempty HWC array")
+        if min(features.shape) < 1 or not bool(jnp.isfinite(features).all()):
+            raise ValueError("features must contain finite nonempty row, column, feature data")
         if (
             len(ids) < 2
             or any(not isinstance(x, str) or not x for x in ids)
             or len(set(ids)) != len(ids)
         ):
             raise ValueError("sampling_unit_ids must contain at least two unique nonempty labels")
-        if positions.shape != (len(ids), 2) or not np.issubdtype(positions.dtype, np.integer):
+        if positions.shape != (len(ids), 2) or not jnp.issubdtype(positions.dtype, jnp.integer):
             raise ValueError(
                 "grid_positions must be an integer (sampling units, 2) row/column array"
             )
-        if (positions < 0).any() or (positions >= np.asarray(features.shape[:2])).any():
+        if (positions < 0).any() or (positions >= jnp.asarray(features.shape[:2])).any():
             raise ValueError("grid_positions fall outside the raster")
         if names is not None and (
             len(names) != features.shape[-1]
@@ -154,20 +138,17 @@ class RegionBatch:
             self, "features", cx.Field(features, dims=("row", "column", "feature"), axes=axes)
         )
         object.__setattr__(self, "sampling_unit_ids", ids)
-        object.__setattr__(self, "grid_positions", jnp.asarray(positions, dtype=jnp.int32))
+        object.__setattr__(self, "grid_positions", positions.astype(jnp.int32))
 
     @property
     def feature_array(self) -> jax.Array:
-        """Canonical HWC device array for encoder kernels."""
-        assert isinstance(self.features, cx.Field)
-        values = self.features.data
-        assert isinstance(values, jax.Array)
-        return values
+        """Canonical row, column, feature JAX array for encoder kernels."""
+        return cast(jax.Array, self.features.data)
 
     @property
     def pixel_nodes(self) -> jax.Array:
         """Return labelled locations as row-major native-resolution pixel indices."""
-        positions = jnp.asarray(self.grid_positions)
+        positions = cast(jax.Array, self.grid_positions)
         return positions[:, 0] * self.features.shape[1] + positions[:, 1]
 
 
@@ -210,31 +191,35 @@ class PairwiseObservations:
     """Labelled unordered observations; NaN entries represent absent pairs.
 
     Use ``from_pairs`` for incomplete observations or ``from_matrix`` for a
-    labelled symmetric matrix. No missing pair is replaced by a zero target.
+    labelled symmetric matrix. Floating input precision is retained; ordinary
+    array-like conversion follows the configured JAX precision. Enable float64
+    before creating or converting precise measurements: later promotion cannot
+    recover rounded values. No missing pair is replaced by a zero target.
     """
 
     sampling_unit_ids: tuple[str, ...]
-    values: np.ndarray
+    values: jax.Array
     target: TargetSpec
 
     def __post_init__(self):
         ids = tuple(self.sampling_unit_ids)
-        values = np.array(self.values, dtype=np.float64, copy=True)
+        values = jnp.asarray(self.values)
         if (
             len(ids) < 2
             or any(not isinstance(x, str) or not x for x in ids)
             or len(set(ids)) != len(ids)
         ):
             raise ValueError("Observation identifiers must be unique nonempty sampling-unit labels")
-        if values.shape != (len(ids), len(ids)) or np.isinf(values).any():
+        if values.shape != (len(ids), len(ids)) or jnp.isinf(values).any():
             raise ValueError(
                 "Observation matrix must be aligned with labels and contain no infinity"
             )
-        if not np.allclose(values, values.T, equal_nan=True) or not np.allclose(np.diag(values), 0):
+        if not jnp.allclose(values, values.T, equal_nan=True) or not jnp.allclose(
+            jnp.diag(values), 0
+        ):
             raise ValueError("Observation matrix must be symmetric with zero diagonal")
-        if not np.isfinite(values[np.triu_indices(len(ids), 1)]).any():
+        if not jnp.isfinite(values[jnp.triu_indices(len(ids), 1)]).any():
             raise ValueError("At least one observed pair is required")
-        values.setflags(write=False)
         object.__setattr__(self, "sampling_unit_ids", ids)
         object.__setattr__(self, "values", values)
 
@@ -252,8 +237,8 @@ class PairwiseObservations:
         sampling units with no observed pairs.
         """
         pairs = tuple(tuple(pair) for pair in pairs)
-        values = np.asarray(values, dtype=np.float64)
-        if not pairs or values.shape != (len(pairs),) or not np.isfinite(values).all():
+        values = jnp.asarray(values)
+        if not pairs or values.shape != (len(pairs),) or not jnp.isfinite(values).all():
             raise ValueError("Explicit pairs require one finite observed value per nonempty pair")
         if any(
             len(pair) != 2 or any(not isinstance(x, str) or not x for x in pair) for pair in pairs
@@ -267,8 +252,13 @@ class PairwiseObservations:
         if any(not isinstance(x, str) or not x for x in ids) or len(set(ids)) != len(ids):
             raise ValueError("Observation identifiers must be unique nonempty labels")
         lookup = {label: index for index, label in enumerate(ids)}
-        matrix = np.full((len(ids), len(ids)), np.nan, dtype=np.float64)
-        np.fill_diagonal(matrix, 0)
+        dtype = (
+            values.dtype
+            if jnp.issubdtype(values.dtype, jnp.inexact)
+            else jnp.result_type(values, 0.0)
+        )
+        matrix = jnp.full((len(ids), len(ids)), jnp.nan, dtype=dtype)
+        matrix = matrix.at[jnp.diag_indices(len(ids))].set(0)
         seen = set()
         for pair, value in zip(pairs, values, strict=True):
             if pair[0] == pair[1]:
@@ -280,45 +270,49 @@ class PairwiseObservations:
                 raise ValueError("Observed pairs must be unique, including reversed pairs")
             seen.add(canonical)
             left, right = (lookup[endpoint] for endpoint in pair)
-            matrix[left, right] = matrix[right, left] = value
+            matrix = matrix.at[left, right].set(value).at[right, left].set(value)
         return cls(ids, matrix, target)
 
     @property
     def observed_pairs(self) -> tuple[tuple[str, str], ...]:
         """Return only measured unordered pairs, in deterministic matrix order."""
-        left, right = np.triu_indices(len(self.sampling_unit_ids), 1)
-        present = np.isfinite(self.values[left, right])
+        left, right = jnp.triu_indices(len(self.sampling_unit_ids), 1)
+        present = jnp.isfinite(self.values[left, right])
         return tuple(
             (self.sampling_unit_ids[i], self.sampling_unit_ids[j])
             for i, j in zip(left[present], right[present], strict=True)
         )
 
     @property
-    def observed_values(self) -> np.ndarray:
+    def observed_values(self) -> jax.Array:
         """Return original-scale measurements aligned with ``observed_pairs``."""
-        upper = self.values[np.triu_indices(len(self.sampling_unit_ids), 1)]
-        return upper[np.isfinite(upper)]
+        upper = self.values[jnp.triu_indices(len(self.sampling_unit_ids), 1)]
+        return upper[jnp.isfinite(upper)]
 
-    def aligned_values(self, region: RegionBatch) -> np.ndarray:
+    def aligned_values(self, region: RegionBatch) -> jax.Array:
         """Align known observation labels to a region, retaining NaNs for absent pairs."""
         if not set(self.sampling_unit_ids).issubset(region.sampling_unit_ids):
             raise ValueError(
                 "Observation labels contain endpoints outside region sampling_unit_ids"
             )
-        matrix = np.full(
-            (len(region.sampling_unit_ids), len(region.sampling_unit_ids)), np.nan, dtype=np.float64
+        dtype = (
+            self.values.dtype
+            if jnp.issubdtype(self.values.dtype, jnp.inexact)
+            else jnp.result_type(self.values, 0.0)
         )
-        np.fill_diagonal(matrix, 0)
+        matrix = jnp.full(
+            (len(region.sampling_unit_ids), len(region.sampling_unit_ids)), jnp.nan, dtype=dtype
+        )
+        matrix = matrix.at[jnp.diag_indices(len(region.sampling_unit_ids))].set(0)
         lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-        order = [lookup[label] for label in self.sampling_unit_ids]
-        matrix[np.ix_(order, order)] = self.values
-        return matrix
+        order = jnp.asarray([lookup[label] for label in self.sampling_unit_ids])
+        return matrix.at[jnp.ix_(order, order)].set(self.values)
 
     def aligned_pairs(self, region: RegionBatch, partition: ObservationPartition | None = None):
         """Return observed index pairs and measurements in the prepared unit order."""
         values = self.aligned_values(region)
-        left, right = np.triu_indices(len(region.sampling_unit_ids), 1)
-        present = np.isfinite(values[left, right])
+        left, right = jnp.triu_indices(len(region.sampling_unit_ids), 1)
+        present = jnp.isfinite(values[left, right])
         if partition is not None:
             if partition.region_name != region.name:
                 raise ValueError("Partition region_name does not match the prepared region")
@@ -329,7 +323,7 @@ class PairwiseObservations:
             if not set(partition.pairs).issubset(observed):
                 raise ValueError("Partition selects an unobserved pair")
             selected = set(partition.pairs)
-            present &= np.array(
+            present &= jnp.asarray(
                 [
                     tuple(sorted((region.sampling_unit_ids[i], region.sampling_unit_ids[j])))
                     in selected
