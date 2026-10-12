@@ -2,6 +2,7 @@
 
 from typing import cast, final
 
+import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -148,7 +149,10 @@ class UniformConductance(ConductanceModel):
 def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
     labels = ("west", "east", "north", "south")
     region = RegionBatch(
-        "valley", np.ones((2, 2, 1)), labels, np.array([[0, 0], [0, 1], [1, 0], [1, 1]])
+        "valley",
+        cx.Field(np.ones((2, 2, 1)), dims=("row", "column", "feature")),
+        labels,
+        np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
     )
     resistance = np.array(
         [[0, 0.75, 0.75, 1], [0.75, 0, 1, 0.75], [0.75, 1, 0, 0.75], [1, 0.75, 0.75, 0]]
@@ -276,7 +280,12 @@ def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible
     observations = GaussianMarkerDistances(
         "coincident", labels, distances, raw.shape[1], "average", "squared_gaussian_marker_distance"
     )
-    region = RegionBatch("coincident", np.ones((2, 2, 1)), labels, np.zeros((3, 2), dtype=int))
+    region = RegionBatch(
+        "coincident",
+        cx.Field(np.ones((2, 2, 1)), dims=("row", "column", "feature")),
+        labels,
+        np.zeros((3, 2), dtype=int),
+    )
 
     def diagnostic(scale: float, nugget: float):
         return diagnose_wishart(
