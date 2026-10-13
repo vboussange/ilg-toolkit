@@ -113,6 +113,9 @@ def analyze_case(data):
         for filename in event["new_memory_reports"]:
             if report_roles.get(filename) != event["kind"]:
                 raise ValueError("Missing or mislabelled allocation evidence for checked work")
+    for role in ("encoder_inference", "encoder_training_forward", "encoder_backward"):
+        if not any(event["new_memory_reports"] for event in events if event["kind"] == role):
+            raise ValueError(f"Missing encoder allocation evidence: {role}")
     allocations = []
     for report in data["cpu_compiled_allocation_reports"]:
         matched = re.search(r"Total bytes(?: used)?:\s*(\d+)", report["report"])

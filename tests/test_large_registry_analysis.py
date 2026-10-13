@@ -279,3 +279,30 @@ def test_checked_work_without_its_allocation_evidence_cannot_pass(tmp_path):
     )
     assert result.returncode != 0
     assert "Missing or mislabelled allocation evidence" in result.stderr
+
+
+def test_omitting_all_encoder_allocation_evidence_cannot_pass(tmp_path):
+    raw = two_update_report()
+    raw["cpu_compiled_allocation_reports"] = [
+        report
+        for report in raw["cpu_compiled_allocation_reports"]
+        if report["role"] != "encoder_training_forward"
+    ]
+    for event in raw["events"]:
+        if event["kind"] == "encoder_training_forward":
+            event["new_memory_reports"] = []
+    (tmp_path / "unet-s100-c4.json").write_text(json.dumps(raw))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ANALYZER),
+            str(tmp_path),
+            "--allow-partial",
+            "--output",
+            str(tmp_path / "analysis.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "Missing encoder allocation evidence" in result.stderr
