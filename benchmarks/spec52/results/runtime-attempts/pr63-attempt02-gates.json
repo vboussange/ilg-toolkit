@@ -1,0 +1,64 @@
+[
+  {
+    "case": "resnet-feature-heavy",
+    "complete_fit": {
+      "ratio": 0.5433472849914853,
+      "bootstrap_95_percent": [
+        0.5368920586037262,
+        0.5484253046770052
+      ],
+      "limit": 1.1,
+      "status": "pass",
+      "fit_repetitions": [
+        10,
+        10
+      ],
+      "minimum_repetitions_required": null
+    },
+    "steady_training_step": {
+      "ratio": 1.0176344370340864,
+      "bootstrap_95_percent": [
+        1.0100900611906216,
+        1.0226427739114976
+      ],
+      "limit": 1.1,
+      "status": "pass",
+      "fit_repetitions": [
+        10,
+        10
+      ],
+      "minimum_repetitions_required": null
+    }
+  },
+  {
+    "case": "unet-feature-heavy",
+    "complete_fit": {
+      "ratio": 0.0434180845746766,
+      "bootstrap_95_percent": [
+        0.04206848888329095,
+        0.0438744275157267
+      ],
+      "limit": 1.1,
+      "status": "pass",
+      "fit_repetitions": [
+        10,
+        10
+      ],
+      "minimum_repetitions_required": null
+    },
+    "steady_training_step": {
+      "ratio": 0.6312475933426579,
+      "bootstrap_95_percent": [
+        0.4563103082461953,
+        0.8447525517006578
+      ],
+      "limit": 1.1,
+      "status": "pass",
+      "fit_repetitions": [
+        10,
+        10
+      ],
+      "minimum_repetitions_required": null
+    }
+  }
+]
