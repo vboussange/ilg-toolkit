@@ -10,7 +10,7 @@ from jax.scipy.linalg import cho_solve
 
 from ..data import ObservationPartition, PairwiseObservations
 from ..prediction import Prediction
-from .fit import MLPEError, RegionalMLPECalibration
+from .fit import MLPECalibration, MLPEError
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class MLPEPredictionProvenance:
 
     mode: str
     region_name: str
+    species_name: str
     calibration_pairs: tuple[tuple[str, str], ...]
     calibration_roles: tuple[str, ...]
     support_pairs: tuple[tuple[str, str], ...] = ()
@@ -130,6 +131,7 @@ def _predict(head, distances, pairs, population_ids, mean, covariance, provenanc
             values,
             pairs,
             head.region_name,
+            head.species_name,
             head.target,
             tuple(dict.fromkeys(label for pair in pairs for label in pair)),
         ),
@@ -142,9 +144,7 @@ def _predict(head, distances, pairs, population_ids, mean, covariance, provenanc
     )
 
 
-def predict_known_effects(
-    head: RegionalMLPECalibration, distances, pairs
-) -> MLPEConditionalPrediction:
+def predict_known_effects(head: MLPECalibration, distances, pairs) -> MLPEConditionalPrediction:
     """Use saved effects for known populations and independent priors for unseen ones.
 
     This operation is explicit; ordinary ``head.predict_marginal`` retains zero
@@ -153,6 +153,7 @@ def predict_known_effects(
     provenance = MLPEPredictionProvenance(
         "known_effects",
         head.region_name,
+        head.species_name,
         tuple((min(pair), max(pair)) for pair in head.calibration_pairs),
         head.calibration_roles,
     )
@@ -175,7 +176,7 @@ class MLPESupportConditioner(eqx.Module):
     later, without targets, and must be disjoint from all support pairs.
     """
 
-    head: RegionalMLPECalibration
+    head: MLPECalibration
     population_ids: tuple[str, ...]
     effect_mean: jax.Array
     effect_covariance: jax.Array
@@ -210,7 +211,7 @@ def _condition_posterior(mean, covariance, residual, left, right, noise):
 
 @jax.enable_x64()
 def condition_on_support(
-    head: RegionalMLPECalibration,
+    head: MLPECalibration,
     support_distances,
     support_observations: PairwiseObservations,
     *,
@@ -229,6 +230,8 @@ def condition_on_support(
         raise MLPEError("Conditioning requires an explicit support-role partition")
     if partition.region_name != head.region_name:
         raise MLPEError("Support partition region_name does not match calibration")
+    if partition.species_name != head.species_name:
+        raise MLPEError("Support partition species_name does not match calibration")
     if support_observations.target != head.target:
         raise MLPEError("Support target metadata must match calibration")
     distances, pairs, canonical = _query(support_distances, support_observations.observed_pairs)
@@ -258,6 +261,7 @@ def condition_on_support(
     provenance = MLPEPredictionProvenance(
         "support",
         head.region_name,
+        head.species_name,
         calibration_pairs,
         head.calibration_roles,
         canonical,

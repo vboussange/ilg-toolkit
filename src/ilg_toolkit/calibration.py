@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
-from .mlpe import MLPEConfig, RegionalMLPECalibration, calibrate_mlpe
+from .mlpe import MLPECalibration, MLPEConfig, calibrate_mlpe
 
 if TYPE_CHECKING:
     from .model import LandscapeGeneticsModel
@@ -40,42 +40,44 @@ class DirectCalibrationModule(AbstractCalibrationModule):
 
 
 @final
-class MLPECalibrationModule(AbstractCalibrationModule):
-    """Select a fitted regional MLPE relationship; uncalibrated regions are refused.
-
-    ``regions`` maps region identities to standalone regional calibrations. Every
-    installed relationship must agree with this module's authoritative target.
-    """
+class UnpooledMLPECalibrationModule(AbstractCalibrationModule):
+    """Select independent fitted relationships by exact region and species identity."""
 
     target: TargetSpec
-    regions: dict[str, RegionalMLPECalibration] = eqx.field(default_factory=dict)
+    groups: dict[str, dict[str, MLPECalibration]] = eqx.field(default_factory=dict)
 
     def __post_init__(self):
         if not isinstance(self.target, TargetSpec) or self.target.kind != "dissimilarity":
             raise ValueError("Population MLPE requires a dissimilarity target")
-        regions = dict(self.regions)
-        if any(not isinstance(value, RegionalMLPECalibration) for value in regions.values()):
-            raise ValueError("MLPE regions require fitted RegionalMLPECalibration values")
-        if any(
-            name != value.region_name or value.target != self.target
-            for name, value in regions.items()
-        ):
-            raise ValueError(
-                "Regional calibration names and target contracts must match the module"
-            )
-        self.regions = regions
+        groups = {region: dict(species) for region, species in self.groups.items()}
+        for region, species in groups.items():
+            for name, value in species.items():
+                if not isinstance(value, MLPECalibration):
+                    raise ValueError("MLPE groups require fitted MLPECalibration values")
+                if (region, name) != (
+                    value.region_name,
+                    value.species_name,
+                ) or value.target != self.target:
+                    raise ValueError(
+                        "Calibration group identities and target must match the module"
+                    )
+        self.groups = groups
 
-    def for_region(self, region_name: str) -> RegionalMLPECalibration:
-        """Return a supported region's calibration, requiring explicit regional fitting."""
-        value = self.regions.get(region_name)
+    def for_group(self, region_name: str, species_name: str) -> MLPECalibration:
+        value = self.groups.get(region_name, {}).get(species_name)
         if value is None:
             raise ValueError(
-                f"Region {region_name!r} has no MLPE calibration; calibrate it explicitly"
+                f"Group ({region_name!r}, {species_name!r}) has no MLPE calibration; "
+                "calibrate it explicitly"
             )
         return value
 
-    def predict(self, distances, pairs, *, region_name: str) -> jax.Array:
-        return self.for_region(region_name).predict_marginal(distances, pairs).prediction.values
+    def predict(self, distances, pairs, *, region_name: str, species_name: str) -> jax.Array:
+        return (
+            self.for_group(region_name, species_name)
+            .predict_marginal(distances, pairs)
+            .prediction.values
+        )
 
 
 def calibrate(
@@ -153,7 +155,7 @@ def calibrate(
     selected = ObservationPartition(region.name, tuple(roles), role="calibration")
     regions = (
         dict(model.calibration.regions)
-        if isinstance(model.calibration, MLPECalibrationModule)
+        if isinstance(model.calibration, UnpooledMLPECalibrationModule)
         else {}
     )
     if config is None and region.name in regions:
@@ -172,5 +174,5 @@ def calibrate(
     )
     regions[region.name] = head
     return eqx.tree_at(
-        lambda value: value.calibration, model, MLPECalibrationModule(model.target, regions)
+        lambda value: value.calibration, model, UnpooledMLPECalibrationModule(model.target, regions)
     )

@@ -12,10 +12,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .calibration import DirectCalibrationModule, MLPECalibrationModule
+from .calibration import DirectCalibrationModule, UnpooledMLPECalibrationModule
 from .config import ResistanceSolverConfig
 from .data import TargetSpec
-from .mlpe import MLPEConfig, RegionalMLPECalibration
+from .mlpe import MLPECalibration, MLPEConfig
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel, ConductanceModel
 
@@ -75,7 +75,7 @@ def _model_metadata(model):
     """Nonnumerical contracts and tree structure; learned values remain native leaves."""
     if isinstance(model.calibration, DirectCalibrationModule):
         calibration = {"kind": "direct"}
-    elif isinstance(model.calibration, MLPECalibrationModule):
+    elif isinstance(model.calibration, UnpooledMLPECalibrationModule):
         calibration = {
             "kind": "mlpe",
             "regions": {
@@ -111,7 +111,7 @@ def _head_template(name, metadata, target):
     config = MLPEConfig(**metadata["config"])
     population_ids = tuple(metadata["population_ids"])
     count = len(population_ids)
-    return RegionalMLPECalibration(
+    return MLPECalibration(
         region_name=name,
         target=target,
         population_ids=population_ids,
@@ -150,7 +150,7 @@ def _model_template(metadata, distance_model):
     if saved_calibration["kind"] == "direct":
         calibration = DirectCalibrationModule(target)
     elif saved_calibration["kind"] == "mlpe":
-        calibration = MLPECalibrationModule(
+        calibration = UnpooledMLPECalibrationModule(
             target,
             {
                 name: _head_template(name, regional, target)

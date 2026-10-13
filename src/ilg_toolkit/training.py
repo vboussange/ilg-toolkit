@@ -12,9 +12,16 @@ import numpy as np
 import optax
 
 from ._pairs import PairSelection
-from .calibration import DirectCalibrationModule
+from .calibration import DirectCalibrationModule, UnpooledMLPECalibrationModule
 from .config import TrainingConfig
 from .data import ObservationPartition, PairwiseObservations, RegionBatch
+from .mlpe import (
+    MLPECalibration,
+    MLPEConfig,
+    finalize_mlpe_fit,
+    mlpe_ml_negative_log_likelihood,
+    profiled_mlpe_ml_fit,
+)
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .resistance import ResistanceSolverContext
@@ -45,7 +52,10 @@ class TrainingState(eqx.Module):
     """Latest trainable parameters and an independently selected evaluated model.
 
     Optimizer progress is explicit; history records evaluated snapshots, not a
-    progress counter. Names/provenance belong to host state, never numeric kernels.
+    progress counter. MLPE nuisance arrays have one two-variance row per entry in
+    input_contract["training"], ordered by region name then registry order. The
+    selected array matches best_model; the latest array follows optimizer progress.
+    Names/provenance belong to host state, never numeric kernels.
     """
 
     step: int
@@ -210,18 +220,36 @@ def _validate_contract(training, validation, registry):
                 assigned[identity] = definition
 
 
-def _prepared(item: _GroupInput, model, *, role, group_index, weight):
+def _prepared(item: _GroupInput, model, *, role, group_index, weight, objective):
     if item.partition is not None and item.partition.role != role:
         raise ValueError(f"Expected a {role} partition, got {item.partition.role}")
     pairs, values = item.observations.aligned_pairs(item.region, item.species, item.partition)
-    if item.observations.target.kind != "dissimilarity" or bool((values < 0).any()):
+    if objective == "direct_log1p" and (
+        item.observations.target.kind != "dissimilarity" or bool((values < 0).any())
+    ):
         raise ValueError("direct_log1p requires nonnegative dissimilarities")
+    if objective == "mlpe":
+        if item.observations.target.kind != "dissimilarity":
+            raise ValueError("Population MLPE requires declared dissimilarities")
+        units = item.region.sampling_units[item.species]
+        assert units.kinds is not None
+        if any(kind != "population" for kind in units.kinds):
+            raise ValueError("Population MLPE does not support individual sampling units")
+        if role == "training":
+            if len(values) < 3:
+                raise ValueError("MLPE training requires at least three observed pairs")
+            degree = jnp.bincount(jnp.concatenate(pairs), length=len(units.ids))
+            if degree.max() <= 1:
+                raise ValueError("MLPE variances are unidentifiable: pairs share no endpoints")
+    targets = item.observations.target.forward(values)
+    if objective == "mlpe":
+        targets = targets.astype(jnp.float64)
     nodes = item.region._pixel_nodes(item.species)
     return _TrainingPayload(
         item.region.feature_array,
         nodes,
         pairs,
-        item.observations.target.forward(values),
+        targets,
         model._prepare_pairs(item.region.feature_array, nodes, pairs),
         jnp.asarray(model.species.index(item.species), dtype=jnp.int32),
         jnp.asarray(group_index, dtype=jnp.int32),
@@ -229,7 +257,7 @@ def _prepared(item: _GroupInput, model, *, role, group_index, weight):
     )
 
 
-def _prepare_batches(inputs, model, *, role):
+def _prepare_batches(inputs, model, *, role, objective):
     coverage = {name: sum(item.species == name for item in inputs) for name in model.species}
     present_species = sum(count > 0 for count in coverage.values())
     region_names = tuple(sorted({item.region.name for item in inputs}))
@@ -243,6 +271,7 @@ def _prepare_batches(inputs, model, *, role):
             item,
             model,
             role=role,
+            objective=objective,
             group_index=index,
             weight=1 / (present_species * coverage[item.species]),
         )
@@ -304,7 +333,7 @@ def _input_contract(training, validation, registry):
     return dict(species=registry, training=encode(training), validation=encode(validation))
 
 
-def _group_loss(model, payload, *, context=None, inference=True, key=None):
+def _selected_distances(model, payload, *, context=None, inference=True, key=None):
     distances = model._pair_distances(
         payload.features,
         payload.distance_pairs,
@@ -320,6 +349,11 @@ def _group_loss(model, payload, *, context=None, inference=True, key=None):
         jnp.any(~jnp.isfinite(distances) | (distances < 0)),
         "Distance model produced nonfinite or negative distances",
     )
+    return distances
+
+
+def _group_loss(model, payload, *, context=None, inference=True, key=None):
+    distances = _selected_distances(model, payload, context=context, inference=inference, key=key)
     return jnp.mean((jnp.log1p(distances) - jnp.log1p(payload.targets)) ** 2)
 
 
@@ -330,6 +364,174 @@ def _weighted_loss(model, payload, *, context=None, key=None):
 _gradient = eqx.filter_value_and_grad(_weighted_loss)
 _compiled_gradient = eqx.filter_jit(_gradient)
 _compiled_loss = eqx.filter_jit(_group_loss)
+
+
+def _mlpe_loss(parameters, payload, *, config, context=None, key=None):
+    model, raw = parameters
+    distances = _selected_distances(
+        model, payload, context=context, inference=False, key=key
+    ).astype(jnp.float64)
+    nll, _ = profiled_mlpe_ml_fit(
+        distances,
+        payload.targets,
+        *payload.pairs,
+        n_populations=len(payload.nodes),
+        raw_variances=raw[payload.group_index],
+        variance_floor=config.mlpe_variance_floor,
+        jitter=config.mlpe_jitter,
+    )
+    return payload.weight * nll / len(distances)
+
+
+def _mlpe_gradient(parameters, payload, *, config, context=None, key=None):
+    value, gradient = eqx.filter_value_and_grad(_mlpe_loss)(
+        parameters, payload, config=config, context=context, key=key
+    )
+    bad = ~jnp.isfinite(value)
+    for leaf in jax.tree.leaves(gradient):
+        if eqx.is_inexact_array(leaf):
+            bad |= jnp.any(~jnp.isfinite(leaf))
+    return eqx.error_if(
+        (value, gradient),
+        bad,
+        "Nonfinite objective or gradient; check nonconstant distances, "
+        "identifiable endpoints and variance conditioning",
+    )
+
+
+def _refresh_mlpe(model, raw, payload, *, config, context=None):
+    distances = _selected_distances(model, payload, context=context).astype(jnp.float64)
+    return finalize_mlpe_fit(
+        distances,
+        payload.targets,
+        *payload.pairs,
+        n_populations=len(payload.nodes),
+        raw_variances=raw,
+        variance_floor=config.mlpe_variance_floor,
+        jitter=config.mlpe_jitter,
+    )
+
+
+def _frozen_validation_loss(model, raw, moments, payload, *, config, context=None):
+    distances = _selected_distances(model, payload, context=context).astype(jnp.float64)
+    center, scale, beta = moments
+    return mlpe_ml_negative_log_likelihood(
+        distances,
+        payload.targets,
+        *payload.pairs,
+        n_populations=len(payload.nodes),
+        fixed_effects=beta,
+        raw_variances=raw,
+        distance_center=center,
+        distance_scale=scale,
+        variance_floor=config.mlpe_variance_floor,
+        jitter=config.mlpe_jitter,
+    ) / len(distances)
+
+
+_compiled_mlpe_gradient = eqx.filter_jit(_mlpe_gradient)
+_compiled_refresh = eqx.filter_jit(_refresh_mlpe)
+_compiled_validation = eqx.filter_jit(_frozen_validation_loss)
+
+
+def _initial_raw_variances(batches, config):
+    rows = []
+    for batch in batches:
+        if config.mlpe_initial_variances is None:
+            variance = jnp.maximum(
+                jnp.var(batch.payload.targets, ddof=1), config.mlpe_variance_floor * 100
+            )
+            pair = jnp.maximum(variance * jnp.asarray([0.25, 0.5]), config.mlpe_variance_floor * 10)
+        else:
+            pair = jnp.asarray(config.mlpe_initial_variances, dtype=jnp.float64)
+        positive = pair - config.mlpe_variance_floor
+        rows.append(positive + jnp.log(-jnp.expm1(-positive)))
+    return jnp.stack(rows)
+
+
+def _aggregate(group_values):
+    species_values = {}
+    for groups in group_values.values():
+        for species, value in groups.items():
+            species_values.setdefault(species, []).append(value)
+    by_species = {name: float(np.mean(values)) for name, values in species_values.items()}
+    return float(np.mean(list(by_species.values()))), by_species, group_values
+
+
+def _refresh_heads(model, raw, batches, *, config, step):
+    refresh = _compiled_refresh if config.jit else _refresh_mlpe
+    heads, losses = {}, {}
+    for batch in batches:
+        source = batch.source
+        result = _checked_call(
+            refresh,
+            model,
+            raw[batch.payload.group_index],
+            batch.payload,
+            config=config,
+            context=batch.context,
+            batch=batch,
+            step=step,
+            training_config=config,
+        )
+        if not all(np.isfinite(np.asarray(leaf)).all() for leaf in jax.tree.leaves(result)):
+            raise FloatingPointError(
+                f"region {source.region.name!r}, species {source.species!r}: "
+                f"nonfinite MLPE calibration at step {step}; check nonconstant distances, "
+                "identifiable endpoints and variance conditioning"
+            )
+        head = MLPECalibration.from_fit(
+            result,
+            region_name=source.region.name,
+            species_name=source.species,
+            target=source.observations.target,
+            population_ids=source.region.sampling_units[source.species].ids,
+            calibration_pairs=_labelled_pairs(batch),
+            calibration_roles=("training",) * len(batch.payload.targets),
+            config=MLPEConfig(variance_floor=config.mlpe_variance_floor, jitter=config.mlpe_jitter),
+            optimizer_iterations=step,
+            optimizer_message="Fixed-budget joint Adam; no variance convergence claim",
+            converged=False,
+        )
+        heads.setdefault(source.region.name, {})[source.species] = head
+        losses.setdefault(source.region.name, {})[source.species] = float(result.nll) / len(
+            batch.payload.targets
+        )
+    return heads, _aggregate(losses)
+
+
+def _validate_mlpe(model, raw, batches, heads, group_indices, *, config, step):
+    evaluate = _compiled_validation if config.jit else _frozen_validation_loss
+    losses = {}
+    for batch in batches:
+        source = batch.source
+        head = heads[source.region.name][source.species]
+        moments = (
+            jnp.asarray(head.distance_center),
+            jnp.asarray(head.distance_scale),
+            jnp.asarray((head.intercept, head.slope)),
+        )
+        value = float(
+            _checked_call(
+                evaluate,
+                model,
+                raw[group_indices[(source.region.name, source.species)]],
+                moments,
+                batch.payload,
+                config=config,
+                context=batch.context,
+                batch=batch,
+                step=step,
+                training_config=config,
+            )
+        )
+        if not np.isfinite(value):
+            raise FloatingPointError(
+                f"region {source.region.name!r}, species {source.species!r}: "
+                f"nonfinite MLPE validation at step {step}; check variance conditioning"
+            )
+        losses.setdefault(source.region.name, {})[source.species] = value
+    return _aggregate(losses)
 
 
 def _checked_call[T](
@@ -437,10 +639,8 @@ def fit(
         raise ValueError("Fresh fit requires an explicit native distance_model and TrainingConfig")
     if on_step is not None and not callable(on_step):
         raise ValueError("on_step must be callable or None")
-    if config.objective != "direct_log1p":
-        raise NotImplementedError(
-            "Native group MLPE training is implemented in the dependent MLPE slice"
-        )
+    if config.objective == "mlpe" and not jax.config.read("jax_enable_x64"):
+        raise RuntimeError("MLPE training requires float64; set JAX_ENABLE_X64=true")
     training = _normalize_inputs(regions, observations, partition, species=distance_model.species)
     if validation is None and validation_partition is not None:
         raise ValueError("validation_partition requires validation observations")
@@ -457,8 +657,21 @@ def fit(
     contract = _input_contract(training, validating, distance_model.species)
     if state is not None and state.input_contract != contract:
         raise ValueError("Continuation species, input, identity or target contracts changed")
-    batches = _prepare_batches(training, distance_model, role="training")
-    validation_batches = _prepare_batches(validating, distance_model, role="validation")
+    batches = _prepare_batches(
+        training, distance_model, role="training", objective=config.objective
+    )
+    validation_batches = _prepare_batches(
+        validating, distance_model, role="validation", objective=config.objective
+    )
+    group_indices = {
+        (b.source.region.name, b.source.species): index for index, b in enumerate(batches)
+    }
+    if config.objective == "mlpe" and any(
+        (b.source.region.name, b.source.species) not in group_indices for b in validation_batches
+    ):
+        raise ValueError(
+            "MLPE validation requires a training calibration for the same region-species group"
+        )
     training_pairs, validation_pairs = _access(batches), _access(validation_batches)
     for region, groups in validation_pairs.items():
         for species, pairs in groups.items():
@@ -476,8 +689,14 @@ def fit(
     missing_species = tuple(
         name for name in distance_model.species if name not in validated_species
     )
+    raw = (
+        (None if config.objective == "direct_log1p" else _initial_raw_variances(batches, config))
+        if state is None
+        else state.raw_variances
+    )
+    parameters = distance_model if raw is None else (distance_model, raw)
     optimizer_state = (
-        optax.adam(config.learning_rate).init(eqx.filter(distance_model, eqx.is_inexact_array))
+        optax.adam(config.learning_rate).init(eqx.filter(parameters, eqx.is_inexact_array))
         if state is None
         else state.optimizer_state
     )
@@ -485,10 +704,16 @@ def fit(
     model = distance_model
     history = [] if state is None else list(state.history)
     selected = None if state is None else state.best_model
+    selected_raw = None if state is None else state.selected_raw_variances
     selected_step = 0 if state is None else state.selected_step
     best_loss = float("inf") if state is None else state.best_loss
     progress = 0 if state is None else state.step
-    gradient = _compiled_gradient if config.jit else _gradient
+    gradient = (
+        (_compiled_gradient if config.jit else _gradient)
+        if raw is None
+        else (_compiled_mlpe_gradient if config.jit else _mlpe_gradient)
+    )
+    gradient_options = {} if raw is None else {"config": config}
     update = _compiled_update if config.jit else _apply_gradient
 
     def snapshot():
@@ -497,8 +722,8 @@ def fit(
             progress,
             selected_step,
             model,
-            None,
-            None,
+            raw,
+            selected_raw,
             optimizer_state,
             random_key,
             config,
@@ -516,10 +741,11 @@ def fit(
                 key = jax.random.fold_in(update_key, batch.region_index)
                 _, contribution = _checked_call(
                     gradient,
-                    model,
+                    parameters,
                     batch.payload,
                     context=batch.context,
                     key=key,
+                    **gradient_options,
                     batch=batch,
                     step=step,
                     training_config=config,
@@ -529,9 +755,9 @@ def fit(
                     if accumulated is None
                     else jax.tree.map(lambda total, value: total + value, accumulated, contribution)
                 )
-            model, optimizer_state = _checked_call(
+            parameters, optimizer_state = _checked_call(
                 update,
-                model,
+                parameters,
                 optimizer_state,
                 accumulated,
                 learning_rate=config.learning_rate,
@@ -539,12 +765,30 @@ def fit(
                 step=step,
                 training_config=config,
             )
+        if isinstance(parameters, tuple):
+            model, raw = parameters
+        else:
+            model, raw = parameters, None
         progress = step
-        loss, by_species, by_group = _evaluate(model, batches, config=config, step=step)
+        heads: dict[str, dict[str, MLPECalibration]] = {}
+        if raw is None:
+            calibration = DirectCalibrationModule(training[0].observations.target)
+            loss, by_species, by_group = _evaluate(model, batches, config=config, step=step)
+        else:
+            heads, (loss, by_species, by_group) = _refresh_heads(
+                model, raw, batches, config=config, step=step
+            )
+            calibration = UnpooledMLPECalibrationModule(training[0].observations.target, heads)
         val_loss, val_species, val_group = (
             (None, {}, {})
             if not validation_batches
-            else _evaluate(model, validation_batches, config=config, step=step)
+            else (
+                _evaluate(model, validation_batches, config=config, step=step)
+                if raw is None
+                else _validate_mlpe(
+                    model, raw, validation_batches, heads, group_indices, config=config, step=step
+                )
+            )
         )
         history.append(
             StepRecord(
@@ -561,10 +805,11 @@ def fit(
         )
         if val_loss is None or val_loss < best_loss:
             selected_step = step
+            selected_raw = raw
             best_loss = loss if val_loss is None else val_loss
             selected = LandscapeGeneticsModel(
                 model,
-                DirectCalibrationModule(training[0].observations.target),
+                calibration,
                 training[0].region.feature_array.shape[-1],
                 training[0].region.feature_names,
                 training_objective=config.objective,

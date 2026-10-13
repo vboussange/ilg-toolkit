@@ -6,7 +6,7 @@ import pytest
 from mlpe_reference import _R_DISTANCES
 from test_mlpe import reference_observations
 
-from ilg_toolkit import MLPECalibrationModule
+from ilg_toolkit import UnpooledMLPECalibrationModule
 from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
 
 
@@ -14,9 +14,13 @@ from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
 def calibrated():
     observations = reference_observations()
     head = calibrate_mlpe(
-        _R_DISTANCES, observations, region_name="alpine", config=MLPEConfig(jitter=1e-7)
+        _R_DISTANCES,
+        observations,
+        region_name="alpine",
+        config=MLPEConfig(jitter=1e-07),
+        species_name="species",
     )
-    return head, observations
+    return (head, observations)
 
 
 def joint_gaussian_reference(
@@ -36,7 +40,7 @@ def joint_gaussian_reference(
     cross = covariance[n:, :n]
     mean = fixed[n:] + cross @ np.linalg.solve(covariance[:n, :n], targets - fixed[:n])
     conditional = covariance[n:, n:] - cross @ np.linalg.solve(covariance[:n, :n], cross.T)
-    return mean, np.diag(conditional)
+    return (mean, np.diag(conditional))
 
 
 def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
@@ -57,6 +61,7 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
     )
     result = predict_known_effects(head, distances, pairs)
     assert result.prediction.pairs == pairs
+    assert result.prediction.species_name == result.provenance.species_name == "species"
     assert result.prediction.sampling_unit_ids == ("p01", "p02", "new", "p03", "other-new")
     assert all(
         isinstance(value, jax.Array) and value.dtype == np.float64
@@ -84,12 +89,10 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated)
 
     head, calibration = calibrated
     support = PairwiseObservations.from_pairs(
-        [("new", "p01"), ("p04", "new"), ("second-new", "p02")],
-        [1.4, 0.8, 2.1],
-        target=head.target,
+        [("new", "p01"), ("p04", "new"), ("second-new", "p02")], [1.4, 0.8, 2.1], target=head.target
     )
-    support_distances = np.array([0.7, -0.2, 0.3])  # aligned to observed_pairs, not input order
-    partition = ObservationPartition("alpine", support.observed_pairs, role="support")
+    support_distances = np.array([0.7, -0.2, 0.3])
+    partition = ObservationPartition("alpine", "species", support.observed_pairs, role="support")
     conditioned = condition_on_support(head, support_distances, support, partition=partition)
     pairs = (("new", "p05"), ("second-new", "new"), ("third-new", "p01"))
     distances = np.array([0.1, 0.6, 1.2])
@@ -132,12 +135,11 @@ def test_support_cannot_reuse_calibration_or_query_pairs_even_when_reversed(cali
 
     head, _ = calibrated
     reused = PairwiseObservations.from_pairs([("p02", "p01")], [1.0], target=head.target)
-    partition = ObservationPartition("alpine", (("p01", "p02"),), role="support")
+    partition = ObservationPartition("alpine", "species", (("p01", "p02"),), role="support")
     with pytest.raises(MLPEError, match="calibration.*twice|reuses.*calibration"):
         condition_on_support(head, [0.3], reused, partition=partition)
-
     support = PairwiseObservations.from_pairs([("new", "p01")], [1.0], target=head.target)
-    partition = ObservationPartition("alpine", (("new", "p01"),), role="support")
+    partition = ObservationPartition("alpine", "species", (("new", "p01"),), role="support")
     conditioned = condition_on_support(head, [0.3], support, partition=partition)
     with pytest.raises(MLPEError, match="Support/query overlap"):
         conditioned.predict([0.3], [("p01", "new")])
@@ -159,13 +161,17 @@ def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
     observations = PairwiseObservations.from_pairs(
         reference.observed_pairs, np.expm1(reference.observed_values + 2.0), target=target
     )
-    head = calibrate_mlpe(_R_DISTANCES, observations, region_name="log-region")
+    head = calibrate_mlpe(
+        _R_DISTANCES, observations, region_name="log-region", species_name="species"
+    )
     known = head.predict_known_effects([0.2], [("new", "p01")])
     support = PairwiseObservations.from_pairs([("new", "p02")], [np.expm1(2.3)], target=target)
     conditioned = head.condition_on_support(
         [0.4],
         support,
-        partition=ObservationPartition("log-region", support.observed_pairs, role="support"),
+        partition=ObservationPartition(
+            "log-region", "species", support.observed_pairs, role="support"
+        ),
     )
     result = conditioned.predict([0.2], [("new", "p01")])
     expected_mean, expected_variance = joint_gaussian_reference(
@@ -206,15 +212,19 @@ def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibr
             head.condition_on_support(
                 [0.1, 0.3],
                 support,
-                partition=ObservationPartition("alpine", support.observed_pairs, role=role),
+                partition=ObservationPartition(
+                    "alpine", "species", support.observed_pairs, role=role
+                ),
             )
     with pytest.raises(MLPEError, match="exactly.*declared"):
         head.condition_on_support(
             [0.1, 0.3],
             support,
-            partition=ObservationPartition("alpine", support.observed_pairs[:1], role="support"),
+            partition=ObservationPartition(
+                "alpine", "species", support.observed_pairs[:1], role="support"
+            ),
         )
-    partition = ObservationPartition("alpine", support.observed_pairs, role="support")
+    partition = ObservationPartition("alpine", "species", support.observed_pairs, role="support")
     incompatible = PairwiseObservations.from_pairs(
         support.observed_pairs, [1.0, 2.0], target=TargetSpec("different measurement")
     )
@@ -225,7 +235,15 @@ def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibr
             [0.1, 0.3],
             support,
             partition=ObservationPartition(
-                "another-region", support.observed_pairs, role="support"
+                "another-region", "species", support.observed_pairs, role="support"
+            ),
+        )
+    with pytest.raises(MLPEError, match="species_name"):
+        head.condition_on_support(
+            [0.1, 0.3],
+            support,
+            partition=ObservationPartition(
+                "alpine", "another-species", support.observed_pairs, role="support"
             ),
         )
     with pytest.raises(MLPEError, match="finite.*aligned"):
@@ -248,7 +266,7 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder():
 
     region, observations, _, _ = problem("conditioned-landscape")
     calibration_pairs = tuple(itertools.combinations(region.sampling_unit_ids[:4], 2))
-    training = ObservationPartition(region.name, calibration_pairs, role="training")
+    training = ObservationPartition(region.name, "species", calibration_pairs, role="training")
     direct = fit(
         region,
         observations,
@@ -257,7 +275,7 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder():
         partition=training,
     ).model
     model = calibrate(direct, region, observations)
-    assert isinstance(model.calibration, MLPECalibrationModule)
+    assert isinstance(model.calibration, UnpooledMLPECalibrationModule)
     head = model.calibration.regions[region.name]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict_known_effects(region, pairs)
@@ -290,7 +308,9 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder():
         region,
         pairs,
         support,
-        support_partition=ObservationPartition(region.name, support.observed_pairs, role="support"),
+        support_partition=ObservationPartition(
+            region.name, "species", support.observed_pairs, role="support"
+        ),
     )
     assert result.prediction.sampling_unit_ids == region.sampling_unit_ids
     assert result.prediction.pairs == pairs
@@ -353,7 +373,10 @@ def test_recalibration_and_conditioning_compute_only_declared_pairs():
         target=observations.target,
     )
     training = ObservationPartition(
-        region.name, tuple(itertools.combinations(region.sampling_unit_ids[:4], 2)), "training"
+        region.name,
+        "species",
+        tuple(itertools.combinations(region.sampling_unit_ids[:4], 2)),
+        "training",
     )
     models = []
     for prepared, observed in ((region, observations), (extended, supplied)):
@@ -371,7 +394,9 @@ def test_recalibration_and_conditioning_compute_only_declared_pairs():
         [2.0, 2.5],
         target=observations.target,
     )
-    support_partition = ObservationPartition(region.name, support.observed_pairs, "support")
+    support_partition = ObservationPartition(
+        region.name, "species", support.observed_pairs, "support"
+    )
     for method in ("predict", "predict_known_effects", "predict_with_support"):
         arguments = (query, support) if method == "predict_with_support" else (query,)
         keywords = (

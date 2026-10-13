@@ -3,7 +3,7 @@
 from .calibration import (
     AbstractCalibrationModule,
     DirectCalibrationModule,
-    MLPECalibrationModule,
+    UnpooledMLPECalibrationModule,
     calibrate,
 )
 from .checkpoint import load_checkpoint, save_checkpoint
@@ -35,13 +35,13 @@ from .evaluation import (
 )
 from .ibd import IBDModel
 from .mlpe import (
+    MLPECalibration,
     MLPEConditionalPrediction,
     MLPEConfig,
     MLPEError,
     MLPEPrediction,
     MLPEPredictionProvenance,
     MLPESupportConditioner,
-    RegionalMLPECalibration,
     calibrate_mlpe,
     condition_on_support,
     predict_known_effects,
@@ -54,7 +54,7 @@ from .training import StepRecord, TrainingState, fit
 __all__ = [
     "AbstractCalibrationModule",
     "DirectCalibrationModule",
-    "MLPECalibrationModule",
+    "UnpooledMLPECalibrationModule",
     "IBDModel",
     "EvaluationAccess",
     "EvaluationRegime",
@@ -82,7 +82,7 @@ __all__ = [
     "MLPEConfig",
     "MLPEConditionalPrediction",
     "MLPEError",
-    "RegionalMLPECalibration",
+    "MLPECalibration",
     "MLPEPrediction",
     "MLPEPredictionProvenance",
     "MLPESupportConditioner",

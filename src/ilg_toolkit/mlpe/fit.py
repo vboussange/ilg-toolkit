@@ -95,10 +95,11 @@ class MLPEPrediction(eqx.Module):
 
 
 @final
-class RegionalMLPECalibration(eqx.Module):
-    """Complete regional calibration with auditable observation identities."""
+class MLPECalibration(eqx.Module):
+    """Complete region–species calibration with auditable observation identities."""
 
     region_name: str
+    species_name: str
     target: TargetSpec
     population_ids: tuple[str, ...]
     distance_center: float
@@ -124,6 +125,7 @@ class RegionalMLPECalibration(eqx.Module):
         fit: MLPEFit,
         *,
         region_name: str,
+        species_name: str,
         target: TargetSpec,
         population_ids: tuple[str, ...],
         calibration_pairs: tuple[tuple[str, str], ...],
@@ -132,11 +134,12 @@ class RegionalMLPECalibration(eqx.Module):
         optimizer_iterations: int,
         optimizer_message: str,
         converged: bool = True,
-    ) -> "RegionalMLPECalibration":
+    ) -> "MLPECalibration":
         """Attach target, observation provenance and optimizer diagnostics to a fit."""
         mean, covariance, factor = fit.posterior
         return cls(
             region_name=region_name,
+            species_name=species_name,
             target=target,
             population_ids=population_ids,
             distance_center=float(fit.distance_center),
@@ -193,7 +196,10 @@ class RegionalMLPECalibration(eqx.Module):
         ):
             raise MLPEError("MLPE head population-effect posterior must be finite and aligned")
         if (
-            not self.region_name
+            not isinstance(self.region_name, str)
+            or not self.region_name
+            or not isinstance(self.species_name, str)
+            or not self.species_name
             or len(set(self.population_ids)) != n
             or len(self.calibration_pairs) != len(self.calibration_roles)
         ):
@@ -213,6 +219,7 @@ class RegionalMLPECalibration(eqx.Module):
                 self.target.inverse(model_values),
                 pairs,
                 self.region_name,
+                self.species_name,
                 self.target,
                 tuple(dict.fromkeys(label for pair in pairs for label in pair)),
             ),
@@ -240,9 +247,10 @@ def calibrate_mlpe(
     observations: PairwiseObservations,
     *,
     region_name: str,
+    species_name: str,
     partition: ObservationPartition | None = None,
     config: MLPEConfig | None = None,
-) -> RegionalMLPECalibration:
+) -> MLPECalibration:
     """Fit full ML from distances aligned to ``observations.observed_pairs``.
 
     ``partition`` explicitly selects a subset and records its declared data role.
@@ -254,6 +262,8 @@ def calibrate_mlpe(
     targets = jnp.asarray(observations.observed_values, dtype=jnp.float64)
     if not isinstance(region_name, str) or not region_name:
         raise MLPEError("region_name must be declared")
+    if not isinstance(species_name, str) or not species_name:
+        raise MLPEError("species_name must be declared")
     if observations.target.kind != "dissimilarity":
         raise MLPEError(
             "Population MLPE supports declared dissimilarities; relatedness needs a model"
@@ -266,6 +276,8 @@ def calibrate_mlpe(
             raise MLPEError("Calibration cannot consume query or support partitions")
         if partition.region_name != region_name:
             raise MLPEError("Calibration partition region_name does not match")
+        if partition.species_name != species_name:
+            raise MLPEError("Calibration partition species_name does not match")
         selected = set(partition.pairs)
         if not selected.issubset({tuple(sorted(pair)) for pair in pairs}):
             raise MLPEError("Calibration partition selects unobserved pairs")
@@ -349,9 +361,10 @@ def calibrate_mlpe(
     fit = fit._replace(variances=jnp.exp(jnp.asarray(result.x)))
     if not all(bool(jnp.isfinite(value).all()) for value in jax.tree.leaves(fit)):
         raise MLPEError("Fitted population-effect posterior is nonfinite")
-    return RegionalMLPECalibration.from_fit(
+    return MLPECalibration.from_fit(
         fit,
         region_name=region_name,
+        species_name=species_name,
         target=observations.target,
         population_ids=population_ids,
         calibration_pairs=pairs,
