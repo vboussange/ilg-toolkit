@@ -509,3 +509,143 @@ def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog):
         config=replace(config, steps=12, seed=72),
     )
     assert eqx.tree_equal(reordered, state)
+
+
+@pytest.mark.parametrize("family", ["unet", "loglinear"])
+def test_pooled_mlpe_validation_uses_matching_training_moments_for_one_pair(family):
+    import coordax as cx
+    import jax
+    from test_mlpe_training import dense_profile
+
+    from ilg_toolkit import (
+        ObservationPartition,
+        PairwiseObservations,
+        RegionBatch,
+        SamplingUnits,
+        TargetSpec,
+    )
+    from ilg_toolkit.models import LogLinearConductance, UNetEmbeddingDistance
+
+    species = ("fox", "lynx")
+    prepared = RegionBatch(
+        "forest",
+        cx.field(
+            jax.random.normal(jax.random.key(29), (4, 4, 2), dtype=jnp.float32),
+            "row",
+            "column",
+            "feature",
+        ),
+        {
+            name: SamplingUnits(("a", "b", "c", "d"), [[0, 0], [0, 3], [3, 0], [3, 3]])
+            for name in species
+        },
+    )
+    pairs = (("a", "b"), ("a", "c"), ("a", "d"), ("b", "c"), ("b", "d"), ("c", "d"))
+    target = TargetSpec("divergence")
+    targets = np.array([0.2, 0.7, 0.1, 0.9, 0.4, 0.3])
+    observed = {
+        "forest": {
+            name: PairwiseObservations.from_pairs(pairs, targets * (index + 1), target=target)
+            for index, name in enumerate(species)
+        }
+    }
+    if family == "unet":
+        model = UNetEmbeddingDistance(
+            2,
+            species=species,
+            patch_size=1,
+            base_channels=2,
+            embedding_dim=2,
+            dropout=0.1,
+            key=jax.random.key(71),
+        )
+    else:
+        model = LogLinearConductance(2, species=species, patch_size=1)
+        model = eqx.tree_at(lambda m: m.coefficients, model, jnp.asarray([[0.3, -0.1], [0.1, 0.2]]))
+    config = TrainingConfig(
+        objective="mlpe",
+        steps=2,
+        evaluation_interval=2,
+        species_batch_size=1,
+        species_chunk_size=2,
+        seed=4,
+        mlpe_initial_variances=(0.1, 0.2),
+    )
+    partition = {
+        "forest": {"fox": None, "lynx": ObservationPartition("forest", "lynx", pairs[:-1])}
+    }
+    validation_partition = {
+        "forest": {"lynx": ObservationPartition("forest", "lynx", pairs[-1:], role="validation")}
+    }
+    states = [
+        fit(
+            [prepared],
+            observed,
+            distance_model=model,
+            config=config,
+            partition=partition,
+            validation=(
+                [prepared],
+                {
+                    "forest": {
+                        "lynx": PairwiseObservations.from_pairs(pairs[-1:], [value], target=target)
+                    }
+                },
+            ),
+            validation_partition=validation_partition,
+        )
+        for value in (50.0, 500.0)
+    ]
+    first, second = states
+    assert eqx.tree_equal(first.distance_model, second.distance_model)
+    assert eqx.tree_equal(first.optimizer_state, second.optimizer_state)
+    assert first.raw_variances is not None
+    train = np.asarray(
+        first.distance_model.predict_raw_distances(
+            prepared, species="lynx", pairs={"lynx": pairs[:-1]}
+        )["lynx"].values,
+        dtype=np.float64,
+    )
+    query = float(
+        first.distance_model.predict_raw_distances(
+            prepared, species="lynx", pairs={"lynx": pairs[-1:]}
+        )["lynx"].values[0]
+    )
+    left, right = np.triu_indices(4, 1)
+    variances = np.logaddexp(0.0, np.asarray(first.raw_variances[1])) + config.mlpe_variance_floor
+    _, beta, _, _ = dense_profile(train, 2 * targets[:-1], left[:-1], right[:-1], 4, variances)
+    mean = beta[0] + beta[1] * (query - train.mean()) / train.std(ddof=1)
+    variance = 2 * variances[0] + variances[1]
+    expected = 0.5 * (np.log(2 * np.pi * variance) + (50.0 - mean) ** 2 / variance)
+    assert first.history[-1].validation_loss is not None
+    np.testing.assert_allclose(first.history[-1].validation_loss, expected, rtol=2e-6)
+    assert [record.step for record in first.history] == [0, 2]
+
+
+def test_pooled_direct_training_keeps_float32_without_requesting_float64():
+    import warnings
+
+    import jax
+    from test_species_workflow import observations, region
+
+    from ilg_toolkit.models import UNetEmbeddingDistance
+
+    with jax.enable_x64(False), warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        prepared = region()
+        model = UNetEmbeddingDistance(
+            1,
+            species=("fox",),
+            patch_size=1,
+            base_channels=2,
+            embedding_dim=2,
+            key=jax.random.key(142),
+        )
+        result = fit(
+            [prepared],
+            {prepared.name: {"fox": observations()}},
+            distance_model=model,
+            config=TrainingConfig(objective="direct_log1p", steps=1),
+        )
+        assert result.step == 1
+        assert np.isfinite(result.history[-1].training_loss)

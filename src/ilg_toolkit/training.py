@@ -671,7 +671,7 @@ def _group_results(model, raw, groups, *, tail, pooled, heads, group_indices, mo
         evaluate = execution.compiled_chunk_evaluate if config.jit else execution.chunk_evaluate
         for chunk in execution.shape_chunks(groups, config.species_chunk_size):
             payload = execution.stack_payload(chunk)
-            moments = jnp.zeros((len(chunk), 4), dtype=jnp.float64)
+            moments = jnp.zeros((len(chunk), 4), dtype=payload.targets.dtype)
             if mode == "validation":
                 indices, rows = [], []
                 for batch in chunk:
