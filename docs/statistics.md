@@ -7,6 +7,12 @@ Ecological distances $s_{ij}$ are squared embedding distances or effective
 resistances, depending on the distance model. They are distinct from genetic
 predictions.
 
+Observations can be supplied as labelled pairs or as a symmetric matrix whose
+missing off-diagonal entries are `NaN`. Explicit training, validation,
+calibration, support and query partitions record which measurements were
+accessed. Validation selects the best model, while optimization follows the fixed
+requested epoch budget.
+
 ## Direct regression
 
 Direct training compares the encoder output to the declared transformed target:
@@ -69,7 +75,35 @@ variance components, unsupported conditioning and failed optimization are explic
 failures. [Endpoint-system arithmetic and its precision limits](performance/mlpe.md)
 explain the exact population-sized calculation.
 
+## Fitted models and calibration modules
+
+`fit` returns a `TrainingState` whose selected `.model` is a
+`LandscapeGeneticsModel`. It composes `.distance_model` with `.calibration`:
+`DirectCalibrationModule` applies the declared inverse target transform, while
+`MLPECalibrationModule.regions` contains one `RegionalMLPECalibration` per fitted
+region. The complete model's `.target` comes from its calibration module.
+
+`calibrate(model, region, observations)` or `model.calibrate(...)` freezes the
+distance model and fits or replaces one regional MLPE relationship. It preserves
+other fitted MLPE regions and defaults to recorded training observations;
+development observations and new regions require explicit partitions.
+Converting a direct module to MLPE replaces it completely: genetic prediction
+then requires a regional calibration, including in previously supported regions.
+The saved `.training_objective` continues to record the original training
+objective; calibration determines inference independently of that provenance.
+
 ## Prediction information
+
+Query regions need only features and sampling-unit locations, with the training
+feature meanings and order; locations are integer `(row, column)` cell positions.
+`model.predict(region)` returns a `Prediction` with one original-scale value per
+distinct pair, in region sampling-unit order. `predict(region, [("south", "east")])`
+preserves the requested pair order and orientation. `prediction.as_matrix()`
+explicitly converts the stored points into a symmetric matrix in full
+query-region order. Unrequested off-diagonal entries are `NaN`; dissimilarity
+diagonals are structural zeros, not fitted self-pair predictions. An explicit
+`as_matrix(order=...)` must be unique and contain every predicted endpoint; it may
+include additional units.
 
 Marginal prediction uses $\hat\alpha+\hat\beta x$ and zero population-effect
 means, including for unseen populations. Known-effect prediction adds the saved

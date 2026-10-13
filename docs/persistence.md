@@ -60,7 +60,9 @@ demonstrates the ensemble workflow.
 ## Native format and precision
 
 Each file contains a short JSON header followed by native Equinox leaves
-of the actual `LandscapeGeneticsModel` or `TrainingState`. The header holds nonnumerical
+of the actual `LandscapeGeneticsModel` or `TrainingState`. Both are Equinox modules,
+so their learned numerical fields also participate in ordinary JAX tree
+operations. The header holds nonnumerical
 contracts and the structure needed to construct the distance/calibration composition. Learned
 coefficients and posterior arrays remain ordinary numerical leaves. There is no
 architecture registry, separate numerical payload, content checksum, pickle,
@@ -70,9 +72,17 @@ Equinox checks numerical leaf compatibility with the caller's template. Invalid
 headers, truncated leaves and representative structural incompatibilities raise
 `ArtifactError`. Keep the original precision: artifacts with 64-bit JAX real or
 integer arrays, or complex128 arrays, require `JAX_ENABLE_X64=true` or an active
-`jax.enable_x64()` context when loading. Enable x64 before creating or converting
-inputs when those measurements need float64 precision; enabling it later cannot
-recover information already rounded. Loading never changes global JAX precision.
+`jax.enable_x64()` context when loading.
+
+Inputs follow ordinary JAX conversion: compatible lists and NumPy arrays,
+including NumPy-backed Coordax fields, are accepted. Supplied JAX floating
+observation dtypes are preserved; other inputs follow the configured JAX
+precision. Effective resistance and population-effect calculations require
+float64. Enable x64, with `jax.config.update("jax_enable_x64", True)` or
+`JAX_ENABLE_X64=true`, before creating or converting inputs when those
+measurements need float64 precision; enabling it later cannot recover information
+already rounded. Neither loading nor any other toolkit operation changes global
+JAX precision.
 
 Saves write and flush a temporary file in the destination directory, then replace
 the destination atomically. An interrupted replacement preserves the preceding

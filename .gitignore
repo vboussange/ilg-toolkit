@@ -8,3 +8,4 @@ dist/
 .venv/
 experiments/**/results/
 benchmarks/results/
+*.ilg
