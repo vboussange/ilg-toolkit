@@ -148,6 +148,7 @@ def main():
         }
 
     report_roles = {}
+    shape_catalogue = {}
     events, snapshots = [], [live_snapshot("before_fit")]
     checked = training._checked_call
     seen_reports = set(args.xla_directory.glob("*memory-usage-report.txt"))
@@ -170,8 +171,9 @@ def main():
             event["species_indices"] = np.asarray(payload.species_index).tolist()
             event["group_indices"] = np.asarray(payload.group_index).tolist()
             shapes = [(list(leaf.shape), str(leaf.dtype)) for leaf in jax.tree.leaves(payload)]
-            event["payload_shapes"] = shapes
-            event["payload_signature"] = hashlib.sha256(json.dumps(shapes).encode()).hexdigest()
+            signature = hashlib.sha256(json.dumps(shapes).encode()).hexdigest()
+            event["payload_signature"] = signature
+            shape_catalogue[signature] = shapes
         result = checked(function, *inputs, **options)
         event["finished_ns"] = time.monotonic_ns()
         current = set(args.xla_directory.glob("*memory-usage-report.txt"))
@@ -364,6 +366,7 @@ def main():
                 "are not additive allocations."
             ),
         },
+        "payload_shapes_by_signature": shape_catalogue,
         "events": events,
         "counts": dict(Counter(event["kind"] for event in events)),
         "live_array_boundary_snapshots": snapshots,

@@ -123,3 +123,31 @@ def test_changed_report_total_or_extra_numeric_id_compilation_is_rejected():
     repeated["new_memory_reports"] = ["additional_numeric_id_specialization.txt"]
     with pytest.raises(ValueError, match="one compile per compatible"):
         analyze_case(extra_compile)
+
+
+def test_changed_payload_shapes_cannot_keep_the_old_reuse_signature():
+    import pytest
+
+    from benchmarks.spec52.large_registry_analysis import analyze_case
+
+    raw_path = ANALYZER.parent / "results/large-registry/preliminary-d7e410b/unet-s4-c1.json"
+    raw = json.loads(raw_path.read_text())
+    tail = next(event for event in raw["events"] if event["kind"] == "tail_evaluation")
+    tail["payload_shapes"][0][0][0] = 1000
+    with pytest.raises(ValueError, match="payload shape.*signature"):
+        analyze_case(raw)
+
+
+def test_compact_shape_catalogue_preserves_the_same_audited_evidence():
+    from benchmarks.spec52.large_registry_analysis import analyze_case
+
+    raw_path = ANALYZER.parent / "results/large-registry/preliminary-d7e410b/unet-s4-c1.json"
+    raw = json.loads(raw_path.read_text())
+    expected = analyze_case(raw)
+    raw["payload_shapes_by_signature"] = {}
+    for event in raw["events"]:
+        if "payload_shapes" in event:
+            raw["payload_shapes_by_signature"][event["payload_signature"]] = event.pop(
+                "payload_shapes"
+            )
+    assert analyze_case(raw) == expected

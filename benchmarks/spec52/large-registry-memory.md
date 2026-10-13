@@ -13,7 +13,10 @@ other three groups at eight units/28 pairs.
 run on the agreed final runtime candidate. Current measurements are retained in
 `results/large-registry/preliminary-d7e410b/`; they do not replace the final matrix
 or imply that the separate runtime gates pass. Measured source/driver commit:
-`d7e410b055ec2312660485f75b5d82c146cfc73e`.
+`d7e410b055ec2312660485f75b5d82c146cfc73e`. The two ragged diagnostics use
+`492afd7` with identical production source and numerical driver bytes; each raw
+artifact retains its own full measured revision. Both ragged cases observed two
+tail shapes and exactly one executable per role and shape.
 
 | Family | Registry | Chunk | Tail forward/backward bytes | Tail evaluation/posterior bytes |
 | --- | ---: | ---: | ---: | ---: |

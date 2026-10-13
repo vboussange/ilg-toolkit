@@ -58,7 +58,17 @@ def analyze_case(data):
     for event in events:
         if event["kind"] not in {"tail_evaluation", "tail_forward_backward"}:
             continue
-        key = (event["kind"], event["payload_signature"])
+        signature = event["payload_signature"]
+        shapes = (
+            event["payload_shapes"]
+            if "payload_shapes" in event
+            else data["payload_shapes_by_signature"][signature]
+        )
+        if hashlib.sha256(json.dumps(shapes).encode()).hexdigest() != signature:
+            raise ValueError("Recorded payload shape does not match its signature")
+        if any(shape[0] != len(event["species_indices"]) for shape, _ in shapes):
+            raise ValueError("Recorded payload shape exceeds its declared species chunk")
+        key = (event["kind"], signature)
         group = compile_groups[key]
         group["calls"] += 1
         group["species_ids"].update(event["species_indices"])
