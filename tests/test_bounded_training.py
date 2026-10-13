@@ -465,7 +465,8 @@ def test_sparse_mlpe_selection_keeps_complete_matching_calibrations_and_rng():
     assert result.history[-1].validation_missing_groups == (("alpine", "fox"), ("alpine", "lynx"))
 
 
-def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog):
+@pytest.mark.parametrize("species_batch_size", [1, 2])
+def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog, species_batch_size):
     import jax
     from test_species_workflow import observations, region
 
@@ -478,7 +479,11 @@ def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog):
         1, species=species, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(912)
     )
     config = TrainingConfig(
-        objective="direct_log1p", steps=1, species_batch_size=1, evaluation_interval=3, seed=51
+        objective="direct_log1p",
+        steps=1,
+        species_batch_size=species_batch_size,
+        evaluation_interval=3,
+        seed=51,
     )
     with jax.log_compiles(True):
         fit([prepared], observed, distance_model=model, config=config)

@@ -189,6 +189,10 @@ For one selected group, the same pooled encoder, reduced tail derivative and
 encoder pullback execute inside one compiled call; its timer covers that entire
 operation through Adam. This avoids dispatch overhead without changing the
 group likelihood, sampling weight, dropout key or update count.
+For multiple selected groups, encoder derivative preparation is itself cached
+inside a compiled call. The tail and encoder backward retain their separate
+numerical boundaries; a broader fusion experiment was rejected because it
+violated the existing float32 chunk-equivalence tolerance.
 
 Joint fits and independent species fits use exactly copied and hashed backbone
 and projection-row initializations from the same four-species model. The initial
