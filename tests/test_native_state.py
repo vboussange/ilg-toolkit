@@ -160,8 +160,8 @@ def test_native_mlpe_state_preserves_posterior_support_predictions_and_continuat
     eqx.tree_serialise_leaves(path, partial)
     state = eqx.tree_deserialise_leaves(path, template)
     query = observations.observed_pairs[-1:]
-    expected = partial.model.predict_known_effects(region, query)
-    actual = state.best_model.predict_known_effects(region, query)
+    expected = partial.model.predict_known_effects(region, pairs={"species": query})["species"]
+    actual = state.best_model.predict_known_effects(region, pairs={"species": query})["species"]
     np.testing.assert_array_equal(actual.prediction.values, expected.prediction.values)
     np.testing.assert_array_equal(actual.model_variance, expected.model_variance)
     assert actual.provenance == expected.provenance
@@ -175,11 +175,17 @@ def test_native_mlpe_state_preserves_posterior_support_predictions_and_continuat
     )
     support_partition = ObservationPartition(region.name, "species", support_pair, role="support")
     expected = partial.model.predict_with_support(
-        region, query, support, support_partition=support_partition
-    )
+        region,
+        {"species": support},
+        pairs={"species": query},
+        support_partition={"species": support_partition},
+    )["species"]
     actual = state.best_model.predict_with_support(
-        region, query, support, support_partition=support_partition
-    )
+        region,
+        {"species": support},
+        pairs={"species": query},
+        support_partition={"species": support_partition},
+    )["species"]
     np.testing.assert_array_equal(actual.prediction.values, expected.prediction.values)
     np.testing.assert_array_equal(actual.model_variance, expected.model_variance)
     continued = fit(
