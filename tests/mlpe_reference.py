@@ -6,7 +6,7 @@ Copied numeric data from the Apache-2.0 research implementation; tests need no R
 
 import numpy as np
 
-_R_SCORES = np.array(
+_R_DISTANCES = np.array(
     [
         -1.0847845325555074,
         -0.7856562765597935,
@@ -92,25 +92,27 @@ _R_BLUPS = np.array(
 )
 
 
-def dense_profile(scores, targets, left, right, n_populations, variances, *, jitter: float = 0):
+def dense_profile(distances, targets, left, right, n_populations, variances, *, jitter: float = 0):
     """Independent dense full-covariance oracle retained for acceleration checks."""
-    scores = np.asarray(scores, dtype=np.float64)
-    z = np.zeros((len(scores), n_populations))
+    distances = np.asarray(distances, dtype=np.float64)
+    z = np.zeros((len(distances), n_populations))
     for row, (a, b) in enumerate(zip(left, right, strict=True)):
         z[row, a] = z[row, b] = 1
-    x = np.column_stack([np.ones(len(scores)), (scores - scores.mean()) / scores.std(ddof=1)])
-    v = variances[0] * (z @ z.T) + (variances[1] + jitter) * np.eye(len(scores))
+    x = np.column_stack(
+        [np.ones(len(distances)), (distances - distances.mean()) / distances.std(ddof=1)]
+    )
+    v = variances[0] * (z @ z.T) + (variances[1] + jitter) * np.eye(len(distances))
     beta = np.linalg.lstsq(
         x.T @ np.linalg.solve(v, x), x.T @ np.linalg.solve(v, targets), rcond=None
     )[0]
     r = np.asarray(targets) - x @ beta
     nll = 0.5 * (
-        len(scores) * np.log(2 * np.pi) + np.linalg.slogdet(v)[1] + r @ np.linalg.solve(v, r)
+        len(distances) * np.log(2 * np.pi) + np.linalg.slogdet(v)[1] + r @ np.linalg.solve(v, r)
     )
     return nll, beta
 
 
-def dense_jax_profile(scores, targets, left, right, n_populations, raw_variances):
+def dense_jax_profile(distances, targets, left, right, n_populations, raw_variances):
     """Dense autodiff oracle independent of endpoint-system arithmetic."""
     import jax
     import jax.numpy as jnp
@@ -119,23 +121,25 @@ def dense_jax_profile(scores, targets, left, right, n_populations, raw_variances
     z = np.zeros((len(left), n_populations))
     for row, (a, b) in enumerate(zip(left, right, strict=True)):
         z[row, a] = z[row, b] = 1
-    z = jnp.asarray(z, dtype=scores.dtype)
+    z = jnp.asarray(z, dtype=distances.dtype)
     variances = jax.nn.softplus(raw_variances) + 1e-10
-    x = jnp.column_stack((jnp.ones_like(scores), (scores - scores.mean()) / scores.std(ddof=1)))
-    v = variances[0] * (z @ z.T) + variances[1] * jnp.eye(len(scores))
+    x = jnp.column_stack(
+        (jnp.ones_like(distances), (distances - distances.mean()) / distances.std(ddof=1))
+    )
+    v = variances[0] * (z @ z.T) + variances[1] * jnp.eye(len(distances))
     factor = jnp.linalg.cholesky(v)
     beta = jnp.linalg.solve(
         x.T @ cho_solve((factor, True), x), x.T @ cho_solve((factor, True), targets)
     )
     r = targets - x @ beta
     return 0.5 * (
-        len(scores) * np.log(2 * np.pi)
+        len(distances) * np.log(2 * np.pi)
         + 2 * jnp.log(jnp.diag(factor)).sum()
         + r @ cho_solve((factor, True), r)
     ), beta
 
 
-def decimal_dense_profile_and_gradients(scores, targets, left, right, raw_variances):
+def decimal_dense_profile_and_gradients(distances, targets, left, right, raw_variances):
     """60-digit dense Gaussian oracle when float64 covariance gradients cancel.
 
     Uses standard-library Decimal Gaussian elimination, not the Woodbury or
@@ -154,8 +158,8 @@ def decimal_dense_profile_and_gradients(scores, targets, left, right, raw_varian
         def decimal_sum(values: Iterable[Decimal]) -> Decimal:
             return sum(values, Decimal(0))
 
-        size = len(scores)
-        s, y = list(map(d, scores)), list(map(d, targets))
+        size = len(distances)
+        s, y = list(map(d, distances)), list(map(d, targets))
         raw = list(map(d, raw_variances))
         u, e = [(Decimal(1) + value.exp()).ln() + Decimal("1e-10") for value in raw]
         overlap = [
@@ -214,7 +218,7 @@ def decimal_dense_profile_and_gradients(scores, targets, left, right, raw_varian
             + decimal_sum(a * b for a, b in zip(residual, w, strict=True))
         ) / 2
         wz = decimal_sum(a * b for a, b in zip(w, z, strict=True))
-        score_gradient = [
+        distance_gradient = [
             -beta[1] * (w[i] - decimal_sum(w) / size - z[i] * wz / (size - 1)) / scale
             for i in range(size)
         ]
@@ -233,7 +237,7 @@ def decimal_dense_profile_and_gradients(scores, targets, left, right, raw_varian
             float(nll),
             np.array(list(map(float, beta))),
             (
-                np.array(list(map(float, score_gradient))),
+                np.array(list(map(float, distance_gradient))),
                 np.array(list(map(float, variance_gradient))),
             ),
         )

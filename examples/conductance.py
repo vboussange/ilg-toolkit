@@ -51,5 +51,5 @@ result = fit(
 print("Training loss:", result.history[0].training_loss, "->", result.history[-1].training_loss)
 # Neither operation requires genetic observations at the query locations.
 print("Conductance surface:\n", result.model.conductance_surface(region))
-print("Resistance landscape scores:\n", result.model.landscape_scores(region))
+print("Ecological distances (effective resistance):\n", result.model.ecological_distances(region))
 print("Direct genetic predictions:\n", result.model.predict(region).as_matrix())

@@ -28,7 +28,7 @@ def test_selected_and_complete_predictions_share_pair_contract_and_matrix_order(
     complete = model.predict(region)
     assert complete.pairs == (("unit/7", "unit/20"), ("unit/7", "unit/99"), ("unit/20", "unit/99"))
     np.testing.assert_allclose(complete.values, [0.49, 1.96, 0.49])
-    np.testing.assert_allclose(complete.as_matrix(), model.landscape_scores(region))
+    np.testing.assert_allclose(complete.as_matrix(), model.ecological_distances(region))
     for order in [("unit/7",), ("unit/99", "unit/7", "unit/7")]:
         with pytest.raises(ValueError, match="unique labels.*every predicted endpoint"):
             selected.as_matrix(order)

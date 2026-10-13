@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 from mlpe_reference import (
     _R_BLUPS,
+    _R_DISTANCES,
     _R_FIXED,
     _R_LOG_LIKELIHOOD,
-    _R_SCORES,
     _R_TARGETS,
     _R_VARIANCES,
 )
@@ -28,17 +28,17 @@ def reference_observations():
 
 def test_calibration_matches_frozen_r_full_ml_and_predicts_without_query_targets():
     observations = reference_observations()
-    head = calibrate_mlpe(_R_SCORES, observations, region_name="alpine")
+    head = calibrate_mlpe(_R_DISTANCES, observations, region_name="alpine")
     np.testing.assert_allclose([head.intercept, head.slope], _R_FIXED, rtol=3e-5, atol=3e-6)
     np.testing.assert_allclose(
         [head.unit_variance, head.residual_variance], _R_VARIANCES, rtol=2e-4, atol=2e-6
     )
     assert head.ml_log_likelihood == pytest.approx(_R_LOG_LIKELIHOOD, abs=2e-5)
     np.testing.assert_allclose(head.effect_mean, _R_BLUPS, rtol=2e-4, atol=2e-5)
-    assert head.score_center == pytest.approx(-0.14328369260805038, abs=1e-14)
-    assert head.score_scale == pytest.approx(1.012896471531856, abs=1e-14)
+    assert head.distance_center == pytest.approx(-0.14328369260805038, abs=1e-14)
+    assert head.distance_scale == pytest.approx(1.012896471531856, abs=1e-14)
     query = head.predict_marginal([2.5, -2.0], [("new", "p01"), ("p02", "new")])
-    # Independent frozen predictions from the R coefficients and score moments.
+    # Independent frozen predictions from the R coefficients and distance moments.
     np.testing.assert_allclose(
         query.prediction.values, [-0.49407802616878604, 2.4619456646531583], atol=1e-5
     )
@@ -54,7 +54,7 @@ def test_marginal_prediction_retains_float64_jax_values_without_changing_global_
     import jax.numpy as jnp
 
     with jax.enable_x64(False):
-        head = calibrate_mlpe(_R_SCORES, reference_observations(), region_name="alpine")
+        head = calibrate_mlpe(_R_DISTANCES, reference_observations(), region_name="alpine")
         query = head.predict_marginal([2.5, -2.0], [("new", "p01"), ("p02", "new")])
         point = query.prediction
         assert point.sampling_unit_ids == ("new", "p01", "p02")
@@ -78,15 +78,15 @@ def test_marginal_prediction_retains_float64_jax_values_without_changing_global_
     )
 
 
-def test_calibration_honors_the_declared_score_scale_threshold():
+def test_calibration_honors_the_declared_distance_scale_threshold():
     from ilg_toolkit import MLPEConfig, MLPEError
 
-    scores = _R_SCORES * 1e-14
+    distances = _R_DISTANCES * 1e-14
     observations = reference_observations()
     with pytest.raises(MLPEError, match="constant|ill-scaled"):
-        calibrate_mlpe(scores, observations, region_name="alpine")
+        calibrate_mlpe(distances, observations, region_name="alpine")
     head = calibrate_mlpe(
-        scores, observations, region_name="alpine", config=MLPEConfig(min_score_scale=1e-16)
+        distances, observations, region_name="alpine", config=MLPEConfig(min_distance_scale=1e-16)
     )
     np.testing.assert_allclose([head.intercept, head.slope], _R_FIXED, rtol=3e-5, atol=3e-6)
     np.testing.assert_allclose(
@@ -103,12 +103,12 @@ def test_differentiable_full_ml_matches_dense_incomplete_pair_oracle():
     from ilg_toolkit.mlpe import profiled_mlpe_ml_fit
 
     # Arbitrary order and orientation with two absent pairs.
-    scores = np.array([0.2, 1.1, -0.3, 2.0])
+    distances = np.array([0.2, 1.1, -0.3, 2.0])
     targets = np.array([0.5, 0.1, 0.9, 0.3])
     left, right = np.array([3, 0, 2, 0]), np.array([1, 2, 1, 1])
     raw = np.array([-0.7, -1.4])
     variances = np.logaddexp(0, raw) + 1e-10
-    expected_nll, expected_beta = dense_profile(scores, targets, left, right, 4, variances)
+    expected_nll, expected_beta = dense_profile(distances, targets, left, right, 4, variances)
     with enable_x64():
 
         def objective(values):
@@ -121,10 +121,10 @@ def test_differentiable_full_ml_matches_dense_incomplete_pair_oracle():
                 raw_variances=jnp.asarray(raw),
             )
 
-        nll, beta = objective(jnp.asarray(scores))
+        nll, beta = objective(jnp.asarray(distances))
         np.testing.assert_allclose([nll, *beta], [expected_nll, *expected_beta], atol=1e-11)
         array_like_nll, array_like_beta = profiled_mlpe_ml_fit(
-            scores.tolist(),
+            distances.tolist(),
             targets,
             left.tolist(),
             right,
@@ -134,10 +134,10 @@ def test_differentiable_full_ml_matches_dense_incomplete_pair_oracle():
         np.testing.assert_allclose(
             [array_like_nll, *array_like_beta], [expected_nll, *expected_beta], atol=1e-11
         )
-        compiled = jax.jit(objective)(jnp.asarray(scores))
+        compiled = jax.jit(objective)(jnp.asarray(distances))
         np.testing.assert_allclose(compiled[0], nll, atol=1e-11)
-        gradient = jax.grad(lambda values: objective(values)[0])(jnp.asarray(scores))
-    plus, minus = scores.copy(), scores.copy()
+        gradient = jax.grad(lambda values: objective(values)[0])(jnp.asarray(distances))
+    plus, minus = distances.copy(), distances.copy()
     plus[2] += 1e-5
     minus[2] -= 1e-5
     expected_gradient = (
@@ -154,14 +154,14 @@ def test_calibration_rejects_query_targets_and_unidentified_variances():
     observations = reference_observations()
     query = ObservationPartition("alpine", observations.observed_pairs, role="query")
     with pytest.raises(MLPEError, match="query|support"):
-        calibrate_mlpe(_R_SCORES, observations, region_name="alpine", partition=query)
+        calibrate_mlpe(_R_DISTANCES, observations, region_name="alpine", partition=query)
     disjoint = PairwiseObservations.from_pairs(
         [("a", "b"), ("c", "d"), ("e", "f")], [1, 3, 2], target=observations.target
     )
     with pytest.raises(MLPEError, match="unidentifiable"):
         calibrate_mlpe([1, 2, 3], disjoint, region_name="alpine")
     with pytest.raises(MLPEError, match="constant|singular"):
-        calibrate_mlpe(np.ones(len(_R_SCORES)), observations, region_name="alpine")
+        calibrate_mlpe(np.ones(len(_R_DISTANCES)), observations, region_name="alpine")
 
 
 def test_incomplete_partition_calibration_records_roles_and_original_target_scale():
@@ -181,7 +181,7 @@ def test_incomplete_partition_calibration_records_roles_and_original_target_scal
     )
     partition = ObservationPartition("river", selected, role="training")
     head = calibrate_mlpe(
-        _R_SCORES,
+        _R_DISTANCES,
         observations,
         region_name="river",
         partition=partition,
@@ -192,7 +192,7 @@ def test_incomplete_partition_calibration_records_roles_and_original_target_scal
     right = np.array([lookup[b] for a, b in selected])
     mask = np.array([pair in selected for pair in observations.observed_pairs])
     expected_nll, beta = dense_profile(
-        _R_SCORES[mask],
+        _R_DISTANCES[mask],
         _R_TARGETS[mask] + 1,
         left,
         right,
@@ -222,7 +222,7 @@ def test_explicit_numerical_constraints_and_optimization_failure_are_visible():
 
     invalid_options: tuple[dict[str, Any], ...] = (
         {"variance_floor": 0},
-        {"min_score_scale": float("nan")},
+        {"min_distance_scale": float("nan")},
         {"jitter": 1e-3},
     )
     for options in invalid_options:
@@ -230,14 +230,16 @@ def test_explicit_numerical_constraints_and_optimization_failure_are_visible():
             MLPEConfig(**options)
     with pytest.raises(MLPEError, match="converged"):
         calibrate_mlpe(
-            _R_SCORES,
+            _R_DISTANCES,
             reference_observations(),
             region_name="alpine",
             config=MLPEConfig(max_iterations=1),
         )
 
 
-@pytest.mark.parametrize("field", ["variance_floor", "min_score_scale", "jitter", "max_iterations"])
+@pytest.mark.parametrize(
+    "field", ["variance_floor", "min_distance_scale", "jitter", "max_iterations"]
+)
 @pytest.mark.parametrize("value", [False, True, np.bool_(False), np.bool_(True)])
 def test_mlpe_config_rejects_booleans_at_construction(field, value):
     from ilg_toolkit import MLPEConfig, MLPEError

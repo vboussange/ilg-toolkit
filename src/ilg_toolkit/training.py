@@ -233,13 +233,13 @@ def _regional_loss(
     inference: bool = True,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    predictions = _selected_scores(
+    distances = _selected_distances(
         distance_model, payload, context=context, inference=inference, key=key
     )
-    return jnp.mean(jnp.square(jnp.log1p(predictions) - jnp.log1p(payload.targets)))
+    return jnp.mean(jnp.square(jnp.log1p(distances) - jnp.log1p(payload.targets)))
 
 
-def _selected_scores(
+def _selected_distances(
     distance_model: AbstractDistanceModel,
     payload: _TrainingPayload,
     *,
@@ -247,10 +247,10 @@ def _selected_scores(
     inference: bool = True,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    scores = distance_model.predict_distances(
+    distances = distance_model.predict_distances(
         payload.features, payload.nodes, context=context, inference=inference, key=key
     )
-    return scores[payload.pairs]
+    return distances[payload.pairs]
 
 
 def _joint_loss(
@@ -266,11 +266,11 @@ def _joint_loss(
     if config.objective == "direct_log1p":
         return _regional_loss(distance_model, payload, context=context, inference=False, key=key)
     assert raw_variances is not None
-    scores = _selected_scores(
+    distances = _selected_distances(
         distance_model, payload, context=context, inference=False, key=key
     ).astype(jnp.float64)
     nll, _ = profiled_mlpe_ml_fit(
-        scores,
+        distances,
         payload.targets,
         *payload.pairs,
         n_populations=len(payload.nodes),
@@ -278,7 +278,7 @@ def _joint_loss(
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
     )
-    return nll / len(scores)
+    return nll / len(distances)
 
 
 def _joint_value_and_grad(
@@ -305,7 +305,7 @@ def _joint_value_and_grad(
     return eqx.error_if(
         (value, gradient),
         bad,
-        "Nonfinite objective or gradient; check MLPE score variation, "
+        "Nonfinite objective or gradient; check distance variation, "
         "identifiable endpoints and variance conditioning",
     )
 
@@ -318,9 +318,9 @@ def _refresh_mlpe(
     config: TrainingConfig,
     context: ResistanceSolverContext | None = None,
 ) -> MLPEFit:
-    scores = _selected_scores(distance_model, payload, context=context).astype(jnp.float64)
+    distances = _selected_distances(distance_model, payload, context=context).astype(jnp.float64)
     return finalize_mlpe_fit(
-        scores,
+        distances,
         payload.targets,
         *payload.pairs,
         n_populations=len(payload.nodes),
@@ -339,21 +339,21 @@ def _frozen_validation_loss(
     config: TrainingConfig,
     context: ResistanceSolverContext | None = None,
 ) -> jax.Array:
-    scores = _selected_scores(distance_model, payload, context=context).astype(jnp.float64)
+    distances = _selected_distances(distance_model, payload, context=context).astype(jnp.float64)
     center, scale, beta = moments
     nll = mlpe_ml_negative_log_likelihood(
-        scores,
+        distances,
         payload.targets,
         *payload.pairs,
         n_populations=len(payload.nodes),
         fixed_effects=beta,
         raw_variances=raw,
-        score_center=center,
-        score_scale=scale,
+        distance_center=center,
+        distance_scale=scale,
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
     )
-    return nll / len(scores)
+    return nll / len(distances)
 
 
 _compiled_loss = eqx.filter_jit(_regional_loss)
@@ -482,7 +482,7 @@ def _checked_call[T](
         raise RuntimeError(
             f"{batch.region.name}: {training_config.objective} calculation failed "
             f"at epoch {epoch}; "
-            f"check finite scores, gradients, score variation, identifiable pair endpoints "
+            f"check finite distances, gradients, distance variation, identifiable pair endpoints "
             f"and variance conditioning; "
             f"solver={batch.context.config if batch.context is not None else None}. {error}"
         ) from error
@@ -524,8 +524,8 @@ def _evaluate_regions(
             assert raw_variances is not None
             head = heads[batch.region.name]
             moments = (
-                jnp.asarray(head.score_center),
-                jnp.asarray(head.score_scale),
+                jnp.asarray(head.distance_center),
+                jnp.asarray(head.distance_scale),
                 jnp.asarray((head.intercept, head.slope)),
             )
             value = _checked_call(
@@ -553,7 +553,7 @@ def _evaluate_regions(
         if not np.isfinite(float(value)):
             raise FloatingPointError(
                 f"{batch.region.name}: nonfinite {config.objective} objective at epoch {epoch}; "
-                "check scores and variance conditioning"
+                "check distances and variance conditioning"
             )
         values[batch.region.name] = float(value)
     return float(np.mean(list(values.values()))), values
@@ -586,7 +586,7 @@ def _refresh_heads(
         if not all(np.isfinite(np.asarray(leaf)).all() for leaf in jax.tree.leaves(result)):
             raise FloatingPointError(
                 f"{batch.region.name}: nonfinite MLPE calibration at epoch {epoch}; "
-                "check nonconstant scores, identifiable endpoints and variance conditioning"
+                "check nonconstant distances, identifiable endpoints and variance conditioning"
             )
         heads[batch.region.name] = RegionalMLPECalibration.from_fit(
             result,
@@ -620,7 +620,7 @@ def fit(
 
     Each Adam update averages sequential regional gradients, normalized by pair
     count. MLPE profiles signed GLS coefficients and updates the distance model and two
-    regional variance parameters together. Updated training scores refresh the
+    regional variance parameters together. Updated training distances refresh the
     regional moments, coefficients and posterior before frozen-head validation.
     Validation only selects a model; learning rate and stopping use a fixed
     budget. MLPE explicitly requires enabled JAX float64.

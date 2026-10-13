@@ -5,10 +5,10 @@ The complete `LandscapeGeneticsModel` owns an `MLPECalibrationModule`; its
 `.calibration.regions[region_name]` is the standalone `RegionalMLPECalibration`
 used below. Obtain it after `fit(..., config=TrainingConfig(objective="mlpe", ...))`
 or explicit frozen `calibrate(...)`.
-It uses the saved regional intercept, signed slope and training score moments.
-`head.predict_known_effects(scores, pairs)` is a separate operation that uses the
+It uses the saved regional intercept, signed slope and training distance moments.
+`head.predict_known_effects(distances, pairs)` is a separate operation that uses the
 saved posterior effects for known populations. Unseen populations receive
-independent zero-mean effects with the fitted population variance. Scores align
+independent zero-mean effects with the fitted population variance. Distances align
 with the supplied labelled pairs; no query genetic observations are accepted.
 
 Support observations explicitly update those population effects while keeping
@@ -17,20 +17,20 @@ the encoder, coefficients and variance parameters fixed:
 ```python
 from ilg_toolkit import ObservationPartition, PairwiseObservations
 
-# head is an existing regional MLPE calibration. Scores come from its frozen encoder.
+# head is an existing regional MLPE calibration. Distances come from its frozen model.
 support = PairwiseObservations.from_pairs(
     [("new-north", "known-west"), ("new-north", "known-east")],
     [0.8, 1.1],
     target=head.target,
 )
 declared = ObservationPartition(head.region_name, support.observed_pairs, role="support")
-# support_scores must follow support.observed_pairs, which can reorder input rows.
-conditioned = head.condition_on_support(support_scores, support, partition=declared)
-prediction = conditioned.predict(query_scores, [("new-north", "known-south")])
+# support_distances must follow support.observed_pairs, which can reorder input rows.
+conditioned = head.condition_on_support(support_distances, support, partition=declared)
+prediction = conditioned.predict(query_distances, [("new-north", "known-south")])
 ```
 
-The standalone functions `predict_known_effects(head, scores, pairs)` and
-`condition_on_support(head, support_scores, support_observations, partition=...)`
+The standalone functions `predict_known_effects(head, distances, pairs)` and
+`condition_on_support(head, support_distances, support_observations, partition=...)`
 expose the same operations. Support observations must contain exactly the declared
 partition: extra genetic targets are refused. The region and target metadata must
 match the calibration. Missing observations remain absent.

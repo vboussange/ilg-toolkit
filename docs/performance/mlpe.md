@@ -34,11 +34,11 @@ The conservative supported bound is
 $$\epsilon_{\rm machine}\left(1+2\max_i\deg(i)\frac{u}{e+j}\right)\le0.01.$$
 
 A Gershgorin bound controls roundoff in $K$, including incomplete or bipartite
-endpoint graphs. Unsupported ratios, failed factors, invalid scores and singular
+endpoint graphs. Unsupported ratios, failed factors, invalid distances and singular
 or unidentified profiles return nonfinite kernel diagnostics, which public fit
 boundaries reject. Failure never changes a variance or increases jitter. A frozen
 likelihood can score one query pair; variance fitting needs overlapping endpoints
-and at least three observed pairs with a nonsingular score design.
+and at least three observed pairs with a nonsingular distance design.
 
 A boolean `pair_mask` excludes false rows from moments, determinant counts and
 quadratics in eager and JIT execution, even with nonfinite values or placeholder

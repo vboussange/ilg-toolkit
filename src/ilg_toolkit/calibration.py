@@ -16,13 +16,13 @@ if TYPE_CHECKING:
 
 
 class AbstractCalibrationModule(eqx.Module):
-    """Own the target contract and map selected landscape scores to genetic values."""
+    """Own the target contract and map selected ecological distances to genetic values."""
 
     target: eqx.AbstractVar[TargetSpec]
 
     @abstractmethod
-    def predict(self, scores, pairs, *, region_name: str) -> jax.Array:
-        """Return original-scale values for selected scores and labelled pairs."""
+    def predict(self, distances, pairs, *, region_name: str) -> jax.Array:
+        """Return original-scale values for selected distances and labelled pairs."""
 
 
 @final
@@ -35,8 +35,8 @@ class DirectCalibrationModule(AbstractCalibrationModule):
         if not isinstance(self.target, TargetSpec):
             raise ValueError("Direct calibration requires a TargetSpec")
 
-    def predict(self, scores, pairs, *, region_name: str) -> jax.Array:
-        return self.target.inverse(scores)
+    def predict(self, distances, pairs, *, region_name: str) -> jax.Array:
+        return self.target.inverse(distances)
 
 
 @final
@@ -74,8 +74,8 @@ class MLPECalibrationModule(AbstractCalibrationModule):
             )
         return value
 
-    def predict(self, scores, pairs, *, region_name: str) -> jax.Array:
-        return self.for_region(region_name).predict_marginal(scores, pairs).prediction.values
+    def predict(self, distances, pairs, *, region_name: str) -> jax.Array:
+        return self.for_region(region_name).predict_marginal(distances, pairs).prediction.values
 
 
 def calibrate(
@@ -139,10 +139,10 @@ def calibrate(
             if any(kinds[label] != "population" for label in pair):
                 raise ValueError("Population MLPE calibration requires population sampling units")
             roles[pair] = partition.role
-    scores = model.landscape_scores(region)
+    distances = model.ecological_distances(region)
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-    observed_scores = jnp.asarray(
-        [scores[lookup[a], lookup[b]] for a, b in observations.observed_pairs]
+    observed_distances = jnp.asarray(
+        [distances[lookup[a], lookup[b]] for a, b in observations.observed_pairs]
     )
     selected = ObservationPartition(region.name, tuple(roles), role="calibration")
     regions = (
@@ -153,7 +153,11 @@ def calibrate(
     if config is None and region.name in regions:
         config = regions[region.name].config
     head = calibrate_mlpe(
-        observed_scores, observations, region_name=region.name, partition=selected, config=config
+        observed_distances,
+        observations,
+        region_name=region.name,
+        partition=selected,
+        config=config,
     )
     head = eqx.tree_at(
         lambda value: value.calibration_roles,

@@ -458,10 +458,10 @@ class Ensemble:
         }
         return aggregate_predictions(predictions, expected_member_ids=self.expected_member_ids)
 
-    def landscape_scores(self, region: RegionBatch) -> dict[str, jax.Array]:
-        """Return each member's raw scores separately; their scales can differ."""
+    def ecological_distances(self, region: RegionBatch) -> dict[str, jax.Array]:
+        """Return each member's ecological distances separately; their scales can differ."""
         return {
-            member_id: model.landscape_scores(region)
+            member_id: model.ecological_distances(region)
             for member_id, model in self._completed().items()
         }
 

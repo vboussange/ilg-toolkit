@@ -16,7 +16,7 @@ from jax.scipy.linalg import cho_solve
 from .system import population_system
 
 DEFAULT_VARIANCE_FLOOR = 1e-10
-DEFAULT_MIN_SCORE_SCALE = 1e-12
+DEFAULT_MIN_DISTANCE_SCALE = 1e-12
 
 
 class MLPEFit(NamedTuple):
@@ -24,8 +24,8 @@ class MLPEFit(NamedTuple):
 
     nll: jax.Array
     coefficients: jax.Array
-    score_center: jax.Array
-    score_scale: jax.Array
+    distance_center: jax.Array
+    distance_scale: jax.Array
     variances: jax.Array
     posterior: tuple[jax.Array, jax.Array, jax.Array]
 
@@ -37,20 +37,22 @@ def pair_incidence_matrix(left, right, *, n_populations, dtype=jnp.float32):
     return incidence.at[rows, left].add(1).at[rows, right].add(1)
 
 
-def sample_standardize_scores(scores, *, center=None, scale=None, pair_mask=None):
-    """Sample SD (ddof=1) of observed scores, or stored training moments."""
-    scores = jnp.asarray(scores)
-    weights = jnp.ones(scores.shape, dtype=bool) if pair_mask is None else jnp.asarray(pair_mask)
-    safe_scores = jnp.where(weights, scores, 0)
+def sample_standardize_distances(distances, *, center=None, scale=None, pair_mask=None):
+    """Sample SD (ddof=1) of observed distances, or stored training moments."""
+    distances = jnp.asarray(distances)
+    weights = jnp.ones(distances.shape, dtype=bool) if pair_mask is None else jnp.asarray(pair_mask)
+    safe_distances = jnp.where(weights, distances, 0)
     count = jnp.sum(weights)
     center = (
-        jnp.sum(safe_scores) / count if center is None else jnp.asarray(center, dtype=scores.dtype)
+        jnp.sum(safe_distances) / count
+        if center is None
+        else jnp.asarray(center, dtype=distances.dtype)
     )
-    differences = jnp.where(weights, safe_scores - center, 0)
+    differences = jnp.where(weights, safe_distances - center, 0)
     scale = (
         jnp.sqrt(jnp.sum(differences**2) / (count - 1))
         if scale is None
-        else jnp.asarray(scale, dtype=scores.dtype)
+        else jnp.asarray(scale, dtype=distances.dtype)
     )
     return differences / scale, center, scale
 
@@ -62,43 +64,43 @@ def decode_mlpe_variances(raw_variances, *, variance_floor=DEFAULT_VARIANCE_FLOO
 
 
 def _components(
-    scores,
+    distances,
     targets,
     left,
     right,
     *,
     n_populations,
     raw_variances,
-    score_center,
-    score_scale,
-    min_score_scale,
+    distance_center,
+    distance_scale,
+    min_distance_scale,
     variance_floor,
     jitter,
     pair_mask,
 ):
-    scores, targets, raw_variances = map(jnp.asarray, (scores, targets, raw_variances))
-    dtype = jnp.result_type(scores, targets, raw_variances, jnp.float32)
-    scores = jnp.asarray(scores, dtype=dtype)
+    distances, targets, raw_variances = map(jnp.asarray, (distances, targets, raw_variances))
+    dtype = jnp.result_type(distances, targets, raw_variances, jnp.float32)
+    distances = jnp.asarray(distances, dtype=dtype)
     targets = jnp.asarray(targets, dtype=dtype)
     left, right = jnp.asarray(left, dtype=jnp.int32), jnp.asarray(right, dtype=jnp.int32)
     if (
-        scores.ndim != 1
-        or targets.shape != scores.shape
-        or left.shape != scores.shape
-        or right.shape != scores.shape
+        distances.ndim != 1
+        or targets.shape != distances.shape
+        or left.shape != distances.shape
+        or right.shape != distances.shape
         or n_populations < 2
     ):
-        raise ValueError("MLPE requires aligned one-dimensional scores, targets and endpoints")
-    weights = jnp.ones(scores.shape, dtype=bool) if pair_mask is None else jnp.asarray(pair_mask)
-    if weights.shape != scores.shape or weights.dtype != jnp.bool_:
-        raise ValueError("pair_mask must be a boolean vector aligned with scores")
-    standardized, center, scale = sample_standardize_scores(
-        scores,
-        center=score_center,
-        scale=score_scale,
+        raise ValueError("MLPE requires aligned one-dimensional distances, targets and endpoints")
+    weights = jnp.ones(distances.shape, dtype=bool) if pair_mask is None else jnp.asarray(pair_mask)
+    if weights.shape != distances.shape or weights.dtype != jnp.bool_:
+        raise ValueError("pair_mask must be a boolean vector aligned with distances")
+    standardized, center, scale = sample_standardize_distances(
+        distances,
+        center=distance_center,
+        scale=distance_scale,
         pair_mask=weights,
     )
-    design = jnp.stack([weights.astype(scores.dtype), standardized], axis=1)
+    design = jnp.stack([weights.astype(distances.dtype), standardized], axis=1)
     unit, residual = decode_mlpe_variances(raw_variances, variance_floor=variance_floor)
     system = population_system(
         left,
@@ -107,13 +109,13 @@ def _components(
         unit=unit,
         residual=residual + jitter,
         weights=weights,
-        dtype=scores.dtype,
+        dtype=distances.dtype,
     )
     targets = jnp.where(weights, targets, 0)
     valid = (
         system.valid
         & jnp.isfinite(scale)
-        & (scale > min_score_scale)
+        & (scale > min_distance_scale)
         & jnp.isfinite(design).all()
         & jnp.isfinite(targets).all()
         & (system.pair_count >= 1)
@@ -157,16 +159,16 @@ def _posterior(system, effects, valid):
 
 
 def profiled_mlpe_ml_fit(
-    scores,
+    distances,
     targets,
     left,
     right,
     *,
     n_populations,
     raw_variances,
-    score_center=None,
-    score_scale=None,
-    min_score_scale=DEFAULT_MIN_SCORE_SCALE,
+    distance_center=None,
+    distance_scale=None,
+    min_distance_scale=DEFAULT_MIN_DISTANCE_SCALE,
     variance_floor=DEFAULT_VARIANCE_FLOOR,
     jitter=0.0,
     pair_mask=None,
@@ -179,15 +181,15 @@ def profiled_mlpe_ml_fit(
     use float64 or explicit scientifically appropriate variance constraints.
     """
     targets, design, system, valid, _, _ = _components(
-        scores,
+        distances,
         targets,
         left,
         right,
         n_populations=n_populations,
         raw_variances=raw_variances,
-        score_center=score_center,
-        score_scale=score_scale,
-        min_score_scale=min_score_scale,
+        distance_center=distance_center,
+        distance_scale=distance_scale,
+        min_distance_scale=min_distance_scale,
         variance_floor=variance_floor,
         jitter=jitter,
         pair_mask=pair_mask,
@@ -197,16 +199,16 @@ def profiled_mlpe_ml_fit(
 
 
 def finalize_mlpe_fit(
-    scores,
+    distances,
     targets,
     left,
     right,
     *,
     n_populations,
     raw_variances,
-    score_center=None,
-    score_scale=None,
-    min_score_scale=DEFAULT_MIN_SCORE_SCALE,
+    distance_center=None,
+    distance_scale=None,
+    min_distance_scale=DEFAULT_MIN_DISTANCE_SCALE,
     variance_floor=DEFAULT_VARIANCE_FLOOR,
     jitter=0.0,
     pair_mask=None,
@@ -214,21 +216,21 @@ def finalize_mlpe_fit(
     """Finalize signed GLS, full-ML likelihood and posterior at supplied variances.
 
     The population system is factored once and reused for all fitted quantities.
-    No optimizer is run. Score moments use only selected rows unless supplied;
+    No optimizer is run. Distance moments use only selected rows unless supplied;
     floors, jitter, masking and numerical failures follow the likelihood kernel.
     Gradient-only optimization should use ``profiled_mlpe_ml_fit`` instead,
     which omits posterior covariance construction.
     """
     targets, design, system, valid, center, scale = _components(
-        scores,
+        distances,
         targets,
         left,
         right,
         n_populations=n_populations,
         raw_variances=raw_variances,
-        score_center=score_center,
-        score_scale=score_scale,
-        min_score_scale=min_score_scale,
+        distance_center=distance_center,
+        distance_scale=distance_scale,
+        min_distance_scale=min_distance_scale,
         variance_floor=variance_floor,
         jitter=jitter,
         pair_mask=pair_mask,
@@ -254,7 +256,7 @@ def profiled_mlpe_ml_negative_log_likelihood(*args, **kwargs):
 
 
 def mlpe_ml_negative_log_likelihood(
-    scores,
+    distances,
     targets,
     left,
     right,
@@ -262,24 +264,24 @@ def mlpe_ml_negative_log_likelihood(
     n_populations,
     fixed_effects,
     raw_variances,
-    score_center=None,
-    score_scale=None,
-    min_score_scale=DEFAULT_MIN_SCORE_SCALE,
+    distance_center=None,
+    distance_scale=None,
+    min_distance_scale=DEFAULT_MIN_DISTANCE_SCALE,
     variance_floor=DEFAULT_VARIANCE_FLOOR,
     jitter=0.0,
     pair_mask=None,
 ):
-    """Full ML with frozen fixed effects and score moments, for validation."""
+    """Full ML with frozen fixed effects and distance moments, for validation."""
     targets, design, system, valid, _, _ = _components(
-        scores,
+        distances,
         targets,
         left,
         right,
         n_populations=n_populations,
         raw_variances=raw_variances,
-        score_center=score_center,
-        score_scale=score_scale,
-        min_score_scale=min_score_scale,
+        distance_center=distance_center,
+        distance_scale=distance_scale,
+        min_distance_scale=min_distance_scale,
         variance_floor=variance_floor,
         jitter=jitter,
         pair_mask=pair_mask,
@@ -291,7 +293,7 @@ def mlpe_ml_negative_log_likelihood(
 
 
 def mlpe_effect_posterior(
-    scores,
+    distances,
     targets,
     left,
     right,
@@ -299,9 +301,9 @@ def mlpe_effect_posterior(
     n_populations,
     fixed_effects,
     raw_variances,
-    score_center,
-    score_scale,
-    min_score_scale=DEFAULT_MIN_SCORE_SCALE,
+    distance_center,
+    distance_scale,
+    min_distance_scale=DEFAULT_MIN_DISTANCE_SCALE,
     variance_floor=DEFAULT_VARIANCE_FLOOR,
     jitter=0.0,
     pair_mask=None,
@@ -312,15 +314,15 @@ def mlpe_effect_posterior(
     It uses the same population system and numerical policy as the likelihood.
     """
     targets, design, system, valid, _, _ = _components(
-        scores,
+        distances,
         targets,
         left,
         right,
         n_populations=n_populations,
         raw_variances=raw_variances,
-        score_center=score_center,
-        score_scale=score_scale,
-        min_score_scale=min_score_scale,
+        distance_center=distance_center,
+        distance_scale=distance_scale,
+        min_distance_scale=min_distance_scale,
         variance_floor=variance_floor,
         jitter=jitter,
         pair_mask=pair_mask,

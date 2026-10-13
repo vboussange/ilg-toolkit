@@ -31,31 +31,31 @@ def _worker(n_populations, repeats):
     with jax.enable_x64():
         left, right = np.triu_indices(n_populations, 1)
         rng = np.random.default_rng(37)
-        scores = jnp.asarray(rng.normal(size=len(left)))
-        targets = 0.4 - 0.2 * scores + jnp.asarray(rng.normal(scale=0.3, size=len(left)))
+        distances = jnp.asarray(rng.normal(size=len(left)))
+        targets = 0.4 - 0.2 * distances + jnp.asarray(rng.normal(scale=0.3, size=len(left)))
         raw = jnp.log(jnp.expm1(jnp.asarray([0.5, 0.2]) - 1e-10))
 
         @jax.jit
-        def evaluate(scores, targets, raw):
+        def evaluate(distances, targets, raw):
             return profiled_mlpe_ml_fit(
-                scores, targets, left, right, n_populations=n_populations, raw_variances=raw
+                distances, targets, left, right, n_populations=n_populations, raw_variances=raw
             )
 
         started = time.perf_counter()
-        nll, beta = jax.block_until_ready(evaluate(scores, targets, raw))
+        nll, beta = jax.block_until_ready(evaluate(distances, targets, raw))
         compile_and_first_call = time.perf_counter() - started
-        jax.block_until_ready(evaluate(scores, targets, raw))
+        jax.block_until_ready(evaluate(distances, targets, raw))
         samples = []
         for _ in range(repeats):
             started = time.perf_counter()
-            jax.block_until_ready(evaluate(scores, targets, raw))
+            jax.block_until_ready(evaluate(distances, targets, raw))
             samples.append(time.perf_counter() - started)
     rss_divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
     return dict(
         backend=jax.default_backend(),
         populations=n_populations,
         pairs=len(left),
-        dtype=str(scores.dtype),
+        dtype=str(distances.dtype),
         compile_and_first_call_seconds=compile_and_first_call,
         warm_calls=1,
         median_seconds=statistics.median(samples),

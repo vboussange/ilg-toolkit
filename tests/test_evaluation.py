@@ -539,7 +539,7 @@ def test_only_eligible_pairs_are_inverse_transformed():
         )
         target = TargetSpec("divergence", units="index", transform="sqrt")
         training_pairs = (("a", "b"), ("a", "c"), ("b", "c"))
-        # sqrt(target)=4-.5*score, all observed scores in {1,4}.
+        # sqrt(target)=4-.5*distance, all observed distances in {1,4}.
         observed = PairwiseObservations.from_pairs(
             training_pairs, [12.25, 4, 12.25], target=target, sampling_unit_ids=ids
         )
@@ -557,7 +557,7 @@ def test_only_eligible_pairs_are_inverse_transformed():
         )
         assert ensemble.members[0].status == "completed"
         with pytest.raises(ValueError, match="sqrt inverse"):
-            ensemble.predict(region)  # unrelated (a,e) has score16 and fitted mean-4
+            ensemble.predict(region)  # unrelated (a,e) has distance 16 and fitted mean -4
         marginal = completed_model(ensemble.members[0]).predict(region, [("d", "e")])
         assert marginal.pairs == (("d", "e"),)
         assert marginal.target == target

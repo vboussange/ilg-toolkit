@@ -76,10 +76,10 @@ def effective_resistance(
     context: ResistanceSolverContext | None = None,
     config: ResistanceSolverConfig | None = None,
 ) -> jax.Array:
-    """Return terminal resistance scores for a positive four-neighbour grid.
+    """Return terminal effective resistances for a positive four-neighbour grid.
 
     Edge conductance is the arithmetic mean of its endpoints. Graph solves use
-    float64; scores and their gradients retain the surface's floating dtype.
+    float64; resistances and their gradients retain the surface's floating dtype.
     The last graph vertex is grounded and may be a terminal. Coincident terminal
     nodes have zero resistance. Invalid inputs or failed solves raise, including
     under JIT; numerical failure never triggers an implicit solver replacement.
@@ -111,8 +111,8 @@ def effective_resistance(
             f"Solver context shape {context.graph_shape} does not match surface {surface.shape}"
         )
     graph = GridGraph(surface.astype(jnp.float64), fun=_mean_conductance)
-    scores = ResistanceDistance(solver=context.solver).nodes_to_nodes_distance(
+    resistances = ResistanceDistance(solver=context.solver).nodes_to_nodes_distance(
         graph, nodes, state=context.solver_state
     )
-    scores = scores.at[jnp.diag_indices(nodes.size)].set(0)
-    return scores.astype(surface.dtype)
+    resistances = resistances.at[jnp.diag_indices(nodes.size)].set(0)
+    return resistances.astype(surface.dtype)

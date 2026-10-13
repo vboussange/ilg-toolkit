@@ -28,7 +28,6 @@ def _write_native(path, tree, *, kind, metadata):
     """Atomically replace a header and native leaves; retain the previous file on failure."""
     header = {
         "format": "ilg-toolkit-equinox",
-        "version": 3,
         "kind": kind,
         "requires_x64": any(
             isinstance(value, jax.Array)
@@ -61,13 +60,8 @@ def _read_header(stream, *, kind):
         header = json.loads(stream.readline())
     except (ValueError, UnicodeError) as error:
         raise ArtifactError("Unsupported or incomplete native Equinox artifact header") from error
-    if (
-        not isinstance(header, dict)
-        or header.get("format") != "ilg-toolkit-equinox"
-        or type(header.get("version")) is not int
-        or header["version"] != 3
-    ):
-        raise ArtifactError("Unsupported native Equinox artifact format or version")
+    if not isinstance(header, dict) or header.get("format") != "ilg-toolkit-equinox":
+        raise ArtifactError("Unsupported native Equinox artifact format")
     if header.get("kind") != kind:
         raise ArtifactError(f"Expected {kind} artifact, found {header.get('kind')!r}")
     if type(header.get("requires_x64")) is not bool:
@@ -121,8 +115,8 @@ def _head_template(name, metadata, target):
         region_name=name,
         target=target,
         population_ids=population_ids,
-        score_center=0.0,
-        score_scale=max(1.0, 2 * config.min_score_scale),
+        distance_center=0.0,
+        distance_scale=max(1.0, 2 * config.min_distance_scale),
         intercept=0.0,
         slope=0.0,
         unit_variance=config.variance_floor,

@@ -18,18 +18,18 @@ target semantics and the observations used for training and selection.
 _Avoid_: Encoder, when referring to the complete genetic prediction model.
 
 **Distance model**:
-A relationship deriving pairwise landscape separation from prepared features and
+A relationship deriving ecological distances from prepared features and
 sampling-unit locations without genetic observations. Effective resistance and
-squared embedding distance are supported forms of landscape separation.
+squared embedding distance are supported forms of ecological distance.
 _Avoid_: Genetic predictor, when the relationship has no genetic calibration.
 
 **Calibration module**:
-The authoritative target contract and relationship mapping landscape scores to
+The authoritative target contract and relationship mapping ecological distances to
 genetic predictions. Direct calibration applies the declared inverse target
 transform. MLPE calibration selects a fitted relationship for the query region.
 
 **Regional MLPE calibration**:
-One region's fitted relationship between landscape scores and genetic targets,
+One region's fitted relationship between ecological distances and genetic targets,
 including population dependence, uncertainty and observation-use provenance.
 _Avoid_: Complete model, when referring only to one regional relationship.
 
@@ -64,12 +64,12 @@ A measured genetic relationship between two sampling units, whose meaning and sc
 _Avoid_: Genetic distance, when the observation is a similarity or relatedness measure.
 
 **Region**:
-A landscape and its associated sampling units and genetic observations, with its own relationship between landscape-derived scores and observed genetic targets.
+A landscape and its associated sampling units and genetic observations, with its own relationship between ecological distances and observed genetic targets.
 _Avoid_: Dataset, when referring to one region within a multi-region study.
 
-**Landscape score**:
-A model-derived measure of separation between two sampling units based on their landscape, before any genetic calibration.
-_Avoid_: Genetic prediction, when the score has not been related to the genetic target scale.
+**Ecological distance**:
+A distance model's pairwise separation between two sampling units based on their landscape, before any genetic calibration. Effective resistance through a conductance graph is the main example.
+_Avoid_: Landscape score; genetic prediction, before calibration to the target scale.
 
 **Genetic prediction**:
 An estimated genetic relationship for an identified pair of sampling units in a
@@ -77,4 +77,4 @@ region, expressed in the declared target's original units. Its matrix representa
 does not imply predictions for unrequested pairs or a joint uncertainty model.
 
 **Genetic calibration**:
-The relationship between landscape scores and genetic observations on the declared target scale. This relationship may differ between regions.
+The relationship between ecological distances and genetic observations on the declared target scale. This relationship may differ between regions.

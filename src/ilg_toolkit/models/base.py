@@ -1,7 +1,8 @@
-"""Raster encoders and their landscape-distance boundary.
+"""Raster encoders and their ecological-distance boundary.
 
-Extracted from the cleaned deepilg architecture. Distance encoders return scores;
-observation models determine how those scores relate to genetic targets.
+Extracted from the cleaned deepilg architecture. Distance models return
+ecological distances; calibration determines how those distances relate to genetic
+targets.
 """
 
 from abc import abstractmethod
@@ -17,7 +18,7 @@ from .common import pixel_to_patch_nodes, squared_embedding_distances
 
 
 class AbstractDistanceModel(eqx.Module):
-    """Derive landscape separation from features and locations without genetic labels.
+    """Derive ecological distances from features and locations without genetic labels.
 
     Custom implementations implement ``prepare`` and ``predict_distances``,
     accepting the common inference, random-key and preparation arguments.
@@ -27,7 +28,7 @@ class AbstractDistanceModel(eqx.Module):
 
     @abstractmethod
     def prepare(self, features: ArrayLike) -> ResistanceSolverContext | None:
-        """Prepare shape-dependent numerical work before scoring, or return none."""
+        """Prepare shape-dependent numerical work before predicting distances, or return none."""
 
     @abstractmethod
     def predict_distances(
@@ -40,7 +41,7 @@ class AbstractDistanceModel(eqx.Module):
         key: jax.Array | None = None,
         patch_batch_size: int | None = None,
     ) -> jax.Array:
-        """Return the square landscape-score matrix at row-major pixel locations."""
+        """Return the square ecological-distance matrix at row-major pixel locations."""
 
 
 class ConductanceModel(AbstractDistanceModel):
@@ -77,7 +78,7 @@ class ConductanceModel(AbstractDistanceModel):
         context: ResistanceSolverContext | None = None,
         patch_batch_size: int | None = None,
     ) -> tuple[jax.Array, jax.Array]:
-        """Return landscape scores and the conductance surface that induced them."""
+        """Return effective resistances and the conductance surface that induced them."""
         features = jnp.asarray(features)
         if context is None:
             context = self.prepare(features)
@@ -101,11 +102,11 @@ class ConductanceModel(AbstractDistanceModel):
         key: jax.Array | None = None,
         patch_batch_size: int | None = None,
     ) -> jax.Array:
-        """Return all pairwise resistance scores independently of genetic labels."""
-        scores, _ = self.resistance_and_conductance(
+        """Return all pairwise effective resistances independently of genetic labels."""
+        resistances, _ = self.resistance_and_conductance(
             features, pixel_nodes, context=context, patch_batch_size=patch_batch_size
         )
-        return scores
+        return resistances
 
 
 class EmbeddingDistanceModel(AbstractDistanceModel):

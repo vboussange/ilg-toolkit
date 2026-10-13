@@ -27,10 +27,10 @@ def _raw_from_log_variances(log_variances):
 
 
 @partial(jax.jit, static_argnames=("n_populations",))
-def _optimizer_value_and_gradient(log_variances, scores, targets, left, right, **options):
+def _optimizer_value_and_gradient(log_variances, distances, targets, left, right, **options):
     def objective(parameters):
         return profiled_mlpe_ml_fit(
-            scores,
+            distances,
             targets,
             left,
             right,
@@ -51,15 +51,15 @@ class MLPEConfig:
     """
 
     variance_floor: float = 1e-10
-    min_score_scale: float = 1e-12
+    min_distance_scale: float = 1e-12
     jitter: float = 0.0
     max_iterations: int = 2000
 
     def __post_init__(self):
-        for name in ("variance_floor", "min_score_scale", "jitter", "max_iterations"):
+        for name in ("variance_floor", "min_distance_scale", "jitter", "max_iterations"):
             if isinstance(getattr(self, name), (bool, np.bool_)):
                 raise MLPEError(f"{name} cannot be boolean")
-        for name in ("variance_floor", "min_score_scale"):
+        for name in ("variance_floor", "min_distance_scale"):
             value = getattr(self, name)
             if not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
                 raise MLPEError(f"{name} must be finite and positive")
@@ -101,8 +101,8 @@ class RegionalMLPECalibration(eqx.Module):
     region_name: str
     target: TargetSpec
     population_ids: tuple[str, ...]
-    score_center: float
-    score_scale: float
+    distance_center: float
+    distance_scale: float
     intercept: float
     slope: float
     unit_variance: float
@@ -139,8 +139,8 @@ class RegionalMLPECalibration(eqx.Module):
             region_name=region_name,
             target=target,
             population_ids=population_ids,
-            score_center=float(fit.score_center),
-            score_scale=float(fit.score_scale),
+            distance_center=float(fit.distance_center),
+            distance_scale=float(fit.distance_scale),
             intercept=float(fit.coefficients[0]),
             slope=float(fit.coefficients[1]),
             unit_variance=float(fit.variances[0]),
@@ -161,8 +161,8 @@ class RegionalMLPECalibration(eqx.Module):
         if not isinstance(self.target, TargetSpec) or self.target.kind != "dissimilarity":
             raise MLPEError("Population MLPE requires a dissimilarity TargetSpec")
         scalars = (
-            self.score_center,
-            self.score_scale,
+            self.distance_center,
+            self.distance_scale,
             self.intercept,
             self.slope,
             self.unit_variance,
@@ -171,10 +171,12 @@ class RegionalMLPECalibration(eqx.Module):
         )
         if not all(math.isfinite(value) for value in scalars):
             raise MLPEError("MLPE head cannot retain nonfinite numerical kernel diagnostics")
-        if self.score_scale <= self.config.min_score_scale or min(
+        if self.distance_scale <= self.config.min_distance_scale or min(
             self.unit_variance, self.residual_variance
         ) < self.config.variance_floor * (1 - 8 * np.finfo(float).eps):
-            raise MLPEError("MLPE head requires valid score scale and positive bounded variances")
+            raise MLPEError(
+                "MLPE head requires valid distance scale and positive bounded variances"
+            )
         n = len(self.population_ids)
         mean, covariance, factor = (
             self.effect_mean,
@@ -198,12 +200,14 @@ class RegionalMLPECalibration(eqx.Module):
             raise MLPEError("MLPE head region, sampling-unit identities and provenance must align")
 
     @jax.enable_x64()
-    def predict_marginal(self, scores, pairs) -> MLPEPrediction:
+    def predict_marginal(self, distances, pairs) -> MLPEPrediction:
         """Predict labelled query pairs without targets; new effects have mean zero."""
         from .prediction import _query
 
-        scores, pairs, _ = _query(scores, pairs)
-        model_values = self.intercept + self.slope * (scores - self.score_center) / self.score_scale
+        distances, pairs, _ = _query(distances, pairs)
+        model_values = (
+            self.intercept + self.slope * (distances - self.distance_center) / self.distance_scale
+        )
         return MLPEPrediction(
             Prediction(
                 self.target.inverse(model_values),
@@ -215,35 +219,37 @@ class RegionalMLPECalibration(eqx.Module):
             model_values,
         )
 
-    def predict_known_effects(self, scores, pairs):
+    def predict_known_effects(self, distances, pairs):
         """Explicit posterior-effect prediction, with independent priors for unseen units."""
         from .prediction import predict_known_effects
 
-        return predict_known_effects(self, scores, pairs)
+        return predict_known_effects(self, distances, pairs)
 
-    def condition_on_support(self, support_scores, support_observations, *, partition):
+    def condition_on_support(self, support_distances, support_observations, *, partition):
         """Update effects using only an explicit support-role partition."""
         from .prediction import condition_on_support
 
-        return condition_on_support(self, support_scores, support_observations, partition=partition)
+        return condition_on_support(
+            self, support_distances, support_observations, partition=partition
+        )
 
 
 @jax.enable_x64()
 def calibrate_mlpe(
-    scores,
+    distances,
     observations: PairwiseObservations,
     *,
     region_name: str,
     partition: ObservationPartition | None = None,
     config: MLPEConfig | None = None,
 ) -> RegionalMLPECalibration:
-    """Fit full ML from scores aligned to ``observations.observed_pairs``.
+    """Fit full ML from distances aligned to ``observations.observed_pairs``.
 
     ``partition`` explicitly selects a subset and records its declared data role.
     Missing observations remain absent. This operation never updates an encoder.
     """
     config = MLPEConfig() if config is None else config
-    scores = jnp.asarray(scores, dtype=jnp.float64)
+    distances = jnp.asarray(distances, dtype=jnp.float64)
     pairs = observations.observed_pairs
     targets = jnp.asarray(observations.observed_values, dtype=jnp.float64)
     if not isinstance(region_name, str) or not region_name:
@@ -252,8 +258,8 @@ def calibrate_mlpe(
         raise MLPEError(
             "Population MLPE supports declared dissimilarities; relatedness needs a model"
         )
-    if scores.shape != (len(pairs),) or not bool(jnp.isfinite(scores).all()):
-        raise MLPEError("Calibration scores must be finite and aligned with observed_pairs")
+    if distances.shape != (len(pairs),) or not bool(jnp.isfinite(distances).all()):
+        raise MLPEError("Calibration distances must be finite and aligned with observed_pairs")
     role = "calibration"
     if partition is not None:
         if partition.role in {"support", "query"}:
@@ -266,15 +272,15 @@ def calibrate_mlpe(
         selected_rows = tuple(tuple(sorted(pair)) in selected for pair in pairs)
         pairs = tuple(pair for pair, keep in zip(pairs, selected_rows, strict=True) if keep)
         mask = jnp.asarray(selected_rows)
-        scores, targets = scores[mask], targets[mask]
+        distances, targets = distances[mask], targets[mask]
         role = partition.role
     targets = observations.target.forward(targets)
     if len(pairs) < 3:
         raise MLPEError("MLPE fitting requires at least three observed pairs")
-    center, scale = float(jnp.mean(scores)), float(jnp.std(scores, ddof=1))
-    if not math.isfinite(scale) or scale <= config.min_score_scale:
-        raise MLPEError("Calibration scores are constant or ill-scaled; singular GLS design")
-    design = jnp.column_stack((jnp.ones(len(scores)), (scores - center) / scale))
+    center, scale = float(jnp.mean(distances)), float(jnp.std(distances, ddof=1))
+    if not math.isfinite(scale) or scale <= config.min_distance_scale:
+        raise MLPEError("Calibration distances are constant or ill-scaled; singular GLS design")
+    design = jnp.column_stack((jnp.ones(len(distances)), (distances - center) / scale))
     observed = {endpoint for pair in pairs for endpoint in pair}
     population_ids = tuple(label for label in observations.sampling_unit_ids if label in observed)
     lookup = {label: index for index, label in enumerate(population_ids)}
@@ -292,12 +298,12 @@ def calibrate_mlpe(
     # variances through the common softplus interface with no additional floor;
     # this preserves the exact lower bound without subtracting nearly equal
     # values or changing the joint trainer's raw-parameter policy.
-    kernel_inputs = scores, targets, left, right
+    kernel_inputs = distances, targets, left, right
     kernel_options = dict(
         n_populations=len(population_ids),
-        score_center=center,
-        score_scale=scale,
-        min_score_scale=config.min_score_scale,
+        distance_center=center,
+        distance_scale=scale,
+        min_distance_scale=config.min_distance_scale,
         variance_floor=0.0,
         jitter=config.jitter,
     )
@@ -332,7 +338,7 @@ def calibrate_mlpe(
     if not candidates:
         raise MLPEError(
             "No deterministic MLPE optimization start converged to a finite likelihood"
-            "; check score variation and variance conditioning "
+            "; check distance variation and variance conditioning "
             "(eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= 0.01)"
         )
     result = min(candidates, key=lambda candidate: candidate.fun)

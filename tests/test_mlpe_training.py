@@ -65,12 +65,12 @@ def embedding_problem(name="alpine", offset=0.0, seed=14):
     embedding = features.reshape(6, 2) * np.array([0.3, 1.5])
     matrix = ((embedding[:, None] - embedding[None, :]) ** 2).sum(axis=-1)
     left, right = np.triu_indices(6, 1)
-    scores = matrix[left, right]
+    distances = matrix[left, right]
     effects = rng.normal(scale=0.04, size=6)
     values = (
         1.4
         + offset
-        - 0.4 * (scores - scores.mean()) / scores.std(ddof=1)
+        - 0.4 * (distances - distances.mean()) / distances.std(ddof=1)
         + effects[left]
         + effects[right]
         + rng.normal(scale=0.02, size=len(left))
@@ -102,7 +102,7 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
 
         assert result.raw_variances is not None
         prediction = result.model.predict(region)
-        scores = result.model.landscape_scores(region)
+        distances = result.model.ecological_distances(region)
     assert result.history[-1].training_loss < result.history[0].training_loss - 0.1
     assert isinstance(result.model.distance_model, WeightedEmbedding)
     assert not np.allclose(result.model.distance_model.log_weights, model.log_weights)
@@ -113,27 +113,31 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
     assert result.model.training_objective == "mlpe"
     assert prediction.target.units == "index"
     assert np.isfinite(prediction.values).all()
-    assert not np.allclose(prediction.as_matrix(), scores)
+    assert not np.allclose(prediction.as_matrix(), distances)
     left, right = np.triu_indices(6, 1)
-    np.testing.assert_allclose(head.score_center, np.mean(scores[left, right]), atol=1e-12)
-    np.testing.assert_allclose(head.score_scale, np.std(scores[left, right], ddof=1), atol=1e-12)
+    np.testing.assert_allclose(head.distance_center, np.mean(distances[left, right]), atol=1e-12)
+    np.testing.assert_allclose(
+        head.distance_scale, np.std(distances[left, right], ddof=1), atol=1e-12
+    )
     assert result.epoch == result.selected_epoch == 20
     assert set(head.calibration_roles) == {"training"}
 
 
-def dense_profile(scores, targets, left, right, n, variances, jitter=0):
+def dense_profile(distances, targets, left, right, n, variances, jitter=0):
     # Full independent observation covariance and GLS; no production MLPE helpers.
-    z = np.zeros((len(scores), n))
-    z[np.arange(len(scores)), left] += 1
-    z[np.arange(len(scores)), right] += 1
+    z = np.zeros((len(distances), n))
+    z[np.arange(len(distances)), left] += 1
+    z[np.arange(len(distances)), right] += 1
     u, e = variances
-    covariance = u * z @ z.T + (e + jitter) * np.eye(len(scores))
-    design = np.column_stack((np.ones(len(scores)), (scores - scores.mean()) / scores.std(ddof=1)))
+    covariance = u * z @ z.T + (e + jitter) * np.eye(len(distances))
+    design = np.column_stack(
+        (np.ones(len(distances)), (distances - distances.mean()) / distances.std(ddof=1))
+    )
     inverse_design = np.linalg.solve(covariance, design)
     beta = np.linalg.solve(design.T @ inverse_design, inverse_design.T @ targets)
     residual = targets - design @ beta
     nll = 0.5 * (
-        len(scores) * np.log(2 * np.pi)
+        len(distances) * np.log(2 * np.pi)
         + np.linalg.slogdet(covariance)[1]
         + residual @ np.linalg.solve(covariance, residual)
     )
@@ -156,9 +160,9 @@ def test_joint_adam_update_matches_dense_finite_difference_objective(jit):
 
         def objective(parameters):
             embedding = region.feature_array.reshape(6, 2) * np.exp(parameters[:2])
-            scores = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
+            distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
             variances = np.logaddexp(0, parameters[2:]) + 1e-10
-            return dense_profile(scores, targets, left, right, 6, variances)[0] / len(scores)
+            return dense_profile(distances, targets, left, right, 6, variances)[0] / len(distances)
 
         step = 1e-5
         gradient = []
@@ -190,11 +194,11 @@ def test_joint_adam_update_matches_dense_finite_difference_objective(jit):
         moment = adam_moments(result)
         actual_moment = np.concatenate((moment[0].log_weights, moment[1][region.name]))
         np.testing.assert_allclose(actual_moment, 0.1 * gradient, rtol=1e-7, atol=1e-10)
-        scores = np.asarray(result.model.landscape_scores(region))[left, right]
+        distances = np.asarray(result.model.ecological_distances(region))[left, right]
     assert isinstance(result.model.calibration, MLPECalibrationModule)
     head = result.model.calibration.regions[region.name]
     expected_nll, beta, mean, posterior = dense_profile(
-        scores,
+        distances,
         targets,
         left,
         right,
@@ -237,7 +241,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
             )
             for validation_observations in (observations, altered)
         ]
-        scores = np.asarray(runs[0].latest_model.landscape_scores(region))
+        distances = np.asarray(runs[0].latest_model.ecological_distances(region))
     first, second = runs
 
     assert isinstance(first.distance_model, WeightedEmbedding)
@@ -259,11 +263,12 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     assert set(head.calibration_pairs) == set(train_partition.pairs)
     assert first.latest_model.validation_pairs[region.name] == query_partition.pairs
     (left, right), values = observations.aligned_pairs(region, train_partition)
-    np.testing.assert_allclose(head.score_center, scores[left, right].mean(), atol=1e-12)
-    np.testing.assert_allclose(head.score_scale, scores[left, right].std(ddof=1), atol=1e-12)
+    np.testing.assert_allclose(head.distance_center, distances[left, right].mean(), atol=1e-12)
+    np.testing.assert_allclose(head.distance_scale, distances[left, right].std(ddof=1), atol=1e-12)
     (left, right), values = observations.aligned_pairs(region, query_partition)
     expected_mean = (
-        head.intercept + head.slope * (scores[left, right] - head.score_center) / head.score_scale
+        head.intercept
+        + head.slope * (distances[left, right] - head.distance_center) / head.distance_scale
     )
     variance = 2 * head.unit_variance + head.residual_variance
     expected_nll = 0.5 * (
@@ -322,7 +327,7 @@ class CovariateConductance(ConductanceModel):
 
 
 def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver():
-    from test_multiregion import dense_graph_scores
+    from test_multiregion import dense_graph_resistances
 
     with jax.enable_x64():
         features = np.array([[[0.0], [0.2], [0.8]], [[-0.3], [1.4], [-0.7]]])
@@ -335,10 +340,10 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver():
             feature_names=("habitat",),
         )
         left, right = np.triu_indices(6, 1)
-        scores = dense_graph_scores(np.exp(1.2 * region.feature_array[..., 0]), region.pixel_nodes)[
-            left, right
-        ]
-        target = 2 + 0.5 * (scores - scores.mean()) / scores.std(ddof=1)
+        distances = dense_graph_resistances(
+            np.exp(1.2 * region.feature_array[..., 0]), region.pixel_nodes
+        )[left, right]
+        target = 2 + 0.5 * (distances - distances.mean()) / distances.std(ddof=1)
         target += np.random.default_rng(17).normal(0, 0.01, size=len(target))
         observations = PairwiseObservations.from_pairs(
             [(ids[i], ids[j]) for i, j in zip(left, right, strict=True)],
@@ -364,9 +369,9 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver():
         assert float(result.model.distance_model.weight) > 0.6
         assert np.isfinite(result.model.predict(region).values).all()
         surface = result.model.conductance_surface(region)
-        actual_scores = result.model.landscape_scores(region)
+        actual_distances = result.model.ecological_distances(region)
     np.testing.assert_allclose(
-        actual_scores, dense_graph_scores(surface, region.pixel_nodes), atol=1e-7
+        actual_distances, dense_graph_resistances(surface, region.pixel_nodes), atol=1e-7
     )
 
 
@@ -439,7 +444,9 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
             region,
             features=cx.field(np.ones_like(region.feature_array), "row", "column", "feature"),
         )
-        with pytest.raises(FloatingPointError, match="alpine.*nonfinite MLPE.*nonconstant scores"):
+        with pytest.raises(
+            FloatingPointError, match="alpine.*nonfinite MLPE.*nonconstant distances"
+        ):
             fit(constant_region, observations, distance_model=model, config=config)
         extreme = replace(config, mlpe_initial_variances=(1e12, 1e-9))
         with pytest.raises(FloatingPointError, match="variance conditioning"):
@@ -485,10 +492,10 @@ def test_shared_likelihood_gradient_weights_regions_equally_with_unequal_pair_co
             for i, (region, observed) in enumerate(zip(regions, observations, strict=True)):
                 (left, right), targets = observed.aligned_pairs(region)
                 embedding = region.feature_array.reshape(6, 2) * np.exp(parameters[:2])
-                scores = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
+                distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
                 variances = np.logaddexp(0, parameters[2 + 2 * i : 4 + 2 * i]) + 1e-10
                 losses.append(
-                    dense_profile(scores, targets, left, right, 6, variances)[0] / len(scores)
+                    dense_profile(distances, targets, left, right, 6, variances)[0] / len(distances)
                 )
             return np.mean(losses)
 

@@ -3,7 +3,7 @@
 import equinox as eqx
 import numpy as np
 import pytest
-from mlpe_reference import _R_SCORES
+from mlpe_reference import _R_DISTANCES
 from test_mlpe import reference_observations
 
 from ilg_toolkit import MLPECalibrationModule
@@ -14,20 +14,24 @@ from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
 def calibrated():
     observations = reference_observations()
     head = calibrate_mlpe(
-        _R_SCORES, observations, region_name="alpine", config=MLPEConfig(jitter=1e-7)
+        _R_DISTANCES, observations, region_name="alpine", config=MLPEConfig(jitter=1e-7)
     )
     return head, observations
 
 
-def joint_gaussian_reference(head, observed_pairs, observed_scores, targets, query_pairs, scores):
+def joint_gaussian_reference(
+    head, observed_pairs, observed_distances, targets, query_pairs, distances
+):
     """Dense joint-observation oracle; never uses the stored effect posterior."""
     all_pairs = tuple(observed_pairs) + tuple(query_pairs)
     labels = sorted({label for pair in all_pairs for label in pair})
     incidence = np.array([[float(label in pair) for label in labels] for pair in all_pairs])
     covariance = head.unit_variance * incidence @ incidence.T
     covariance += (head.residual_variance + head.config.jitter) * np.eye(len(all_pairs))
-    all_scores = np.r_[observed_scores, scores]
-    fixed = head.intercept + head.slope * (all_scores - head.score_center) / head.score_scale
+    all_distances = np.r_[observed_distances, distances]
+    fixed = (
+        head.intercept + head.slope * (all_distances - head.distance_center) / head.distance_scale
+    )
     n = len(observed_pairs)
     cross = covariance[n:, :n]
     mean = fixed[n:] + cross @ np.linalg.solve(covariance[:n, :n], targets - fixed[:n])
@@ -42,11 +46,16 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
 
     head, observations = calibrated
     pairs = (("p01", "p02"), ("new", "p03"), ("new", "other-new"))
-    scores = np.array([0.2, 0.8, -0.1])
+    distances = np.array([0.2, 0.8, -0.1])
     expected_mean, expected_variance = joint_gaussian_reference(
-        head, observations.observed_pairs, _R_SCORES, observations.observed_values, pairs, scores
+        head,
+        observations.observed_pairs,
+        _R_DISTANCES,
+        observations.observed_values,
+        pairs,
+        distances,
     )
-    result = predict_known_effects(head, scores, pairs)
+    result = predict_known_effects(head, distances, pairs)
     assert result.prediction.pairs == pairs
     assert result.prediction.sampling_unit_ids == ("p01", "p02", "new", "p03", "other-new")
     assert all(
@@ -60,7 +69,7 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
     )
     np.testing.assert_allclose(result.model_values, expected_mean, atol=2e-11)
     np.testing.assert_allclose(result.model_variance, expected_variance, atol=2e-11)
-    marginal = head.predict_marginal(scores, pairs)
+    marginal = head.predict_marginal(distances, pairs)
     assert result.model_values[0] != pytest.approx(marginal.model_values[0])
     assert result.model_values[-1] == pytest.approx(marginal.model_values[-1])
     assert result.provenance.unseen_effect_policy == "independent_prior"
@@ -79,12 +88,12 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated)
         [1.4, 0.8, 2.1],
         target=head.target,
     )
-    support_scores = np.array([0.7, -0.2, 0.3])  # aligned to observed_pairs, not input order
+    support_distances = np.array([0.7, -0.2, 0.3])  # aligned to observed_pairs, not input order
     partition = ObservationPartition("alpine", support.observed_pairs, role="support")
-    conditioned = condition_on_support(head, support_scores, support, partition=partition)
+    conditioned = condition_on_support(head, support_distances, support, partition=partition)
     pairs = (("new", "p05"), ("second-new", "new"), ("third-new", "p01"))
-    scores = np.array([0.1, 0.6, 1.2])
-    result = conditioned.predict(scores, pairs)
+    distances = np.array([0.1, 0.6, 1.2])
+    result = conditioned.predict(distances, pairs)
     assert all(
         isinstance(value, jax.Array) and value.dtype == np.float64
         for value in (
@@ -97,10 +106,10 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated)
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration.observed_pairs + support.observed_pairs,
-        np.r_[_R_SCORES, support_scores],
+        np.r_[_R_DISTANCES, support_distances],
         np.r_[calibration.observed_values, support.observed_values],
         pairs,
-        scores,
+        distances,
     )
     np.testing.assert_allclose(result.model_values, expected_mean, atol=3e-11)
     np.testing.assert_allclose(result.model_variance, expected_variance, atol=3e-11)
@@ -150,7 +159,7 @@ def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
     observations = PairwiseObservations.from_pairs(
         reference.observed_pairs, np.expm1(reference.observed_values + 2.0), target=target
     )
-    head = calibrate_mlpe(_R_SCORES, observations, region_name="log-region")
+    head = calibrate_mlpe(_R_DISTANCES, observations, region_name="log-region")
     known = head.predict_known_effects([0.2], [("new", "p01")])
     support = PairwiseObservations.from_pairs([("new", "p02")], [np.expm1(2.3)], target=target)
     conditioned = head.condition_on_support(
@@ -162,7 +171,7 @@ def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         observations.observed_pairs + support.observed_pairs,
-        np.r_[_R_SCORES, 0.4],
+        np.r_[_R_DISTANCES, 0.4],
         np.r_[target.forward(observations.observed_values), 2.3],
         [("new", "p01")],
         [0.2],
@@ -223,7 +232,7 @@ def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibr
         head.condition_on_support([np.nan, 0.3], support, partition=partition)
 
 
-def test_model_conditions_real_landscape_scores_without_updating_encoder():
+def test_model_conditions_real_ecological_distances_without_updating_encoder():
     import itertools
 
     import jax.numpy as jnp
@@ -254,21 +263,21 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
     known = model.predict_known_effects(region, pairs)
     assert known.prediction.sampling_unit_ids == region.sampling_unit_ids
     assert known.prediction.pairs == pairs
-    scores = model.landscape_scores(region)
+    distances = model.ecological_distances(region)
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
 
-    def selected_scores(selected):
-        return np.array([scores[lookup[a], lookup[b]] for a, b in selected])
+    def selected_distances(selected):
+        return np.array([distances[lookup[a], lookup[b]] for a, b in selected])
 
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration_pairs,
-        selected_scores(calibration_pairs),
+        selected_distances(calibration_pairs),
         observations.aligned_values(region)[
             [lookup[a] for a, _ in calibration_pairs], [lookup[b] for _, b in calibration_pairs]
         ],
         pairs,
-        selected_scores(pairs),
+        selected_distances(pairs),
     )
     np.testing.assert_allclose(known.model_values, expected_mean, atol=1e-10)
     np.testing.assert_allclose(known.model_variance, expected_variance, atol=1e-10)
@@ -288,7 +297,7 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration_pairs + support.observed_pairs,
-        np.r_[selected_scores(calibration_pairs), selected_scores(support.observed_pairs)],
+        np.r_[selected_distances(calibration_pairs), selected_distances(support.observed_pairs)],
         np.r_[
             observations.aligned_values(region)[
                 [lookup[a] for a, _ in calibration_pairs], [lookup[b] for _, b in calibration_pairs]
@@ -296,7 +305,7 @@ def test_model_conditions_real_landscape_scores_without_updating_encoder():
             support.observed_values,
         ],
         pairs,
-        selected_scores(pairs),
+        selected_distances(pairs),
     )
     np.testing.assert_allclose(result.model_values, expected_mean, atol=1e-10)
     np.testing.assert_allclose(result.model_variance, expected_variance, atol=1e-10)

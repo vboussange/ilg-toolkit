@@ -84,9 +84,9 @@ with jax.enable_x64():
         positions,
     )
     embeddings = features[tuple(positions.T)] * np.array([0.3, 1.5])
-    scores = ((embeddings[:, None] - embeddings[None, :]) ** 2).sum(-1)
+    distances = ((embeddings[:, None] - embeddings[None, :]) ** 2).sum(-1)
     left, right = np.triu_indices(len(labels), 1)
-    targets = 1 + 0.1 * scores[left, right] + rng.normal(0, 0.02, len(left))
+    targets = 1 + 0.1 * distances[left, right] + rng.normal(0, 0.02, len(left))
     observations = PairwiseObservations.from_pairs(
         [(labels[i], labels[j]) for i, j in zip(left, right, strict=True)],
         targets,

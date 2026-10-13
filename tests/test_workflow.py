@@ -48,7 +48,7 @@ def test_fixed_budget_fit_improves_and_predicts_without_query_targets():
     assert np.all(np.isfinite(prediction.as_matrix()))
     np.testing.assert_allclose(prediction.as_matrix(), prediction.as_matrix().T, atol=1e-6)
     np.testing.assert_allclose(np.diag(prediction.as_matrix()), 0, atol=1e-6)
-    np.testing.assert_allclose(result.model.landscape_scores(region), prediction.as_matrix())
+    np.testing.assert_allclose(result.model.ecological_distances(region), prediction.as_matrix())
 
 
 def test_validation_selects_model_without_refitting_on_validation_targets():

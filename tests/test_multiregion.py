@@ -109,7 +109,7 @@ class ScaledConductance(ConductanceModel):
         return jnp.exp(self.log_scale) * features[..., 0]
 
 
-def dense_graph_scores(surface, nodes):
+def dense_graph_resistances(surface, nodes):
     # Independent full pseudoinverse, using no production graph/solver utilities.
     rows, columns = surface.shape
     laplacian = np.zeros((surface.size, surface.size))
@@ -157,11 +157,14 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
             losses = []
             for region, observations_for_region in zip(regions, observations, strict=True):
                 surface = np.exp(log_scale) * region.feature_array[..., 0].astype(np.float64)
-                scores = dense_graph_scores(surface, region.pixel_nodes)
+                distances = dense_graph_resistances(surface, region.pixel_nodes)
                 pairs = np.triu_indices(len(region.sampling_unit_ids), 1)
                 losses.append(
                     np.mean(
-                        (np.log1p(scores[pairs]) - np.log1p(observations_for_region.values[pairs]))
+                        (
+                            np.log1p(distances[pairs])
+                            - np.log1p(observations_for_region.values[pairs])
+                        )
                         ** 2
                     )
                 )
@@ -187,7 +190,7 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
             surface = result.model.conductance_surface(region)
             np.testing.assert_allclose(
                 result.model.predict(region).as_matrix(),
-                dense_graph_scores(surface, region.pixel_nodes),
+                dense_graph_resistances(surface, region.pixel_nodes),
                 rtol=1e-7,
             )
 
