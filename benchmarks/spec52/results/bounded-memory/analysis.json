@@ -1,0 +1,391 @@
+{
+  "schema": "spec52-bounded-analysis-v1",
+  "analysis_sha256": "ad6080e6928c140de92881fe924ae4df1968f312111c2cf795e80179e25d8be1",
+  "scope": "CPU compiler buffer allocations include arguments, outputs and temporaries. Encoder residuals remain live during tail calls; neither the maximum nor sum of these per-executable totals is an observed end-to-end peak. Process RSS includes compiler caches and persistent inputs/outputs; no GPU peak was measured.",
+  "cases": [
+    {
+      "source": "resnet-s16-c1.json",
+      "source_sha256": "a3e7fb231d0b33334d8e3ae0947eb0771bafa56561533b5d01ed978c5fa258ce",
+      "family": "resnet",
+      "registry_size": 16,
+      "species_chunk_size": 1,
+      "measured_commit": "7b60e4f67d81dbbbab7760149653838ec20aa667",
+      "allocations": [
+        {
+          "role": "encoder_inference",
+          "compiled_allocated_bytes": 6061428,
+          "report_file": "module_0342.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_evaluation_and_posterior_output",
+          "compiled_allocated_bytes": 188669,
+          "report_file": "module_0360.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_training_forward_and_residual_outputs",
+          "compiled_allocated_bytes": 6077820,
+          "report_file": "module_0416.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_forward_backward",
+          "compiled_allocated_bytes": 276291,
+          "report_file": "module_0418.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_backward",
+          "compiled_allocated_bytes": 9437624,
+          "report_file": "module_0496.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        }
+      ],
+      "persistent_bytes": {
+        "distance_model": 2980160,
+        "optimizer": 5960836,
+        "raw_nuisance": 256,
+        "selected_calibration_arrays": 17408
+      },
+      "counts": {
+        "encoder": 3,
+        "tail_forward_backward": 16,
+        "tail_evaluation": 32,
+        "optimizer_update": 1
+      },
+      "process_peak_rss_bytes_including_compiler": 926625792
+    },
+    {
+      "source": "resnet-s16-c4.json",
+      "source_sha256": "6a41501940a5c30186f7b890078377a896b01417584fd02f481d7441dfb8c18e",
+      "family": "resnet",
+      "registry_size": 16,
+      "species_chunk_size": 4,
+      "measured_commit": "7b60e4f67d81dbbbab7760149653838ec20aa667",
+      "allocations": [
+        {
+          "role": "encoder_inference",
+          "compiled_allocated_bytes": 6061428,
+          "report_file": "module_0342.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_evaluation_and_posterior_output",
+          "compiled_allocated_bytes": 414322,
+          "report_file": "module_0360.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_training_forward_and_residual_outputs",
+          "compiled_allocated_bytes": 6077820,
+          "report_file": "module_0424.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_forward_backward",
+          "compiled_allocated_bytes": 600226,
+          "report_file": "module_0426.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_backward",
+          "compiled_allocated_bytes": 9437624,
+          "report_file": "module_0496.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        }
+      ],
+      "persistent_bytes": {
+        "distance_model": 2980160,
+        "optimizer": 5960836,
+        "raw_nuisance": 256,
+        "selected_calibration_arrays": 17408
+      },
+      "counts": {
+        "encoder": 3,
+        "tail_forward_backward": 4,
+        "tail_evaluation": 8,
+        "optimizer_update": 1
+      },
+      "process_peak_rss_bytes_including_compiler": 915918848
+    },
+    {
+      "source": "resnet-s4-c1.json",
+      "source_sha256": "d2237a4c48f11dce4ed11b077bb3a73a7926a209c32910f34b1e442247074ffa",
+      "family": "resnet",
+      "registry_size": 4,
+      "species_chunk_size": 1,
+      "measured_commit": "7b60e4f67d81dbbbab7760149653838ec20aa667",
+      "allocations": [
+        {
+          "role": "encoder_inference",
+          "compiled_allocated_bytes": 6061428,
+          "report_file": "module_0342.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_evaluation_and_posterior_output",
+          "compiled_allocated_bytes": 176141,
+          "report_file": "module_0360.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_training_forward_and_residual_outputs",
+          "compiled_allocated_bytes": 6077820,
+          "report_file": "module_0416.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_forward_backward",
+          "compiled_allocated_bytes": 251235,
+          "report_file": "module_0418.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_backward",
+          "compiled_allocated_bytes": 9437624,
+          "report_file": "module_0496.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        }
+      ],
+      "persistent_bytes": {
+        "distance_model": 2967824,
+        "optimizer": 5935780,
+        "raw_nuisance": 64,
+        "selected_calibration_arrays": 4352
+      },
+      "counts": {
+        "encoder": 3,
+        "tail_forward_backward": 4,
+        "tail_evaluation": 8,
+        "optimizer_update": 1
+      },
+      "process_peak_rss_bytes_including_compiler": 908611584
+    },
+    {
+      "source": "resnet-s4-c4.json",
+      "source_sha256": "a12ca55066ddfff98e984f16914d958877fe2218de7b6c70aeec2b66d273e8a0",
+      "family": "resnet",
+      "registry_size": 4,
+      "species_chunk_size": 4,
+      "measured_commit": "7b60e4f67d81dbbbab7760149653838ec20aa667",
+      "allocations": [
+        {
+          "role": "encoder_inference",
+          "compiled_allocated_bytes": 6061428,
+          "report_file": "module_0342.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_evaluation_and_posterior_output",
+          "compiled_allocated_bytes": 401794,
+          "report_file": "module_0360.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_training_forward_and_residual_outputs",
+          "compiled_allocated_bytes": 6077820,
+          "report_file": "module_0424.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_forward_backward",
+          "compiled_allocated_bytes": 575170,
+          "report_file": "module_0426.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_backward",
+          "compiled_allocated_bytes": 9437624,
+          "report_file": "module_0488.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        }
+      ],
+      "persistent_bytes": {
+        "distance_model": 2967824,
+        "optimizer": 5935780,
+        "raw_nuisance": 64,
+        "selected_calibration_arrays": 4352
+      },
+      "counts": {
+        "encoder": 3,
+        "tail_forward_backward": 1,
+        "tail_evaluation": 2,
+        "optimizer_update": 1
+      },
+      "process_peak_rss_bytes_including_compiler": 938258432
+    },
+    {
+      "source": "unet-s16-c1.json",
+      "source_sha256": "acde31873af05c4fc1373ebdfd2678b74725a356bebeced89df03de540da4bde",
+      "family": "unet",
+      "registry_size": 16,
+      "species_chunk_size": 1,
+      "measured_commit": "7b60e4f67d81dbbbab7760149653838ec20aa667",
+      "allocations": [
+        {
+          "role": "encoder_inference",
+          "compiled_allocated_bytes": 147336,
+          "report_file": "module_0360.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_evaluation_and_posterior_output",
+          "compiled_allocated_bytes": 26092,
+          "report_file": "module_0378.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_training_forward_and_residual_outputs",
+          "compiled_allocated_bytes": 1845256,
+          "report_file": "module_0404.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_forward_backward",
+          "compiled_allocated_bytes": 55197,
+          "report_file": "module_0406.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_backward",
+          "compiled_allocated_bytes": 2006571,
+          "report_file": "module_0416.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        }
+      ],
+      "persistent_bytes": {
+        "distance_model": 46512,
+        "optimizer": 93540,
+        "raw_nuisance": 256,
+        "selected_calibration_arrays": 17408
+      },
+      "counts": {
+        "encoder": 3,
+        "tail_forward_backward": 16,
+        "tail_evaluation": 32,
+        "optimizer_update": 1
+      },
+      "process_peak_rss_bytes_including_compiler": 930430976
+    },
+    {
+      "source": "unet-s16-c4.json",
+      "source_sha256": "7655764f0264f5cacc25f27fa3896a8bfebece20a790b25f5d4e5bc6ac34da64",
+      "family": "unet",
+      "registry_size": 16,
+      "species_chunk_size": 4,
+      "measured_commit": "7b60e4f67d81dbbbab7760149653838ec20aa667",
+      "allocations": [
+        {
+          "role": "encoder_inference",
+          "compiled_allocated_bytes": 147336,
+          "report_file": "module_0360.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_evaluation_and_posterior_output",
+          "compiled_allocated_bytes": 40481,
+          "report_file": "module_0378.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_training_forward_and_residual_outputs",
+          "compiled_allocated_bytes": 1845256,
+          "report_file": "module_0412.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_forward_backward",
+          "compiled_allocated_bytes": 73837,
+          "report_file": "module_0414.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_backward",
+          "compiled_allocated_bytes": 2006571,
+          "report_file": "module_0424.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        }
+      ],
+      "persistent_bytes": {
+        "distance_model": 46512,
+        "optimizer": 93540,
+        "raw_nuisance": 256,
+        "selected_calibration_arrays": 17408
+      },
+      "counts": {
+        "encoder": 3,
+        "tail_forward_backward": 4,
+        "tail_evaluation": 8,
+        "optimizer_update": 1
+      },
+      "process_peak_rss_bytes_including_compiler": 944840704
+    },
+    {
+      "source": "unet-s4-c1.json",
+      "source_sha256": "3bffb4b0420fc607d294897d2775210bda07103ba1fdc549f5809a3e5ba5356b",
+      "family": "unet",
+      "registry_size": 4,
+      "species_chunk_size": 1,
+      "measured_commit": "7b60e4f67d81dbbbab7760149653838ec20aa667",
+      "allocations": [
+        {
+          "role": "encoder_inference",
+          "compiled_allocated_bytes": 147336,
+          "report_file": "module_0360.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_evaluation_and_posterior_output",
+          "compiled_allocated_bytes": 25180,
+          "report_file": "module_0378.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_training_forward_and_residual_outputs",
+          "compiled_allocated_bytes": 1845256,
+          "report_file": "module_0404.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_forward_backward",
+          "compiled_allocated_bytes": 52477,
+          "report_file": "module_0406.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_backward",
+          "compiled_allocated_bytes": 2006571,
+          "report_file": "module_0416.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        }
+      ],
+      "persistent_bytes": {
+        "distance_model": 45792,
+        "optimizer": 91716,
+        "raw_nuisance": 64,
+        "selected_calibration_arrays": 4352
+      },
+      "counts": {
+        "encoder": 3,
+        "tail_forward_backward": 4,
+        "tail_evaluation": 8,
+        "optimizer_update": 1
+      },
+      "process_peak_rss_bytes_including_compiler": 934551552
+    },
+    {
+      "source": "unet-s4-c4.json",
+      "source_sha256": "55ca1c67861b24665dcd759e5609e69ddde69938aa7934f1475c1339ac95f076",
+      "family": "unet",
+      "registry_size": 4,
+      "species_chunk_size": 4,
+      "measured_commit": "7b60e4f67d81dbbbab7760149653838ec20aa667",
+      "allocations": [
+        {
+          "role": "encoder_inference",
+          "compiled_allocated_bytes": 147336,
+          "report_file": "module_0360.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_evaluation_and_posterior_output",
+          "compiled_allocated_bytes": 39569,
+          "report_file": "module_0378.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_training_forward_and_residual_outputs",
+          "compiled_allocated_bytes": 1845256,
+          "report_file": "module_0412.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "tail_forward_backward",
+          "compiled_allocated_bytes": 72013,
+          "report_file": "module_0414.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+        },
+        {
+          "role": "encoder_backward",
+          "compiled_allocated_bytes": 2006571,
+          "report_file": "module_0416.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+        }
+      ],
+      "persistent_bytes": {
+        "distance_model": 45792,
+        "optimizer": 91716,
+        "raw_nuisance": 64,
+        "selected_calibration_arrays": 4352
+      },
+      "counts": {
+        "encoder": 3,
+        "tail_forward_backward": 1,
+        "tail_evaluation": 2,
+        "optimizer_update": 1
+      },
+      "process_peak_rss_bytes_including_compiler": 928215040
+    }
+  ]
+}

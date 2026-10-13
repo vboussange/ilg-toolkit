@@ -1,8 +1,9 @@
 """Species-balanced full-group fitting through native numerical pair kernels."""
 
 import hashlib
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import NamedTuple, cast, final
 
 import equinox as eqx
@@ -11,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
+from . import _training_execution as execution
 from ._pairs import PairSelection
 from .calibration import DirectCalibrationModule, UnpooledMLPECalibrationModule
 from .config import TrainingConfig
@@ -22,6 +24,7 @@ from .mlpe import (
     mlpe_ml_negative_log_likelihood,
     profiled_mlpe_ml_fit,
 )
+from .mlpe.likelihood import MLPEFit
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .resistance import ResistanceSolverContext
@@ -191,11 +194,17 @@ def _validate_contract(training, validation, registry):
         raise ValueError("Every registered species requires observed training coverage")
     if len({item.region.name for item in all_inputs}) > 1 and first.region.feature_names is None:
         raise ValueError("Multiple regions require explicit feature_names")
-    assigned, regions = {}, {}
+    assigned, regions, checked = {}, {}, set()
     for item in all_inputs:
         region = item.region
         if item.observations.target != first.observations.target:
             raise ValueError("All region-species target contracts must match")
+        # Flattened observed groups can share one RegionBatch. Validate all its
+        # declarations once, including unobserved species. Separate validation
+        # RegionBatch objects still require a complete consistency check.
+        if id(region) in checked:
+            continue
+        checked.add(id(region))
         if (
             region.feature_array.shape[-1] != first.region.feature_array.shape[-1]
             or region.feature_names != first.region.feature_names
@@ -258,9 +267,11 @@ def _prepared(item: _GroupInput, model, *, role, group_index, weight, objective)
 
 
 def _prepare_batches(inputs, model, *, role, objective):
-    coverage = {name: sum(item.species == name for item in inputs) for name in model.species}
-    present_species = sum(count > 0 for count in coverage.values())
-    region_names = tuple(sorted({item.region.name for item in inputs}))
+    coverage = Counter(item.species for item in inputs)
+    present_species = len(coverage)
+    region_indices = {
+        name: index for index, name in enumerate(sorted({item.region.name for item in inputs}))
+    }
     contexts = {}
     batches = []
     for index, item in enumerate(inputs):
@@ -276,9 +287,57 @@ def _prepare_batches(inputs, model, *, role, objective):
             weight=1 / (present_species * coverage[item.species]),
         )
         batches.append(
-            _GroupBatch(item, payload, contexts[shape], region_names.index(item.region.name))
+            _GroupBatch(item, payload, contexts[shape], region_indices[item.region.name])
         )
     return tuple(batches)
+
+
+def _by_region(batches):
+    regions = {}
+    for batch in batches:
+        regions.setdefault(batch.region_index, []).append(batch)
+    return tuple(tuple(groups) for groups in regions.values())
+
+
+def _sample_regions(regions, key, config):
+    """Horvitz–Thompson weights for uniform region-then-species sampling."""
+    count = len(regions)
+    selected_count = min(count, config.region_batch_size or count)
+    sampling_key = jax.random.fold_in(key, 0x53414D50)
+    indices = (
+        range(count)
+        if selected_count == count
+        else sorted(
+            np.asarray(
+                jax.random.choice(sampling_key, count, (selected_count,), replace=False)
+            ).tolist()
+        )
+    )
+    for index in indices:
+        groups = regions[index]
+        chosen_count = min(len(groups), config.species_batch_size or len(groups))
+        chosen = (
+            range(len(groups))
+            if chosen_count == len(groups)
+            else sorted(
+                np.asarray(
+                    jax.random.choice(
+                        jax.random.fold_in(sampling_key, index + 1),
+                        len(groups),
+                        (chosen_count,),
+                        replace=False,
+                    )
+                ).tolist()
+            )
+        )
+        probability = (selected_count / count) * (chosen_count / len(groups))
+        yield tuple(
+            replace(
+                groups[j],
+                payload=groups[j].payload._replace(weight=groups[j].payload.weight / probability),
+            )
+            for j in chosen
+        )
 
 
 def _labelled_pairs(batch):
@@ -302,6 +361,39 @@ def _input_contract(training, validation, registry):
         value = np.asarray(array)
         return hashlib.sha256(value.tobytes()).hexdigest()
 
+    region_records = {}
+    for item in (*training, *validation):
+        region = item.region
+        if id(region) not in region_records:
+            region_records[id(region)] = dict(
+                region=region.name,
+                shape=tuple(region.feature_array.shape),
+                feature_dtype=str(region.feature_array.dtype),
+                feature_sha256=fingerprint(region.feature_array),
+                feature_names=region.feature_names,
+                sampling_units=tuple(
+                    dict(
+                        species=name,
+                        units=region.sampling_units[name].ids,
+                        positions=tuple(
+                            map(
+                                tuple,
+                                np.asarray(region.sampling_units[name].grid_positions).tolist(),
+                            )
+                        ),
+                        kinds=region.sampling_units[name].kinds,
+                    )
+                    for name in registry
+                    if name in region.sampling_units
+                ),
+            )
+
+    def declared(inputs):
+        return tuple(
+            region_records[id(region)]
+            for region in {item.region.name: item.region for item in inputs}.values()
+        )
+
     def encode(inputs):
         return tuple(
             dict(
@@ -309,7 +401,7 @@ def _input_contract(training, validation, registry):
                 species=item.species,
                 shape=tuple(item.region.feature_array.shape),
                 feature_dtype=str(item.region.feature_array.dtype),
-                feature_sha256=fingerprint(item.region.feature_array),
+                feature_sha256=region_records[id(item.region)]["feature_sha256"],
                 observation_sha256=fingerprint(item.observations.values),
                 target_dtype=str(item.observations.values.dtype),
                 units=item.region.sampling_units[item.species].ids,
@@ -330,7 +422,13 @@ def _input_contract(training, validation, registry):
             for item in inputs
         )
 
-    return dict(species=registry, training=encode(training), validation=encode(validation))
+    return dict(
+        species=registry,
+        training=encode(training),
+        validation=encode(validation),
+        training_regions=declared(training),
+        validation_regions=declared(validation),
+    )
 
 
 def _selected_distances(model, payload, *, context=None, inference=True, key=None):
@@ -458,86 +556,10 @@ def _aggregate(group_values):
     return float(np.mean(list(by_species.values()))), by_species, group_values
 
 
-def _refresh_heads(model, raw, batches, *, config, step):
-    refresh = _compiled_refresh if config.jit else _refresh_mlpe
-    heads, losses = {}, {}
-    for batch in batches:
-        source = batch.source
-        result = _checked_call(
-            refresh,
-            model,
-            raw[batch.payload.group_index],
-            batch.payload,
-            config=config,
-            context=batch.context,
-            batch=batch,
-            step=step,
-            training_config=config,
-        )
-        if not all(np.isfinite(np.asarray(leaf)).all() for leaf in jax.tree.leaves(result)):
-            raise FloatingPointError(
-                f"region {source.region.name!r}, species {source.species!r}: "
-                f"nonfinite MLPE calibration at step {step}; check nonconstant distances, "
-                "identifiable endpoints and variance conditioning"
-            )
-        head = MLPECalibration.from_fit(
-            result,
-            region_name=source.region.name,
-            species_name=source.species,
-            target=source.observations.target,
-            population_ids=source.region.sampling_units[source.species].ids,
-            calibration_pairs=_labelled_pairs(batch),
-            calibration_roles=("training",) * len(batch.payload.targets),
-            config=MLPEConfig(variance_floor=config.mlpe_variance_floor, jitter=config.mlpe_jitter),
-            optimizer_iterations=step,
-            optimizer_message="Fixed-budget joint Adam; no variance convergence claim",
-            converged=False,
-        )
-        heads.setdefault(source.region.name, {})[source.species] = head
-        losses.setdefault(source.region.name, {})[source.species] = float(result.nll) / len(
-            batch.payload.targets
-        )
-    return heads, _aggregate(losses)
-
-
-def _validate_mlpe(model, raw, batches, heads, group_indices, *, config, step):
-    evaluate = _compiled_validation if config.jit else _frozen_validation_loss
-    losses = {}
-    for batch in batches:
-        source = batch.source
-        head = heads[source.region.name][source.species]
-        moments = (
-            jnp.asarray(head.distance_center),
-            jnp.asarray(head.distance_scale),
-            jnp.asarray((head.intercept, head.slope)),
-        )
-        value = float(
-            _checked_call(
-                evaluate,
-                model,
-                raw[group_indices[(source.region.name, source.species)]],
-                moments,
-                batch.payload,
-                config=config,
-                context=batch.context,
-                batch=batch,
-                step=step,
-                training_config=config,
-            )
-        )
-        if not np.isfinite(value):
-            raise FloatingPointError(
-                f"region {source.region.name!r}, species {source.species!r}: "
-                f"nonfinite MLPE validation at step {step}; check variance conditioning"
-            )
-        losses.setdefault(source.region.name, {})[source.species] = value
-    return _aggregate(losses)
-
-
 def _checked_call[T](
     function: Callable[..., T],
     *args,
-    batch: _GroupBatch | None,
+    batch: _GroupBatch | Sequence[_GroupBatch] | None,
     step: int,
     training_config: TrainingConfig,
     **kwargs,
@@ -546,12 +568,16 @@ def _checked_call[T](
     try:
         return jax.block_until_ready(function(*args, **kwargs))
     except RuntimeError as error:
+        groups = () if batch is None else ((batch,) if isinstance(batch, _GroupBatch) else batch)
         identity = (
             "joint groups"
-            if batch is None
-            else f"region {batch.source.region.name!r}, species {batch.source.species!r}"
+            if not groups
+            else "; ".join(
+                f"region {group.source.region.name!r}, species {group.source.species!r}"
+                for group in groups
+            )
         )
-        solver = None if batch is None or batch.context is None else batch.context.config
+        solver = None if not groups or groups[0].context is None else groups[0].context.config
         raise RuntimeError(
             f"{identity}: {training_config.objective} calculation failed at step {step}; "
             f"check finite distances/gradients and numerical conditioning; solver={solver}. "
@@ -575,31 +601,222 @@ def _apply_gradient(model, optimizer_state, gradient, *, learning_rate):
 _compiled_update = eqx.filter_jit(_apply_gradient)
 
 
-def _evaluate(model, batches, *, config, step):
-    group_values = {}
-    species_values = {}
-    evaluate = _compiled_loss if config.jit else _group_loss
-    for batch in batches:
-        value = float(
+def _region_gradient(model, raw, groups, *, config, step, key):
+    """Finish each tail backward before releasing its bounded intermediates."""
+    batch = groups[0]
+    if not execution.supports_pooled(model):
+        parameters = model if raw is None else (model, raw)
+        gradient = (
+            (_compiled_gradient if config.jit else _gradient)
+            if raw is None
+            else (_compiled_mlpe_gradient if config.jit else _mlpe_gradient)
+        )
+        options = {} if raw is None else {"config": execution.settings(config)}
+        accumulated = None
+        for group in groups:
+            _, contribution = _checked_call(
+                gradient,
+                parameters,
+                group.payload,
+                context=group.context,
+                key=key,
+                **options,
+                batch=group,
+                step=step,
+                training_config=config,
+            )
+            accumulated = execution.add_gradients(accumulated, contribution)
+        return accumulated
+    tail, pooled, pullback = _checked_call(
+        execution.pooled_region,
+        model,
+        batch.payload.features,
+        jit=config.jit,
+        inference=False,
+        key=key,
+        batch=batch,
+        step=step,
+        training_config=config,
+    )
+    gradient = execution.compiled_chunk_gradient if config.jit else execution.chunk_gradient
+    accumulated = None
+    for chunk in execution.shape_chunks(groups, config.species_chunk_size):
+        _, contribution = _checked_call(
+            gradient,
+            (tail, pooled, raw),
+            execution.stack_payload(chunk),
+            context=batch.context,
+            config=execution.settings(config),
+            batch=chunk,
+            step=step,
+            training_config=config,
+        )
+        accumulated = execution.add_gradients(accumulated, contribution)
+    assert accumulated is not None
+    tail_gradient, feature_gradient, raw_gradient = accumulated
+    if pullback is not None:
+        (backbone_gradient,) = _checked_call(
+            pullback, feature_gradient, batch=batch, step=step, training_config=config
+        )
+        model_gradient = execution.join_backbone(tail_gradient, backbone_gradient)
+    else:
+        model_gradient = tail_gradient
+    return model_gradient if raw is None else (model_gradient, raw_gradient)
+
+
+def _group_results(model, raw, groups, *, tail, pooled, heads, group_indices, mode, config, step):
+    """Yield synchronized bounded outputs; only final posterior output persists."""
+    options = execution.settings(config)
+    if pooled is not None:
+        evaluate = execution.compiled_chunk_evaluate if config.jit else execution.chunk_evaluate
+        for chunk in execution.shape_chunks(groups, config.species_chunk_size):
+            payload = execution.stack_payload(chunk)
+            moments = jnp.zeros((len(chunk), 4), dtype=payload.targets.dtype)
+            if mode == "validation":
+                indices, rows = [], []
+                for batch in chunk:
+                    source = batch.source
+                    head = heads[source.region.name][source.species]
+                    indices.append(group_indices[(source.region.name, source.species)])
+                    rows.append(
+                        (head.distance_center, head.distance_scale, head.intercept, head.slope)
+                    )
+                payload = payload._replace(group_index=jnp.asarray(indices, dtype=jnp.int32))
+                moments = jnp.asarray(rows)
+            result = _checked_call(
+                evaluate,
+                tail,
+                pooled,
+                raw,
+                payload,
+                moments,
+                config=options,
+                context=chunk[0].context,
+                mode=mode,
+                batch=chunk,
+                step=step,
+                training_config=config,
+            )
+            for index, batch in enumerate(chunk):
+                yield batch, jax.tree.map(lambda leaf, index=index: leaf[index], result)
+        return
+    for batch in groups:
+        source = batch.source
+        if mode == "direct":
+            evaluate = _compiled_loss if config.jit else _group_loss
+            args, kwargs = (model, batch.payload), {}
+        elif mode == "refresh":
+            evaluate = _compiled_refresh if config.jit else _refresh_mlpe
+            args, kwargs = (
+                (model, raw[batch.payload.group_index], batch.payload),
+                {"config": options},
+            )
+        else:
+            evaluate = _compiled_validation if config.jit else _frozen_validation_loss
+            head = heads[source.region.name][source.species]
+            moments = (
+                jnp.asarray(head.distance_center),
+                jnp.asarray(head.distance_scale),
+                jnp.asarray((head.intercept, head.slope)),
+            )
+            args = (
+                model,
+                raw[group_indices[(source.region.name, source.species)]],
+                moments,
+                batch.payload,
+            )
+            kwargs = {"config": options}
+        yield (
+            batch,
             _checked_call(
                 evaluate,
-                model,
-                batch.payload,
+                *args,
+                **kwargs,
                 context=batch.context,
                 batch=batch,
                 step=step,
                 training_config=config,
-            )
+            ),
         )
-        if not np.isfinite(value):
-            raise FloatingPointError(
-                f"region {batch.source.region.name!r}, species {batch.source.species!r}: "
-                f"nonfinite objective at step {step}"
+
+
+def _evaluate_snapshot(model, raw, batches, validation, group_indices, *, config, step):
+    # Process the union by region so train/validation share the same inference
+    # encoding without retaining pooled features from every region.
+    regions = {}
+    for batches_for_role, role in ((batches, 0), (validation, 1)):
+        for batch in batches_for_role:
+            regions.setdefault(batch.source.region.name, ([], []))[role].append(batch)
+    heads, training_values, validation_values = {}, {}, {}
+    for training, validating in regions.values():
+        first = (training or validating)[0]
+        tail = pooled = None
+        if execution.supports_pooled(model):
+            tail, pooled, _ = _checked_call(
+                execution.pooled_region,
+                model,
+                first.payload.features,
+                jit=config.jit,
+                batch=first,
+                step=step,
+                training_config=config,
             )
-        group_values.setdefault(batch.source.region.name, {})[batch.source.species] = value
-        species_values.setdefault(batch.source.species, []).append(value)
-    by_species = {name: float(np.mean(values)) for name, values in species_values.items()}
-    return float(np.mean(list(by_species.values()))), by_species, group_values
+        for groups, mode, values in (
+            (training, "direct" if raw is None else "refresh", training_values),
+            (validating, "direct" if raw is None else "validation", validation_values),
+        ):
+            for batch, result in _group_results(
+                model,
+                raw,
+                groups,
+                tail=tail,
+                pooled=pooled,
+                heads=heads,
+                group_indices=group_indices,
+                mode=mode,
+                config=config,
+                step=step,
+            ):
+                source = batch.source
+                if not all(np.isfinite(np.asarray(leaf)).all() for leaf in jax.tree.leaves(result)):
+                    calculation = {
+                        "refresh": "MLPE calibration",
+                        "validation": "MLPE validation",
+                        "direct": "objective",
+                    }[mode]
+                    raise FloatingPointError(
+                        f"region {source.region.name!r}, species {source.species!r}: "
+                        f"nonfinite {calculation} at step {step}; check nonconstant distances, "
+                        "identifiable endpoints and variance conditioning"
+                    )
+                if mode == "refresh":
+                    assert isinstance(result, MLPEFit)
+                    head = MLPECalibration.from_fit(
+                        result,
+                        region_name=source.region.name,
+                        species_name=source.species,
+                        target=source.observations.target,
+                        population_ids=source.region.sampling_units[source.species].ids,
+                        calibration_pairs=_labelled_pairs(batch),
+                        calibration_roles=("training",) * len(batch.payload.targets),
+                        config=MLPEConfig(
+                            variance_floor=config.mlpe_variance_floor, jitter=config.mlpe_jitter
+                        ),
+                        optimizer_iterations=step,
+                        optimizer_message="Fixed-budget joint Adam; no variance convergence claim",
+                        converged=False,
+                    )
+                    heads.setdefault(source.region.name, {})[source.species] = head
+                    value = float(result.nll) / len(batch.payload.targets)
+                else:
+                    assert not isinstance(result, MLPEFit)
+                    value = float(result)
+                values.setdefault(source.region.name, {})[source.species] = value
+    return (
+        heads,
+        _aggregate(training_values),
+        ((None, {}, {}) if not validation else _aggregate(validation_values)),
+    )
 
 
 def fit(
@@ -708,13 +925,8 @@ def fit(
     selected_step = 0 if state is None else state.selected_step
     best_loss = float("inf") if state is None else state.best_loss
     progress = 0 if state is None else state.step
-    gradient = (
-        (_compiled_gradient if config.jit else _gradient)
-        if raw is None
-        else (_compiled_mlpe_gradient if config.jit else _mlpe_gradient)
-    )
-    gradient_options = {} if raw is None else {"config": config}
     update = _compiled_update if config.jit else _apply_gradient
+    region_batches = _by_region(batches)
 
     def snapshot():
         assert selected is not None
@@ -737,24 +949,12 @@ def fit(
         if step:
             random_key, update_key = jax.random.split(random_key)
             accumulated = None
-            for batch in batches:
-                key = jax.random.fold_in(update_key, batch.region_index)
-                _, contribution = _checked_call(
-                    gradient,
-                    parameters,
-                    batch.payload,
-                    context=batch.context,
-                    key=key,
-                    **gradient_options,
-                    batch=batch,
-                    step=step,
-                    training_config=config,
+            for groups in _sample_regions(region_batches, update_key, config):
+                key = jax.random.fold_in(update_key, groups[0].region_index)
+                contribution = _region_gradient(
+                    model, raw, groups, config=config, step=step, key=key
                 )
-                accumulated = (
-                    contribution
-                    if accumulated is None
-                    else jax.tree.map(lambda total, value: total + value, accumulated, contribution)
-                )
+                accumulated = execution.add_gradients(accumulated, contribution)
             parameters, optimizer_state = _checked_call(
                 update,
                 parameters,
@@ -770,52 +970,43 @@ def fit(
         else:
             model, raw = parameters, None
         progress = step
-        heads: dict[str, dict[str, MLPECalibration]] = {}
-        if raw is None:
-            calibration = DirectCalibrationModule(training[0].observations.target)
-            loss, by_species, by_group = _evaluate(model, batches, config=config, step=step)
-        else:
-            heads, (loss, by_species, by_group) = _refresh_heads(
-                model, raw, batches, config=config, step=step
-            )
-            calibration = UnpooledMLPECalibrationModule(training[0].observations.target, heads)
-        val_loss, val_species, val_group = (
-            (None, {}, {})
-            if not validation_batches
-            else (
-                _evaluate(model, validation_batches, config=config, step=step)
-                if raw is None
-                else _validate_mlpe(
-                    model, raw, validation_batches, heads, group_indices, config=config, step=step
+        if step == 0 or step % config.evaluation_interval == 0 or step == config.steps:
+            heads, (loss, by_species, by_group), (val_loss, val_species, val_group) = (
+                _evaluate_snapshot(
+                    model, raw, batches, validation_batches, group_indices, config=config, step=step
                 )
             )
-        )
-        history.append(
-            StepRecord(
-                step,
-                loss,
-                val_loss,
-                by_species,
-                by_group,
-                val_species,
-                val_group,
-                missing_groups,
-                missing_species,
+            calibration = (
+                DirectCalibrationModule(training[0].observations.target)
+                if raw is None
+                else UnpooledMLPECalibrationModule(training[0].observations.target, heads)
             )
-        )
-        if val_loss is None or val_loss < best_loss:
-            selected_step = step
-            selected_raw = raw
-            best_loss = loss if val_loss is None else val_loss
-            selected = LandscapeGeneticsModel(
-                model,
-                calibration,
-                training[0].region.feature_array.shape[-1],
-                training[0].region.feature_names,
-                training_objective=config.objective,
-                training_pairs=training_pairs,
-                validation_pairs=validation_pairs,
+            history.append(
+                StepRecord(
+                    step,
+                    loss,
+                    val_loss,
+                    by_species,
+                    by_group,
+                    val_species,
+                    val_group,
+                    missing_groups,
+                    missing_species,
+                )
             )
+            if val_loss is None or val_loss < best_loss:
+                selected_step = step
+                selected_raw = raw
+                best_loss = loss if val_loss is None else val_loss
+                selected = LandscapeGeneticsModel(
+                    model,
+                    calibration,
+                    training[0].region.feature_array.shape[-1],
+                    training[0].region.feature_names,
+                    training_objective=config.objective,
+                    training_pairs=training_pairs,
+                    validation_pairs=validation_pairs,
+                )
         if step and on_step is not None:
             on_step(snapshot())
     return snapshot()

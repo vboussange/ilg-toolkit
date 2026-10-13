@@ -273,6 +273,10 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         self.embedding_dim = embedding_dim
         self.dropout = dropout
 
+    def _split_pooled(self):
+        """Private encoder/tail partition for one regional VJP and bounded tails."""
+        return self.backbone, eqx.tree_at(lambda model: model.backbone, self, None)
+
     def _pooled_features(self, features, *, inference=True, key=None, patch_batch_size=None):
         """Private cut shared by native pair kernels and bounded training execution."""
         return self.backbone(

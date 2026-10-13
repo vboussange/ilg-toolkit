@@ -140,6 +140,10 @@ class ResNet9Conductance(ConductanceModel):
         self.patch_batch_size = patch_batch_size
         self.solver_config = solver_config
 
+    def _split_pooled(self):
+        """Private encoder/tail partition for one regional VJP and bounded tails."""
+        return self.backbone, eqx.tree_at(lambda model: model.backbone, self, None)
+
     def _pooled_features(self, features, *, inference=True, key=None, patch_batch_size=None):
         """Return patch features, checkpointing every configured encoder chunk.
 
