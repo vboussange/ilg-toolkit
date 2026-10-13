@@ -136,6 +136,33 @@ def chunk_gradient(parameters, payloads, *, config, context):
 compiled_chunk_gradient = eqx.filter_jit(chunk_gradient)
 
 
+def single_group_gradient(model, raw, payload, *, config, context=None, key=None):
+    """Compile the existing one-group chain rule without host dispatch boundaries."""
+    backbone, tail = model._split_pooled()
+    pullback = None
+    if backbone is None:
+        pooled = _compiled_encode(backbone, tail, payload.features, inference=False, key=key)
+    else:
+        pooled, pullback = eqx.filter_vjp(
+            lambda value: _compiled_encode(value, tail, payload.features, inference=False, key=key),
+            backbone,
+        )
+    numeric = payload._replace(features=jnp.empty((0,), dtype=payload.features.dtype))
+    batched = jax.tree.map(lambda value: jnp.expand_dims(value, 0), numeric)
+    value, (tail_gradient, feature_gradient, raw_gradient) = compiled_chunk_gradient(
+        (tail, pooled, raw), batched, config=config, context=context
+    )
+    if pullback is not None:
+        (backbone_gradient,) = pullback(feature_gradient)
+        model_gradient = join_backbone(tail_gradient, backbone_gradient)
+    else:
+        model_gradient = tail_gradient
+    return value, model_gradient if raw is None else (model_gradient, raw_gradient)
+
+
+compiled_single_group_gradient = eqx.filter_jit(single_group_gradient)
+
+
 def chunk_evaluate(tail, pooled, raw, payloads, moments, *, config, context, mode):
     def group(payload, fixed):
         distances = _distances(tail, pooled, payload, context)

@@ -130,6 +130,30 @@ def test_complete_equivalent_report_passes_every_required_gate():
     ] == pytest.approx([0.2] * 6)
 
 
+def test_fresh_ten_repeat_main_batch_supersedes_preserved_initial_samples():
+    baseline, native = reports()
+    repeated = copy.deepcopy(baseline)
+    repeated["results"] = [
+        row
+        for row in repeated["results"]
+        if row["case"]["name"] in repeated["protocol"]["gated_representative_cases"]
+    ]
+    native["protocol"] = copy.deepcopy(native["protocol"])
+    baseline["protocol"]["fit_repeats"] = 3
+    for row in baseline["results"]:
+        row["warm_fit"]["samples_seconds"] = [10.0] * 3
+        row["warm_training_steps_by_fit_seconds"] = [[10.0] * 3] * 3
+    result = compare_reports([baseline, repeated], [native])
+    assert result["status"] == "pass"
+    assert result["repeated_main_cases"] == ["resnet-feature-heavy", "unet-feature-heavy"]
+
+
+def test_duplicate_full_batches_cannot_select_favorable_samples():
+    baseline, native = reports()
+    with pytest.raises(ValueError, match="Duplicate"):
+        compare_reports([baseline, copy.deepcopy(baseline)], [native])
+
+
 @pytest.mark.parametrize(
     "corruption", ["work", "initialization", "shape", "repeats", "protocol", "ids"]
 )

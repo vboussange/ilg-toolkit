@@ -185,6 +185,10 @@ pairs, finite results, final calibration, and independent dense resistance
 outside timed intervals. The checked-call timer starts at the first regional
 training encoding and ends at synchronized Adam completion, including all
 regional tails, encoder pullbacks and accumulation.
+For one selected group, the same pooled encoder, reduced tail derivative and
+encoder pullback execute inside one compiled call; its timer covers that entire
+operation through Adam. This avoids dispatch overhead without changing the
+group likelihood, sampling weight, dropout key or update count.
 
 Joint fits and independent species fits use exactly copied and hashed backbone
 and projection-row initializations from the same four-species model. The initial
@@ -208,3 +212,9 @@ initialization, source consistency and full scientific accounting before drawing
 independent fit-block bootstrap samples. Inconclusive comparisons require fresh
 matched batches with at least ten repetitions; retain all earlier raw evidence.
 Use repeat output filenames, never rewrite the original frozen main report.
+For a fresh baseline repeat, pass the original report first and the new report
+second with another `--main`. A new batch of at least ten fits can supersede an
+initial smaller batch only with identical source, fixture, software and protocol
+identities; corresponding PR fits must also have at least ten repetitions. Two
+competing full batches are rejected. The report retains both input hashes and
+names every repeated baseline case.

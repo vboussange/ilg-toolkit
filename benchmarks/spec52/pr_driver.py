@@ -166,12 +166,19 @@ def worker(experiment, settings, *, smoke=False):
 
     def observe(function, *args, **kwargs):
         step = kwargs["step"]
+        singleton = function is execution.compiled_single_group_gradient
+        if singleton:
+            counts["encodings"] += 1
+            if step not in step_started:
+                step_started[step] = time.perf_counter()
         if function is execution.pooled_region:
             counts["encodings"] += 1
             if not kwargs.get("inference", True) and step not in step_started:
                 step_started[step] = time.perf_counter()
         result = checked(function, *args, **kwargs)
-        if function is execution.compiled_chunk_gradient:
+        if singleton:
+            counts["group_contributions"] += 1
+        elif function is execution.compiled_chunk_gradient:
             counts["group_contributions"] += args[1].species_index.shape[0]
         elif function is execution.compiled_chunk_evaluate:
             counts["evaluated_groups"] += args[3].species_index.shape[0]

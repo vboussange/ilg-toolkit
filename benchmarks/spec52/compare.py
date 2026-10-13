@@ -69,7 +69,27 @@ def _indexed(reports, native):
         for result in report["results"]:
             name = result["experiment"]["id"] if native else result["case"]["name"]
             if name in output:
-                raise ValueError(f"Duplicate result {name}; select a documented measurement batch")
+                previous = output[name]
+                repeat = (
+                    not native
+                    and len(previous["warm_fit"]["samples_seconds"]) < 10
+                    and len(result["warm_fit"]["samples_seconds"]) >= 10
+                    and previous["case"] == result["case"]
+                    and previous["input_sha256"] == result["input_sha256"]
+                    and all(
+                        previous["machine"][field] == result["machine"][field]
+                        for field in (
+                            "source_tree",
+                            "software",
+                            "fixtures_sha256",
+                            "protocol_sha256",
+                        )
+                    )
+                )
+                if not repeat:
+                    raise ValueError(
+                        f"Duplicate result {name}; select a documented measurement batch"
+                    )
             output[name] = result
     return output
 
@@ -89,6 +109,14 @@ def compare_reports(main_reports, pr_reports) -> dict:
     directory = Path(__file__).parent
     protocol = json.loads((directory / "protocol.json").read_text())
     main, pr = _indexed(main_reports, False), _indexed(pr_reports, True)
+    repeated_main_cases = sorted(
+        name
+        for name in main
+        if sum(
+            any(row["case"]["name"] == name for row in report["results"]) for report in main_reports
+        )
+        > 1
+    )
     required_main = {case["name"] for case in protocol["cases"]}
     required_pr = {name + "-single" for name in required_main}
     for name in protocol["gated_representative_cases"]:
@@ -175,6 +203,8 @@ def compare_reports(main_reports, pr_reports) -> dict:
         baseline, native = main[name], pr[name + "-single"]
         main_fit, main_steps = _samples(baseline)
         pr_fit, pr_steps = _samples(native)
+        if name in repeated_main_cases and len(pr_fit) < 10:
+            raise ValueError("A repeated baseline requires a fresh PR batch with at least ten fits")
         if (
             native["case"] != case
             or native["input_sha256"]["species-0"] != baseline["input_sha256"]
@@ -190,6 +220,18 @@ def compare_reports(main_reports, pr_reports) -> dict:
                 gated=name in protocol["gated_representative_cases"],
                 complete_fit=fitted,
                 steady_training_step=steady,
+                median_seconds=dict(
+                    main_fit=float(np.median(main_fit)),
+                    pr_fit=float(np.median(pr_fit)),
+                    main_steady_step=float(np.median(main_steps)),
+                    pr_steady_step=float(np.median(pr_steps)),
+                    main_recurrent_first_update=float(
+                        np.median(np.asarray(baseline["warm_training_steps_by_fit_seconds"])[:, 0])
+                    ),
+                    pr_recurrent_first_update=float(
+                        np.median(np.asarray(native["warm_training_steps_by_fit_seconds"])[:, 0])
+                    ),
+                ),
             )
         )
         for field, threshold in (
@@ -266,6 +308,7 @@ def compare_reports(main_reports, pr_reports) -> dict:
     )
     return dict(
         status=status,
+        repeated_main_cases=repeated_main_cases,
         production_source_tree=next(iter(sources)),
         single_species=single,
         joint_species=joint,

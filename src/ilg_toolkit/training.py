@@ -604,6 +604,22 @@ _compiled_update = eqx.filter_jit(_apply_gradient)
 def _region_gradient(model, raw, groups, *, config, step, key):
     """Finish each tail backward before releasing its bounded intermediates."""
     batch = groups[0]
+    # A single selected group already has a bounded full-model gradient. Preserve
+    # the pooled chain rule while compiling its forward/tail/pullback together.
+    if len(groups) == 1 and execution.supports_pooled(model) and config.jit:
+        _, contribution = _checked_call(
+            execution.compiled_single_group_gradient,
+            model,
+            raw,
+            batch.payload,
+            config=execution.settings(config),
+            context=batch.context,
+            key=key,
+            batch=batch,
+            step=step,
+            training_config=config,
+        )
+        return contribution
     if not execution.supports_pooled(model):
         parameters = model if raw is None else (model, raw)
         gradient = (
