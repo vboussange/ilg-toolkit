@@ -1,6 +1,6 @@
-"""Regional full-Gaussian-ML genetic calibration."""
+"""Complete-group full-Gaussian-ML genetic calibration."""
 
-from .fit import MLPEConfig, MLPEError, MLPEPrediction, RegionalMLPECalibration, calibrate_mlpe
+from .fit import MLPECalibration, MLPEConfig, MLPEError, MLPEPrediction, calibrate_mlpe
 from .likelihood import (
     decode_mlpe_variances,
     finalize_mlpe_fit,
@@ -23,7 +23,7 @@ __all__ = [
     "MLPEConfig",
     "MLPEConditionalPrediction",
     "MLPEError",
-    "RegionalMLPECalibration",
+    "MLPECalibration",
     "MLPEPrediction",
     "MLPEPredictionProvenance",
     "MLPESupportConditioner",

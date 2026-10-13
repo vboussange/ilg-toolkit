@@ -28,7 +28,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .calibration import MLPECalibrationModule
+from .calibration import UnpooledMLPECalibrationModule
 from .data import (
     ObservationPartition,
     PairwiseObservations,
@@ -424,7 +424,7 @@ def _access(model, name, support, regime):
     """Read the fitted model's access, rather than infer it from nominal folds."""
     head = (
         model.calibration.regions.get(name)
-        if isinstance(model.calibration, MLPECalibrationModule)
+        if isinstance(model.calibration, UnpooledMLPECalibrationModule)
         else None
     )
     calibration = (
