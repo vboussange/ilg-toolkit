@@ -34,8 +34,8 @@ def test_sparse_evaluation_preserves_every_update_and_resumes_between_evaluation
     resumed = fit(regions, observations, state=callbacks[1], config=config)
     assert eqx.tree_equal(resumed, result)
     frequent = fit(
-        regions,
-        observations,
+        list(reversed(regions)),
+        dict(reversed(tuple(observations.items()))),
         distance_model=StochasticEmbedding(jnp.asarray(1.0)),
         config=replace(config, evaluation_interval=1),
     )
@@ -501,3 +501,11 @@ def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog):
     assert isinstance(adam, optax.ScaleByAdamState)
     assert isinstance(adam.mu, UNetEmbeddingDistance)
     assert np.count_nonzero(np.linalg.norm(adam.mu.projection_weight, axis=(1, 2))) > 1
+
+    reordered = fit(
+        [prepared],
+        {prepared.name: dict(reversed(tuple(observed[prepared.name].items())))},
+        distance_model=model,
+        config=replace(config, steps=12, seed=72),
+    )
+    assert eqx.tree_equal(reordered, state)

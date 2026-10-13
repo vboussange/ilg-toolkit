@@ -136,11 +136,13 @@ def main():
         if not any(name in path.name for name in ("encode", "chunk_gradient", "chunk_evaluate")):
             continue
         report = path.read_text()
-        matched = re.search(r"Total bytes used:\s*(\d+)", report)
+        matched = re.search(r"Total bytes(?: used)?:\s*(\d+)", report)
+        if matched is None:
+            raise RuntimeError(f"Missing XLA allocation total in {path}")
         reports.append(
             {
                 "file": path.name,
-                "total_allocated_bytes": None if matched is None else int(matched.group(1)),
+                "total_allocated_bytes": int(matched.group(1)),
                 "report": report,
             }
         )
