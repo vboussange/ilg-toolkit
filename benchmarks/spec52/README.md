@@ -101,8 +101,8 @@ If bootstrap uncertainty crosses a timing threshold, collect more samples before
 declaring a pass or failure. Bootstrap intervals with three fit samples are
 descriptive and cannot establish reliable tail behavior. No speedup claim is
 allowed solely from overlapping intervals or unpaired host runs. Use a seeded
-10,000-resample paired-by-workload ratio bootstrap, increasing to at least ten
-fit repetitions when a required threshold is ambiguous; unresolved uncertainty
+10,000-resample ratio bootstrap with independent resampling of main/PR fit blocks,
+increasing to at least ten fit repetitions when a required threshold is ambiguous; unresolved uncertainty
 is an inconclusive gate, not a pass. This repeatability policy and the designated
 representative cases must not be changed after observing PR performance.
 
@@ -122,3 +122,54 @@ A PR-specific driver must translate the fixture into its native public API and
 retain this protocol unchanged. It belongs beside this driver, not in `src/`.
 The baseline driver is intentionally only runnable against the frozen main
 source tree; it is not a compatibility test for the new API.
+
+## Analysis policy frozen before PR measurement
+
+`analysis_policy.json` resolves two measurement details discovered by reviewing
+the main observations. It changes neither the workload nor the numeric gates.
+The original `results/main.json`, protocol bytes, per-fit arrays, and measured
+source hashes remain intact. All 12 measured workers used benchmark commit
+`5963194`; its driver/fixture files remain retrievable from Git even though the
+current driver has subsequently been formatted, type-narrowed, and given a
+repetition override. `results/main-analysis.json` records its own analysis code,
+policy and raw-file hashes.
+
+A fresh public fit on main recreates the optimizer. Its first update incurs
+recurrent overhead consistent with static-optimizer compilation, even after a
+previous fit. The full fit measurement retains that real cost. For the warmed
+training-step gate, use `steady_training_step` from the analysis report: updates
+2 and 3 within every repeated fit. Report first updates separately as
+`recurrent_first_update`. The historical raw report's `warm_training_step`
+summary includes **all** updates and must not be used as the steady-state gate.
+Every observed update remains available in `warm_training_steps_by_fit_seconds`.
+Bootstrap whole fit blocks, retaining their post-first steps together; main and
+PR runs have no paired repetition IDs, so their blocks are resampled independently.
+The small initial repeat count remains descriptive; an uncertain gate requires
+at least ten repetitions and is never an automatic pass.
+
+`multispecies_fixtures.py` freezes the added-species fixture generation: species
+zero exactly reproduces the main input, all species share each region's features,
+and later species have independently seeded locations/targets with the same
+unit and complete-pair counts. Use the same species fixture in its joint and
+independent fit. Initialize each independent fit with the joint initialization's
+exact pooled backbone and that species' output projection; verify the arrays
+match before timing. A common random seed alone does not establish this when
+output-array shape changes.
+
+```sh
+/path/to/dependencies/bin/python benchmarks/spec52/analyze.py \
+  benchmarks/spec52/results/main.json \
+  --output benchmarks/spec52/results/main-analysis.json
+
+# Increase observations without editing frozen workloads or thresholds.
+PYTHONPATH=/path/to/frozen-main/src /path/to/dependencies/bin/python \
+  benchmarks/spec52/main_driver.py --case resnet-feature-heavy --fit-repeats 10 \
+  --output benchmarks/spec52/results/main-resnet-feature-heavy-10.json
+```
+
+The override is recorded in the new output's effective protocol and command;
+its `protocol_sha256` still identifies the immutable protocol file. Repetition
+changes require fresh baseline and PR samples under comparable host conditions.
+Type-check this revision-specific driver against frozen main. It intentionally
+uses API names that the native multispecies revision removes, so checking it
+against new production types would test the wrong revision.
