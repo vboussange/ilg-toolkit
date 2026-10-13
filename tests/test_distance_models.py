@@ -27,18 +27,18 @@ class CustomDistance(AbstractDistanceModel):
     def prepare(self, features):
         return None
 
-    def predict_distances(
+    def _pair_distances(
         self,
         features,
-        pixel_nodes,
+        selection,
         *,
         context=None,
         inference=True,
         key=None,
         patch_batch_size=None,
     ):
-        values = jnp.asarray(features).reshape(-1)[jnp.asarray(pixel_nodes)]
-        return self.scale**2 * (values[:, None] - values[None, :]) ** 2
+        values = jnp.asarray(features).reshape(-1)[selection.nodes]
+        return self.scale**2 * (values[selection.left] - values[selection.right]) ** 2
 
 
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])

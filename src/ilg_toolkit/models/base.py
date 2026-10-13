@@ -10,17 +10,24 @@ from abc import abstractmethod
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from numpy.typing import ArrayLike
 
+from .._pairs import PairSelection
 from ..config import ResistanceSolverConfig
-from ..resistance import ResistanceSolverContext, build_resistance_context, effective_resistance
-from .common import pixel_to_patch_nodes, squared_embedding_distances
+from ..resistance import (
+    ResistanceSolverContext,
+    _effective_resistance_pairs,
+    build_resistance_context,
+    effective_resistance,
+)
+from .common import pixel_to_patch_nodes
 
 
 class AbstractDistanceModel(eqx.Module):
     """Derive ecological distances from features and locations without genetic labels.
 
-    Custom implementations implement ``prepare`` and ``predict_distances``,
+    Custom implementations implement ``prepare`` and the private pair kernel,
     accepting the common inference, random-key and preparation arguments.
     Preparation returns ``None`` when no numerical setup is needed; otherwise it
     is local to an operation, outside model parameters and JAX transformations.
@@ -31,17 +38,52 @@ class AbstractDistanceModel(eqx.Module):
         """Prepare shape-dependent numerical work before predicting distances, or return none."""
 
     @abstractmethod
-    def predict_distances(
+    def _pair_distances(
         self,
         features: ArrayLike,
-        pixel_nodes: ArrayLike,
+        selection: PairSelection,
         *,
         context: ResistanceSolverContext | None = None,
         inference: bool = True,
         key: jax.Array | None = None,
         patch_batch_size: int | None = None,
     ) -> jax.Array:
-        """Return the square ecological-distance matrix at row-major pixel locations."""
+        """Return one distance per prepared pair, without a full output matrix."""
+
+    def _distance_nodes(self, features: ArrayLike, pixel_nodes: ArrayLike) -> jax.Array:
+        return jnp.asarray(pixel_nodes, dtype=jnp.int32)
+
+    def _prepare_pairs(self, features, pixel_nodes, pairs) -> PairSelection:
+        """Deduplicate requested distance nodes on the host, before differentiation."""
+        nodes = np.asarray(self._distance_nodes(features, pixel_nodes))
+        endpoints = np.stack(pairs, axis=0)
+        selected, inverse = np.unique(nodes[endpoints], return_inverse=True)
+        left, right = inverse.reshape(endpoints.shape)
+        return PairSelection(jnp.asarray(selected), jnp.asarray(left), jnp.asarray(right))
+
+    def predict_distances(
+        self,
+        features,
+        pixel_nodes,
+        *,
+        context=None,
+        inference=True,
+        key=None,
+        patch_batch_size=None,
+    ) -> jax.Array:
+        """Explicit full-matrix diagnostic; ordinary workflows use prepared pairs."""
+        nodes = self._distance_nodes(features, pixel_nodes)
+        left, right = jnp.triu_indices(len(nodes), 1)
+        values = self._pair_distances(
+            features,
+            PairSelection(nodes, left, right),
+            context=context,
+            inference=inference,
+            key=key,
+            patch_batch_size=patch_batch_size,
+        )
+        matrix = jnp.zeros((len(nodes), len(nodes)), dtype=values.dtype)
+        return matrix.at[left, right].set(values).at[right, left].set(values)
 
 
 class ConductanceModel(AbstractDistanceModel):
@@ -92,21 +134,29 @@ class ConductanceModel(AbstractDistanceModel):
         )
         return effective_resistance(surface, nodes, context=context), surface
 
-    def predict_distances(
+    def _distance_nodes(self, features: ArrayLike, pixel_nodes: ArrayLike) -> jax.Array:
+        shape = jnp.asarray(features).shape
+        return pixel_to_patch_nodes(
+            pixel_nodes, raster_shape=(shape[0], shape[1]), patch_size=self.patch_size
+        )
+
+    def _pair_distances(
         self,
         features: ArrayLike,
-        pixel_nodes: ArrayLike,
+        selection: PairSelection,
         *,
         context: ResistanceSolverContext | None = None,
         inference: bool = True,
         key: jax.Array | None = None,
         patch_batch_size: int | None = None,
     ) -> jax.Array:
-        """Return all pairwise effective resistances independently of genetic labels."""
-        resistances, _ = self.resistance_and_conductance(
-            features, pixel_nodes, context=context, patch_batch_size=patch_batch_size
-        )
-        return resistances
+        """Return exact requested resistances on the complete regional graph."""
+        features = jnp.asarray(features)
+        context = self.prepare(features) if context is None else context
+        if context.config != self.solver_config:
+            raise ValueError("Solver context policy does not match the conductance model settings")
+        surface = self.conductance(features, patch_batch_size=patch_batch_size)
+        return _effective_resistance_pairs(surface, selection, context=context)
 
 
 class EmbeddingDistanceModel(AbstractDistanceModel):
@@ -129,24 +179,26 @@ class EmbeddingDistanceModel(AbstractDistanceModel):
     ) -> jax.Array:
         """Return embeddings with row, column and embedding dimensions."""
 
-    def predict_distances(
+    def _distance_nodes(self, features: ArrayLike, pixel_nodes: ArrayLike) -> jax.Array:
+        shape = jnp.asarray(features).shape
+        return pixel_to_patch_nodes(
+            pixel_nodes, raster_shape=(shape[0], shape[1]), patch_size=self.patch_size
+        )
+
+    def _pair_distances(
         self,
         features: ArrayLike,
-        pixel_nodes: ArrayLike,
+        selection: PairSelection,
         *,
         context: ResistanceSolverContext | None = None,
         inference: bool = True,
         key: jax.Array | None = None,
         patch_batch_size: int | None = None,
     ) -> jax.Array:
-        """Return all pairwise squared embedding distances at row-major pixel nodes."""
+        """Gather selected endpoints before calculating squared separations."""
         features = jnp.asarray(features)
         grid = self.embedding_grid(
             features, inference=inference, key=key, patch_batch_size=patch_batch_size
         )
-        nodes = pixel_to_patch_nodes(
-            pixel_nodes,
-            raster_shape=(features.shape[0], features.shape[1]),
-            patch_size=self.patch_size,
-        )
-        return squared_embedding_distances(grid.reshape(-1, grid.shape[-1])[nodes])
+        endpoints = grid.reshape(-1, grid.shape[-1])[selection.nodes]
+        return jnp.sum(jnp.square(endpoints[selection.left] - endpoints[selection.right]), axis=-1)

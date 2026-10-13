@@ -139,11 +139,17 @@ def calibrate(
             if any(kinds[label] != "population" for label in pair):
                 raise ValueError("Population MLPE calibration requires population sampling units")
             roles[pair] = partition.role
-    distances = model.ecological_distances(region)
-    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-    observed_distances = jnp.asarray(
-        [distances[lookup[a], lookup[b]] for a, b in observations.observed_pairs]
+    pairs = tuple(pair for pair in observations.observed_pairs if tuple(sorted(pair)) in roles)
+    lookup = {label: index for index, label in enumerate(observations.sampling_unit_ids)}
+    left = jnp.asarray([lookup[a] for a, _ in pairs])
+    right = jnp.asarray([lookup[b] for _, b in pairs])
+    selected_observations = PairwiseObservations.from_pairs(
+        pairs,
+        observations.values[left, right],
+        target=observations.target,
+        sampling_unit_ids=observations.sampling_unit_ids,
     )
+    observed_distances = model._distances_for_pairs(region, selected_observations.observed_pairs)
     selected = ObservationPartition(region.name, tuple(roles), role="calibration")
     regions = (
         dict(model.calibration.regions)
@@ -154,7 +160,7 @@ def calibrate(
         config = regions[region.name].config
     head = calibrate_mlpe(
         observed_distances,
-        observations,
+        selected_observations,
         region_name=region.name,
         partition=selected,
         config=config,

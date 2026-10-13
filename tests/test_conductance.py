@@ -7,6 +7,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 
 from ilg_toolkit import (
@@ -142,6 +143,49 @@ class PointConductance(ConductanceModel):
 
     def conductance(self, features, *, patch_batch_size=None):
         return jnp.exp(self.log_scale) * features[..., 0]
+
+
+@pytest.mark.parametrize("jit", [False, True])
+def test_sparse_resistance_fit_matches_dense_reference_with_repeated_and_grounded_terminals(jit):
+    surface = np.array([[1.0, 1.4, 0.7], [0.8, 2.0, 1.1]])
+    nodes = np.array([0, 0, 2, 5, 1])
+    region = RegionBatch(
+        "sparse-graph",
+        cx.field(surface[..., None], "row", "column", "feature"),
+        ("a", "coincident", "c", "ground", "unrequested"),
+        np.column_stack(np.unravel_index(nodes, surface.shape)),
+    )
+    pairs = (("ground", "a"), ("a", "coincident"), ("c", "a"))
+    indices = (np.array([3, 0, 2]), np.array([0, 1, 0]))
+    targets = dense_resistance(surface * 1.7, nodes)[indices]
+    observations = PairwiseObservations.from_pairs(pairs, targets, target=TargetSpec("divergence"))
+    solver = ResistanceSolverConfig(rtol=1e-10, atol=1e-12)
+    result = fit(
+        region,
+        observations,
+        distance_model=PointConductance(jnp.array(0.0), solver_config=solver),
+        config=TrainingConfig(objective="direct_log1p", epochs=1, learning_rate=0.01, jit=jit),
+    )
+
+    def objective(log_scale):
+        distances = dense_resistance(np.exp(log_scale) * surface, nodes)[indices]
+        return np.mean((np.log1p(distances) - np.log1p(targets)) ** 2)
+
+    gradient = (objective(1e-5) - objective(-1e-5)) / 2e-5
+    expected_scale = -0.01 * gradient / (abs(gradient) + 1e-8)
+    assert isinstance(result.optimizer_state, tuple)
+    adam = result.optimizer_state[0]
+    assert isinstance(adam, optax.ScaleByAdamState)
+    assert isinstance(adam.mu, tuple) and isinstance(adam.mu[0], PointConductance)
+    assert float(adam.mu[0].log_scale) == pytest.approx(0.1 * gradient, abs=1e-10)
+    assert isinstance(result.distance_model, PointConductance)
+    assert float(result.distance_model.log_scale) == pytest.approx(expected_scale, abs=1e-10)
+    expected = dense_resistance(np.exp(expected_scale) * surface, nodes)
+    prediction = result.model.predict(region, pairs)
+    np.testing.assert_allclose(prediction.values, expected[indices], rtol=1e-8, atol=1e-10)
+    assert prediction.pairs == pairs
+    assert float(prediction.values[1]) == 0.0
+    np.testing.assert_allclose(result.model.ecological_distances(region), expected, atol=1e-10)
 
 
 def test_failed_solver_reports_region_and_epoch_without_changing_solver():

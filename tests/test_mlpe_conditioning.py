@@ -317,3 +317,74 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder():
         direct.predict_known_effects(region, pairs)
     with pytest.raises(ValueError, match="sampling-unit.*region"):
         model.predict_known_effects(region, [("missing-location", "population-0")])
+
+
+def test_recalibration_and_conditioning_compute_only_declared_pairs():
+    import itertools
+
+    import coordax as cx
+    import jax.numpy as jnp
+    from test_recalibration import ScalarEmbedding, problem
+
+    from ilg_toolkit import (
+        ObservationPartition,
+        PairwiseObservations,
+        RegionBatch,
+        TrainingConfig,
+        fit,
+    )
+
+    region, observations, _, _ = problem("selected")
+    extended = RegionBatch(
+        region.name,
+        cx.field(
+            np.concatenate((np.asarray(region.feature_array).reshape(6, 2), [[1e200, 1.0]]))[None],
+            "row",
+            "column",
+            "feature",
+        ),
+        region.sampling_unit_ids + ("unrequested",),
+        np.column_stack((np.zeros(7, dtype=int), np.arange(7))),
+        feature_names=region.feature_names,
+    )
+    supplied = PairwiseObservations.from_pairs(
+        observations.observed_pairs + (("unrequested", "population-0"),),
+        np.r_[observations.observed_values, 3.0],
+        target=observations.target,
+    )
+    training = ObservationPartition(
+        region.name, tuple(itertools.combinations(region.sampling_unit_ids[:4], 2)), "training"
+    )
+    models = []
+    for prepared, observed in ((region, observations), (extended, supplied)):
+        direct = fit(
+            prepared,
+            observed,
+            distance_model=ScalarEmbedding(jnp.array(1.0)),
+            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            partition=training,
+        ).model
+        models.append(direct.calibrate(prepared, observed))
+    query = (("population-4", "population-2"), ("population-5", "population-3"))
+    support = PairwiseObservations.from_pairs(
+        (("population-4", "population-0"), ("population-4", "population-1")),
+        [2.0, 2.5],
+        target=observations.target,
+    )
+    support_partition = ObservationPartition(region.name, support.observed_pairs, "support")
+    for method in ("predict", "predict_known_effects", "predict_with_support"):
+        arguments = (query, support) if method == "predict_with_support" else (query,)
+        keywords = (
+            {"support_partition": support_partition} if method == "predict_with_support" else {}
+        )
+        expected = getattr(models[0], method)(region, *arguments, **keywords)
+        actual = getattr(models[1], method)(extended, *arguments, **keywords)
+        if method == "predict":
+            np.testing.assert_allclose(actual.values, expected.values, atol=1e-10)
+        else:
+            np.testing.assert_allclose(
+                actual.prediction.values, expected.prediction.values, atol=1e-10
+            )
+            np.testing.assert_allclose(actual.model_variance, expected.model_variance, atol=1e-10)
+    with pytest.raises(FloatingPointError, match="nonfinite"):
+        models[1].ecological_distances(extended)

@@ -84,6 +84,20 @@ class LandscapeGeneticsModel(eqx.Module):
             raise FloatingPointError("Distance model produced nonfinite or nonpositive conductance")
         return surface
 
+    def _distances_for_pairs(self, region: RegionBatch, pairs) -> jax.Array:
+        self._validate_region(region)
+        indices = _pair_indices(region, pairs)
+        selection = self.distance_model._prepare_pairs(
+            region.feature_array, region.pixel_nodes, indices
+        )
+        context = self.distance_model.prepare(region.feature_array)
+        values = self.distance_model._pair_distances(
+            region.feature_array, selection, context=context
+        )
+        if not bool(jnp.isfinite(values).all()) or bool((values < 0).any()):
+            raise FloatingPointError("Distance model produced nonfinite or negative distances")
+        return values
+
     def _regional_head(self, region: RegionBatch) -> RegionalMLPECalibration:
         self._validate_region(region)
         if not isinstance(self.calibration, MLPECalibrationModule):
@@ -139,7 +153,7 @@ class LandscapeGeneticsModel(eqx.Module):
             ) from error
         if isinstance(self.calibration, MLPECalibrationModule):
             self._regional_head(region)
-        distances = _distances_for_pairs(self.ecological_distances(region), region, pairs)
+        distances = self._distances_for_pairs(region, pairs)
         values = self.calibration.predict(distances, pairs, region_name=region.name)
         return Prediction(
             jnp.asarray(values), pairs, region.name, self.target, region.sampling_unit_ids
@@ -183,7 +197,7 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         head = self._regional_head(region)
         pairs = tuple(pairs)
-        distances = _distances_for_pairs(self.ecological_distances(region), region, pairs)
+        distances = self._distances_for_pairs(region, pairs)
         result = head.predict_known_effects(distances, pairs)
         return eqx.tree_at(
             lambda value: value.prediction.sampling_unit_ids, result, region.sampling_unit_ids
@@ -236,22 +250,19 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         head = self._regional_head(region)
         pairs = tuple(pairs)
-        distances = self.ecological_distances(region)
-        support_distances = _distances_for_pairs(
-            distances, region, support_observations.observed_pairs
-        )
+        support_pairs = support_observations.observed_pairs
+        distances = self._distances_for_pairs(region, support_pairs + pairs)
+        support_distances = distances[: len(support_pairs)]
         conditioned = head.condition_on_support(
             support_distances, support_observations, partition=support_partition
         )
-        result = conditioned.predict(_distances_for_pairs(distances, region, pairs), pairs)
+        result = conditioned.predict(distances[len(support_pairs) :], pairs)
         return eqx.tree_at(
             lambda value: value.prediction.sampling_unit_ids, result, region.sampling_unit_ids
         )
 
 
-def _distances_for_pairs(
-    distances: jax.Array, region: RegionBatch, pairs: Sequence[tuple[str, str]]
-) -> jax.Array:
+def _pair_indices(region: RegionBatch, pairs: Sequence[tuple[str, str]]):
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
     try:
         if not pairs:
@@ -261,4 +272,4 @@ def _distances_for_pairs(
         raise ValueError(
             "Pairs must contain two sampling-unit labels with locations in the query region"
         ) from error
-    return distances[indices[:, 0], indices[:, 1]]
+    return indices[:, 0], indices[:, 1]
