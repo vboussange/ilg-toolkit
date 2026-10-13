@@ -104,6 +104,25 @@ def _samples(result):
     return fits, steps[:, 1:]
 
 
+def timing_summary(result):
+    """Describe independent fit blocks without inventing a baseline comparison."""
+    fits, steps = _samples(result)
+    fit_bounds = np.quantile(sampled_medians(fits, np.random.default_rng(52053)), [0.025, 0.975])
+    return dict(
+        case=result["experiment"]["id"],
+        fit_median_seconds=float(np.median(fits)),
+        fit_bootstrap_95_percent_seconds=fit_bounds.tolist(),
+        steady_step_median_seconds=float(np.median(steps)),
+        recurrent_first_update_median_seconds=float(
+            np.median(np.asarray(result["warm_training_steps_by_fit_seconds"])[:, 0])
+        ),
+        compile_plus_first_fit_seconds=result["compile_plus_first_fit_seconds"],
+        first_predict_seconds=result["first_predict_seconds"],
+        warm_predict=result["warm_predict"],
+        process_peak_rss_after_timed_work_mib=result["process_peak_rss_after_timed_work_mib"],
+    )
+
+
 def compare_reports(main_reports, pr_reports) -> dict:
     """Validate complete work manifests before evaluating every frozen gate."""
     directory = Path(__file__).parent
@@ -132,6 +151,24 @@ def compare_reports(main_reports, pr_reports) -> dict:
             f"Missing workloads: main={sorted(required_main - main.keys())}, "
             f"PR={sorted(required_pr - pr.keys())}"
         )
+    frozen_main = _indexed([json.loads((directory / "results/main.json").read_text())], False)
+    for name, result in main.items():
+        reference = frozen_main[name]
+        if (
+            result["case"] != reference["case"]
+            or result["input_sha256"] != reference["input_sha256"]
+            or any(
+                result["machine"][field] != reference["machine"][field]
+                for field in (
+                    "source_tree",
+                    "frozen_main_commit",
+                    "protocol_sha256",
+                    "fixtures_sha256",
+                    "cpu_affinity",
+                )
+            )
+        ):
+            raise ValueError(f"Frozen baseline source, inputs or execution mismatch: {name}")
     for report in main_reports + pr_reports:
         settings = dict(report["protocol"])
         repeats = settings.pop("fit_repeats")
@@ -313,7 +350,9 @@ def compare_reports(main_reports, pr_reports) -> dict:
         single_species=single,
         joint_species=joint,
         disclosures=disclosures,
-        loglinear=[value for value in pr if value.startswith("loglinear-")],
+        loglinear=[
+            timing_summary(result) for name, result in pr.items() if name.startswith("loglinear-")
+        ],
         measured_commits=sorted({value["machine"]["measured_commit"] for value in pr.values()}),
     )
 

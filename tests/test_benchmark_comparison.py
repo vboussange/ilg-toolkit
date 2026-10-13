@@ -154,6 +154,34 @@ def test_duplicate_full_batches_cannot_select_favorable_samples():
         compare_reports([baseline, copy.deepcopy(baseline)], [native])
 
 
+@pytest.mark.parametrize("corruption", ["source", "input", "affinity", "fixture"])
+def test_baseline_must_match_the_frozen_measured_workload(corruption):
+    baseline, native = reports()
+    row = baseline["results"][0]
+    if corruption == "source":
+        row["machine"]["source_tree"] = "different-source"
+    elif corruption == "input":
+        row["input_sha256"] = "different-input"
+        native["results"][0]["input_sha256"]["species-0"] = "different-input"
+    elif corruption == "affinity":
+        row["machine"]["cpu_affinity"] = [2, 3]
+    else:
+        row["machine"]["fixtures_sha256"] = "different-fixture"
+    with pytest.raises(ValueError, match="Frozen baseline"):
+        compare_reports([baseline], [native])
+
+
+def test_loglinear_timings_are_reported_without_a_main_ratio():
+    baseline, native = reports()
+    result = compare_reports([baseline], [native])
+    assert len(result["loglinear"]) == 4
+    four = next(row for row in result["loglinear"] if row["case"].endswith("heavy-joint-4"))
+    assert four["fit_median_seconds"] == 16.0
+    assert four["fit_bootstrap_95_percent_seconds"] == [16.0, 16.0]
+    assert four["steady_step_median_seconds"] == 10.0
+    assert "main_ratio" not in four
+
+
 @pytest.mark.parametrize(
     "corruption", ["work", "initialization", "shape", "repeats", "protocol", "ids"]
 )
