@@ -173,3 +173,38 @@ changes require fresh baseline and PR samples under comparable host conditions.
 Type-check this revision-specific driver against frozen main. It intentionally
 uses API names that the native multispecies revision removes, so checking it
 against new production types would test the wrong revision.
+
+## Native revision measurements and hard acceptance
+
+`pr_driver.py` translates the frozen arrays directly to the native public API.
+It requires a clean committed source and driver, records the exact revision,
+and refuses to overwrite an existing result file. `--smoke` permits development
+checks but marks their results ineligible for acceptance. Every worker observes
+all updates, group contributions and complete evaluations; it checks requested
+pairs, finite results, final calibration, and independent dense resistance
+outside timed intervals. The checked-call timer starts at the first regional
+training encoding and ends at synchronized Adam completion, including all
+regional tails, encoder pullbacks and accumulation.
+
+Joint fits and independent species fits use exactly copied and hashed backbone
+and projection-row initializations from the same four-species model. The initial
+execution choice is species chunk one. Scientifically equivalent bounded chunk
+optimizations may be measured in separate complete batches; preserve prior
+attempts and disclose the chosen configuration, without changing frozen work or
+thresholds. LogLinear uses its default bounded link and explicit frozen patch and
+solver settings; its separate report has no main comparison.
+
+```sh
+PYTHONPATH=src python benchmarks/spec52/pr_driver.py --suite all --fit-repeats 3 \
+  --output /tmp/pr-spec52-attempt-01.json
+python benchmarks/spec52/compare.py --main benchmarks/spec52/results/main.json \
+  --pr /tmp/pr-spec52-attempt-01.json --output /tmp/pr-spec52-comparison-01.json
+```
+
+The comparison exits nonzero for a failed, inconclusive or incomplete gate. It
+requires all twelve single-species cases, both joint 1/2/3/4 and independent
+0/1/2/3 matrices, and the separate LogLinear cases. It checks workload manifests,
+initialization, source consistency and full scientific accounting before drawing
+independent fit-block bootstrap samples. Inconclusive comparisons require fresh
+matched batches with at least ten repetitions; retain all earlier raw evidence.
+Use repeat output filenames, never rewrite the original frozen main report.
