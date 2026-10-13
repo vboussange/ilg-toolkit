@@ -265,24 +265,24 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder():
     )
 
     region, observations, _, _ = problem("conditioned-landscape")
-    calibration_pairs = tuple(itertools.combinations(region.sampling_unit_ids[:4], 2))
+    calibration_pairs = tuple(itertools.combinations(region.sampling_units["species"].ids[:4], 2))
     training = ObservationPartition(region.name, "species", calibration_pairs, role="training")
     direct = fit(
-        region,
-        observations,
+        [region],
+        {region.name: {"species": observations}},
         distance_model=ScalarEmbedding(weight=jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
-        partition=training,
+        config=TrainingConfig(objective="direct_log1p", steps=0),
+        partition={region.name: {"species": training}},
     ).model
-    model = calibrate(direct, region, observations)
+    model = calibrate(direct, region, {"species": observations})
     assert isinstance(model.calibration, UnpooledMLPECalibrationModule)
-    head = model.calibration.regions[region.name]
+    head = model.calibration.for_group(region.name, "species")
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
-    known = model.predict_known_effects(region, pairs)
-    assert known.prediction.sampling_unit_ids == region.sampling_unit_ids
+    known = model.predict_known_effects(region, pairs={"species": pairs})["species"]
+    assert known.prediction.sampling_unit_ids == region.sampling_units["species"].ids
     assert known.prediction.pairs == pairs
-    distances = model.ecological_distances(region)
-    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
+    distances = model.ecological_distances(region)["species"]
+    lookup = {label: index for index, label in enumerate(region.sampling_units["species"].ids)}
 
     def selected_distances(selected):
         return np.array([distances[lookup[a], lookup[b]] for a, b in selected])
@@ -291,7 +291,7 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder():
         head,
         calibration_pairs,
         selected_distances(calibration_pairs),
-        observations.aligned_values(region)[
+        observations.aligned_values(region, "species")[
             [lookup[a] for a, _ in calibration_pairs], [lookup[b] for _, b in calibration_pairs]
         ],
         pairs,
@@ -306,20 +306,22 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder():
     )
     result = model.predict_with_support(
         region,
-        pairs,
-        support,
-        support_partition=ObservationPartition(
-            region.name, "species", support.observed_pairs, role="support"
-        ),
-    )
-    assert result.prediction.sampling_unit_ids == region.sampling_unit_ids
+        {"species": support},
+        pairs={"species": pairs},
+        support_partition={
+            "species": ObservationPartition(
+                region.name, "species", support.observed_pairs, role="support"
+            )
+        },
+    )["species"]
+    assert result.prediction.sampling_unit_ids == region.sampling_units["species"].ids
     assert result.prediction.pairs == pairs
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration_pairs + support.observed_pairs,
         np.r_[selected_distances(calibration_pairs), selected_distances(support.observed_pairs)],
         np.r_[
-            observations.aligned_values(region)[
+            observations.aligned_values(region, "species")[
                 [lookup[a] for a, _ in calibration_pairs], [lookup[b] for _, b in calibration_pairs]
             ],
             support.observed_values,
@@ -334,9 +336,11 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder():
         tuple(sorted(pair)) for pair in support.observed_pairs
     )
     with pytest.raises(ValueError, match="MLPE"):
-        direct.predict_known_effects(region, pairs)
-    with pytest.raises(ValueError, match="sampling-unit.*region"):
-        model.predict_known_effects(region, [("missing-location", "population-0")])
+        direct.predict_known_effects(region, pairs={"species": pairs})
+    with pytest.raises(ValueError, match="sampling-unit labels"):
+        model.predict_known_effects(
+            region, pairs={"species": [("missing-location", "population-0")]}
+        )
 
 
 def test_recalibration_and_conditioning_compute_only_declared_pairs():
@@ -350,6 +354,7 @@ def test_recalibration_and_conditioning_compute_only_declared_pairs():
         ObservationPartition,
         PairwiseObservations,
         RegionBatch,
+        SamplingUnits,
         TrainingConfig,
         fit,
     )
@@ -363,8 +368,12 @@ def test_recalibration_and_conditioning_compute_only_declared_pairs():
             "column",
             "feature",
         ),
-        region.sampling_unit_ids + ("unrequested",),
-        np.column_stack((np.zeros(7, dtype=int), np.arange(7))),
+        {
+            "species": SamplingUnits(
+                region.sampling_units["species"].ids + ("unrequested",),
+                np.column_stack((np.zeros(7, dtype=int), np.arange(7))),
+            )
+        },
         feature_names=region.feature_names,
     )
     supplied = PairwiseObservations.from_pairs(
@@ -375,19 +384,19 @@ def test_recalibration_and_conditioning_compute_only_declared_pairs():
     training = ObservationPartition(
         region.name,
         "species",
-        tuple(itertools.combinations(region.sampling_unit_ids[:4], 2)),
+        tuple(itertools.combinations(region.sampling_units["species"].ids[:4], 2)),
         "training",
     )
     models = []
     for prepared, observed in ((region, observations), (extended, supplied)):
         direct = fit(
-            prepared,
-            observed,
+            [prepared],
+            {prepared.name: {"species": observed}},
             distance_model=ScalarEmbedding(jnp.array(1.0)),
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
-            partition=training,
+            config=TrainingConfig(objective="direct_log1p", steps=0),
+            partition={region.name: {"species": training}},
         ).model
-        models.append(direct.calibrate(prepared, observed))
+        models.append(direct.calibrate(prepared, {"species": observed}))
     query = (("population-4", "population-2"), ("population-5", "population-3"))
     support = PairwiseObservations.from_pairs(
         (("population-4", "population-0"), ("population-4", "population-1")),
@@ -398,12 +407,18 @@ def test_recalibration_and_conditioning_compute_only_declared_pairs():
         region.name, "species", support.observed_pairs, "support"
     )
     for method in ("predict", "predict_known_effects", "predict_with_support"):
-        arguments = (query, support) if method == "predict_with_support" else (query,)
+        arguments = ({"species": support},) if method == "predict_with_support" else ()
         keywords = (
-            {"support_partition": support_partition} if method == "predict_with_support" else {}
+            {"support_partition": {"species": support_partition}}
+            if method == "predict_with_support"
+            else {}
         )
-        expected = getattr(models[0], method)(region, *arguments, **keywords)
-        actual = getattr(models[1], method)(extended, *arguments, **keywords)
+        expected = getattr(models[0], method)(
+            region, *arguments, pairs={"species": query}, **keywords
+        )["species"]
+        actual = getattr(models[1], method)(
+            extended, *arguments, pairs={"species": query}, **keywords
+        )["species"]
         if method == "predict":
             np.testing.assert_allclose(actual.values, expected.values, atol=1e-10)
         else:
