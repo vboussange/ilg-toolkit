@@ -293,7 +293,7 @@ class WishartDiagnostic:
     """Fixed-parameter reference evidence, including an explicit training gate."""
 
     region_name: str
-    resistance_scores: np.ndarray
+    resistances: np.ndarray
     model_covariance: np.ndarray
     log_likelihood: float
     heldout_score: HeldoutWishartScore
@@ -352,15 +352,15 @@ def diagnose_wishart(
     context = build_resistance_context(
         (height // encoder.patch_size, width // encoder.patch_size), solver_config
     )
-    scores = np.asarray(
+    resistances = np.asarray(
         encoder.predict_distances(region.feature_array, region.pixel_nodes, context=context)
     )
     order = [region.sampling_unit_ids.index(label) for label in observations.sampling_unit_ids]
-    scores = np.array(scores[np.ix_(order, order)], dtype=np.float64)
-    if not np.isfinite(scores).all() or np.any(scores < 0):
-        raise FloatingPointError("The graph produced nonfinite or negative resistance scores")
+    resistances = np.array(resistances[np.ix_(order, order)], dtype=np.float64)
+    if not np.isfinite(resistances).all() or np.any(resistances < 0):
+        raise FloatingPointError("The graph produced nonfinite or negative effective resistances")
     basis = observations.contrast_basis
-    kernel = -0.5 * basis @ scores @ basis.T
+    kernel = -0.5 * basis @ resistances @ basis.T
     covariance = scale * kernel + nugget * np.eye(kernel.shape[0])
     _positive_definite(covariance, "Model covariance")
     design = np.column_stack((kernel.ravel(), np.eye(kernel.shape[0]).ravel()))
@@ -373,11 +373,11 @@ def diagnose_wishart(
         anchor_id=anchor_id,
         parameter_source=parameter_source,
     )
-    scores.setflags(write=False)
+    resistances.setflags(write=False)
     covariance.setflags(write=False)
     return WishartDiagnostic(
         region.name,
-        scores,
+        resistances,
         covariance,
         wishart_log_likelihood(observations, covariance),
         heldout,

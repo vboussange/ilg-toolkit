@@ -43,7 +43,7 @@ Loading does not refit calibration. Regional normalization, coefficients,
 variances, posterior quantities, population identities and actual
 training/validation/calibration access are retained. Marginal, known-effect and
 support-conditioned predictions preserve their scientific meaning. A model may
-have MLPE calibration for only some regions: landscape scores remain available
+have MLPE calibration for only some regions: ecological distances remain available
 in compatible regions, while MLPE genetic prediction requires an explicit
 regional relationship. Direct-to-MLPE calibration replaces the entire direct module;
 there is no direct prediction fallback for other regions. The original
@@ -63,9 +63,8 @@ Each file contains a short JSON header followed by native Equinox leaves
 of the actual `LandscapeGeneticsModel` or `TrainingState`. The header holds nonnumerical
 contracts and the structure needed to construct the distance/calibration composition. Learned
 coefficients and posterior arrays remain ordinary numerical leaves. There is no
-architecture registry, separate numerical payload, content checksum, pickle or
-exact runtime-version gate. Only the current format (version 3) is accepted.
-Earlier native and ZIP artifacts, including old training checkpoints, are unsupported.
+architecture registry, separate numerical payload, content checksum, pickle,
+format version or runtime-version gate.
 
 Equinox checks numerical leaf compatibility with the caller's template. Invalid
 headers, truncated leaves and representative structural incompatibilities raise

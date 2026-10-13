@@ -8,7 +8,7 @@ Read the root `GLOSSARY.md` and the relevant decisions under `docs/adr/`. If a d
 
 ## Vocabulary and decisions
 
-Use the glossary's canonical domain terms in issues, design discussions, and tests. Distinguish sampling units, pairwise genetic observations, landscape scores, and genetic calibration; relatedness is not automatically a genetic distance.
+Use the glossary's canonical domain terms in issues, design discussions, and tests. Distinguish sampling units, pairwise genetic observations, ecological distances, and genetic calibration; relatedness is not automatically a genetic distance.
 
 Surface a conflict with an existing ADR explicitly rather than silently overriding it. Use domain-modeling to resolve terminology gaps and record consequential decisions.
 

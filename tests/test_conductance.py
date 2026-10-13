@@ -114,13 +114,15 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions():
         surface = result.model.conductance_surface(region)
         prediction = result.model.predict(region)
         assert isinstance(surface, jax.Array)
-        assert isinstance(result.model.landscape_scores(region), jax.Array)
+        assert isinstance(result.model.ecological_distances(region), jax.Array)
         assert isinstance(prediction.values, jax.Array)
         assert surface.shape == (2, 2)
         assert np.all(np.isfinite(surface) & (surface > 0))
         expected = dense_resistance(surface, np.array([0, 1, 3]))
         np.testing.assert_allclose(prediction.as_matrix(), expected, atol=2e-6, rtol=2e-6)
-        np.testing.assert_allclose(result.model.landscape_scores(region), prediction.as_matrix())
+        np.testing.assert_allclose(
+            result.model.ecological_distances(region), prediction.as_matrix()
+        )
         assert prediction.target.units == "index"
 
 
@@ -303,10 +305,10 @@ def test_shared_conductance_fit_rebuilds_solver_on_native_reload_and_resume(tmp_
             assert actual == expected
     for region in regions:
         np.testing.assert_array_equal(
-            restored_model.landscape_scores(region), first.model.landscape_scores(region)
+            restored_model.ecological_distances(region), first.model.ecological_distances(region)
         )
         np.testing.assert_allclose(
-            continued.model.landscape_scores(region),
+            continued.model.ecological_distances(region),
             dense_resistance(
                 np.asarray(continued.model.conductance_surface(region)),
                 np.asarray(region.pixel_nodes),

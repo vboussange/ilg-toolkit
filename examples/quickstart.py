@@ -36,5 +36,5 @@ result = fit(
     config=TrainingConfig(objective="direct_log1p", epochs=4, learning_rate=0.001),
 )
 print("Conductance surface:\n", result.model.conductance_surface(region))
-print("Resistance landscape scores:\n", result.model.landscape_scores(region))
+print("Ecological distances (effective resistance):\n", result.model.ecological_distances(region))
 print("Genetic predictions:\n", result.model.predict(region).as_matrix())

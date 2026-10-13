@@ -31,10 +31,10 @@ region = RegionBatch(
 model = UNetEmbeddingDistance(
     2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4)
 )
-initial_scores = model.predict_distances(region.feature_array, region.pixel_nodes)
+initial_distances = model.predict_distances(region.feature_array, region.pixel_nodes)
 effects = np.array([0.2, -0.1, 0.15, -0.2, 0.25, -0.05])
 noise = rng.normal(scale=0.08, size=(6, 6))
-targets = 2 + 0.5 * initial_scores + effects[:, None] + effects[None, :] + (noise + noise.T) / 2
+targets = 2 + 0.5 * initial_distances + effects[:, None] + effects[None, :] + (noise + noise.T) / 2
 targets = targets.at[jnp.diag_indices(len(region.sampling_unit_ids))].set(0)
 observations = PairwiseObservations.from_matrix(
     region.sampling_unit_ids, targets, target=TargetSpec("synthetic divergence", units="index")
@@ -51,7 +51,9 @@ new_region = replace(
     name="new-catchment",
     features=cx.field(region.feature_array * 1.1, "row", "column", "feature"),
 )
-print("Label-free scores in new region:\n", calibrated.landscape_scores(new_region))
+print(
+    "Label-free ecological distances in new region:\n", calibrated.ecological_distances(new_region)
+)
 try:
     calibrated.predict(new_region)
 except ValueError as error:

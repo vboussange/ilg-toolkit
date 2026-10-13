@@ -1,4 +1,4 @@
-"""Label-free landscape scoring and explicit target-scale predictions."""
+"""Label-free ecological distances and explicit target-scale predictions."""
 
 from collections.abc import Sequence
 from typing import cast, final
@@ -17,15 +17,15 @@ from .prediction import Prediction
 
 @final
 class LandscapeGeneticsModel(eqx.Module):
-    """Compose landscape distances and an authoritative genetic calibration module.
+    """Compose ecological distances and an authoritative genetic calibration module.
 
-    ``distance_model`` derives scores without genetic observations. ``calibration``
-    owns the target and converts selected scores into genetic predictions. Frozen
-    calibration retains the entire distance model. Recorded pair access describes
-    distance-model training and validation selection; regional calibrations retain
-    their own pair identities and data roles. ``training_objective`` records the
-    actual fitting objective, or is ``None`` for a composition built without a fit;
-    it never selects inference behavior.
+    ``distance_model`` derives ecological distances without genetic observations.
+    ``calibration`` owns the target and converts selected distances into genetic
+    predictions. Frozen calibration retains the entire distance model. Recorded
+    pair access describes distance-model training and validation selection;
+    regional calibrations retain their own pair identities and data roles.
+    ``training_objective`` records the actual fitting objective, or is ``None`` for
+    a composition built without a fit; it never selects inference behavior.
     """
 
     distance_model: AbstractDistanceModel
@@ -63,8 +63,8 @@ class LandscapeGeneticsModel(eqx.Module):
                 "Query feature contract must match training feature meanings and order"
             )
 
-    def landscape_scores(self, region: RegionBatch) -> jax.Array:
-        """Predict scores for prepared query locations without genetic observations."""
+    def ecological_distances(self, region: RegionBatch) -> jax.Array:
+        """Return pairwise ecological distances at query locations without genetic observations."""
         self._validate_region(region)
         context = self.distance_model.prepare(region.feature_array)
         values = self.distance_model.predict_distances(
@@ -99,7 +99,7 @@ class LandscapeGeneticsModel(eqx.Module):
         """Return original-scale predictions; MLPE uses the region's marginal head.
 
         No query targets are accepted. An unseen MLPE region requires explicit
-        calibration even though its landscape scores can already be computed.
+        calibration even though its ecological distances can already be computed.
 
         Args:
             region: Query features and locations matching the model's feature
@@ -139,8 +139,8 @@ class LandscapeGeneticsModel(eqx.Module):
             ) from error
         if isinstance(self.calibration, MLPECalibrationModule):
             self._regional_head(region)
-        scores = _scores_for_pairs(self.landscape_scores(region), region, pairs)
-        values = self.calibration.predict(scores, pairs, region_name=region.name)
+        distances = _distances_for_pairs(self.ecological_distances(region), region, pairs)
+        values = self.calibration.predict(distances, pairs, region_name=region.name)
         return Prediction(
             jnp.asarray(values), pairs, region.name, self.target, region.sampling_unit_ids
         )
@@ -173,7 +173,7 @@ class LandscapeGeneticsModel(eqx.Module):
             contributions, excluding distance-model, coefficient and variance-
             parameter uncertainty. Nonlinear inverse-transformed means are not
             original-scale expectations. Conditional calculations use scoped
-            float64; resistance scores require enabled x64. Global precision,
+            float64; effective resistances require enabled x64. Global precision,
             model parameters and stored posterior remain unchanged.
 
         Raises:
@@ -183,8 +183,8 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         head = self._regional_head(region)
         pairs = tuple(pairs)
-        scores = _scores_for_pairs(self.landscape_scores(region), region, pairs)
-        result = head.predict_known_effects(scores, pairs)
+        distances = _distances_for_pairs(self.ecological_distances(region), region, pairs)
+        result = head.predict_known_effects(distances, pairs)
         return eqx.tree_at(
             lambda value: value.prediction.sampling_unit_ids, result, region.sampling_unit_ids
         )
@@ -226,7 +226,7 @@ class LandscapeGeneticsModel(eqx.Module):
             jitter contributions only. Nonlinear inverse-transformed means are
             not original-scale expectations. Conditional calculations use scoped
             float64 without changing global precision; resistance requires
-            explicitly enabled x64 before score calculation.
+            explicitly enabled x64 before distance calculation.
 
         Raises:
             ValueError: Features, regional calibration, population kinds, pair
@@ -236,19 +236,21 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         head = self._regional_head(region)
         pairs = tuple(pairs)
-        scores = self.landscape_scores(region)
-        support_scores = _scores_for_pairs(scores, region, support_observations.observed_pairs)
-        conditioned = head.condition_on_support(
-            support_scores, support_observations, partition=support_partition
+        distances = self.ecological_distances(region)
+        support_distances = _distances_for_pairs(
+            distances, region, support_observations.observed_pairs
         )
-        result = conditioned.predict(_scores_for_pairs(scores, region, pairs), pairs)
+        conditioned = head.condition_on_support(
+            support_distances, support_observations, partition=support_partition
+        )
+        result = conditioned.predict(_distances_for_pairs(distances, region, pairs), pairs)
         return eqx.tree_at(
             lambda value: value.prediction.sampling_unit_ids, result, region.sampling_unit_ids
         )
 
 
-def _scores_for_pairs(
-    scores: jax.Array, region: RegionBatch, pairs: Sequence[tuple[str, str]]
+def _distances_for_pairs(
+    distances: jax.Array, region: RegionBatch, pairs: Sequence[tuple[str, str]]
 ) -> jax.Array:
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
     try:
@@ -259,4 +261,4 @@ def _scores_for_pairs(
         raise ValueError(
             "Pairs must contain two sampling-unit labels with locations in the query region"
         ) from error
-    return scores[indices[:, 0], indices[:, 1]]
+    return distances[indices[:, 0], indices[:, 1]]

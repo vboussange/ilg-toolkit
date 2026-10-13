@@ -3,8 +3,9 @@
 Write $y_{ij}$ for an observed target in its declared units and
 $t_{ij}=T(y_{ij})$ for its explicitly selected `TargetSpec` transform. Identity,
 log1p and square root have different meanings; no conversion is inferred.
-Landscape scores $s_{ij}$ are squared embedding distances or effective
-resistances, depending on the encoder. They are distinct from genetic predictions.
+Ecological distances $s_{ij}$ are squared embedding distances or effective
+resistances, depending on the distance model. They are distinct from genetic
+predictions.
 
 ## Direct regression
 
@@ -21,7 +22,7 @@ automatically dominate. Missing observations never contribute.
 
 ## Population MLPE
 
-For each region, training scores are standardized using their observed-pair mean
+For each region, training distances are standardized using their observed-pair mean
 $c$ and sample SD $a$ (ddof=1): $x_{ij}=(s_{ij}-c)/a$. MLPE assumes
 
 $$t_{ij}=\alpha+\beta x_{ij}+b_i+b_j+\epsilon_{ij},\qquad
@@ -32,7 +33,7 @@ Intercept $\alpha$ and slope $\beta$ are signed. Population variance $u$ and
 residual variance $e$ are positive with explicit floors; $j$ is the declared
 jitter addition, used consistently throughout fitting and prediction. It is
 never increased automatically. The same observation model applies to embedding
-and resistance scores. Individual relatedness requires another observation model.
+and resistance distances. Individual relatedness requires another observation model.
 
 A pair has variance $2u+d$. Two different pairs sharing one endpoint have
 covariance $u$; disjoint pairs have covariance zero. Thus shared populations
@@ -62,8 +63,8 @@ inner variance fit at each encoder update, and records `converged=False`.
 
 After a joint update, training observations refresh $c,a,\hat\theta$ and the
 population-effect posterior. Validation uses those frozen training quantities:
-it does not recompute score moments or refit coefficients on validation targets.
-Constant scores, singular GLS, disjoint endpoint sets that cannot identify two
+it does not recompute distance moments or refit coefficients on validation targets.
+Constant distances, singular GLS, disjoint endpoint sets that cannot identify two
 variance components, unsupported conditioning and failed optimization are explicit
 failures. [Endpoint-system arithmetic and its precision limits](performance/mlpe.md)
 explain the exact population-sized calculation.

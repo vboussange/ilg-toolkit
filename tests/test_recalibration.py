@@ -47,10 +47,10 @@ def problem(
         np.array(list(np.ndindex(2, 3))),
         feature_names=("east_covariate", "canopy_covariate"),
     )
-    scores = (coordinates[:, None] - coordinates[None, :]) ** 2
+    distances = (coordinates[:, None] - coordinates[None, :]) ** 2
     effects = np.array([0.2, -0.15, 0.1, 0.3, -0.2, 0.05])
     rng = np.random.default_rng(17)
-    observed = 2 + 0.7 * scores + effects[:, None] + effects[None, :]
+    observed = 2 + 0.7 * distances + effects[:, None] + effects[None, :]
     noise = rng.normal(scale=0.12, size=(6, 6))
     observed += (noise + noise.T) / 2
     np.fill_diagonal(observed, 0)
@@ -106,7 +106,7 @@ def test_explicit_development_recalibration_keeps_encoder_and_prior_history_froz
     }
     assert not np.allclose(calibrated.predict(region).values, developed.predict(region).values)
     np.testing.assert_array_equal(
-        developed.landscape_scores(region), calibrated.landscape_scores(region)
+        developed.ecological_distances(region), calibrated.ecological_distances(region)
     )
 
 
@@ -174,7 +174,7 @@ def test_regional_mlpe_installation_requires_matching_region_and_target_contract
         replace(regional, target=TargetSpec("relatedness", kind="relatedness"))
 
 
-def test_transfer_scores_are_label_free_and_each_region_requires_its_own_head():
+def test_transfer_distances_are_label_free_and_each_region_requires_its_own_head():
     import pytest
 
     from ilg_toolkit import calibrate
@@ -189,8 +189,8 @@ def test_transfer_scores_are_label_free_and_each_region_requires_its_own_head():
     ).model
     calibrated = calibrate(original, region, observations)
     new_region = replace(region, name="unseen-catchment")
-    scores = calibrated.landscape_scores(new_region)
-    assert np.isfinite(scores).all()
+    distances = calibrated.ecological_distances(new_region)
+    assert np.isfinite(distances).all()
     with pytest.raises(ValueError, match="unseen-catchment.*no MLPE calibration"):
         calibrated.predict(new_region)
     with pytest.raises(ValueError, match="declare a calibration partition"):
@@ -291,6 +291,6 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
     with pytest.raises(ValueError, match="population sampling units"):
         calibrate(model, individuals, observations)
     calibrated = calibrate(model, region, observations)
-    assert np.isfinite(calibrated.landscape_scores(individuals)).all()
+    assert np.isfinite(calibrated.ecological_distances(individuals)).all()
     with pytest.raises(ValueError, match="population sampling units"):
         calibrated.predict(individuals)

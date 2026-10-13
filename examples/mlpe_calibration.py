@@ -1,4 +1,4 @@
-"""Calibrate declared landscape scores separately from the frozen encoder."""
+"""Calibrate ecological distances separately from the frozen encoder."""
 
 import coordax as cx
 import jax
@@ -25,11 +25,11 @@ encoder = UNetEmbeddingDistance(
 )
 raw_matrix = encoder.predict_distances(region.feature_array, region.pixel_nodes)
 left, right = jnp.triu_indices(len(region.sampling_unit_ids), 1)
-raw_scores = raw_matrix[left, right].astype(jnp.float64)
+distances = raw_matrix[left, right].astype(jnp.float64)
 effects = rng.normal(scale=0.04, size=8)
 measured = (
     1
-    + 0.15 * (raw_scores - raw_scores.mean()) / raw_scores.std(ddof=1)
+    + 0.15 * (distances - distances.mean()) / distances.std(ddof=1)
     + effects[left]
     + effects[right]
     + rng.normal(scale=0.02, size=len(left))
@@ -44,9 +44,9 @@ observations = PairwiseObservations.from_pairs(
     sampling_unit_ids=region.sampling_unit_ids,
     target=TargetSpec("synthetic divergence", units="index"),
 )
-head = calibrate_mlpe(raw_scores, observations, region_name=region.name)
-prediction = head.predict_marginal(raw_scores, observations.observed_pairs)
-print("Landscape scores:", raw_scores[:4])
+head = calibrate_mlpe(distances, observations, region_name=region.name)
+prediction = head.predict_marginal(distances, observations.observed_pairs)
+print("Ecological distances:", distances[:4])
 print(
     "Calibrated genetic predictions:",
     prediction.prediction.values[:4],

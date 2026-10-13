@@ -46,7 +46,7 @@ These operations do not refit or mutate models. Support conditioning returns a
 conditional result without altering the saved posterior. Deployment requires
 all requested members to succeed; OOF can retain partial coverage with failures
 reported. MLPE genetic prediction requires explicit calibration for the query
-region even when the distance model can already compute its landscape scores.
+region even when the distance model can already compute its ecological distances.
 
 ## Holdout and actual access must agree
 

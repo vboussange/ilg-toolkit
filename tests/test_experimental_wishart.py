@@ -178,7 +178,7 @@ def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
             anchor_id=labels[0],
             parameter_source="fixed",
         )
-    np.testing.assert_allclose(report.resistance_scores, resistance, atol=1e-6)
+    np.testing.assert_allclose(report.resistances, resistance, atol=1e-6)
     np.testing.assert_allclose(report.model_covariance, covariance, atol=1e-6)
     assert np.isclose(report.log_likelihood, wishart_log_likelihood(observations, covariance))
     assert np.isfinite(report.heldout_score.log_likelihood)

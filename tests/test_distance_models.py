@@ -67,7 +67,7 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
     save_model(path, state.model)
     restored = load_model(path, distance_model=CustomDistance(jnp.array(0.0)))
     np.testing.assert_array_equal(
-        restored.landscape_scores(region), state.model.landscape_scores(region)
+        restored.ecological_distances(region), state.model.ecological_distances(region)
     )
     np.testing.assert_array_equal(
         restored.predict(region).values, state.model.predict(region).values

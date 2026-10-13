@@ -9,7 +9,7 @@ from .likelihood import (
     pair_incidence_matrix,
     profiled_mlpe_ml_fit,
     profiled_mlpe_ml_negative_log_likelihood,
-    sample_standardize_scores,
+    sample_standardize_distances,
 )
 from .prediction import (
     MLPEConditionalPrediction,
@@ -37,5 +37,5 @@ __all__ = [
     "predict_known_effects",
     "profiled_mlpe_ml_fit",
     "profiled_mlpe_ml_negative_log_likelihood",
-    "sample_standardize_scores",
+    "sample_standardize_distances",
 ]

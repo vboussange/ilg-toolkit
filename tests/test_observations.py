@@ -105,8 +105,8 @@ def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_t
 
 def test_encoder_distance_boundary_accepts_array_like_rasters_and_nodes():
     encoder = LinearEmbedding(jnp.asarray(1.0))
-    scores = encoder.predict_distances([[[0.0], [1.0], [2.0]]], [0, 1, 2])
-    np.testing.assert_array_equal(scores, [[0, 1, 4], [1, 0, 1], [4, 1, 0]])
+    distances = encoder.predict_distances([[[0.0], [1.0], [2.0]]], [0, 1, 2])
+    np.testing.assert_array_equal(distances, [[0, 1, 4], [1, 0, 1], [4, 1, 0]])
 
 
 def test_labelled_raster_axes_normalize_without_changing_feature_meaning():
@@ -160,15 +160,15 @@ def test_public_landscape_and_target_predictions_return_jax_values():
         distance_model=model,
         config=TrainingConfig(objective="direct_log1p", epochs=0),
     ).model
-    scores = fitted.landscape_scores(region)
+    distances = fitted.ecological_distances(region)
     prediction = fitted.predict(region)
     selected = fitted.predict(region, [("unit/20", "unit/7")])
-    assert isinstance(scores, jax.Array)
+    assert isinstance(distances, jax.Array)
     assert isinstance(prediction.values, jax.Array)
     assert isinstance(selected.values, jax.Array)
     assert isinstance(target.forward(jnp.array([0.5])), jax.Array)
     assert isinstance(target.inverse(jnp.array([0.5])), jax.Array)
-    np.testing.assert_allclose(scores[0, 1], 0.49, rtol=1e-6)
+    np.testing.assert_allclose(distances[0, 1], 0.49, rtol=1e-6)
     np.testing.assert_allclose(selected.values, [np.expm1(0.49)], rtol=1e-6)
     np.testing.assert_array_equal(np.diag(prediction.as_matrix()), 0)
 
@@ -284,7 +284,7 @@ def test_incomplete_pairs_remain_absent_through_fitting():
     np.testing.assert_allclose(result.model.predict(region).as_matrix()[0, 2], 4)
 
 
-def test_explicit_transform_returns_original_units_and_separate_landscape_scores():
+def test_explicit_transform_returns_original_units_and_separate_ecological_distances():
     region, _, _ = problem()
     target = TargetSpec("explicitly transformed divergence", units="index", transform="log1p")
     observations = PairwiseObservations.from_pairs(
@@ -302,7 +302,7 @@ def test_explicit_transform_returns_original_units_and_separate_landscape_scores
     assert prediction.target.transform == "log1p"
     assert prediction.target.units == "index"
     np.testing.assert_allclose(prediction.as_matrix()[0, 1], np.e - 1, rtol=1e-6)
-    np.testing.assert_allclose(result.model.landscape_scores(region)[0, 1], 1)
+    np.testing.assert_allclose(result.model.ecological_distances(region)[0, 1], 1)
 
 
 def test_supplied_partitions_select_observations_and_reject_invalid_membership():

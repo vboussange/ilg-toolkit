@@ -15,8 +15,8 @@ The conductance workflow connects three quantities:
 - **Conductance** describes ease of movement through the landscape. A model
   learns conductance from features, then calculates **effective resistance**:
   separation between locations through the resulting movement graph. Resistance
-  is a **landscape score**, before relating it to genetic measurements.
-- **Genetic calibration** relates landscape scores to the declared genetic
+  is an **ecological distance**, before relating it to genetic measurements.
+- **Genetic calibration** relates ecological distances to the declared genetic
   target scale. A **landscape genetics model** composes the distance model and this
   relationship together for prediction.
 
@@ -84,7 +84,7 @@ result = fit(
     config=TrainingConfig(objective="direct_log1p", epochs=4, learning_rate=0.001),
 )
 print("Conductance surface:\n", result.model.conductance_surface(region))
-print("Resistance landscape scores:\n", result.model.landscape_scores(region))
+print("Ecological distances (effective resistance):\n", result.model.ecological_distances(region))
 prediction = result.model.predict(region)
 print("Genetic pair predictions:", prediction.pairs, prediction.values)
 print("Genetic prediction matrix:\n", prediction.as_matrix())
@@ -102,7 +102,7 @@ structural zeros, not fitted self-pair predictions. An explicit unique matrix
 order may include additional units but must contain every predicted endpoint.
 
 Both the distance model and objective are required choices. Here `direct_log1p` minimizes
-mean squared differences after applying `log1p` to nonnegative scores and targets.
+mean squared differences after applying `log1p` to nonnegative distances and targets.
 This loss does not change the declared `identity` target transform. Conductance,
 resistance and genetic prediction remain separate outputs; a good genetic fit
 alone does not identify a unique biological movement surface.

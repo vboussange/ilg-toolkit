@@ -57,8 +57,8 @@ class MLPEConditionalPrediction(eqx.Module):
     )
 
 
-def _query(scores, pairs):
-    scores = jnp.asarray(scores, dtype=jnp.float64)
+def _query(distances, pairs):
+    distances = jnp.asarray(distances, dtype=jnp.float64)
     try:
         raw_pairs = tuple(pairs)
         if any(isinstance(pair, str) for pair in raw_pairs):
@@ -66,8 +66,8 @@ def _query(scores, pairs):
         pairs = tuple(tuple(pair) for pair in raw_pairs)
     except (TypeError, ValueError) as error:
         raise MLPEError("Query pairs must contain sampling-unit labels") from error
-    if not pairs or scores.shape != (len(pairs),) or not bool(jnp.isfinite(scores).all()):
-        raise MLPEError("Query scores must be finite and aligned with labelled pairs")
+    if not pairs or distances.shape != (len(pairs),) or not bool(jnp.isfinite(distances).all()):
+        raise MLPEError("Query distances must be finite and aligned with labelled pairs")
     if any(
         len(pair) != 2
         or any(not isinstance(label, str) or not label for label in pair)
@@ -78,7 +78,7 @@ def _query(scores, pairs):
     canonical = tuple(tuple(sorted(pair)) for pair in pairs)
     if len(set(canonical)) != len(canonical):
         raise MLPEError("Query pairs contain duplicate unordered identities, including reversals")
-    return scores, pairs, canonical
+    return distances, pairs, canonical
 
 
 def _extend(head, population_ids, mean, covariance, pairs):
@@ -108,13 +108,15 @@ def _effect_prediction(mean, covariance, left, right):
 
 
 @jax.enable_x64()
-def _predict(head, scores, pairs, population_ids, mean, covariance, provenance):
-    scores, pairs, canonical = _query(scores, pairs)
+def _predict(head, distances, pairs, population_ids, mean, covariance, provenance):
+    distances, pairs, canonical = _query(distances, pairs)
     if set(canonical) & set(provenance.support_pairs):
         raise MLPEError("Support/query overlap: an unordered support pair cannot be a query")
     population_ids, mean, covariance = _extend(head, population_ids, mean, covariance, pairs)
     left, right = _endpoints(pairs, population_ids)
-    model_values = head.intercept + head.slope * (scores - head.score_center) / head.score_scale
+    model_values = (
+        head.intercept + head.slope * (distances - head.distance_center) / head.distance_scale
+    )
     effects, effect_variance, valid = _effect_prediction(mean, covariance, left, right)
     if not bool(valid):
         raise MLPEError("Population-effect prediction covariance is not positive definite")
@@ -141,7 +143,7 @@ def _predict(head, scores, pairs, population_ids, mean, covariance, provenance):
 
 
 def predict_known_effects(
-    head: RegionalMLPECalibration, scores, pairs
+    head: RegionalMLPECalibration, distances, pairs
 ) -> MLPEConditionalPrediction:
     """Use saved effects for known populations and independent priors for unseen ones.
 
@@ -156,7 +158,7 @@ def predict_known_effects(
     )
     return _predict(
         head,
-        scores,
+        distances,
         pairs,
         head.population_ids,
         head.effect_mean,
@@ -179,11 +181,11 @@ class MLPESupportConditioner(eqx.Module):
     effect_covariance: jax.Array
     provenance: MLPEPredictionProvenance
 
-    def predict(self, scores, pairs) -> MLPEConditionalPrediction:
+    def predict(self, distances, pairs) -> MLPEConditionalPrediction:
         """Predict disjoint queries, extending unseen effects with independent priors."""
         return _predict(
             self.head,
-            scores,
+            distances,
             pairs,
             self.population_ids,
             self.effect_mean,
@@ -209,14 +211,14 @@ def _condition_posterior(mean, covariance, residual, left, right, noise):
 @jax.enable_x64()
 def condition_on_support(
     head: RegionalMLPECalibration,
-    support_scores,
+    support_distances,
     support_observations: PairwiseObservations,
     *,
     partition: ObservationPartition,
 ) -> MLPESupportConditioner:
     """Update effects from exactly the explicitly declared support pairs.
 
-    Scores align with ``support_observations.observed_pairs``. The observations
+    Distances align with ``support_observations.observed_pairs``. The observations
     must contain exactly the declared support set, with the calibrated target
     metadata. Previously consumed calibration pairs cannot be supplied again,
     even in reversed order or under a different input row ordering. This is a
@@ -229,7 +231,7 @@ def condition_on_support(
         raise MLPEError("Support partition region_name does not match calibration")
     if support_observations.target != head.target:
         raise MLPEError("Support target metadata must match calibration")
-    scores, pairs, canonical = _query(support_scores, support_observations.observed_pairs)
+    distances, pairs, canonical = _query(support_distances, support_observations.observed_pairs)
     if set(canonical) != set(partition.pairs):
         raise MLPEError("Support observations must contain exactly the declared support pairs")
     calibration_pairs = tuple((min(pair), max(pair)) for pair in head.calibration_pairs)
@@ -244,7 +246,9 @@ def condition_on_support(
     )
     left, right = _endpoints(pairs, labels)
     residual = support_observations.target.forward(support_observations.observed_values)
-    residual -= head.intercept + head.slope * (scores - head.score_center) / head.score_scale
+    residual -= (
+        head.intercept + head.slope * (distances - head.distance_center) / head.distance_scale
+    )
     d = head.residual_variance + head.config.jitter
     updated_mean, updated_covariance = _condition_posterior(
         mean, covariance, residual, left, right, d

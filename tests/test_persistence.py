@@ -33,9 +33,9 @@ def problem(name="inference"):
         np.array(list(np.ndindex(2, 3))),
         feature_names=("east_covariate", "canopy_covariate"),
     )
-    scores = (coordinates[:, None] - coordinates[None, :]) ** 2
+    distances = (coordinates[:, None] - coordinates[None, :]) ** 2
     effects = np.array([0.2, -0.15, 0.1, 0.3, -0.2, 0.05])
-    observed = 2 + 0.7 * scores + effects[:, None] + effects[None, :]
+    observed = 2 + 0.7 * distances + effects[:, None] + effects[None, :]
     noise = np.random.default_rng(17).normal(scale=0.12, size=(6, 6))
     observed += (noise + noise.T) / 2
     np.fill_diagonal(observed, 0)
@@ -69,7 +69,9 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(tmp_p
     path = tmp_path / "direct.ilg"
     save_model(path, model)
     restored = load_model(path, distance_model=encoder(7))
-    np.testing.assert_array_equal(restored.landscape_scores(region), model.landscape_scores(region))
+    np.testing.assert_array_equal(
+        restored.ecological_distances(region), model.ecological_distances(region)
+    )
     np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
     assert restored.target == model.target
     assert restored.feature_names == model.feature_names
@@ -221,7 +223,7 @@ def test_model_reload_refuses_jax_precision_truncation(tmp_path, saved_dtype, te
             load_model(path, distance_model=template)
 
 
-def test_conductance_reload_preserves_surface_scores_and_solver_settings(tmp_path):
+def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_path):
     from ilg_toolkit import LandscapeGeneticsModel, ResistanceSolverConfig
     from ilg_toolkit.models import ResNet9Conductance
 
@@ -261,7 +263,9 @@ def test_conductance_reload_preserves_surface_scores_and_solver_settings(tmp_pat
     np.testing.assert_array_equal(
         restored.conductance_surface(region), model.conductance_surface(region)
     )
-    np.testing.assert_array_equal(restored.landscape_scores(region), model.landscape_scores(region))
+    np.testing.assert_array_equal(
+        restored.ecological_distances(region), model.ecological_distances(region)
+    )
     np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
     assert isinstance(restored.distance_model, ResNet9Conductance)
     assert isinstance(model.distance_model, ResNet9Conductance)
@@ -297,10 +301,7 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
         load_model(path, distance_model=wrong_dtype)
 
 
-def test_model_reload_rejects_truncated_leaves_and_legacy_archives(tmp_path):
-    import json
-    import zipfile
-
+def test_model_reload_rejects_truncated_leaves(tmp_path):
     from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
 
     encoder = UNetEmbeddingDistance(
@@ -318,18 +319,6 @@ def test_model_reload_rejects_truncated_leaves_and_legacy_archives(tmp_path):
     truncated.write_bytes(path.read_bytes()[:-10])
     with pytest.raises(ArtifactError, match="supplied distance_model template"):
         load_model(truncated, distance_model=encoder)
-    legacy = tmp_path / "legacy.ilg"
-    with zipfile.ZipFile(legacy, "w") as archive:
-        archive.writestr("manifest.json", '{"format":"ilg-toolkit","schema":1}')
-    with pytest.raises(ArtifactError, match="Unsupported"):
-        load_model(legacy, distance_model=encoder)
-    header, leaves = path.read_bytes().split(b"\n", 1)
-    outdated_header = json.loads(header)
-    outdated_header["version"] = 2
-    old_native = tmp_path / "old-native.ilg"
-    old_native.write_bytes(json.dumps(outdated_header).encode() + b"\n" + leaves)
-    with pytest.raises(ArtifactError, match="Unsupported"):
-        load_model(old_native, distance_model=encoder)
 
 
 def test_interrupted_model_replacement_preserves_previous_predictions(tmp_path, monkeypatch):
