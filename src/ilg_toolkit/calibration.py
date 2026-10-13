@@ -21,7 +21,7 @@ class AbstractCalibrationModule(eqx.Module):
     target: eqx.AbstractVar[TargetSpec]
 
     @abstractmethod
-    def predict(self, distances, pairs, *, region_name: str) -> jax.Array:
+    def predict(self, distances, pairs, *, region_name: str, species_name: str) -> jax.Array:
         """Return original-scale values for selected distances and labelled pairs."""
 
 
@@ -35,7 +35,7 @@ class DirectCalibrationModule(AbstractCalibrationModule):
         if not isinstance(self.target, TargetSpec):
             raise ValueError("Direct calibration requires a TargetSpec")
 
-    def predict(self, distances, pairs, *, region_name: str) -> jax.Array:
+    def predict(self, distances, pairs, *, region_name: str, species_name: str) -> jax.Array:
         return self.target.inverse(distances)
 
 

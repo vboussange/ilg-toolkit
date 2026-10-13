@@ -8,7 +8,7 @@ from .calibration import (
 )
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
-from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
+from .data import ObservationPartition, PairwiseObservations, RegionBatch, SamplingUnits, TargetSpec
 from .ensemble import (
     Ensemble,
     EnsembleMember,
@@ -48,8 +48,8 @@ from .mlpe import (
 )
 from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
-from .prediction import Prediction
-from .training import EpochRecord, TrainingState, fit
+from .prediction import Prediction, RawDistances
+from .training import StepRecord, TrainingState, fit
 
 __all__ = [
     "AbstractCalibrationModule",
@@ -89,7 +89,7 @@ __all__ = [
     "calibrate_mlpe",
     "condition_on_support",
     "predict_known_effects",
-    "EpochRecord",
+    "StepRecord",
     "TrainingConfig",
     "TrainingState",
     "PairwiseObservations",
@@ -97,6 +97,8 @@ __all__ = [
     "Prediction",
     "LandscapeGeneticsModel",
     "RegionBatch",
+    "SamplingUnits",
+    "RawDistances",
     "ResistanceSolverConfig",
     "TargetSpec",
     "fit",

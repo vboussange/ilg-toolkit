@@ -47,6 +47,8 @@ pythonpath = ["."]
 
 [tool.pyright]
 include = ["src", "tests", "experiments", "examples", "benchmarks"]
+# Frozen benchmark code targets its recorded main revision, checked separately.
+exclude = ["benchmarks/spec52/main_driver.py"]
 extraPaths = ["src", "tests"]
 pythonVersion = "3.12"
 reportIncompatibleMethodOverride = true
