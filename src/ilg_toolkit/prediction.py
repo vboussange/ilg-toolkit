@@ -80,14 +80,17 @@ class Prediction(eqx.Module):
         self.sampling_unit_ids = tuple(self.sampling_unit_ids)
         ObservationPartition(self.region_name, self.species_name, self.pairs, role="query")
         _validate_order(self.sampling_unit_ids, self.pairs)
-        if (
-            not isinstance(self.target, TargetSpec)
-            or self.scale != "original"
-            or self.values.shape != (len(self.pairs),)
-            or not jnp.issubdtype(self.values.dtype, jnp.floating)
-            or bool(jnp.isinf(self.values).any())
-        ):
-            raise ValueError("Prediction requires aligned original-scale floating point values")
+        # Scoped calibration may return stored float64 values to a float32 caller.
+        # Validate those values in their precision without changing caller policy.
+        with jax.enable_x64(jax.config.read("jax_enable_x64") or self.values.dtype == jnp.float64):
+            if (
+                not isinstance(self.target, TargetSpec)
+                or self.scale != "original"
+                or self.values.shape != (len(self.pairs),)
+                or not jnp.issubdtype(self.values.dtype, jnp.floating)
+                or bool(jnp.isinf(self.values).any())
+            ):
+                raise ValueError("Prediction requires aligned original-scale floating point values")
 
     def as_matrix(self, order: Sequence[str] | None = None) -> jax.Array:
         """Symmetric stored-pair view, with zero diagonal and missing-pair NaNs."""
