@@ -27,10 +27,10 @@ class PopulationFold:
     """
 
     fold_id: str
-    held_out_units: Mapping[str, tuple[str, ...]]
-    training: Mapping[str, ObservationPartition]
-    query: Mapping[str, ObservationPartition] = field(default_factory=dict)
-    validation: Mapping[str, ObservationPartition] = field(default_factory=dict)
+    held_out_units: Mapping[str, Mapping[str, tuple[str, ...]]]
+    training: Mapping[str, Mapping[str, ObservationPartition]]
+    query: Mapping[str, Mapping[str, ObservationPartition]] = field(default_factory=dict)
+    validation: Mapping[str, Mapping[str, ObservationPartition]] = field(default_factory=dict)
     query_regime: str = "both_unseen"
 
     def __post_init__(self):
@@ -38,44 +38,73 @@ class PopulationFold:
             raise ValueError("fold_id must be a nonempty stable identifier")
         if self.query_regime not in {"both_unseen", "at_least_one_unseen"}:
             raise ValueError("query_regime must be both_unseen or at_least_one_unseen")
-        held_out = {name: tuple(labels) for name, labels in self.held_out_units.items()}
-        if not held_out or any(
-            not isinstance(name, str)
-            or not name
-            or not labels
-            or len(set(labels)) != len(labels)
-            or any(not isinstance(label, str) or not label for label in labels)
-            for name, labels in held_out.items()
-        ):
-            raise ValueError("Each fold region requires distinct labelled held-out units")
-        held_out = {name: tuple(sorted(labels)) for name, labels in held_out.items()}
-        object.__setattr__(self, "held_out_units", held_out)
-        for role in ("training", "query", "validation"):
-            partitions = dict(getattr(self, role))
-            if any(
-                not isinstance(partition, ObservationPartition)
-                or name != partition.region_name
-                or partition.role != role
-                for name, partition in partitions.items()
+        declared = _group_mapping(self.held_out_units, "held-out units")
+        held_out = {}
+        for (region, species), labels in declared.items():
+            if isinstance(labels, (str, bytes)) or not isinstance(labels, Sequence):
+                raise ValueError("Each fold group requires distinct labelled held-out units")
+            labels = tuple(labels)
+            if (
+                not labels
+                or any(not isinstance(v, str) or not v for v in labels)
+                or len(set(labels)) != len(labels)
             ):
-                raise ValueError(
-                    f"Fold {role} partitions must have matching region names and roles"
-                )
-            if not set(partitions).issubset(held_out):
-                raise ValueError("Fold partition regions must have declared endpoint holdouts")
-            object.__setattr__(self, role, partitions)
-        if set(self.training) != set(held_out):
-            raise ValueError("Fold training and held-out region names must match exactly")
-        for name, partition in self.training.items():
-            if any(set(pair) & set(held_out[name]) for pair in partition.pairs):
+                raise ValueError("Each fold group requires distinct labelled held-out units")
+            held_out.setdefault(region, {})[species] = tuple(sorted(labels))
+        object.__setattr__(self, "held_out_units", held_out)
+        flattened = {}
+        for role in ("training", "query", "validation"):
+            partitions = _group_mapping(getattr(self, role), role, allow_empty=role != "training")
+            if role == "training" and set(partitions) != set(declared):
+                raise ValueError("Fold training and held-out group identities must match exactly")
+            if not set(partitions).issubset(declared):
+                raise ValueError("Fold partition groups must have declared endpoint holdouts")
+            nested = {}
+            for (region, species), partition in partitions.items():
+                if not isinstance(partition, ObservationPartition) or (
+                    partition.region_name,
+                    partition.species_name,
+                    partition.role,
+                ) != (region, species, role):
+                    raise ValueError(
+                        f"Fold {role} partitions require matching "
+                        "region/species identities and roles"
+                    )
+                nested.setdefault(region, {})[species] = partition
+            flattened[role] = partitions
+            object.__setattr__(self, role, nested)
+        for (region, species), partition in flattened["training"].items():
+            if any(set(pair) & set(held_out[region][species]) for pair in partition.pairs):
                 raise ValueError("Fold training pairs cannot include held-out endpoints")
-        for name, partition in self.query.items():
+        for (region, species), partition in flattened["query"].items():
             count = 2 if self.query_regime == "both_unseen" else 1
-            if any(len(set(pair) & set(held_out[name])) < count for pair in partition.pairs):
+            if any(
+                len(set(pair) & set(held_out[region][species])) < count for pair in partition.pairs
+            ):
                 raise ValueError("Fold query pairs violate the declared endpoint holdout regime")
-        for name, partition in self.validation.items():
-            if set(partition.pairs) & set(self.training[name].pairs):
+        for identity, partition in flattened["validation"].items():
+            if set(partition.pairs) & set(flattened["training"][identity].pairs):
                 raise ValueError("Fold training and validation pairs must be disjoint")
+
+
+def _group_mapping(value, label, *, allow_empty=False):
+    """Validate native host group mappings without accepting flat one-group forms."""
+    if not isinstance(value, Mapping) or (not value and not allow_empty):
+        raise ValueError(f"{label} requires a region-then-species mapping")
+    flattened = {}
+    for region, groups in value.items():
+        if (
+            not isinstance(region, str)
+            or not region
+            or not isinstance(groups, Mapping)
+            or not groups
+        ):
+            raise ValueError(f"{label} requires nonempty named region/species groups")
+        for species, item in groups.items():
+            if not isinstance(species, str) or not species:
+                raise ValueError(f"{label} requires named species identities")
+            flattened[region, species] = item
+    return flattened
 
 
 def _integer(value, name, *, minimum=0):
@@ -89,7 +118,7 @@ def generate_population_folds(
     observations,
     *,
     n_folds: int,
-    holdout_size: int | Mapping[str, int],
+    holdout_size: int | Mapping[str, Mapping[str, int]],
     seed: int = 0,
     query_regime: str = "both_unseen",
 ) -> tuple[PopulationFold, ...]:
@@ -106,29 +135,29 @@ def generate_population_folds(
     if query_regime not in {"both_unseen", "at_least_one_unseen"}:
         raise ValueError("query_regime must be both_unseen or at_least_one_unseen")
     inputs = _normalize_inputs(region, observations, None)
-    names = {prepared.name for prepared, _, _ in inputs}
-    if isinstance(holdout_size, Mapping) and set(holdout_size) != names:
-        raise ValueError("holdout_size mapping must match region names exactly")
+    catalogue = {(item.region.name, item.species) for item in inputs}
+    sizes = (
+        _group_mapping(holdout_size, "holdout_size") if isinstance(holdout_size, Mapping) else None
+    )
+    if sizes is not None and set(sizes) != catalogue:
+        raise ValueError("holdout_size mapping must match region/species groups exactly")
     folds = []
     rng = np.random.default_rng(seed)
     for index in range(n_folds):
         held_out, training, query = {}, {}, {}
         fold_id = f"fold-{index:04d}"
-        for prepared, observed, _ in inputs:
-            assert prepared.sampling_unit_kinds is not None
-            if any(kind != "population" for kind in prepared.sampling_unit_kinds):
-                raise ValueError("Population holdout generation requires population sampling units")
-            observed.aligned_pairs(prepared)
+        for prepared, species, observed, _ in inputs:
+            observed.aligned_pairs(prepared, species)
+            units = prepared.sampling_units[species]
             size = _integer(
-                holdout_size[prepared.name] if isinstance(holdout_size, Mapping) else holdout_size,
+                sizes[prepared.name, species] if sizes is not None else holdout_size,
                 "holdout_size",
                 minimum=1,
             )
-            if size > len(prepared.sampling_unit_ids) - 2:
+            if size > len(units.ids) - 2:
                 raise ValueError("holdout_size must leave at least two training sampling units")
-            labels = sorted(prepared.sampling_unit_ids)
-            selected = set(rng.choice(labels, size=size, replace=False).tolist())
-            held_out[prepared.name] = tuple(sorted(selected))
+            selected = set(rng.choice(sorted(units.ids), size=size, replace=False).tolist())
+            held_out.setdefault(prepared.name, {})[species] = tuple(sorted(selected))
             pairs = tuple(sorted((min(a, b), max(a, b)) for a, b in observed.observed_pairs))
             train_pairs = tuple(pair for pair in pairs if not selected.intersection(pair))
             threshold = 2 if query_regime == "both_unseen" else 1
@@ -137,11 +166,15 @@ def generate_population_folds(
             )
             if not train_pairs or not query_pairs:
                 raise ValueError(
-                    f"{fold_id}/{prepared.name}: holdout has no observed training or query pairs; "
-                    "supply explicit folds or adjust the holdout"
+                    f"{fold_id}/{prepared.name}/{species}: holdout has no observed "
+                    "training or query pairs; supply explicit folds or adjust the holdout"
                 )
-            training[prepared.name] = ObservationPartition(prepared.name, train_pairs, "training")
-            query[prepared.name] = ObservationPartition(prepared.name, query_pairs, "query")
+            training.setdefault(prepared.name, {})[species] = ObservationPartition(
+                prepared.name, species, train_pairs, "training"
+            )
+            query.setdefault(prepared.name, {})[species] = ObservationPartition(
+                prepared.name, species, query_pairs, "query"
+            )
         folds.append(PopulationFold(fold_id, held_out, training, query, query_regime=query_regime))
     return tuple(folds)
 
@@ -255,6 +288,7 @@ class EnsembleSurface:
     member_values: jax.Array
     member_spread: jax.Array
     region_name: str
+    species_name: str
 
 
 @jax.enable_x64()
@@ -302,9 +336,10 @@ def aggregate_predictions(
             prediction.sampling_unit_ids != first.sampling_unit_ids
             or prediction.pairs != first.pairs
             or prediction.region_name != first.region_name
+            or prediction.species_name != first.species_name
         ):
             raise ValueError(
-                "Ensemble predictions must align sampling-unit, pair and region identities"
+                "Ensemble predictions must align sampling-unit, pair and region/species identities"
             )
         member_values = jnp.asarray(prediction.values, dtype=jnp.float64)
         if member_values.shape != first.values.shape or not bool(jnp.isfinite(member_values).all()):
@@ -313,7 +348,14 @@ def aggregate_predictions(
     stacked = jnp.stack(values)
     mean, spread = _summarize_members(stacked)
     return EnsemblePrediction(
-        Prediction(mean, first.pairs, first.region_name, first.target, first.sampling_unit_ids),
+        Prediction(
+            mean,
+            first.pairs,
+            first.region_name,
+            first.species_name,
+            first.target,
+            first.sampling_unit_ids,
+        ),
         ids,
         stacked,
         spread,
@@ -387,9 +429,13 @@ class Ensemble:
                 p.target != first.target
                 or p.feature_count != first.feature_count
                 or p.feature_names != first.feature_names
+                or p.species != first.species
                 for p in completed
             ):
-                raise ValueError("Ensemble members require compatible target and feature contracts")
+                raise ValueError(
+                    "Ensemble members require compatible target, feature "
+                    "and ordered species contracts"
+                )
         object.__setattr__(self, "members", members)
         object.__setattr__(self, "expected_member_ids", expected)
 
@@ -417,68 +463,65 @@ class Ensemble:
             models[member.identity.member_id] = member.model
         return models
 
-    def predict(self, region: RegionBatch, pairs=None) -> EnsemblePrediction:
-        """Predict marginal genetic points with every requested member.
+    def predict(
+        self, region: RegionBatch, *, species=None, pairs=None
+    ) -> dict[str, EnsemblePrediction]:
+        """Average original-scale predictions per selected species over all members.
 
-        Deployment has no endpoint holdout or actual-target-access requirement.
-        MLPE members use their region's marginal calibration, with population
-        effect means zero; direct members apply their target inverse transform.
-        Use ``predict_out_of_fold`` for eligibility-filtered evaluation.
-
-        Args:
-            region: One ``RegionBatch`` with located query units and features
-                matching each member's feature contract. MLPE members require
-                calibration for this region. No genetic query targets are used.
-            pairs: Optional nonempty iterable of distinct unordered labelled
-                pairs. Caller order/orientation is retained; self-pairs,
-                duplicates (including reversals) and unlocated labels fail.
-                ``None`` requests all distinct pairs in region sampling-unit
-                order. Selected distances are inverted only for requested pairs.
-
-        Returns:
-            ``EnsemblePrediction`` composing original-scale mean points and
-            full region matrix order, member values ``(k, m)`` and descriptive
-            original-unit SD ``(m,)``. Each member's inverse transform precedes
-            averaging. Aggregation uses scoped float64 without changing global
-            precision; resistance calculations require explicitly enabled x64.
-            No member is fitted or mutated and no query targets are read.
-
-        Raises:
-            RuntimeError: Any requested member is failed or pending.
-            ValueError: Features, regional calibration, pair selection or member
-                outputs are incompatible. Deployment propagates prediction
-                failures rather than returning partial composition.
-            FloatingPointError: A member prediction, target inverse or aggregate
-                produces invalid numerical values.
+        Selection mirrors LandscapeGeneticsModel.predict: multispecies models
+        require explicit species, and pairs is a species-keyed mapping. Every
+        requested member must succeed. This deployment operation imposes no
+        holdout eligibility rule and consumes no query targets.
         """
-        models = self._completed()
-        pairs = None if pairs is None else tuple(pairs)
-        predictions = {
-            member_id: model.predict(region, pairs) for member_id, model in models.items()
+        if pairs is not None:
+            if not isinstance(pairs, Mapping):
+                raise ValueError("pairs must be a mapping keyed by selected species")
+            pairs = {name: tuple(selected) for name, selected in pairs.items()}
+        outputs = {
+            identity: model.predict(region, species=species, pairs=pairs)
+            for identity, model in self._completed().items()
         }
-        return aggregate_predictions(predictions, expected_member_ids=self.expected_member_ids)
-
-    def ecological_distances(self, region: RegionBatch) -> dict[str, jax.Array]:
-        """Return each member's ecological distances separately; their scales can differ."""
+        selected = next(iter(outputs.values()))
         return {
-            member_id: model.ecological_distances(region)
-            for member_id, model in self._completed().items()
+            name: aggregate_predictions(
+                {identity: result[name] for identity, result in outputs.items()},
+                expected_member_ids=self.expected_member_ids,
+            )
+            for name in selected
+        }
+
+    def ecological_distances(
+        self, region: RegionBatch, *, species=None
+    ) -> dict[str, dict[str, jax.Array]]:
+        """Species then member keyed ecological matrices; no genetic calibration."""
+        outputs = {
+            identity: model.ecological_distances(region, species=species)
+            for identity, model in self._completed().items()
+        }
+        return {
+            name: {identity: result[name] for identity, result in outputs.items()}
+            for name in next(iter(outputs.values()))
         }
 
     @jax.enable_x64()
-    def conductance_surfaces(self, region: RegionBatch) -> EnsembleSurface:
-        """Return an explicitly descriptive surface mean, separate from genetic means."""
-        surfaces = {
-            member_id: model.conductance_surface(region)
-            for member_id, model in self._completed().items()
+    def conductance_surfaces(
+        self, region: RegionBatch, *, species=None
+    ) -> dict[str, EnsembleSurface]:
+        """Species-keyed descriptive surfaces, distinct from averaged distances."""
+        outputs = {
+            identity: model.conductance_surface(region, species=species)
+            for identity, model in self._completed().items()
         }
         ids = self.expected_member_ids
         assert ids is not None
-        stacked = jnp.stack(
-            [jnp.asarray(surfaces[member_id], dtype=jnp.float64) for member_id in ids]
-        )
-        mean, spread = _summarize_members(stacked)
-        return EnsembleSurface(mean, ids, stacked, spread, region.name)
+        summaries = {}
+        for name in next(iter(outputs.values())):
+            stacked = jnp.stack(
+                [jnp.asarray(outputs[identity][name], dtype=jnp.float64) for identity in ids]
+            )
+            mean, spread = _summarize_members(stacked)
+            summaries[name] = EnsembleSurface(mean, ids, stacked, spread, region.name, name)
+        return summaries
 
 
 class _ProgressFailure(Exception):
@@ -490,18 +533,16 @@ def _fold_inputs(region, observations, fold):
     if not isinstance(fold, PopulationFold):
         raise ValueError("fold must be a PopulationFold")
     inputs = _normalize_inputs(region, observations, fold.training)
-    if set(fold.held_out_units) != {prepared.name for prepared, _, _ in inputs}:
-        raise ValueError("Fold region identities must match all supplied regions")
-    for prepared, observed, partition in inputs:
-        assert prepared.sampling_unit_kinds is not None
-        if any(kind != "population" for kind in prepared.sampling_unit_kinds):
-            raise ValueError("Population folds require population sampling units")
-        if not set(fold.held_out_units[prepared.name]).issubset(prepared.sampling_unit_ids):
-            raise ValueError("Fold held-out endpoints must belong to the prepared region")
-        observed.aligned_pairs(prepared, partition)
+    for prepared, species, observed, partition in inputs:
+        if not set(fold.held_out_units[prepared.name][species]).issubset(
+            prepared.sampling_units[species].ids
+        ):
+            raise ValueError("Fold held-out endpoints must belong to the prepared region/species")
+        observed.aligned_pairs(prepared, species, partition)
         for partitions in (fold.validation, fold.query):
-            if prepared.name in partitions:
-                observed.aligned_pairs(prepared, partitions[prepared.name])
+            selected = partitions.get(prepared.name, {}).get(species)
+            if selected is not None:
+                observed.aligned_pairs(prepared, species, selected)
     return inputs
 
 
@@ -514,7 +555,7 @@ def fit_ensemble_member(
     config: TrainingConfig | None = None,
     model_factory: Callable[[jax.Array], AbstractDistanceModel] | None = None,
     state: TrainingState | None = None,
-    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
+    on_step: Callable[[MemberIdentity, TrainingState], None] | None = None,
 ) -> EnsembleMember:
     """Fit or continue one independent member, the persistence orchestration seam.
 
@@ -533,19 +574,24 @@ def fit_ensemble_member(
     config = state.config if config is None and state is not None else config
     assert config is not None
     config = replace(config, seed=identity.initialization_seed)
-    regions = {prepared.name: prepared for prepared, _, _ in inputs}
-    observed = {prepared.name: values for prepared, values, _ in inputs}
+    regions = {item.region.name: item.region for item in inputs}
+    observed = {}
+    for item in inputs:
+        observed.setdefault(item.region.name, {})[item.species] = item.observations
     validation = None
     if fold.validation:
         validation = (
             {name: regions[name] for name in fold.validation},
-            {name: observed[name] for name in fold.validation},
+            {
+                name: {species: observed[name][species] for species in groups}
+                for name, groups in fold.validation.items()
+            },
         )
 
     def progress(current: TrainingState):
-        assert on_epoch is not None
+        assert on_step is not None
         try:
-            on_epoch(identity, current)
+            on_step(identity, current)
         except Exception as error:
             raise _ProgressFailure(error) from error
 
@@ -567,7 +613,7 @@ def fit_ensemble_member(
             validation=validation,
             validation_partition=fold.validation if fold.validation else None,
             state=state,
-            on_epoch=progress if on_epoch is not None else None,
+            on_step=progress if on_step is not None else None,
         )
     except _ProgressFailure as failure:
         raise failure.error from failure
@@ -626,14 +672,14 @@ def fit_ensemble(
     *,
     folds: Sequence[PopulationFold] | None = None,
     n_folds: int | None = None,
-    holdout_size: int | Mapping[str, int] | None = None,
+    holdout_size: int | Mapping[str, Mapping[str, int]] | None = None,
     fold_seed: int = 0,
     query_regime: str = "both_unseen",
     initialization_seeds: Sequence[int] | None = None,
     config: TrainingConfig,
     model_factory: Callable[[jax.Array], AbstractDistanceModel] | None = None,
     member_states: Mapping[str, TrainingState] | None = None,
-    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
+    on_step: Callable[[MemberIdentity, TrainingState], None] | None = None,
     on_member: Callable[[EnsembleMember], None] | None = None,
 ) -> Ensemble:
     """Sequential independent fits from explicit or reproducibly generated folds.
@@ -641,7 +687,7 @@ def fit_ensemble(
     Default generated holdouts are query-only. Explicit validation uses its
     targets for encoder selection and is recorded. All requested outcomes are
     returned, including failures; prediction refuses to drop failed members.
-    Per-member continuation and epoch/member callbacks support external durable
+    Per-member continuation and step/member callbacks support external durable
     orchestration without making persistence mandatory.
     """
     folds, seeds, identities = _prepare_ensemble(
@@ -674,7 +720,7 @@ def fit_ensemble(
                 config=config,
                 model_factory=model_factory,
                 state=states.get(identity.member_id),
-                on_epoch=on_epoch,
+                on_step=on_step,
             )
             members.append(member)
             if on_member is not None:
