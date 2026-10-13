@@ -7,12 +7,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from test_checkpoint import initial_state as initial_state
+from test_species_conditioning import conditioned_species as conditioned_species
 
 from ilg_toolkit import (
     DirectCalibrationModule,
-    MLPECalibrationModule,
     PairwiseObservations,
     RegionBatch,
+    SamplingUnits,
     TargetSpec,
     TrainingConfig,
     fit,
@@ -29,8 +31,7 @@ def problem(name="inference"):
     region = RegionBatch(
         name,
         cx.Field(jnp.asarray(features), dims=("row", "column", "feature")),
-        labels,
-        np.array(list(np.ndindex(2, 3))),
+        {"fox": SamplingUnits(labels, np.array(list(np.ndindex(2, 3))))},
         feature_names=("east_covariate", "canopy_covariate"),
     )
     distances = (coordinates[:, None] - coordinates[None, :]) ** 2
@@ -53,6 +54,7 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(tmp_p
     def encoder(seed):
         return UNetEmbeddingDistance(
             2,
+            species=("fox",),
             patch_size=1,
             base_channels=2,
             embedding_dim=3,
@@ -61,125 +63,50 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(tmp_p
         )
 
     model = fit(
-        region,
-        observations,
+        [region],
+        {region.name: {"fox": observations}},
         distance_model=encoder(3),
-        config=TrainingConfig(epochs=0, objective="direct_log1p"),
+        config=TrainingConfig(steps=0, objective="direct_log1p"),
     ).model
     path = tmp_path / "direct.ilg"
     save_model(path, model)
     restored = load_model(path, distance_model=encoder(7))
     np.testing.assert_array_equal(
-        restored.ecological_distances(region), model.ecological_distances(region)
+        restored.ecological_distances(region)["fox"], model.ecological_distances(region)["fox"]
     )
-    np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
+    np.testing.assert_array_equal(
+        restored.predict(region)["fox"].values, model.predict(region)["fox"].values
+    )
     assert restored.target == model.target
     assert restored.feature_names == model.feature_names
     assert restored.training_pairs == model.training_pairs
     assert restored.training_objective == "direct_log1p"
     assert isinstance(restored.distance_model, UNetEmbeddingDistance)
-    assert restored.distance_model.encoder1.dropout.p == 0.23
+    assert restored.distance_model.backbone.encoder1.dropout.p == 0.23
 
 
-def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(tmp_path):
-    from dataclasses import replace
-
+def test_custom_mlpe_reload_preserves_posteriors_and_conditioning(tmp_path, conditioned_species):
     import equinox as eqx
 
-    from ilg_toolkit import ObservationPartition
-    from ilg_toolkit.models import EmbeddingDistanceModel
-
-    @final
-    class ScaledEmbedding(EmbeddingDistanceModel):
-        log_weights: jax.Array
-        patch_size: int = eqx.field(static=True, default=1)
-
-        def __init__(self, log_weights: jax.Array):
-            self.log_weights = log_weights
-
-        def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-            return features * jnp.exp(self.log_weights)
-
-    region, observations = problem()
-    other = replace(region, name="second-calibration")
-    other_observations = PairwiseObservations.from_matrix(
-        observations.sampling_unit_ids, observations.values * 2.0, target=observations.target
-    )
-    labels = set(region.sampling_unit_ids[:4])
-    pairs = tuple(pair for pair in observations.observed_pairs if set(pair) <= labels)
-    training = ObservationPartition(region.name, pairs[:-1], role="training")
-    validation = ObservationPartition(region.name, pairs[-1:], role="validation")
-    model = fit(
-        (region, other),
-        (observations, other_observations),
-        distance_model=ScaledEmbedding(jnp.asarray([0.2, -0.7])),
-        config=TrainingConfig(epochs=0, objective="mlpe"),
-        partition=(training, replace(training, region_name=other.name)),
-        validation=(region, observations),
-        validation_partition=validation,
-    ).model
+    model, region, _, query, support, partitions = conditioned_species
     path = tmp_path / "custom-mlpe.ilg"
     save_model(path, model)
-    restored = load_model(path, distance_model=ScaledEmbedding(jnp.asarray([4.0, 3.0])))
-    assert type(restored.distance_model) is ScaledEmbedding
-    for prepared in (region, other):
+    restored = load_model(path, distance_model=model.distance_model)
+    assert eqx.tree_equal(restored, model)
+    names = ("fox", "lynx")
+    pairs = dict.fromkeys(names, query)
+    for name in names:
         np.testing.assert_array_equal(
-            restored.predict(prepared).values, model.predict(prepared).values
+            restored.predict(region, species=names)[name].values,
+            model.predict(region, species=names)[name].values,
         )
-        assert isinstance(model.calibration, MLPECalibrationModule)
-        assert isinstance(restored.calibration, MLPECalibrationModule)
-        assert eqx.tree_equal(
-            restored.calibration.regions[prepared.name], model.calibration.regions[prepared.name]
-        )
-    assert restored.training_pairs == model.training_pairs
-    assert restored.validation_pairs == model.validation_pairs
-    query = (("population-4", "population-2"), ("population-5", "population-3"))
-    before = model.predict_known_effects(region, query)
-    after = restored.predict_known_effects(region, query)
-    np.testing.assert_array_equal(after.prediction.values, before.prediction.values)
-    np.testing.assert_array_equal(after.model_variance, before.model_variance)
-    assert after.provenance == before.provenance
-    support = PairwiseObservations.from_pairs(
-        [("population-4", "population-0")], [1.5], target=model.target
-    )
-    declared = ObservationPartition(region.name, support.observed_pairs, role="support")
-    before = model.predict_with_support(region, query, support, support_partition=declared)
-    after = restored.predict_with_support(region, query, support, support_partition=declared)
-    np.testing.assert_array_equal(after.prediction.values, before.prediction.values)
-    np.testing.assert_array_equal(after.model_variance, before.model_variance)
-    assert after.provenance == before.provenance
-    assert isinstance(restored.calibration, MLPECalibrationModule)
-    assert restored.calibration.regions[region.name].converged is False
-
-    from ilg_toolkit import (
-        Ensemble,
-        EnsembleMember,
-        MemberIdentity,
-        PopulationFold,
-        predict_out_of_fold,
-    )
-
-    fold = PopulationFold(
-        "held-out",
-        {region.name: region.sampling_unit_ids[-2:]},
-        {region.name: training},
-        validation={region.name: validation},
-    )
-    evaluation_pairs = (
-        validation.pairs[0],
-        ("population-2", "population-4"),
-        ("population-4", "population-5"),
-    )
-
-    def evaluate(calibrated):
-        member = EnsembleMember(MemberIdentity(fold.fold_id, 3), fold, "completed", calibrated)
-        return predict_out_of_fold(Ensemble((member,)), region, evaluation_pairs)
-
-    before_evaluation, after_evaluation = evaluate(model), evaluate(restored)
-    np.testing.assert_array_equal(after_evaluation.eligible_counts, [0, 0, 1])
-    np.testing.assert_array_equal(after_evaluation.values, before_evaluation.values)
-    assert after_evaluation.access == before_evaluation.access
-    assert after_evaluation.exclusion_reasons == before_evaluation.exclusion_reasons
+    for operation in (
+        lambda value: value.predict_known_effects(region, species=names, pairs=pairs),
+        lambda value: value.predict_with_support(
+            region, support, species=names, pairs=pairs, support_partition=partitions
+        ),
+    ):
+        assert eqx.tree_equal(operation(restored), operation(model))
 
 
 @pytest.mark.parametrize(
@@ -196,12 +123,15 @@ def test_model_reload_refuses_jax_precision_truncation(tmp_path, saved_dtype, te
     @final
     class CustomEmbedding(EmbeddingDistanceModel):
         weight: jax.Array
+        species: tuple[str, ...] = eqx.field(static=True, default=("fox",))
         patch_size: int = eqx.field(static=True, default=1)
 
         def __init__(self, weight: jax.Array):
             self.weight = weight
 
-        def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
+        def _embedding_grid(
+            self, features, species_index, *, inference=True, key=None, patch_batch_size=None
+        ):
             return features * self.weight
 
     path = tmp_path / "precision.ilg"
@@ -233,20 +163,18 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_
             jnp.asarray(np.random.default_rng(1).normal(size=(8, 8, 2))),
             dims=("row", "column", "feature"),
         ),
-        ("west", "north", "east"),
-        np.array([[0, 0], [0, 7], [7, 7]]),
+        {"fox": SamplingUnits(("west", "north", "east"), np.array([[0, 0], [0, 7], [7, 7]]))},
         feature_names=("elevation", "canopy"),
     )
 
     def encoder(seed):
         return ResNet9Conductance(
             2,
+            species=("fox",),
             patch_size=4,
             min_conductance=0.02,
             patch_batch_size=3,
-            solver_config=ResistanceSolverConfig(rtol=1e-9, atol=1e-10)
-            if seed == 3
-            else ResistanceSolverConfig(),
+            solver_config=ResistanceSolverConfig(rtol=1e-9, atol=1e-10),
             key=jax.random.key(seed),
         )
 
@@ -261,12 +189,14 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_
     save_model(path, model)
     restored = load_model(path, distance_model=encoder(9))
     np.testing.assert_array_equal(
-        restored.conductance_surface(region), model.conductance_surface(region)
+        restored.conductance_surface(region)["fox"], model.conductance_surface(region)["fox"]
     )
     np.testing.assert_array_equal(
-        restored.ecological_distances(region), model.ecological_distances(region)
+        restored.ecological_distances(region)["fox"], model.ecological_distances(region)["fox"]
     )
-    np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
+    np.testing.assert_array_equal(
+        restored.predict(region)["fox"].values, model.predict(region)["fox"].values
+    )
     assert isinstance(restored.distance_model, ResNet9Conductance)
     assert isinstance(model.distance_model, ResNet9Conductance)
     assert restored.distance_model.solver_config == model.distance_model.solver_config
@@ -278,7 +208,7 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
     from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
 
     encoder = UNetEmbeddingDistance(
-        2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0)
+        2, species=("fox",), patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0)
     )
     model = LandscapeGeneticsModel(
         encoder,
@@ -289,15 +219,15 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
     path = tmp_path / "model.ilg"
     save_model(path, model)
     wrong_shape = UNetEmbeddingDistance(
-        2, patch_size=1, base_channels=2, embedding_dim=3, key=jax.random.key(0)
+        2, species=("fox",), patch_size=1, base_channels=2, embedding_dim=3, key=jax.random.key(0)
     )
-    with pytest.raises(ArtifactError, match="changed shape"):
+    with pytest.raises(ArtifactError, match="shape|embedding_dim"):
         load_model(path, distance_model=wrong_shape)
     wrong_dtype = jax.tree.map(
         lambda value: value.astype(jnp.float64) if isinstance(value, jax.Array) else value,
         encoder,
     )
-    with pytest.raises(ArtifactError, match="changed dtype"):
+    with pytest.raises(ArtifactError, match="dtype"):
         load_model(path, distance_model=wrong_dtype)
 
 
@@ -305,7 +235,7 @@ def test_model_reload_rejects_truncated_leaves(tmp_path):
     from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
 
     encoder = UNetEmbeddingDistance(
-        2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0)
+        2, species=("fox",), patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0)
     )
     model = LandscapeGeneticsModel(
         encoder,
@@ -317,7 +247,7 @@ def test_model_reload_rejects_truncated_leaves(tmp_path):
     save_model(path, model)
     truncated = tmp_path / "truncated.ilg"
     truncated.write_bytes(path.read_bytes()[:-10])
-    with pytest.raises(ArtifactError, match="supplied distance_model template"):
+    with pytest.raises(ArtifactError, match="payload|supplied distance_model template"):
         load_model(truncated, distance_model=encoder)
 
 
@@ -331,7 +261,12 @@ def test_interrupted_model_replacement_preserves_previous_predictions(tmp_path, 
     def model(seed):
         return LandscapeGeneticsModel(
             UNetEmbeddingDistance(
-                2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(seed)
+                2,
+                species=("fox",),
+                patch_size=1,
+                base_channels=2,
+                embedding_dim=2,
+                key=jax.random.key(seed),
             ),
             DirectCalibrationModule(TargetSpec("divergence")),
             2,
@@ -350,5 +285,256 @@ def test_interrupted_model_replacement_preserves_previous_predictions(tmp_path, 
     with pytest.raises(OSError, match="interrupted replacement"):
         save_model(path, replacement)
     restored = load_model(path, distance_model=replacement.distance_model)
-    np.testing.assert_array_equal(restored.predict(region).values, first.predict(region).values)
+    np.testing.assert_array_equal(
+        restored.predict(region)["fox"].values, first.predict(region)["fox"].values
+    )
     assert set(tmp_path.iterdir()) == {path}
+
+
+def test_template_rejects_same_shape_species_reassociation(tmp_path):
+    from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
+
+    def distance(species):
+        return UNetEmbeddingDistance(
+            2,
+            species=species,
+            patch_size=1,
+            base_channels=2,
+            embedding_dim=2,
+            key=jax.random.key(3),
+        )
+
+    model = LandscapeGeneticsModel(
+        distance(("fox", "lynx")), DirectCalibrationModule(TargetSpec("divergence")), 2
+    )
+    path = tmp_path / "registry.ilg"
+    save_model(path, model)
+    for species in (("lynx", "fox"), ("fox", "deer")):
+        with pytest.raises(ArtifactError, match="species"):
+            load_model(path, distance_model=distance(species))
+
+
+def test_bound_callable_policy_settings_must_match(tmp_path):
+    from dataclasses import dataclass
+
+    import equinox as eqx
+    from artifact_helpers import NativeEmbedding
+
+    from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
+
+    @dataclass(frozen=True)
+    class Policy:
+        factor: float
+
+        def apply(self, values):
+            return values * self.factor
+
+    def template(factor):
+        return eqx.tree_at(lambda value: value.activation, NativeEmbedding(), Policy(factor).apply)
+
+    model = LandscapeGeneticsModel(template(2.0), DirectCalibrationModule(TargetSpec("d")), 2)
+    path = tmp_path / "policy.ilg"
+    save_model(path, model)
+    load_model(path, distance_model=template(2.0))
+    with pytest.raises(ArtifactError, match="factor"):
+        load_model(path, distance_model=template(3.0))
+
+
+@pytest.mark.parametrize("family", ["custom", "unet"])
+def test_native_templates_are_stable_in_separate_processes(tmp_path, family):
+    import os
+    import subprocess
+    import sys
+
+    script = """
+import sys
+import numpy as np
+from artifact_helpers import distance_model, checkpoint_problem
+from ilg_toolkit import (
+    LandscapeGeneticsModel, DirectCalibrationModule, TargetSpec, save_model, load_model
+)
+family, mode, directory = sys.argv[1:]
+region, _ = checkpoint_problem()
+path = directory + '/model.ilg'
+if mode == 'save':
+    model = LandscapeGeneticsModel(
+        distance_model(family), DirectCalibrationModule(TargetSpec('d')), 2, region.feature_names
+    )
+    save_model(path, model)
+    np.save(directory + '/prediction.npy', model.predict(region, species='fox')['fox'].values)
+else:
+    model = load_model(path, distance_model=distance_model(family, seed=99))
+    np.testing.assert_array_equal(
+        model.predict(region, species='fox')['fox'].values, np.load(directory + '/prediction.npy')
+    )
+"""
+    for mode, hash_seed in (("save", "11"), ("load", "947")):
+        result = subprocess.run(
+            [sys.executable, "-c", script, family, mode, str(tmp_path)],
+            env={**os.environ, "PYTHONHASHSEED": hash_seed},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "family,setting,value",
+    [
+        ("custom", "scale", 2.0),
+        ("unet", "dropout", 0.4),
+        ("resnet", "patch_batch_size", 1),
+        ("resnet", "min_conductance", 0.2),
+        ("loglinear", "max_conductance", 200.0),
+        ("loglinear", "patch_size", 2),
+    ],
+)
+def test_same_shape_execution_settings_must_match(tmp_path, family, setting, value):
+    from copy import copy
+
+    from artifact_helpers import distance_model
+
+    from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
+
+    original = distance_model(family)
+    altered = copy(original)
+    object.__setattr__(altered, setting, value)
+    model = LandscapeGeneticsModel(original, DirectCalibrationModule(TargetSpec("d")), 2)
+    path = tmp_path / "setting.ilg"
+    save_model(path, model)
+    with pytest.raises(ArtifactError, match=setting):
+        load_model(path, distance_model=altered)
+
+
+def test_nested_dropout_and_solver_policy_must_match(tmp_path):
+    from copy import copy
+    from dataclasses import replace
+
+    import equinox as eqx
+    from artifact_helpers import distance_model
+
+    from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
+
+    unet = distance_model("unet")
+    changed = eqx.tree_at(lambda model: model.backbone.encoder1.dropout.p, unet, 0.3)
+    resnet = distance_model("resnet")
+    from ilg_toolkit.models import ResNet9Conductance
+
+    assert isinstance(resnet, ResNet9Conductance)
+    changed_solver = copy(resnet)
+    object.__setattr__(changed_solver, "solver_config", replace(resnet.solver_config, rtol=1e-8))
+    for model, template, match in (
+        (unet, changed, "dropout"),
+        (resnet, changed_solver, "solver_config"),
+    ):
+        path = tmp_path / "nested.ilg"
+        save_model(path, LandscapeGeneticsModel(model, DirectCalibrationModule(TargetSpec("d")), 2))
+        with pytest.raises(ArtifactError, match=match):
+            load_model(path, distance_model=template)
+
+
+def test_artifacts_reject_altered_or_appended_payload_and_metadata(tmp_path):
+    import json
+
+    from artifact_helpers import NativeEmbedding
+
+    from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
+
+    model = LandscapeGeneticsModel(NativeEmbedding(), DirectCalibrationModule(TargetSpec("d")), 2)
+    path = tmp_path / "integrity.ilg"
+    save_model(path, model)
+    original = path.read_bytes()
+    header_bytes, leaves = original.split(b"\n", 1)
+    metadata = json.loads(header_bytes)
+    metadata["metadata"]["target"]["name"] = "different target"
+    altered = json.dumps(metadata).encode() + b"\n" + leaves
+    for contents in (
+        original + b"unexpected bytes",
+        original[:-1],
+        original[:-1] + bytes([original[-1] ^ 1]),
+        altered,
+    ):
+        path.write_bytes(contents)
+        with pytest.raises(ArtifactError):
+            load_model(path, distance_model=model.distance_model)
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [("feature_count", 0), ("feature_count", True), ("feature_names", ("only-one",))],
+)
+def test_invalid_model_contract_cannot_be_saved(tmp_path, setting, value):
+    from copy import copy
+
+    from artifact_helpers import NativeEmbedding
+
+    from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
+
+    model = LandscapeGeneticsModel(NativeEmbedding(), DirectCalibrationModule(TargetSpec("d")), 2)
+    invalid = copy(model)
+    object.__setattr__(invalid, setting, value)
+    with pytest.raises(ArtifactError, match="feature"):
+        save_model(tmp_path / "invalid.ilg", invalid)
+
+
+@pytest.mark.parametrize("failure", ["serialize", "fsync", "replace"])
+@pytest.mark.parametrize("kind", ["model", "checkpoint"])
+def test_atomic_generations_survive_all_write_failures(
+    tmp_path, monkeypatch, initial_state, failure, kind
+):
+    import os
+
+    import equinox as eqx
+
+    from ilg_toolkit import load_checkpoint, save_checkpoint
+
+    state, _, _ = initial_state
+    tree = state.model if kind == "model" else state
+    save = save_model if kind == "model" else save_checkpoint
+    load = load_model if kind == "model" else load_checkpoint
+    path = tmp_path / "atomic.ilg"
+    save(path, tree)
+    original = path.read_bytes()
+
+    def interrupt(*args, **kwargs):
+        if failure == "serialize":
+            args[0].write(b"partial generation")
+        raise OSError("interrupted artifact write")
+
+    owner, name = (eqx, "tree_serialise_leaves") if failure == "serialize" else (os, failure)
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, name, interrupt)
+        with pytest.raises(OSError, match="interrupted artifact"):
+            save(path, tree)
+    assert path.read_bytes() == original
+    assert set(tmp_path.iterdir()) == {path}
+    assert eqx.tree_equal(load(path, distance_model=state.distance_model), tree)
+
+
+@pytest.mark.parametrize("header", [b"", b"not json\n", b"[]\n", b'{"format":"unknown"}\n'])
+def test_malformed_artifact_headers_fail_actionably(tmp_path, header):
+    from artifact_helpers import NativeEmbedding
+
+    from ilg_toolkit import ArtifactError, load_checkpoint
+
+    path = tmp_path / "invalid.ilg"
+    path.write_bytes(header)
+    for load in (load_model, load_checkpoint):
+        with pytest.raises(ArtifactError):
+            load(path, distance_model=NativeEmbedding())
+
+
+def test_unsupported_opaque_model_configuration_is_actionable(tmp_path):
+    import equinox as eqx
+    from artifact_helpers import NativeEmbedding
+
+    from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
+
+    class OpaquePolicy:
+        def apply(self, values):
+            return values
+
+    distance = eqx.tree_at(lambda model: model.activation, NativeEmbedding(), OpaquePolicy().apply)
+    model = LandscapeGeneticsModel(distance, DirectCalibrationModule(TargetSpec("d")), 2)
+    with pytest.raises(ArtifactError, match="configuration"):
+        save_model(tmp_path / "opaque.ilg", model)
