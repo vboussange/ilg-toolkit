@@ -13,11 +13,16 @@ from pathlib import Path
 
 
 def analyze_case(data):
-    if data.get("schema") != "spec52-large-registry-v1":
+    if data.get("schema") not in {"spec52-large-registry-v1", "spec52-large-registry-v2"}:
         raise ValueError("Unknown large-registry evidence schema")
+    steps = 2 if data["schema"] == "spec52-large-registry-v2" else 1
+    if steps == 2 and (
+        data["training_config"]["steps"] != 2 or data["training_config"]["evaluation_interval"] != 2
+    ):
+        raise ValueError("Final memory evidence requires two updates and initial/final evaluation")
     size, chunk = data["registry_size"], data["species_chunk_size"]
     events = data["events"]
-    for step, phase in ((0, "initial"), (1, "final")):
+    for step, phase in ((0, "initial"), (steps, "final")):
         indices = [
             index
             for event in events
@@ -29,9 +34,9 @@ def analyze_case(data):
     counts = Counter(event["kind"] for event in events)
     for role, expected in (
         ("encoder_inference", 2),
-        ("encoder_training_forward", 1),
-        ("encoder_backward", 1),
-        ("optimizer_update", 1),
+        ("encoder_training_forward", steps),
+        ("encoder_backward", steps),
+        ("optimizer_update", steps),
     ):
         if counts[role] != expected:
             raise ValueError(f"Incomplete encoder/optimizer work: {role}={counts[role]}")
@@ -41,8 +46,19 @@ def analyze_case(data):
         if event["kind"] == "tail_forward_backward"
         for index in event["species_indices"]
     ]
-    if len(selected) != 4 or len(set(selected)) != 4:
-        raise ValueError("Training must select exactly four distinct species")
+    if len(selected) != 4 * steps or any(index < 0 or index >= size for index in selected):
+        raise ValueError("Training contributions do not match the declared selected work")
+    if steps == 2 and size > 4 and len(set(selected)) <= 4:
+        raise ValueError("Repeated updates must exercise different numeric species IDs")
+    for step in range(1, steps + 1):
+        selected_at_step = [
+            index
+            for event in events
+            if event["kind"] == "tail_forward_backward" and event["step"] == step
+            for index in event["species_indices"]
+        ]
+        if len(selected_at_step) != 4 or len(set(selected_at_step)) != 4:
+            raise ValueError("Training must select exactly four distinct species per update")
     if any(len(event.get("species_indices", ())) > chunk for event in events):
         raise ValueError("Observed species tail exceeds the configured chunk bound")
     if any(
@@ -50,7 +66,7 @@ def analyze_case(data):
         for left, right in zip(events, events[1:], strict=False)
     ):
         raise ValueError("Checked numerical calls overlap rather than completing sequentially")
-    if data["history_steps"] != [0, 1] or data["calibrated_groups"] != size:
+    if data["history_steps"] != [0, steps] or data["calibrated_groups"] != size:
         raise ValueError("Missing initial/final evaluations or complete calibration output")
     if not data["selected_prediction_checks"]["passed"]:
         raise ValueError("Selected public prediction checks did not pass")
@@ -90,6 +106,13 @@ def analyze_case(data):
     for role in ("tail_evaluation", "tail_forward_backward"):
         if sum(item["role"] == role for item in compilation) != expected_shapes:
             raise ValueError(f"Unexpected {role} shape specialization count")
+    report_roles = {
+        report["file"]: report["role"] for report in data["cpu_compiled_allocation_reports"]
+    }
+    for event in events:
+        for filename in event["new_memory_reports"]:
+            if report_roles.get(filename) != event["kind"]:
+                raise ValueError("Missing or mislabelled allocation evidence for checked work")
     allocations = []
     for report in data["cpu_compiled_allocation_reports"]:
         matched = re.search(r"Total bytes(?: used)?:\s*(\d+)", report["report"])
@@ -107,6 +130,7 @@ def analyze_case(data):
         "family": data["family"],
         "registry_size": size,
         "species_chunk_size": chunk,
+        "training_steps": steps,
         "ragged": data["ragged"],
         "measured_commit": data["source_commit"],
         "selected_species_indices": selected,

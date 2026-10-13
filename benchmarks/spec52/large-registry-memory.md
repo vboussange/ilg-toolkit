@@ -4,12 +4,15 @@ The reproducible probe extends the earlier [4/16-species evidence](bounded-memor
 to registries of 4, 100 and 1,000 species, with exactly four selected training
 groups and chunks of 1 or 4. Both neural families retain the same 32×32×2 raster,
 eight sampling units, all 28 observed pairs, MLPE policy, and seeds as that probe.
-One public optimizer update is surrounded by complete initial and final evaluations:
+The final fixture uses two public optimizer updates, with four selected groups in
+each update, surrounded by complete initial and final evaluations:
 all registered observed species receive completed calibrations. Two separate ragged
 cases use four species and six units/15 pairs for the last species, keeping the
 other three groups at eight units/28 pairs.
 
-**Status: preliminary diagnostic evidence.** The complete 14-case matrix must be
+**Status: preliminary diagnostic evidence.** Historical raw schema v1 uses one
+update; final schema v2 uses two updates with evaluation_interval=2 to test numeric-ID
+reuse across training calls. The frozen runtime protocol is unchanged. The complete 14-case matrix must be
 run on the agreed final runtime candidate. Current measurements are retained in
 `results/large-registry/preliminary-d7e410b/`; they do not replace the final matrix
 or imply that the separate runtime gates pass. Measured source/driver commit:
@@ -52,8 +55,10 @@ boundary. It does not replace numerical kernels, change gradients, alter selecti
 or relax the solver. Every completed tail event records numeric species/group IDs,
 payload shapes, chronological boundaries, and newly emitted executable reports.
 The audit requires full initial/final group coverage, exactly four distinct selected
-training groups, chunk bounds, sequential completion, the shared encoder forward and
-backward, one update, and all completed calibrations. Compatible numeric IDs reuse
+training groups per update, chunk bounds, sequential completion, the shared encoder
+forward and backward for both updates, and all completed calibrations. At registry
+100/1,000 the two updates must select more than four distinct species in total.
+Compatible numeric IDs reuse
 one executable per shape; the separate ragged cases must record two shape-driven
 specializations per tail role. Different registries may specialize parameter shapes.
 

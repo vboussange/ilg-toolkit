@@ -114,9 +114,10 @@ def main():
     )
     config = TrainingConfig(
         objective="mlpe",
-        steps=1,
+        steps=2,
         species_batch_size=4,
         species_chunk_size=args.chunk,
+        evaluation_interval=2,
         mlpe_initial_variances=(0.2, 0.4),
         seed=7304,
     )
@@ -154,7 +155,7 @@ def main():
     seen_reports = set(args.xla_directory.glob("*memory-usage-report.txt"))
 
     def observe(function, *inputs, **options):
-        if function is execution.pooled_region:
+        if function in (execution.pooled_region, execution.compiled_pooled_region):
             inference = options.get("inference", True)
             kind = "encoder_inference" if inference else "encoder_training_forward"
             payload = None
@@ -182,7 +183,10 @@ def main():
         relevant = [
             path
             for path in new
-            if any(token in path.name for token in ("encode", "chunk_gradient", "chunk_evaluate"))
+            if any(
+                token in path.name
+                for token in ("encode", "pooled_region", "chunk_gradient", "chunk_evaluate")
+            )
         ]
         event["new_memory_reports"] = [path.name for path in relevant]
         for path in relevant:
@@ -316,7 +320,7 @@ def main():
             }
         )
     result = {
-        "schema": "spec52-large-registry-v1",
+        "schema": "spec52-large-registry-v2",
         "family": args.family,
         "registry_size": args.species,
         "species_batch_size": 4,
