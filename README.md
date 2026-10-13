@@ -104,7 +104,7 @@ explicit choices.
 ## Install
 
 ```bash
-uv add "ilg-toolkit @ git+https://github.com/vboussange/ilg-toolkit@v0.0.1"
+uv add "ilg-toolkit @ git+https://github.com/vboussange/ilg-toolkit@v0.0.2"
 ```
 
 ILG Toolkit requires Python 3.12 or newer; `pip install` accepts the same
