@@ -214,6 +214,8 @@ def main():
         raise AssertionError("Expected complete native group MLPE calibrations")
     distance_model = state.distance_model
     assert isinstance(distance_model, (UNetEmbeddingDistance, ResNet9Conductance))
+    selected_distance_model = state.model.distance_model
+    assert isinstance(selected_distance_model, (UNetEmbeddingDistance, ResNet9Conductance))
     calibrated = state.model.calibration.groups["probe"]
     if set(calibrated) != set(species):
         raise AssertionError("Full initial/final evaluation omitted registered observed groups")
@@ -235,8 +237,8 @@ def main():
     unselected = [index for index, name in enumerate(species) if name not in requested]
     altered = eqx.tree_at(
         lambda value: value.projection_weight,
-        state.distance_model,
-        distance_model.projection_weight.at[jnp.asarray(unselected)].add(1.0),
+        selected_distance_model,
+        selected_distance_model.projection_weight.at[jnp.asarray(unselected)].add(1.0),
     )
     changed = altered.predict_raw_distances(prepared, species=requested, pairs=selections)
     numerical = {}
@@ -257,8 +259,8 @@ def main():
     if args.family == "unet":
         scaled = eqx.tree_at(
             lambda value: value.projection_weight,
-            state.distance_model,
-            distance_model.projection_weight.at[0].multiply(1.1),
+            selected_distance_model,
+            selected_distance_model.projection_weight.at[0].multiply(1.1),
         ).predict_raw_distances(
             prepared, species=(species[0],), pairs={species[0]: selections[species[0]]}
         )
@@ -375,6 +377,8 @@ def main():
         "counts": dict(Counter(event["kind"] for event in events)),
         "live_array_boundary_snapshots": snapshots,
         "history_steps": [record.step for record in state.history],
+        "latest_step": state.step,
+        "selected_step": state.selected_step,
         "final_loss": state.history[-1].training_loss,
         "calibrated_groups": len(calibrated),
         "selected_prediction_checks": {
