@@ -87,12 +87,12 @@ The 1.10/0.50 requirements come from implementation issue #63. For the two
 predeclared feature-heavy representative cases, complete warmed fit and warmed
 training-step time (excluding evaluation/calibration) must be at most 1.10 times
 main. All factorial and stress cases are also reported; they expose solver and
-calibration costs rather than being silently dropped. Measure joint 1-, 2-, and
+calibration costs rather than being silently dropped. Measure joint 1-, 2-, 3-, and
 4-species fits with equal per-species update exposure. On those two feature-heavy
 cases, each added-species marginal cost must be at most 0.50 of that species'
 independent PR fit; report both increments and total joint time against the sum
-of independent fits. For 2→4 report the average marginal cost per added species,
-with its uncertainty. The future PR driver must provide the matched independent
+of independent fits. Report every adjacent increment (1→2, 2→3, 3→4)
+against that added species' independent fit, with its uncertainty. The future PR driver must provide the matched independent
 species denominator and cannot substitute old-main timing.
 
 Report startup ratios above 2.0 and prediction/RSS ratios above 1.5 as material
