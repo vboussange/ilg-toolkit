@@ -151,3 +151,26 @@ def test_compact_shape_catalogue_preserves_the_same_audited_evidence():
                 "payload_shapes"
             )
     assert analyze_case(raw) == expected
+
+
+def test_one_matrix_cannot_mix_different_production_source_trees(tmp_path):
+    samples = ANALYZER.parent / "results/large-registry/preliminary-d7e410b"
+    for index, name in enumerate(("unet-s4-c1.json", "unet-s100-c1.json")):
+        raw = json.loads((samples / name).read_text())
+        if index:
+            raw["source_tree"] = "different-production-tree"
+        (tmp_path / name).write_text(json.dumps(raw))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ANALYZER),
+            str(tmp_path),
+            "--allow-partial",
+            "--output",
+            str(tmp_path / "analysis.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "one production source tree" in result.stderr

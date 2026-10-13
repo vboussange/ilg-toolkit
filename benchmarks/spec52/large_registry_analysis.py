@@ -126,12 +126,18 @@ def main():
     parser.add_argument("--allow-partial", action="store_true")
     args = parser.parse_args()
     cases = []
+    source_trees, driver_hashes = set(), set()
     for path in sorted(args.directory.glob("*-s*-c*.json")):
-        case = analyze_case(json.loads(path.read_text()))
+        raw = json.loads(path.read_text())
+        case = analyze_case(raw)
+        source_trees.add(raw["source_tree"])
+        driver_hashes.add(raw["source_sha256"]["benchmarks/spec52/large_registry_probe.py"])
         case.update(source=path.name, source_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
         cases.append(case)
     if not cases:
         raise ValueError("No large-registry evidence")
+    if len(source_trees) != 1 or len(driver_hashes) != 1:
+        raise ValueError("A matrix requires one production source tree and one measured driver")
     required = {
         (family, size, chunk, False)
         for family in ("unet", "resnet")
@@ -142,12 +148,16 @@ def main():
         (case["family"], case["registry_size"], case["species_chunk_size"], case["ragged"])
         for case in cases
     }
+    if len(actual) != len(cases):
+        raise ValueError("A matrix must not duplicate the same family/registry/chunk/shape case")
     missing = sorted(required - actual)
     if missing and not args.allow_partial:
         raise ValueError(f"Missing required large-registry cases: {missing}")
     output = {
         "schema": "spec52-large-registry-analysis-v1",
         "analysis_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "production_source_tree": next(iter(source_trees)),
+        "measured_driver_sha256": next(iter(driver_hashes)),
         "complete_matrix": not missing,
         "missing_cases": missing,
         "scope": (

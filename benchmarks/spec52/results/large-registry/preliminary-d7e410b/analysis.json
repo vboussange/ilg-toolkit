@@ -1,6 +1,8 @@
 {
   "schema": "spec52-large-registry-analysis-v1",
-  "analysis_sha256": "e12809c305b016b767e9bde7abf613b67bd3ed3064277063684d5eaa177ef512",
+  "analysis_sha256": "454aa67b4aed879d783d7d773dfa4b1d7a92319029f9f9c4730911a976d22d5e",
+  "production_source_tree": "a3c07b8e868bc7a2cba735d06f2e20053a038aa1",
+  "measured_driver_sha256": "37043cb04a7f5c5cd1acef570fb7504055e4d524ab77ab851b458280abe43512",
   "complete_matrix": false,
   "missing_cases": [
     [
