@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
+from ._pairs import PairSelection
 from .calibration import DirectCalibrationModule, MLPECalibrationModule
 from .config import TrainingConfig
 from .data import ObservationPartition, PairwiseObservations, RegionBatch
@@ -112,6 +113,7 @@ class _TrainingPayload(NamedTuple):
     nodes: jax.Array
     pairs: tuple[jax.Array, jax.Array]
     targets: jax.Array
+    distance_pairs: PairSelection
 
 
 class _RegionalInput(NamedTuple):
@@ -137,6 +139,7 @@ def _prepared(
     *,
     role: str = "training",
     objective: str = "direct_log1p",
+    distance_model: AbstractDistanceModel,
 ) -> _TrainingPayload:
     if partition is not None and partition.role != role:
         raise ValueError(f"Expected a {role} partition, got {partition.role}")
@@ -166,6 +169,9 @@ def _prepared(
         nodes=region.pixel_nodes,
         pairs=pairs,
         targets=targets.astype(jnp.float64) if objective == "mlpe" else targets,
+        distance_pairs=distance_model._prepare_pairs(
+            region.feature_array, region.pixel_nodes, pairs
+        ),
     )
 
 
@@ -247,10 +253,9 @@ def _selected_distances(
     inference: bool = True,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    distances = distance_model.predict_distances(
-        payload.features, payload.nodes, context=context, inference=inference, key=key
+    return distance_model._pair_distances(
+        payload.features, payload.distance_pairs, context=context, inference=inference, key=key
     )
-    return distances[payload.pairs]
 
 
 def _joint_loss(
@@ -424,7 +429,14 @@ def _prepare_batches(
 
     def make_batch(inputs: _RegionalInput, role: str) -> _RegionalBatch:
         region, observations, partition = inputs
-        payload = _prepared(region, observations, partition, role=role, objective=config.objective)
+        payload = _prepared(
+            region,
+            observations,
+            partition,
+            role=role,
+            objective=config.objective,
+            distance_model=distance_model,
+        )
         shape = (region.feature_array.shape[0], region.feature_array.shape[1])
         if shape not in contexts:
             contexts[shape] = distance_model.prepare(region.feature_array)
