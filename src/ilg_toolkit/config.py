@@ -52,15 +52,15 @@ class ResistanceSolverConfig:
 class TrainingConfig:
     """Fixed training budget; validation only changes model selection.
 
-    A fixed Adam learning rate is used. Epoch zero is included in the reported
+    A fixed Adam learning rate is used. Step zero is included in the reported
     history and is eligible for validation selection. No test data is accepted.
-    MLPE uses separate regional variance parameters with the same Adam learning
+    MLPE uses separate group variance parameters with the same Adam learning
     rate, an explicit floor/jitter and optional initial (population, residual)
     variances. Otherwise initialization uses training-target sample variance.
     """
 
     objective: str
-    epochs: int = 100
+    steps: int = 100
     learning_rate: float = 0.001
     seed: int = 0
     jit: bool = True
@@ -106,8 +106,8 @@ class TrainingConfig:
             or not 0 <= self.seed < 2**32
         ):
             raise ValueError("seed must be an integer in [0, 2**32)")
-        if isinstance(self.epochs, bool) or not isinstance(self.epochs, int) or self.epochs < 0:
-            raise ValueError("epochs must be a nonnegative integer")
+        if isinstance(self.steps, bool) or not isinstance(self.steps, int) or self.steps < 0:
+            raise ValueError("steps must be a nonnegative integer")
         if (
             isinstance(self.learning_rate, bool)
             or not isinstance(self.learning_rate, Real)

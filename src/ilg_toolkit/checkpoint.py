@@ -16,7 +16,7 @@ from .persistence import (
     _read_header,
     _write_native,
 )
-from .training import EpochRecord, TrainingState
+from .training import StepRecord, TrainingState
 
 
 def save_checkpoint(path, state: TrainingState) -> None:
@@ -63,7 +63,7 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
             if history_length < 1:
                 raise ArtifactError("Checkpoint history is incomplete")
             history = tuple(
-                EpochRecord(
+                StepRecord(
                     epoch=0,
                     training_loss=0.0,
                     validation_loss=0.0 if latest.validation_pairs else None,
