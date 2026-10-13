@@ -8,7 +8,7 @@ import argparse
 import hashlib
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 
@@ -26,6 +26,15 @@ def analyze_case(data):
         ]
         if sorted(indices) != list(range(size)):
             raise ValueError(f"Incomplete {phase} evaluation coverage")
+    counts = Counter(event["kind"] for event in events)
+    for role, expected in (
+        ("encoder_inference", 2),
+        ("encoder_training_forward", 1),
+        ("encoder_backward", 1),
+        ("optimizer_update", 1),
+    ):
+        if counts[role] != expected:
+            raise ValueError(f"Incomplete encoder/optimizer work: {role}={counts[role]}")
     selected = [
         index
         for event in events
