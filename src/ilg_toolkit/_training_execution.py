@@ -55,6 +55,11 @@ def pooled_region(model, features, *, jit, inference=True, key=None):
     return tail, pooled, pullback
 
 
+# Cache construction of the encoder VJP as well as its numerical forward pass.
+# Returning the pullback PyTree keeps the existing tail/backward arithmetic cuts.
+compiled_pooled_region = eqx.filter_jit(pooled_region)
+
+
 def shape_chunks(groups, size):
     buckets = {}
     for group in groups:
@@ -134,6 +139,36 @@ def chunk_gradient(parameters, payloads, *, config, context):
 
 
 compiled_chunk_gradient = eqx.filter_jit(chunk_gradient)
+
+
+def group_gradient(model, raw, payloads, *, config, context=None, key=None):
+    """Compile one compatible bounded chunk and its single encoder pullback."""
+    backbone, tail = model._split_pooled()
+    features = payloads[0].features
+    pullback = None
+    if backbone is None:
+        pooled = _compiled_encode(backbone, tail, features, inference=False, key=key)
+    else:
+        pooled, pullback = eqx.filter_vjp(
+            lambda value: _compiled_encode(value, tail, features, inference=False, key=key),
+            backbone,
+        )
+    numeric = tuple(
+        payload._replace(features=jnp.empty((0,), dtype=features.dtype)) for payload in payloads
+    )
+    batched = jax.tree.map(lambda *values: jnp.stack(values), *numeric)
+    value, (tail_gradient, feature_gradient, raw_gradient) = compiled_chunk_gradient(
+        (tail, pooled, raw), batched, config=config, context=context
+    )
+    if pullback is not None:
+        (backbone_gradient,) = pullback(feature_gradient)
+        model_gradient = join_backbone(tail_gradient, backbone_gradient)
+    else:
+        model_gradient = tail_gradient
+    return value, model_gradient if raw is None else (model_gradient, raw_gradient)
+
+
+compiled_group_gradient = eqx.filter_jit(group_gradient)
 
 
 def chunk_evaluate(tail, pooled, raw, payloads, moments, *, config, context, mode):

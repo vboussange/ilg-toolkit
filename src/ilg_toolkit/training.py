@@ -627,8 +627,25 @@ def _region_gradient(model, raw, groups, *, config, step, key):
             )
             accumulated = execution.add_gradients(accumulated, contribution)
         return accumulated
+    chunks = tuple(execution.shape_chunks(groups, config.species_chunk_size))
+    # One selected group has bounded intermediates inside a fused call. Larger
+    # selections keep the numerical encoder/tail/backward boundaries below.
+    if len(groups) == 1 and config.jit:
+        _, contribution = _checked_call(
+            execution.compiled_group_gradient,
+            model,
+            raw,
+            tuple(group.payload for group in chunks[0]),
+            config=execution.settings(config),
+            context=batch.context,
+            key=key,
+            batch=chunks[0],
+            step=step,
+            training_config=config,
+        )
+        return contribution
     tail, pooled, pullback = _checked_call(
-        execution.pooled_region,
+        execution.compiled_pooled_region if config.jit else execution.pooled_region,
         model,
         batch.payload.features,
         jit=config.jit,
@@ -640,7 +657,7 @@ def _region_gradient(model, raw, groups, *, config, step, key):
     )
     gradient = execution.compiled_chunk_gradient if config.jit else execution.chunk_gradient
     accumulated = None
-    for chunk in execution.shape_chunks(groups, config.species_chunk_size):
+    for chunk in chunks:
         _, contribution = _checked_call(
             gradient,
             (tail, pooled, raw),
