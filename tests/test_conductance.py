@@ -12,6 +12,7 @@ import optax
 import pytest
 
 from ilg_toolkit import (
+    ArtifactError,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
@@ -515,14 +516,20 @@ def test_shared_conductance_fit_rebuilds_solver_on_native_reload_and_resume(tmp_
     model_path, checkpoint_path = tmp_path / "model.ilg", tmp_path / "checkpoint.ilg"
     save_model(model_path, first.model)
     save_checkpoint(checkpoint_path, first)
-    template = PointConductance(jnp.array(9.0))
+    mismatched_template = PointConductance(jnp.array(9.0))
+    with pytest.raises(ArtifactError, match="solver_config"):
+        load_model(model_path, distance_model=mismatched_template)
+    with pytest.raises(ArtifactError, match="solver_config"):
+        load_checkpoint(checkpoint_path, distance_model=mismatched_template)
+    assert mismatched_template.solver_config == ResistanceSolverConfig()
+    template = PointConductance(jnp.array(9.0), solver_config=solver)
     restored_model = load_model(model_path, distance_model=template)
     restored_state = load_checkpoint(checkpoint_path, distance_model=template)
     assert isinstance(restored_model.distance_model, PointConductance)
     assert isinstance(restored_state.distance_model, PointConductance)
     assert restored_model.distance_model.solver_config == solver
     assert restored_state.distance_model.solver_config == solver
-    assert template.solver_config == ResistanceSolverConfig()
+    assert template.solver_config == solver
     continued = fit(regions[::-1], observations, state=restored_state, config=config)
     assert continued.history[-1].training_loss < continued.history[0].training_loss
     for actual, expected in zip(
