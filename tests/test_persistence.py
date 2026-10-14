@@ -345,9 +345,12 @@ def test_native_templates_are_stable_in_separate_processes(tmp_path, family):
     import os
     import subprocess
     import sys
+    from pathlib import Path
 
     script = """
 import sys
+# Only the test helper directory is added; toolkit resolution stays with the caller.
+sys.path.insert(0, sys.argv.pop(1))
 import numpy as np
 from artifact_helpers import distance_model, checkpoint_problem
 from ilg_toolkit import (
@@ -370,7 +373,15 @@ else:
 """
     for mode, hash_seed in (("save", "11"), ("load", "947")):
         result = subprocess.run(
-            [sys.executable, "-c", script, family, mode, str(tmp_path)],
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(Path(__file__).resolve().parent),
+                family,
+                mode,
+                str(tmp_path),
+            ],
             env={**os.environ, "PYTHONHASHSEED": hash_seed},
             capture_output=True,
             text=True,
