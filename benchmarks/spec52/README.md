@@ -222,3 +222,16 @@ initial smaller batch only with identical source, fixture, software and protocol
 identities; corresponding PR fits must also have at least ten repetitions. Two
 competing full batches are rejected. The report retains both input hashes and
 names every repeated baseline case.
+
+## Completed native evidence
+
+The [final runtime report](runtime-results.md) records all 32 workloads, the
+passing required gates, diagnostic uncertainty, separate LogLinear results,
+startup/prediction/RSS disclosures, and preserved failed attempts. Its
+[machine-readable comparison](results/runtime-comparison.json) is reproducible
+from the archived raw files without rerunning the measurements.
+
+The [large-registry report](large-registry-memory.md) records the complete
+14-case memory/compilation matrix through 1,000 species on the same production
+source. It separates bounded scientific workspace from parameter/output growth
+and explicitly describes the CPU allocator-profiling limitation.

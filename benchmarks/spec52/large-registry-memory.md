@@ -169,6 +169,10 @@ compiler totals and extra numeric-ID-specific compilation. Its output
 records raw-file and analyzer hashes. An independent audit also rebuilt
 every source/driver hash from Git, every seeded fixture/target hash, and
 every embedded allocation-report hash for all 14 cases.
+The coordinator separately verified all 74 original report/HLO file hashes
+and inspected the full optimized HLO for registry sizes 100 and 1,000;
+registry-sized axes occurred only in parameter/nuisance arrays and their
+derivative or finite-check work, with no heavy all-species intermediate.
 
 All seven preliminary schema-v1 one-update reports and their derived
 [analysis](results/large-registry/preliminary-d7e410b/analysis.json) remain
