@@ -9,8 +9,8 @@ no compatibility reader, alias, wrapper or adapter was restored.
 Production source tree is `8d92e023e4d4b29beca50e0c7028572ef7dd78ba`, identical
 to measured candidate `df7aea21ec55ce39bf34d78e53668ab8d4c86f44` and verified
 integration `7871653f5e3234cce40e7b7c985b31b846ddc8f2`. #65 changes only the
-checkout-only Wishart diagnostic/tests/docs and installed-release fixture plus
-this trace. It adds no Wishart training or package exports.
+checkout-only Wishart diagnostic/tests/docs, installed-release fixture and
+test-process fixture lifetime, plus this trace. It adds no Wishart training or package exports.
 
 ## Validation bundles
 
@@ -210,12 +210,38 @@ and the no_go gate are preserved. Installed-release fixture copies benchmarks
 and GLOSSARY alongside tests/docs/examples/experiments; the installed import-origin
 assertion, Python 3.12 and AMG checks remain intact.
 
+## Test compilation-cache lifetime
+
+Two local whole-suite processes (source Python 3.13 and installed Python 3.12)
+terminated with native segmentation faults in JAX `backend_compile_and_load`
+during different LogLinear tests. The exact node and complete LogLinear module
+passed in fresh processes. Early, middle and late preceding-file subsets also
+passed (57, 74 and 105 cases). Clean GitHub CI completed all scientific tests;
+its two separate-process helper-import failures were fixed by explicitly adding
+only the test helper directory in those children, preserving toolkit resolution.
+
+An external controlled comparison clears only `jax.clear_caches()` between test
+modules and logs process resources/configuration without changing numerical
+inputs, precision, assertions or within-module compilation reuse. Both source and
+installed Python 3.12+AMG controlled runs passed the former LogLinear failure
+points. The minimal `tests/conftest.py` fixture follows that cache-lifetime policy;
+it adds no production cache clearing, test exclusion, skip or tolerance change.
+The complete suite is the regression seam. Full controlled/canonical outcomes
+remain required and are recorded in the coordinator's final evidence.
+
+The upstream compiler cause remains unresolved. This is a test-process
+cache-lifetime workaround supported by the comparison, not a claimed numerical
+kernel fix or proof of system OOM. Original crash logs, resource snapshots and
+prefix outcomes are retained with the final acceptance evidence.
+
 ## Final execution record
 
 Stable implementation commit: `457449482f3bd29d976d4747258fc2f75defb01f`.
 Coordinator-verified integration: `f768e857eba6491aeba2efbefce6ae013bf8305c`.
-Their implementation trees are identical; later acceptance-trace changes are
-documentation only. The original user checkout's glossary edit and deleted ADR
+Those initial implementation trees are identical. Later test-harness changes
+supply the explicit subprocess helper path and scope compilation caches to test
+modules; final test/fixture commit identities are recorded with closing evidence.
+Production numerical source and measured drivers remain unchanged. The original user checkout's glossary edit and deleted ADR
 remain untouched and match the coordinator's original patch checksum.
 
 Completed local checks use Python 3.13.13, JAX/JAXlib 0.10.2, Equinox 0.13.8,
