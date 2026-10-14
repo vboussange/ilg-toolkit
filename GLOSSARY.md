@@ -5,11 +5,11 @@ Inverse landscape genetics: learning relationships between landscapes and pairwi
 ## Language
 
 **Region batch**:
-The prepared landscape features and sampling-unit locations for one region, independent of genetic observations.
+The prepared landscape features and species-specific sampling-unit locations for one region, independent of genetic observations.
 _Avoid_: Prepared region, when naming this input boundary.
 
 **Training configuration**:
-The explicit optimization budget and numerical settings supplied as `TrainingConfig`.
+The explicit optimization budget, group-sampling policy and numerical settings for a fit.
 _Avoid_: FitConfig, when naming this public configuration.
 
 **Landscape genetics model**:
@@ -26,17 +26,14 @@ _Avoid_: Genetic predictor, when the relationship has no genetic calibration.
 **Calibration module**:
 The authoritative target contract and relationship mapping ecological distances to
 genetic predictions. Direct calibration applies the declared inverse target
-transform. MLPE calibration selects a fitted relationship for the query region.
+transform. MLPE calibration selects a fitted relationship for the query region and species.
 
-**Regional MLPE calibration**:
-One region's fitted relationship between ecological distances and genetic targets,
-including population dependence, uncertainty and observation-use provenance.
-_Avoid_: Complete model, when referring only to one regional relationship.
+**MLPE calibration**:
+One region–species group's fitted relationship between ecological distances and genetic targets, including population dependence, uncertainty and observation-use provenance.
+_Avoid_: Complete model, when referring only to one group relationship.
 
 **Resistance calculation**:
-Effective resistance between sampling-unit nodes in a conductance graph, computed
-by `effective_resistance`. `ResistanceSolverConfig` declares numerical settings;
-`ResistanceSolverContext` holds a reusable solver for one graph shape.
+Effective resistance between sampling-unit nodes in a conductance graph under declared numerical settings.
 _Avoid_: Distance solver, when referring specifically to resistance computation.
 
 **Isolation by distance (IBD)**:
@@ -52,11 +49,11 @@ One fitted model belonging to a fold ensemble.
 _Avoid_: Fold, when referring to the fitted model rather than the population partition.
 
 **Population pair**:
-An unordered pair of distinct populations within a landscape, associated with an observed or predicted genetic dissimilarity.
+An unordered pair of distinct populations of one species within a region, associated with an observed or predicted genetic dissimilarity.
 _Avoid_: Sample, when referring to a pair rather than an individual population or genetic specimen.
 
 **Sampling unit**:
-An identified population or individual associated with a location in a landscape and serving as an endpoint of genetic observations.
+An identified population or individual of one species associated with a landscape location and serving as an observation endpoint. Its biological identity combines species and label, and it belongs to one region within that species.
 _Avoid_: Population, when an endpoint represents an individual.
 
 **Pairwise genetic observation**:
@@ -64,7 +61,7 @@ A measured genetic relationship between two sampling units, whose meaning and sc
 _Avoid_: Genetic distance, when the observation is a similarity or relatedness measure.
 
 **Region**:
-A landscape and its associated sampling units and genetic observations, with its own relationship between ecological distances and observed genetic targets.
+A geographic domain with prepared landscape features, sampling units and a computational boundary. Each observed species in the region has its own genetic calibration.
 _Avoid_: Dataset, when referring to one region within a multi-region study.
 
 **Ecological distance**:
@@ -73,8 +70,27 @@ _Avoid_: Landscape score; genetic prediction, before calibration to the target s
 
 **Genetic prediction**:
 An estimated genetic relationship for an identified pair of sampling units in a
-region, expressed in the declared target's original units. Its matrix representation
+region and species, expressed in the declared target's original units. Its matrix representation
 does not imply predictions for unrequested pairs or a joint uncertainty model.
 
 **Genetic calibration**:
-The relationship between ecological distances and genetic observations on the declared target scale. This relationship may differ between regions.
+The relationship between ecological distances and genetic observations on the declared target scale. This relationship may differ between region–species groups.
+
+**Species registry**:
+The fixed ordered set of named species represented by a distance model. Species identity binds ecological responses and predictions to their biological meaning.
+
+**Region–species group**:
+One species' observations and sampling units in one region. Missing geographic coverage does not create a group or imply zero observations.
+
+**Pooled backbone**:
+A neural landscape-feature relationship learned jointly across the model's species and regions.
+_Avoid_: Frozen backbone, when pooled parameters remain trainable; partial pooling, for ordinary shared deterministic parameters.
+
+**Species-specific projection**:
+A species' learned relationship from pooled neural features to its conductance or embedding, pooled across that species' regions.
+
+**Unpooled genetic calibration**:
+Independent fitted genetic relationships for the observed region–species groups, with no cross-group shrinkage or population-effect covariance. Population random effects within one group do not establish pooling between groups.
+
+**Selected model**:
+The fully evaluated model chosen for prediction, with genetic calibrations belonging to that same snapshot. With validation it may precede the current optimizer progress.

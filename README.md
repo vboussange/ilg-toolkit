@@ -8,7 +8,7 @@
   <img src="docs/assets/ilg-overview.webp" width="420" alt="From bottom to top: a raw Earth-observation raster, a patch encoder, a conductance grid graph, the effective resistance R_ij between two sampled locations, and the genetic dissimilarity D_ij between them.">
 </p>
 
-**Overview, from bottom to top.** A patch encoder maps each patch of a raw
+**Conductance-family illustration, from bottom to top.** A patch encoder maps each patch of a raw
 Earth-observation raster to a positive conductance, and these conductances form a
 conductance grid graph. The effective resistance $R_{ij}$ between the vertices of two
 sampling units $i$ and $j$ is their ecological distance. Genetic calibration relates
@@ -25,15 +25,39 @@ or individuals therefore records how hard it has been, over generations, to move
 between them through the landscape.
 
 Inverse landscape genetics (ILG) infers this effect of the landscape from genetic
-data. ILG Toolkit casts it as **metric learning**: it learns a distance between
-landscape locations, parameterised through a conductance grid graph whose
-conductances a neural network predicts from landscape features. Supervision is
-sparse and pairwise: genetic observations exist only between a limited set of
-sampled locations. Gradients of the genetic loss flow through the effective
-resistance computation back to the network, and the fitted model predicts genetic
-dissimilarity at unsampled locations from landscape features alone. A good genetic
-fit does not, however, identify a unique movement surface: different conductance
-surfaces can induce nearly the same distances between the sampled locations.
+data. ILG Toolkit learns ecological distances from prepared landscape features,
+using effective resistance through a conductance graph or squared distances
+between neural embeddings. Genetic observations provide sparse pairwise
+supervision. A calibrated model predicts genetic dissimilarity at new locations
+without their genetic measurements. A good genetic fit does not identify a unique
+movement surface: different landscapes can induce nearly the same observed distances.
+
+## Models
+
+All learned distance choices belong to the existing native hierarchy:
+
+```text
+AbstractDistanceModel
+├── ConductanceModel                  effective resistance on a conductance graph
+│   ├── ResNet9Conductance             pooled residual backbone, species projections
+│   └── LogLinearConductance           independent species coefficients/intercepts
+└── EmbeddingDistanceModel            squared Euclidean embedding distance
+    └── UNetEmbeddingDistance          pooled U-Net backbone, species projections
+```
+
+`IBDModel` is a separate geographic baseline using physical distance alone.
+`LandscapeGeneticsModel` composes a distance model with genetic calibration; it is
+not another architecture. The independent calibration hierarchy is
+`AbstractCalibrationModule` → `DirectCalibrationModule` or
+`UnpooledMLPECalibrationModule`, which holds one `MLPECalibration` per
+region–species group. MLPE coefficients, variances and population effects are
+unpooled across groups. Neural backbones are learned jointly across species and
+regions; each species projection is learned across that species' regions.
+
+Construct the architecture explicitly and pass it to `fit`. Every constructor
+requires an ordered `species=("fox", ...)` registry, fixed for the model's lifetime.
+The [model guide](docs/models.md) covers constructors, generic log-linear covariates,
+custom native models, input identity and bounded training.
 
 ## Concepts
 
@@ -49,7 +73,7 @@ non-overlapping $p \times p$ patches. A **patch encoder**, such as
 `ResNet9Conductance`, maps each patch to a conductance strictly greater than
 `min_conductance`. The conductance grid graph has one vertex per patch, forming an
 $(H/p) \times (W/p)$ lattice, and edges between 4-neighbouring vertices, weighted
-from the conductances at their two ends. High conductance means easy movement. Each
+by the arithmetic mean of the conductances at their two ends. High conductance means easy movement. Each
 sampling unit sits at the vertex of the patch containing its cell.
 
 **Effective resistance.** Read the graph as an electrical network in which edge
@@ -69,13 +93,13 @@ enables differentiating through that solve, so that gradients reach the encoder.
 **Ecological distance.** A distance model's pairwise separation between two
 sampling units, derived from the landscape before any genetic calibration. It is
 not a genetic prediction and is not in genetic units. For a conductance model it is
-$R_{ij}$; `model.ecological_distances(region)` returns the full matrix.
+$R_{ij}$; `model.ecological_distances(region, species="fox")["fox"]` explicitly returns a full matrix.
 
 **Distance model.** Any model that maps landscape features and sampling-unit
 locations to ecological distances without access to genetic data. The conductance
 model above is the main instance. An alternative, `UNetEmbeddingDistance`, embeds
 each location and uses the squared Euclidean distance between embeddings (see the
-[shared-regions example](examples/shared_regions.py)). Custom models subclass
+[pooled-regions example](examples/pooled_regions.py)). Custom models subclass
 `AbstractDistanceModel`.
 
 **Sampling units and pairwise genetic observations.** A sampling unit is an
@@ -88,16 +112,17 @@ inferred from the data. Observations may be missing for some pairs.
 **Genetic calibration.** A map from ecological distances to predictions
 $\hat D_{ij}$ of the declared genetic target. Direct calibration applies the
 inverse of the declared target transform. MLPE calibration fits a linear mixed model
-with population effects for each region, so one distance model can serve several
-regions. A **landscape genetics model** (`LandscapeGeneticsModel`) is a distance
-model composed with a calibration: `ecological_distances(region)` returns the
-distance model's output, and `predict(region)` returns calibrated genetic
-predictions in the target's units.
+with population effects separately for each region–species group. A **landscape genetics model** (`LandscapeGeneticsModel`) is a distance
+model composed with a calibration: `predict_raw_distances(region, species="fox")`
+returns requested ecological pair vectors, and `predict(region, species="fox")`
+returns calibrated genetic predictions in the target's original units. Both are
+species-keyed mappings; a sole registered species can be inferred. A multispecies
+model requires explicit selection, including when only one species is requested.
 
 **Fitting.** `fit` trains the distance model end to end. It computes ecological
 distances for the observed pairs, compares them with the genetic observations
 through a training objective, and updates the distance model's parameters with
-Adam for a fixed number of epochs. Optional validation pairs select the best epoch
+Adam for a fixed number of optimizer steps. Optional validation pairs select the best evaluated snapshot
 without changing the optimisation. The distance model and the objective are both
 explicit choices.
 
@@ -133,6 +158,7 @@ import jax.numpy as jnp
 from ilg_toolkit import (
     PairwiseObservations,
     RegionBatch,
+    SamplingUnits,
     TargetSpec,
     TrainingConfig,
     fit,
@@ -153,42 +179,42 @@ region = RegionBatch(
         "column",
         cx.LabeledAxis("feature", ["elevation", "habitat"]),
     ),
-    sampling_unit_ids=("south", "north", "east"),
-    grid_positions=[[0, 0], [0, 7], [7, 7]],
+    sampling_units={"fox": SamplingUnits(("south", "north", "east"), [[0, 0], [0, 7], [7, 7]])},
 )
 # Pairwise genetic observations, with their meaning, units and transform declared.
 observations = PairwiseObservations.from_matrix(
-    region.sampling_unit_ids,
+    region.sampling_units["fox"].ids,
     [[0, 0.375, 0.5], [0.375, 0, 0.375], [0.5, 0.375, 0]],
     target=TargetSpec("synthetic genetic dissimilarity", units="index", transform="identity"),
 )
 # patch_size=4 coarsens the 8x8 raster into a 2x2 conductance grid graph.
 distance_model = ResNet9Conductance(
-    in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(6)
+    in_channels=2, species=("fox",), patch_size=4, min_conductance=1e-6, key=jax.random.key(6)
 )
 result = fit(
-    region,
-    observations,
+    [region],
+    {region.name: {"fox": observations}},
     distance_model=distance_model,
-    config=TrainingConfig(objective="direct_log1p", epochs=4, learning_rate=0.001),
+    config=TrainingConfig(objective="direct_log1p", steps=4, learning_rate=0.001),
 )
 model = result.model  # The selected landscape genetics model.
 
-print("Conductance surface:\n", model.conductance_surface(region))
-print("Ecological distances (effective resistance):\n", model.ecological_distances(region))
+print("Conductance surface:\n", model.conductance_surface(region)["fox"])
+print("Ecological distances (effective resistance):\n", model.ecological_distances(region)["fox"])
+# Outputs stay species-keyed, even when the sole species can be inferred.
 # predict returns one calibrated value per distinct pair, in the target's units;
 # as_matrix lays them out symmetrically in sampling-unit order.
-prediction = model.predict(region)
+prediction = model.predict(region)["fox"]
 print("Genetic predictions:", prediction.pairs, prediction.values)
 print("Genetic prediction matrix:\n", prediction.as_matrix())
 
-# Loading needs a template distance model with the same configuration.
+# Loading checks the exact ordered registry and architecture/solver settings.
 save_model("model.ilg", model)
 template = ResNet9Conductance(
-    in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(0)
+    in_channels=2, species=("fox",), patch_size=4, min_conductance=1e-6, key=jax.random.key(0)
 )
 restored = load_model("model.ilg", distance_model=template)
-print("Restored predictions:\n", restored.predict(region).as_matrix())
+print("Restored predictions:\n", restored.predict(region)["fox"].as_matrix())
 ```
 
 ## Examples
@@ -197,8 +223,8 @@ print("Restored predictions:\n", restored.predict(region).as_matrix())
 - [conductance.py](examples/conductance.py): a conductance model with an explicit
   resistance-solver tolerance; on large rasters, `patch_batch_size` bounds encoder
   memory.
-- [shared_regions.py](examples/shared_regions.py): one U-Net embedding distance
-  model shared across regions of different extents.
+- [pooled_regions.py](examples/pooled_regions.py): one species' U-Net backbone
+  pooled across regions of different extents.
 - [mlpe_calibration.py](examples/mlpe_calibration.py): MLPE calibration fitted to
   the ecological distances of a frozen distance model.
 - [region_transfer.py](examples/region_transfer.py): transfer a fitted distance
@@ -207,8 +233,34 @@ print("Restored predictions:\n", restored.predict(region).as_matrix())
   evaluation, support conditioning and checkpoint continuation.
 - [ibd.py](examples/ibd.py): an isolation-by-distance baseline from geographic
   separation alone.
+- [multispecies.py](examples/multispecies.py): two neural species, irregular regional
+  coverage, exact group MLPE, bounded scheduling and missing-validation reports.
 
 From a clone, run one with `JAX_ENABLE_X64=true uv run python examples/<name>.py`.
+
+## Training controls
+
+Inputs are a nonempty region collection and observations nested as
+`{region_name: {species_name: PairwiseObservations(...)}}`. Each region contains
+one prepared raster and a species-keyed `SamplingUnits` mapping. Missing coverage
+stays absent. All groups share ordered feature meanings and one `TargetSpec`.
+
+| Control | Meaning |
+| --- | --- |
+| `steps` | Total optimizer updates; one update after all selected contributions. |
+| `region_batch_size` | Regions sampled per update; `None` selects all. |
+| `species_batch_size` | Observed species sampled within each selected region; `None` selects all. |
+| `species_chunk_size` | Simultaneous selected-species computation; changes execution, not the objective. |
+| `evaluation_interval` | Full training/validation evaluations, also at zero and the final step. |
+| ResNet `patch_batch_size` | Separate encoder patch-memory/recomputation control. |
+
+The objective gives equal weight to species and, within each species, to its
+observed regions. Sampling corrects for uneven coverage; selected MLPE groups use
+all their training pairs. History contains sparse `StepRecord` evaluations with
+actual `.step` values, group/species reports and missing validation coverage.
+`on_step` observes every completed update. The returned `.model` belongs to
+`.selected_step` with all matching group calibrations; latest optimizer parameters
+can be newer. See [continuation](docs/persistence.md) for that distinction.
 
 ## Documentation
 
@@ -219,7 +271,7 @@ modules, recalibration and the layout of predictions.
 - `direct_log1p`: mean squared error between `log1p` of the ecological distances and
   of the transformed targets; prediction applies the inverse target transform.
 - `mlpe`: maximum-likelihood population effects. It fits the distance model jointly
-  with a regional linear mixed model in which pairs sharing a population are
+  with a separate group linear mixed model in which pairs sharing a population are
   correlated. It supports population dissimilarities.
 - Wishart: experimental, not yet trainable: a fixed-parameter scoring reference in
   the source checkout; fitting tracked in
@@ -227,6 +279,9 @@ modules, recalibration and the layout of predictions.
   [Wishart guide](docs/statistics/wishart.md).
 
 **Guides**:
+
+- [Models, inputs and training controls](docs/models.md): all constructors, pooled
+  learning, log-linear interpretation, subregions and custom extensions.
 
 - [Evaluation and out-of-fold ensembles](docs/evaluation.md): deployment versus
   out-of-fold prediction, holdout rules, coverage and metrics.

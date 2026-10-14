@@ -1,29 +1,31 @@
 # MLPE prediction and declared support
 
 Ordinary calibrated prediction is marginal: population effects have mean zero.
-The complete `LandscapeGeneticsModel` owns an `MLPECalibrationModule`; its
-`.calibration.regions[region_name]` is the standalone `RegionalMLPECalibration`
+The complete `LandscapeGeneticsModel` owns an `UnpooledMLPECalibrationModule`; its
+`.calibration.for_group(region_name, species_name)` is the standalone `MLPECalibration`
 used below. Obtain it after `fit(..., config=TrainingConfig(objective="mlpe", ...))`
 or explicit frozen `calibrate(...)`.
-It uses the saved regional intercept, signed slope and training distance moments.
+It uses the saved group intercept, signed slope and training distance moments.
 `head.predict_known_effects(distances, pairs)` is a separate operation that uses the
 saved posterior effects for known populations. Unseen populations receive
 independent zero-mean effects with the fitted population variance. Distances align
 with the supplied labelled pairs; no query genetic observations are accepted.
 
 Support observations explicitly update those population effects while keeping
-the encoder, coefficients and variance parameters fixed:
+the entire distance model, coefficients and variance parameters fixed:
 
 ```python
 from ilg_toolkit import ObservationPartition, PairwiseObservations
 
-# head is an existing regional MLPE calibration. Distances come from its frozen model.
+# head is an existing region–species MLPE calibration. Distances come from its frozen model.
 support = PairwiseObservations.from_pairs(
     [("new-north", "known-west"), ("new-north", "known-east")],
     [0.8, 1.1],
     target=head.target,
 )
-declared = ObservationPartition(head.region_name, support.observed_pairs, role="support")
+declared = ObservationPartition(
+    head.region_name, head.species_name, support.observed_pairs, role="support",
+)
 # support_distances must follow support.observed_pairs, which can reorder input rows.
 conditioned = head.condition_on_support(support_distances, support, partition=declared)
 prediction = conditioned.predict(query_distances, [("new-north", "known-south")])
@@ -32,18 +34,21 @@ prediction = conditioned.predict(query_distances, [("new-north", "known-south")]
 The standalone functions `predict_known_effects(head, distances, pairs)` and
 `condition_on_support(head, support_distances, support_observations, partition=...)`
 expose the same operations. Support observations must contain exactly the declared
-partition: extra genetic targets are refused. The region and target metadata must
+partition: extra genetic targets are refused. The region, species and target metadata must
 match the calibration. Missing observations remain absent.
 
-The frozen model provides `model.predict_known_effects(region, pairs)`
-and `model.predict_with_support(region, pairs, support_observations,
-support_partition=declared)`. Both return labelled pair vectors with the same
+The frozen model provides
+`model.predict_known_effects(region, species="fox", pairs={"fox": query_pairs})`
+and `model.predict_with_support(region, {"fox": support}, species="fox",
+pairs={"fox": query_pairs}, support_partition={"fox": declared})`.
+Both return species-keyed conditional records with labelled pair vectors,
 variance and provenance metadata. The prepared region supplies locations for all
 support and query endpoints; its feature contract must match training. Ordinary
-`model.predict(region)` continues to use marginal prediction. An unseen region
+`model.predict(region, species="fox")["fox"]` continues to use marginal prediction. An unseen region–species group
 needs its own explicit calibration before any target-scale MLPE operation.
 
-Unordered endpoint labels are observation identities. Reversing endpoints or
+Unordered endpoint labels are observation identities within their region and
+species. Identical text in another species does not share a population effect. Reversing endpoints or
 reordering input rows cannot bypass the guards. Reusing a calibration pair as
 support would count the same genetic target twice and is refused. A query cannot
 reuse a support pair, and duplicate queries, including reversed duplicates, are
@@ -80,10 +85,10 @@ calibration or support endpoints. An explicit order must contain every predicted
 endpoint and may add other units with missing off-diagonal entries. Conversion
 does not turn the separate pair variances into a covariance matrix.
 
-Prediction provenance records the region, prediction mode, canonical calibration
+Prediction provenance records the region, species, prediction mode, canonical calibration
 pairs and their roles, supplied support pairs and their support roles, and the
 independent-prior unseen-effect policy. These identities complement the model's
-encoder-training and validation provenance when deciding evaluation eligibility.
+distance-model training and validation provenance when deciding evaluation eligibility.
 Known-effect prediction may predict a calibration pair for deployment; provenance
 must still exclude that target from a claim of held-out evaluation. Statistical
 predictive variance and ensemble disagreement describe different uncertainty.
