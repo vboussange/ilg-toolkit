@@ -12,7 +12,7 @@ The original measured production source tree is
 duplicated pooled conductance solver dispatch into one ordinary private helper.
 The guard, family projection/link, solver/AD operations and compiled boundaries
 retain their order. Final source bytes therefore differ from the original measured
-tree; compilation equivalence and fresh final runtime/memory gates are required.
+tree. Final source `9d8c31b784f4d716bc00898838220382bc2b5da7` on `b2088e6c390e943ce90f2d14e678358c9f33afa0` passed compiler equivalence, all ten fresh runtime gates across 32 workloads, and the complete fresh 14-case memory matrix.
 Other #65 changes cover checkout-only Wishart consumers, installed-release/test
 fixtures and this trace. No Wishart training or package export is added.
 
@@ -35,8 +35,8 @@ behavioral boundaries; the complete suite runs their parameterizations together.
 | F | tests/test_ensemble.py and test_species_ensemble.py: deterministic independent group holdouts, explicit coordinated spatial folds, selected keyed original-scale deployment, failures and member continuation. |
 | O | tests/test_evaluation.py, test_species_evaluation.py and test_artifact_ensemble.py: same-endpoint nominal/actual nonaccess, own-query exclusion, group/species coverage, missing/failed contributions, conditional provenance and retained artifact/member continuation. |
 | D | README.md, GLOSSARY.md, docs/models.md/statistics.md/persistence.md/mlpe-conditioning.md/evaluation.md; tests/test_readme.py and test_package_boundary.py; exactly eight examples. |
-| R | benchmarks/spec52/runtime-results.md and results/runtime-comparison.json: all 32 workloads, both required parity pairs and all six adjacent marginal gates, ten fits, seeded intervals, startup/prediction/RSS disclosures and separate LogLinear. |
-| V | benchmarks/spec52/large-registry-memory.md and results/large-registry/final-df7aea21/analysis.json: all 14 public-fit cases, two updates, complete evaluations/heads through 1,000 species, bounded differentiated work and honest CPU allocation/live/RSS accounting. |
+| R | benchmarks/spec52/runtime-results-final-b2088e6.md and results/runtime-comparison-final-b2088e6.json: all 32 workloads, both required parity pairs and all six adjacent marginal gates, ten fits, seeded intervals, startup/prediction/RSS disclosures and separate LogLinear. |
+| V | benchmarks/spec52/large-registry-memory-final-b2088e6.md and results/large-registry/final-b2088e6/analysis.json: all 14 public-fit cases, two updates, complete evaluations/heads through 1,000 species, bounded differentiated work and honest CPU allocation/live/RSS accounting. |
 | X | tests/test_ibd.py and test_experimental_wishart.py; unchanged IBD policy and independent Wishart density/holdout/identifiability/no-go references. Full local checks, examples/research, installed distributions and actual CI are recorded below. |
 
 ## All 62 user stories
@@ -159,8 +159,7 @@ unprepared solver context, have identical StableHLO and identical optimized HLO
 after removal of source/stack debug metadata only. Outputs and all parameter/pooled
 gradients are bit-identical; invalid-context rejection still precedes projection.
 This supports preserving the numerical boundaries, but does not replace fresh
-final performance checks. A new complete frozen 32-case runtime matrix and final
-memory recheck are coordinator gates after the extraction. Old raw evidence,
+final performance checks. The new complete frozen [32-case runtime matrix](../benchmarks/spec52/runtime-results-final-b2088e6.md) passed all ten required gates, and the [14-case memory recheck](../benchmarks/spec52/large-registry-memory-final-b2088e6.md) passed its unchanged analyzer and independent audits after the extraction. Old raw evidence,
 protocol, drivers and thresholds are preserved; no timing is mixed with local
 scientific test load.
 
@@ -240,8 +239,7 @@ inputs, precision, assertions or within-module compilation reuse. Both source an
 installed Python 3.12+AMG controlled runs passed the former LogLinear failure
 points. The minimal `tests/conftest.py` fixture follows that cache-lifetime policy;
 it adds no production cache clearing, test exclusion, skip or tolerance change.
-The complete suite is the regression seam. Full controlled/canonical outcomes
-remain required and are recorded in the coordinator's final evidence.
+The complete suite is the regression seam. Full controlled/canonical outcomes passed and are recorded in the coordinator's final evidence; the final validation section distinguishes historical full suites from final-source focused artifact checks.
 
 The upstream compiler cause remains unresolved. This is a test-process
 cache-lifetime workaround supported by the comparison, not a claimed numerical
@@ -280,7 +278,7 @@ NumPy 2.5.4, SciPy 1.18.1, Optax 0.2.8, Coordax 0.2.9 and JAXscape 0.0.10:
 - Runtime and memory analyzers exactly reproduce their original archived results;
   the coordinator independently reproduces their bootstrap gates. Measured
   driver/fixture/policy identities are unchanged. The private extraction has
-  explicit compiled-equivalence evidence and requires fresh final source gates.
+  explicit compiled-equivalence evidence and passed fresh final source gates.
 
 The complete local suite collects 438 cases. Its command is:
 
@@ -301,9 +299,7 @@ the stable implementation, then runs the actual
 `.github/scripts/test-release.sh` with both artifacts, isolated Python 3.12 and
 the declared AMG extra. Package/test/release-fixture identity is verified after
 integration. Actual current-head GitHub CI must also pass full types, tests,
-examples/research and build. At trace publication, full local execution,
-installed-distribution suites and current-head CI remain pending; no result is
-claimed for a gate still running.
+examples/research and build. On final source `b2088e6`, current-source CI run 38537972629 passed 436 tests with two optional absent-AMG skips in 967.68 seconds, Ruff across 86 files, Pyright with zero errors, all eight examples, Wishart smoke with its unchanged no-go result, and distribution builds. Fresh installed source and wheel each passed the 86 affected numerical tests with AMG (624.89 / 627.83 seconds). Earlier complete installed source and wheel suites on `31a58a5` each passed all 438 cases (1437.37 / 1427.74 seconds). Those full-suite results are historical pre-extraction evidence, not a claim that all 438 were rerun locally on `b2088e6`.
 
 Final commands, counts, artifact identities, current-head CI and independent
 review outcomes are recorded in the coordinator's closing evidence on

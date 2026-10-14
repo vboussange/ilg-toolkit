@@ -1,0 +1,19 @@
+{
+  "coordinator_isolation_released": true,
+  "wrapper_started_utc": "2026-10-14T09:06:12.701501+00:00",
+  "candidate_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+  "production_source_tree": "9d8c31b784f4d716bc00898838220382bc2b5da7",
+  "source_worktree": "/tmp/ilg-spec52/integration",
+  "output": "/tmp/ilg-spec52/pr65-final-reviewfix.json",
+  "expected_cases": 32,
+  "fit_repeats": 10,
+  "species_chunk_size": 4,
+  "driver_fixture_policy_sha256": {
+    "benchmarks/spec52/main_driver.py": "4f95182fbe8a57809c6af6894c47249105ec090805056bfa2bdfa46d7651be7c",
+    "benchmarks/spec52/pr_driver.py": "634b828a6746f63d837cf31f8e3a90100b4c158f77f5eb82d29dc052868715aa",
+    "benchmarks/spec52/fixtures.py": "0431916beca5db9334f983a4dc64d2d8c4d01b3b36d2ad61fd01d5c026c05616",
+    "benchmarks/spec52/multispecies_fixtures.py": "1fe3624cf7463f17ced66ba228d7045738e39807a9b25078e42b9bf2fc0e9178",
+    "benchmarks/spec52/protocol.json": "91b5c0a6a2d58b162e013df6b1982a72c0e42e4338eeeb18add48a590f13ae80",
+    "benchmarks/spec52/analysis_policy.json": "3b033aa4589199b0ab7b6bab5792c3fb0867da7b2b37fc2e49641a0a60987a28"
+  }
+}

@@ -225,13 +225,13 @@ names every repeated baseline case.
 
 ## Completed native evidence
 
-The [final runtime report](runtime-results.md) records all 32 workloads, the
+The [final runtime report](runtime-results-final-b2088e6.md) records all 32 workloads, the
 passing required gates, diagnostic uncertainty, separate LogLinear results,
 startup/prediction/RSS disclosures, and preserved failed attempts. Its
-[machine-readable comparison](results/runtime-comparison.json) is reproducible
+[machine-readable comparison](results/runtime-comparison-final-b2088e6.json) is reproducible
 from the archived raw files without rerunning the measurements.
 
-The [large-registry report](large-registry-memory.md) records the complete
+The [large-registry report](large-registry-memory-final-b2088e6.md) records the complete
 14-case memory/compilation matrix through 1,000 species on the same production
 source. It separates bounded scientific workspace from parameter/output growth
 and explicitly describes the CPU allocator-profiling limitation.
