@@ -6,6 +6,55 @@ numerical settings, repetitions, and acceptance thresholds before any PR timing.
 This is a hardware-specific, fixed-budget comparison, outside correctness CI.
 It makes no time-to-convergence claim and imposes no universal GPU limit.
 
+## Release evidence
+
+Git retains the benchmark scripts, authored protocol/policy, analyzer tests, and
+Markdown reports. Generated result JSON, HLO/StableHLO dumps, and NPZ arrays are
+stored in `ilg-toolkit-v0.0.3-benchmark-evidence.tar.gz` on the
+[v0.0.3 release](https://github.com/vboussange/ilg-toolkit/releases/tag/v0.0.3).
+Before merge, this is a draft visible to collaborators with push access. It is
+published alongside the tested distributions after the PR is squash-merged.
+
+Archive SHA-256:
+`f7ffc3fd09f5d63bda82aafd1aa7c37583a2ef252ccdd9f18f07c93200d88594`.
+The archive preserves the complete benchmark snapshot at `ee2ee16`, all earlier
+attempts, the original analyzer tests, baseline/candidate source snapshots, and
+a per-file `MANIFEST.json`. Measurements identify `b2088e6` and production source
+tree `9d8c31b784f4d716bc00898838220382bc2b5da7`; relocation does not rerun them.
+
+Download and inspect the archive outside your checkout:
+
+```sh
+mkdir -p /tmp/ilg-v0.0.3-evidence
+gh release download v0.0.3 --repo vboussange/ilg-toolkit \
+  --pattern 'ilg-toolkit-v0.0.3-benchmark-evidence.tar.gz*' \
+  --dir /tmp/ilg-v0.0.3-evidence
+cd /tmp/ilg-v0.0.3-evidence
+sha256sum -c ilg-toolkit-v0.0.3-benchmark-evidence.tar.gz.sha256
+tar -xzf ilg-toolkit-v0.0.3-benchmark-evidence.tar.gz
+```
+
+`ARCHIVE.md` gives commands to reproduce both accepted analyses without JAX.
+Relative raw-result paths in the reports below refer to archive members. To use
+the current scripts with those files, run this from the checkout (GNU tar):
+
+```sh
+tar -xzf /tmp/ilg-v0.0.3-evidence/ilg-toolkit-v0.0.3-benchmark-evidence.tar.gz \
+  --wildcards 'benchmarks/spec52/results/*.json' \
+  'benchmarks/spec52/results/*.hlo' 'benchmarks/spec52/results/*.stablehlo' \
+  'benchmarks/spec52/results/*.npz'
+```
+
+These restored files are ignored by Git; tracked reports are left intact.
+Normal tests need no download: their inputs are small, authored synthetic cases.
+
+The release workflow resumes the draft, verifies the archive against
+`.github/release-assets.json` and the measured production source tree, then
+uploads the tested wheel/source distribution before publishing. Missing or
+changed evidence stops publication. If production code changes during review,
+refresh the affected measurements and archive policy before merging. Future
+versions require evidence only when explicitly listed in that policy.
+
 ## Workload equivalence
 
 The eight factorial cases cross ResNet/U-Net, direct/MLPE, and one/two regions.
@@ -228,7 +277,7 @@ names every repeated baseline case.
 The [final runtime report](runtime-results-final-b2088e6.md) records all 32 workloads, the
 passing required gates, diagnostic uncertainty, separate LogLinear results,
 startup/prediction/RSS disclosures, and preserved failed attempts. Its
-[machine-readable comparison](results/runtime-comparison-final-b2088e6.json) is reproducible
+[machine-readable comparison](README.md#release-evidence) (archive member `results/runtime-comparison-final-b2088e6.json`) is reproducible
 from the archived raw files without rerunning the measurements.
 
 The [large-registry report](large-registry-memory-final-b2088e6.md) records the complete

@@ -1,5 +1,10 @@
 # Native multispecies acceptance trace
 
+Generated measurements, compiler dumps and arrays are preserved in the
+[v0.0.3 release evidence archive](../benchmarks/spec52/README.md#release-evidence).
+Scripts, protocol/policy and narrative reports remain in Git. The storage cleanup
+and version bump leave the measured production source tree unchanged.
+
 This records the complete #52 scope: all 62 user stories, all 11 implementation
 sections, all 17 testing decisions and the added runtime gate. Tickets #53–#64 were
 independently integrated/verified before this final acceptance slice. The final
@@ -146,7 +151,7 @@ behavioral boundaries; the complete suite runs their parameterizations together.
 
 ## Runtime and candidate identity
 
-The official analyzers reproduce the original committed runtime and memory
+The official analyzers reproduce the original archived runtime and memory
 reports exactly (CLI raw-input path spelling may differ). Those measurements pass
 all required gates and the complete memory matrix, without `--allow-partial`, on
 their explicitly recorded original source tree. The coordinator independently

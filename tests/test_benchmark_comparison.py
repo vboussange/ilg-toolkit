@@ -1,12 +1,60 @@
 """Acceptance analysis examples independent of measured performance."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
-from benchmarks.spec52.compare import compare_reports, marginal_gate, ratio_gate
+from benchmarks.spec52.compare import compare_reports as analyze_reports
+from benchmarks.spec52.compare import marginal_gate, ratio_gate
+
+
+def baseline_report():
+    """Authored identity and work examples; none of these values are measurements."""
+    directory = Path(__file__).parents[1] / "benchmarks/spec52"
+    protocol_bytes = (directory / "protocol.json").read_bytes()
+    protocol = json.loads(protocol_bytes)
+    protocol["fit_repeats"] = 10
+    rows = []
+    for case in protocol["cases"]:
+        pairs = case["units"] * (case["units"] - 1) // 2
+        rows.append(
+            dict(
+                case=case,
+                input_sha256=f"synthetic-input-{case['name']}",
+                machine=dict(
+                    source_tree="synthetic-main",
+                    frozen_main_commit="synthetic-main-commit",
+                    protocol_sha256=hashlib.sha256(protocol_bytes).hexdigest(),
+                    fixtures_sha256="synthetic-fixtures",
+                    cpu_affinity=[0, 1],
+                    software={"synthetic": "test"},
+                ),
+                scientific_eligibility="passed",
+                warm_fit={"samples_seconds": [10.0] * 10},
+                warm_training_steps_by_fit_seconds=[[10.0] * 3 for _ in range(10)],
+                compile_plus_first_fit_seconds=50.0,
+                first_predict_seconds=2.0,
+                warm_predict={"median_seconds": 1.0},
+                process_peak_rss_after_timed_work_mib=128.0,
+                checks=[{"pairs": pairs} for _ in range(case["regions"])],
+                accounting=dict(
+                    optimizer_updates=3,
+                    group_update_exposure=3,
+                    regions=case["regions"],
+                    pairs_per_group=pairs,
+                    full_evaluations=4,
+                ),
+            )
+        )
+    return dict(protocol=protocol, results=rows, failures=[], smoke=False)
+
+
+def compare_reports(main_reports, pr_reports):
+    # A fresh reference must not inherit corruptions applied to the test inputs.
+    return analyze_reports(main_reports, pr_reports, frozen_main_report=baseline_report())
 
 
 def test_ratio_gate_separates_pass_failure_and_unresolved_noise():
@@ -47,10 +95,8 @@ def test_missing_workloads_cannot_become_a_pass():
 
 
 def reports():
-    """Literal 1.0 parity and 0.2 marginal examples with frozen scientific manifests."""
-    path = Path(__file__).parents[1] / "benchmarks/spec52/results/main.json"
-    baseline = json.loads(path.read_text())
-    baseline["protocol"]["fit_repeats"] = 10
+    """Literal 1.0 parity and 0.2 marginal examples with synthetic work manifests."""
+    baseline = baseline_report()
     native = dict(protocol=baseline["protocol"], results=[], failures=[], smoke=False)
     for original in baseline["results"]:
         original["warm_fit"]["samples_seconds"] = [10.0] * 10

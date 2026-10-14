@@ -7,5 +7,9 @@ build/
 dist/
 .venv/
 experiments/**/results/
-benchmarks/results/
+# Generated benchmark evidence belongs in release archives. Keep authored reports.
+benchmarks/**/results/**
+!benchmarks/**/results/**/
+!benchmarks/**/results/**/*.md
+!benchmarks/**/results/**/*.patch
 *.ilg

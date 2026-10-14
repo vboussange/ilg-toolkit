@@ -32,25 +32,7 @@ jobs:
           python-version: "3.12"
       - name: Check for an existing release
         id: version
-        run: |
-          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName > "$RUNNER_TEMP/releases.json"
-          python - <<'PY'
-          import json
-          import os
-          import tomllib
-          from pathlib import Path
-
-          project = tomllib.loads(Path('pyproject.toml').read_text())['project']
-          tag = f"v{project['version']}"
-          releases = json.loads((Path(os.environ['RUNNER_TEMP']) / 'releases.json').read_text())
-          exists = any(release['tagName'] == tag for release in releases)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              print(f"name={project['name']}", file=output)
-              print(f"version={project['version']}", file=output)
-              print(f'tag={tag}', file=output)
-              print(f'needed={str(not exists).lower()}', file=output)
-          print(f'{tag}: ' + ('already released' if exists else 'release required'))
-          PY
+        run: python .github/scripts/github-release.py status
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
         if: steps.version.outputs.needed == 'true'
         with:
@@ -73,6 +55,9 @@ jobs:
           version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
           assert version == os.environ['RELEASE_VERSION'], 'Tag and project versions disagree'
           PY
+      - name: Verify staged benchmark evidence
+        if: steps.version.outputs.needed == 'true'
+        run: python .github/scripts/github-release.py verify-evidence
       - name: Build source distribution and wheel
         if: steps.version.outputs.needed == 'true'
         run: uv build --out-dir "$RUNNER_TEMP/release-dist"
@@ -81,16 +66,6 @@ jobs:
         run: bash "$RUNNER_TEMP/test-release.sh" "$RUNNER_TEMP/release-dist"
       - name: Tag and publish the GitHub release
         if: steps.version.outputs.needed == 'true'
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          PROJECT_NAME: ${{ steps.version.outputs.name }}
         run: |
-          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git tag -a "$RELEASE_TAG" -m "$PROJECT_NAME $RELEASE_TAG"
-            git push origin "refs/tags/$RELEASE_TAG"
-          fi
-          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/release-dist/"* \
-            --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --title "$PROJECT_NAME $RELEASE_TAG" --generate-notes
+          python .github/scripts/github-release.py publish \
+            --distributions "$RUNNER_TEMP/release-dist"

@@ -44,13 +44,13 @@ The source guard verified the imported `src` tree against frozen main. A shared 
 ## Native comparison
 
 The original observations above remain unchanged. The final native comparison
-uses [main-feature-repeat10.json](main-feature-repeat10.json) for the two
+uses [main-feature-repeat10.json](../README.md#release-evidence) (archive member `results/main-feature-repeat10.json`) for the two
 predeclared feature-heavy gates and retains this original baseline for the other
 ten workloads. The repeat increases fit observations without changing the
 production source, fixture, scientific work or thresholds.
 
-See the [runtime report](../runtime-results-final-b2088e6.md), [final PR raw data](pr-final-b2088e6.json),
-and [machine-readable comparison](runtime-comparison-final-b2088e6.json). All earlier
+See the [runtime report](../runtime-results-final-b2088e6.md), [final PR raw data](../README.md#release-evidence) (archive member `results/pr-final-b2088e6.json`),
+and [machine-readable comparison](../README.md#release-evidence) (archive member `results/runtime-comparison-final-b2088e6.json`). All earlier
 [runtime attempts](runtime-attempts/README.md) remain preserved, including failed
 gates. The separate [large-registry report](../large-registry-memory-final-b2088e6.md) documents
 the completed 14-case CPU memory and compilation matrix.

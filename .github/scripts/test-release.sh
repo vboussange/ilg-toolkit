@@ -16,11 +16,13 @@ for artifact in "$distributions"/*.tar.gz "$distributions"/*.whl; do
     # The package-boundary test also builds a wheel. Keep its source fixture
     # separate from the environment so its isolated subprocess sees dependencies.
     # The README test resolves the README's links, including those into docs.
+    # Analyzer tests use authored synthetic fixtures; no benchmark results are needed.
+    # Release workflow tests load the scripts and asset policy from .github.
     mkdir -p "$workdir/source/src"
     cp -R "$source_root/tests" "$source_root/examples" "$source_root/experiments" \
       "$source_root/docs" "$source_root/benchmarks" "$source_root/pyproject.toml" \
       "$source_root/README.md" "$source_root/GLOSSARY.md" \
-      "$source_root/LICENSE" "$workdir/source/"
+      "$source_root/LICENSE" "$source_root/.github" "$workdir/source/"
     cp -R "$source_root/src/ilg_toolkit" "$workdir/source/src/"
     cd "$workdir/source"
     uv sync --extra dev --extra amg --no-install-project --inexact

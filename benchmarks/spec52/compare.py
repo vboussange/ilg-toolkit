@@ -123,7 +123,7 @@ def timing_summary(result):
     )
 
 
-def compare_reports(main_reports, pr_reports) -> dict:
+def compare_reports(main_reports, pr_reports, *, frozen_main_report=None) -> dict:
     """Validate complete work manifests before evaluating every frozen gate."""
     directory = Path(__file__).parent
     protocol = json.loads((directory / "protocol.json").read_text())
@@ -151,7 +151,15 @@ def compare_reports(main_reports, pr_reports) -> dict:
             f"Missing workloads: main={sorted(required_main - main.keys())}, "
             f"PR={sorted(required_pr - pr.keys())}"
         )
-    frozen_main = _indexed([json.loads((directory / "results/main.json").read_text())], False)
+    if frozen_main_report is None:
+        path = directory / "results/main.json"
+        if not path.exists():
+            raise ValueError(
+                "Frozen baseline is missing; restore the release evidence archive "
+                "as described in benchmarks/spec52/README.md"
+            )
+        frozen_main_report = json.loads(path.read_text())
+    frozen_main = _indexed([frozen_main_report], False)
     for name, result in main.items():
         reference = frozen_main[name]
         if (

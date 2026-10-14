@@ -1,11 +1,88 @@
 """Check that the reproducible evidence command refuses incomplete reports."""
 
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 
 ANALYZER = Path(__file__).resolve().parents[1] / "benchmarks/spec52/large_registry_analysis.py"
+
+
+def memory_report(size=4, chunk=1) -> dict:
+    """Small authored work/shape examples, with illustrative allocation totals."""
+    totals = dict(
+        encoder_inference=10,
+        encoder_training_forward=20,
+        encoder_backward=30,
+        tail_evaluation=40,
+        tail_forward_backward=50,
+    )
+    events = []
+    compiled = set()
+
+    def event(kind, step, indices=None):
+        reports = []
+        if kind in totals and kind not in compiled:
+            reports = [f"synthetic-{kind}.txt"]
+            compiled.add(kind)
+        row: dict = dict(
+            kind=kind,
+            step=step,
+            started_ns=len(events) * 2,
+            finished_ns=len(events) * 2 + 1,
+            new_memory_reports=reports,
+        )
+        if indices is not None:
+            shapes = [[[len(indices), 2], "float64"]]
+            row.update(
+                species_indices=list(indices),
+                group_indices=list(indices),
+                payload_shapes=shapes,
+                payload_signature=hashlib.sha256(json.dumps(shapes).encode()).hexdigest(),
+            )
+        events.append(row)
+
+    def tails(kind, step, indices):
+        for start in range(0, len(indices), chunk):
+            event(kind, step, indices[start : start + chunk])
+
+    event("encoder_inference", 0)
+    tails("tail_evaluation", 0, list(range(size)))
+    event("encoder_training_forward", 1)
+    tails("tail_forward_backward", 1, list(range(4)) if size == 4 else [4, 5, 6, 7])
+    event("encoder_backward", 1)
+    event("optimizer_update", 1)
+    event("encoder_inference", 1)
+    tails("tail_evaluation", 1, list(range(size)))
+    return dict(
+        schema="spec52-large-registry-v1",
+        family="unet",
+        registry_size=size,
+        species_chunk_size=chunk,
+        species_batch_size=4,
+        ragged=False,
+        events=events,
+        history_steps=[0, 1],
+        calibrated_groups=size,
+        training_config=dict(steps=1, evaluation_interval=1),
+        selected_prediction_checks={"passed": True},
+        cpu_compiled_allocation_reports=[
+            dict(
+                file=f"synthetic-{role}.txt",
+                role=role,
+                total_allocated_bytes=total,
+                entry_layout="synthetic",
+                report=f"Total bytes used: {total}",
+            )
+            for role, total in totals.items()
+        ],
+        persistent_bytes={},
+        process_peak_rss_bytes_including_compiler=0,
+        source_commit="synthetic",
+        source_tree="synthetic-tree",
+        source_sha256={"benchmarks/spec52/large_registry_probe.py": "synthetic-driver"},
+    )
 
 
 def test_empty_evidence_directory_cannot_report_success(tmp_path):
@@ -86,22 +163,21 @@ def test_absent_encoder_and_optimizer_work_cannot_pass_the_audit():
         analyze_case(raw)
 
 
-def test_preserved_real_reports_verify_totals_reuse_and_selected_work():
+def test_reports_verify_totals_reuse_and_selected_work():
     from benchmarks.spec52.large_registry_analysis import analyze_case
 
-    raw_path = ANALYZER.parent / "results/large-registry/preliminary-d7e410b/unet-s4-c1.json"
-    summary = analyze_case(json.loads(raw_path.read_text()))
+    summary = analyze_case(memory_report())
     assert sorted(summary["selected_species_indices"]) == [0, 1, 2, 3]
     assert [(item["calls"], item["compiled_executables"]) for item in summary["compilation"]] == [
         (8, 1),
         (4, 1),
     ]
     assert {item["role"]: item["compiled_allocated_bytes"] for item in summary["allocations"]} == {
-        "encoder_inference": 147336,
-        "encoder_training_forward": 1845256,
-        "encoder_backward": 2006571,
-        "tail_evaluation": 25180,
-        "tail_forward_backward": 52477,
+        "encoder_inference": 10,
+        "encoder_training_forward": 20,
+        "encoder_backward": 30,
+        "tail_evaluation": 40,
+        "tail_forward_backward": 50,
     }
 
 
@@ -112,8 +188,7 @@ def test_changed_report_total_or_extra_numeric_id_compilation_is_rejected():
 
     from benchmarks.spec52.large_registry_analysis import analyze_case
 
-    raw_path = ANALYZER.parent / "results/large-registry/preliminary-d7e410b/unet-s4-c1.json"
-    original = json.loads(raw_path.read_text())
+    original = memory_report()
     corrupted = copy.deepcopy(original)
     corrupted["cpu_compiled_allocation_reports"][0]["total_allocated_bytes"] += 1
     with pytest.raises(ValueError, match="inconsistent.*allocation"):
@@ -130,8 +205,7 @@ def test_changed_payload_shapes_cannot_keep_the_old_reuse_signature():
 
     from benchmarks.spec52.large_registry_analysis import analyze_case
 
-    raw_path = ANALYZER.parent / "results/large-registry/preliminary-d7e410b/unet-s4-c1.json"
-    raw = json.loads(raw_path.read_text())
+    raw = memory_report()
     tail = next(event for event in raw["events"] if event["kind"] == "tail_evaluation")
     tail["payload_shapes"][0][0][0] = 1000
     with pytest.raises(ValueError, match="payload shape.*signature"):
@@ -141,8 +215,7 @@ def test_changed_payload_shapes_cannot_keep_the_old_reuse_signature():
 def test_compact_shape_catalogue_preserves_the_same_audited_evidence():
     from benchmarks.spec52.large_registry_analysis import analyze_case
 
-    raw_path = ANALYZER.parent / "results/large-registry/preliminary-d7e410b/unet-s4-c1.json"
-    raw = json.loads(raw_path.read_text())
+    raw = memory_report()
     expected = analyze_case(raw)
     raw["payload_shapes_by_signature"] = {}
     for event in raw["events"]:
@@ -154,9 +227,8 @@ def test_compact_shape_catalogue_preserves_the_same_audited_evidence():
 
 
 def test_one_matrix_cannot_mix_different_production_source_trees(tmp_path):
-    samples = ANALYZER.parent / "results/large-registry/preliminary-d7e410b"
     for index, name in enumerate(("unet-s4-c1.json", "unet-s100-c1.json")):
-        raw = json.loads((samples / name).read_text())
+        raw = memory_report(size=100 if index else 4)
         if index:
             raw["source_tree"] = "different-production-tree"
         (tmp_path / name).write_text(json.dumps(raw))
@@ -181,8 +253,7 @@ def two_update_report():
     import copy
     from collections import Counter
 
-    raw_path = ANALYZER.parent / "results/large-registry/preliminary-d7e410b/unet-s100-c4.json"
-    raw = json.loads(raw_path.read_text())
+    raw = memory_report(size=100, chunk=4)
     raw["source_commit"] = "synthetic-two-update-execution"
     raw["schema"] = "spec52-large-registry-v2"
     raw["training_config"].update(steps=2, evaluation_interval=2)

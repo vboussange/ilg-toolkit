@@ -314,6 +314,13 @@ Release workflow tests the built wheel and source archive, then tags `v<version>
 and publishes a GitHub release; nothing is published to PyPI. Retry a failed
 release from Actions → Release → Run workflow on `main`.
 
+Benchmark scripts, authored protocols and readable reports belong in Git;
+generated measurements, compiler dumps and arrays belong in release assets.
+For v0.0.3, the [benchmark evidence archive](benchmarks/spec52/README.md#release-evidence)
+is staged on the draft release. The workflow checks its checksum and measured
+production source before publishing it alongside the tested distributions.
+An existing draft is resumed; only an already published release is skipped.
+
 ## License
 
 Developed by Victor Boussange and contributors. Licensed under the

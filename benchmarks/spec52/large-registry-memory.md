@@ -5,7 +5,7 @@
 **Complete: all 14 public-fit cases passed** on clean measured commit
 `df7aea21ec55ce39bf34d78e53668ab8d4c86f44`, production source tree
 `8d92e023e4d4b29beca50e0c7028572ef7dd78ba`.
-The [raw matrix and machine-readable audit](results/large-registry/final-df7aea21/analysis.json)
+The [raw matrix and machine-readable audit](README.md#release-evidence) (archive member `results/large-registry/final-df7aea21/analysis.json`)
 cover both neural families at registries of 4, 100 and 1,000 species,
 chunks of 1 and 4, plus one ragged case per family. Every case used a fresh
 CPU process and XLA dump directory, affinity 2–3, one BLAS/OpenMP thread,
@@ -177,7 +177,7 @@ registry-sized axes occurred only in parameter/nuisance arrays and their
 derivative or finite-check work, with no heavy all-species intermediate.
 
 All seven preliminary schema-v1 one-update reports and their derived
-[analysis](results/large-registry/preliminary-d7e410b/analysis.json) remain
+[analysis](README.md#release-evidence) (archive member `results/large-registry/preliminary-d7e410b/analysis.json`) remain
 byte-identical in their archive. They are historical diagnostics and are
 not mixed into the final matrix. No final case failed or was replaced.
 The complete matrix establishes the bounded execution and compilation
