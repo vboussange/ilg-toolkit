@@ -5,7 +5,7 @@ import jax
 import numpy as np
 from scipy.linalg import helmert
 
-from ilg_toolkit.data import RegionBatch
+from ilg_toolkit.data import RegionBatch, SamplingUnits
 from ilg_toolkit.models import ResNet9Conductance
 
 from .diagnostic import GaussianMarkerDistances, diagnose_wishart
@@ -19,11 +19,11 @@ def main():
         cx.Field(
             np.random.default_rng(4).normal(size=(8, 8, 2)), dims=("row", "column", "feature")
         ),
-        labels,
-        np.array([[0, 0], [0, 7], [7, 0], [7, 7]]),
+        {"fox": SamplingUnits(labels, np.array([[0, 0], [0, 7], [7, 0], [7, 7]]))},
+        feature_names=("elevation", "habitat"),
     )
-    encoder = ResNet9Conductance(2, patch_size=4, key=jax.random.key(6))
-    resistances = np.asarray(encoder.predict_distances(region.feature_array, region.pixel_nodes))
+    encoder = ResNet9Conductance(2, species=("fox",), patch_size=4, key=jax.random.key(6))
+    resistances = np.asarray(encoder.ecological_distances(region, species="fox")["fox"])
     basis = helmert(len(labels))
     scale, nugget, marker_count = 1.3, 0.2, 20
     covariance = -0.5 * scale * basis @ resistances @ basis.T + nugget * np.eye(3)
@@ -40,6 +40,7 @@ def main():
         region,
         observations,
         encoder=encoder,
+        species="fox",
         scale=scale,
         nugget=nugget,
         training_unit_ids=labels[:2],

@@ -257,8 +257,8 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory():
             {validation_region.name: {"species": validation_observations}},
         ),
     )
-    assert [epoch.training_by_group for epoch in baseline.history] == [
-        epoch.training_by_group for epoch in validated.history
+    assert [record.training_by_group for record in baseline.history] == [
+        record.training_by_group for record in validated.history
     ]
     reordered = fit(
         reversed_regions,

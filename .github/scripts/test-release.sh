@@ -18,7 +18,8 @@ for artifact in "$distributions"/*.tar.gz "$distributions"/*.whl; do
     # The README test resolves the README's links, including those into docs.
     mkdir -p "$workdir/source/src"
     cp -R "$source_root/tests" "$source_root/examples" "$source_root/experiments" \
-      "$source_root/docs" "$source_root/pyproject.toml" "$source_root/README.md" \
+      "$source_root/docs" "$source_root/benchmarks" "$source_root/pyproject.toml" \
+      "$source_root/README.md" "$source_root/GLOSSARY.md" \
       "$source_root/LICENSE" "$workdir/source/"
     cp -R "$source_root/src/ilg_toolkit" "$workdir/source/src/"
     cd "$workdir/source"
