@@ -6,11 +6,15 @@ independently integrated/verified before this final acceptance slice. The final
 source, examples, experimental consumer and release fixture use the native API;
 no compatibility reader, alias, wrapper or adapter was restored.
 
-Production source tree is `8d92e023e4d4b29beca50e0c7028572ef7dd78ba`, identical
-to measured candidate `df7aea21ec55ce39bf34d78e53668ab8d4c86f44` and verified
-integration `7871653f5e3234cce40e7b7c985b31b846ddc8f2`. #65 changes only the
-checkout-only Wishart diagnostic/tests/docs, installed-release fixture and
-test-process fixture lifetime, plus this trace. It adds no Wishart training or package exports.
+The original measured production source tree is
+`8d92e023e4d4b29beca50e0c7028572ef7dd78ba`, from candidate
+`df7aea21ec55ce39bf34d78e53668ab8d4c86f44`. Final review additionally extracts
+duplicated pooled conductance solver dispatch into one ordinary private helper.
+The guard, family projection/link, solver/AD operations and compiled boundaries
+retain their order. Final source bytes therefore differ from the original measured
+tree; compilation equivalence and fresh final runtime/memory gates are required.
+Other #65 changes cover checkout-only Wishart consumers, installed-release/test
+fixtures and this trace. No Wishart training or package export is added.
 
 ## Validation bundles
 
@@ -142,13 +146,23 @@ behavioral boundaries; the complete suite runs their parameterizations together.
 
 ## Runtime and candidate identity
 
-The official runtime and memory analyzers were rerun against committed raw files
-on this final production tree. Their complete outputs equal the archived analyses
-exactly (CLI raw-input path spelling may differ). Runtime status is pass and the
-memory matrix is complete; no `--allow-partial` was used. The coordinator also
-independently audited every interval/input/initialization/work/source manifest and
-ran a fresh matching U-Net100/chunk4 public-fit probe on integration. No new
-performance timing was mixed with ordinary test load.
+The official analyzers reproduce the original committed runtime and memory
+reports exactly (CLI raw-input path spelling may differ). Those measurements pass
+all required gates and the complete memory matrix, without `--allow-partial`, on
+their explicitly recorded original source tree. The coordinator independently
+audited the intervals/manifests and a matching U-Net 100/chunk4 public-fit probe
+before final review. They are preserved evidence, not a claim that final source
+bytes still match after the private dispatch extraction.
+
+Before/after representative ResNet and LogLinear kernels, each with prepared and
+unprepared solver context, have identical StableHLO and identical optimized HLO
+after removal of source/stack debug metadata only. Outputs and all parameter/pooled
+gradients are bit-identical; invalid-context rejection still precedes projection.
+This supports preserving the numerical boundaries, but does not replace fresh
+final performance checks. A new complete frozen 32-case runtime matrix and final
+memory recheck are coordinator gates after the extraction. Old raw evidence,
+protocol, drivers and thresholds are preserved; no timing is mixed with local
+scientific test load.
 
 Frozen target main is `8439f99ea37f04273a1868b8009e1076239ad316`; the
 coordinator freshly verified it before final acceptance. Both native measured
@@ -241,13 +255,16 @@ Coordinator-verified integration: `f768e857eba6491aeba2efbefce6ae013bf8305c`.
 Those initial implementation trees are identical. Later test-harness changes
 supply the explicit subprocess helper path and scope compilation caches to test
 modules; final test/fixture commit identities are recorded with closing evidence.
-Production numerical source and measured drivers remain unchanged. The original user checkout's glossary edit and deleted ADR
-remain untouched and match the coordinator's original patch checksum.
+The later private solver-dispatch extraction changes source bytes while retaining
+projection/link/solver/AD operations and boundaries. Measured drivers, fixtures and
+policy remain unchanged. Final source identity and fresh performance outcomes are
+recorded in the coordinator's closing evidence. The original user checkout's
+glossary edit and deleted ADR remain untouched and match the original checksum.
 
 Completed local checks use Python 3.13.13, JAX/JAXlib 0.10.2, Equinox 0.13.8,
 NumPy 2.5.4, SciPy 1.18.1, Optax 0.2.8, Coordax 0.2.9 and JAXscape 0.0.10:
 
-- Full Ruff lint and formatting pass (85 Python files); shell syntax and changed
+- Full Ruff lint and formatting pass (86 Python files); shell syntax and changed
   whitespace pass. All 42 relative Markdown links resolve.
 - Full Pyright passes with zero errors/warnings/information under the project's
   Python 3.12 target and only its frozen main-driver exclusion. The frozen driver
@@ -260,9 +277,10 @@ NumPy 2.5.4, SciPy 1.18.1, Optax 0.2.8, Coordax 0.2.9 and JAXscape 0.0.10:
   because benchmarks are absent. Copying the required benchmarks yields 39
   passes in 1.18 seconds across runtime/memory-policy and README checks. This
   fixture check complements the complete installed-distribution gates below.
-- Runtime and memory analyzers exactly reproduce their archived results. Both
-  production source and measured driver/fixture/policy identities are verified;
-  the coordinator independently reproduces all bootstrap gates as well.
+- Runtime and memory analyzers exactly reproduce their original archived results;
+  the coordinator independently reproduces their bootstrap gates. Measured
+  driver/fixture/policy identities are unchanged. The private extraction has
+  explicit compiled-equivalence evidence and requires fresh final source gates.
 
 The complete local suite collects 438 cases. Its command is:
 

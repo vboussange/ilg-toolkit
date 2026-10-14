@@ -6,7 +6,7 @@ targets.
 """
 
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import equinox as eqx
 import jax
@@ -161,6 +161,24 @@ class AbstractDistanceModel(eqx.Module):
             name: result.as_matrix()
             for name, result in self.predict_raw_distances(region, species=species).items()
         }
+
+
+def _pooled_resistance_pairs(
+    conductance: Callable[[jax.Array, jax.Array], jax.Array],
+    pooled: jax.Array,
+    selection: PairSelection,
+    species_index: jax.Array,
+    config: ResistanceSolverConfig,
+    *,
+    context: ResistanceSolverContext | None = None,
+) -> jax.Array:
+    """Validate pooled solver policy before projecting and solving requested pairs."""
+    if context is not None and context.config != config:
+        raise ValueError("Solver context policy does not match the conductance model settings")
+    surface = conductance(pooled, species_index)
+    if context is None:
+        return _effective_resistance_pairs(surface, selection, config=config)
+    return _effective_resistance_pairs(surface, selection, context=context)
 
 
 class ConductanceModel(AbstractDistanceModel):

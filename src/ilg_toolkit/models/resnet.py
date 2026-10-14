@@ -12,8 +12,7 @@ import jax.numpy as jnp
 
 from .._pairs import PairSelection
 from ..config import ResistanceSolverConfig, validate_patch_batch_size
-from ..resistance import _effective_resistance_pairs
-from .base import ConductanceModel, validate_species
+from .base import ConductanceModel, _pooled_resistance_pairs, validate_species
 from .common import patchify
 
 
@@ -183,12 +182,14 @@ class ResNet9Conductance(ConductanceModel):
         return self._conductance_from_pooled(pooled, species_index)
 
     def _pairs_from_pooled(self, pooled, selection: PairSelection, species_index, *, context=None):
-        if context is not None and context.config != self.solver_config:
-            raise ValueError("Solver context policy does not match the conductance model settings")
-        surface = self._conductance_from_pooled(pooled, species_index)
-        if context is None:
-            return _effective_resistance_pairs(surface, selection, config=self.solver_config)
-        return _effective_resistance_pairs(surface, selection, context=context)
+        return _pooled_resistance_pairs(
+            self._conductance_from_pooled,
+            pooled,
+            selection,
+            species_index,
+            self.solver_config,
+            context=context,
+        )
 
     def _pair_distances(
         self,
