@@ -2,7 +2,8 @@
 
 Fitting, prediction, frozen recalibration and support-conditioned prediction
 calculate the requested pair distances directly. The explicit
-`model.ecological_distances(region)` diagnostic still returns a complete matrix.
+`model.ecological_distances(region, species="fox")["fox"]` diagnostic returns a
+complete matrix for the selected species; the public output remains species-keyed.
 Pair order and orientation are preserved, and distinct labels at the same graph
 vertex have zero resistance. Selecting pairs does not crop the regional graph or
 remove any declared training observations from their complete-group likelihood.
