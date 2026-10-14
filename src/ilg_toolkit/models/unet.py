@@ -8,8 +8,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from .._pairs import PairSelection
 from ..config import validate_patch_batch_size
-from .base import EmbeddingDistanceModel
+from .base import EmbeddingDistanceModel, validate_species
 from .common import patchify
 
 
@@ -74,8 +75,8 @@ class ResidualConvBlock(eqx.Module):
 
 
 @final
-class UNetEmbeddingDistance(EmbeddingDistanceModel):
-    """Predict patch embeddings and squared distances between population nodes."""
+class _UNetBackbone(eqx.Module):
+    """Shared U-Net features before the species-specific embedding projection."""
 
     patch_embedding: eqx.nn.Linear
     patch_norm: eqx.nn.GroupNorm
@@ -94,7 +95,6 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
     merge1: eqx.nn.Conv2d
     merge1_norm: eqx.nn.GroupNorm
     decoder1: ResidualConvBlock
-    embedding_head: eqx.nn.Conv2d
     patch_size: int = eqx.field(static=True)
     base_channels: int = eqx.field(static=True)
     embedding_dim: int = eqx.field(static=True)
@@ -170,14 +170,11 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         self.decoder1 = ResidualConvBlock(
             base_channels, base_channels, dropout=dropout, key=keys[11]
         )
-        self.embedding_head = eqx.nn.Conv2d(
-            base_channels, embedding_dim, 1, dtype=jnp.float32, key=keys[12]
-        )
         self.patch_size = patch_size
         self.base_channels = base_channels
         self.embedding_dim = embedding_dim
 
-    def embedding_grid(
+    def __call__(
         self,
         features: jax.Array,
         *,
@@ -185,7 +182,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         key: jax.Array | None = None,
         patch_batch_size: int | None = None,
     ) -> jax.Array:
-        """Return an ``(patch rows, patch columns, embedding_dim)`` tensor.
+        """Return an ``(patch rows, patch columns, base_channels)`` feature tensor.
 
         patch_batch_size only chunks the linear patch embedding; it does not
         checkpoint or split the subsequent spatial U-Net computation.
@@ -221,4 +218,101 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         values = _match_shape(self.up1(values), skip1)
         values = self.merge1_norm(self.merge1(jnp.concatenate([values, skip1], axis=0)))
         values = self.decoder1(jax.nn.gelu(values), inference=inference, key=keys[4])
-        return jnp.moveaxis(self.embedding_head(values), 0, -1)
+        return jnp.moveaxis(values, 0, -1)
+
+
+@final
+class UNetEmbeddingDistance(EmbeddingDistanceModel):
+    """One pooled spatial backbone with stacked species-specific projections."""
+
+    species: tuple[str, ...] = eqx.field(static=True)
+    backbone: _UNetBackbone
+    projection_weight: jax.Array
+    projection_bias: jax.Array
+    patch_size: int = eqx.field(static=True)
+    base_channels: int = eqx.field(static=True)
+    embedding_dim: int = eqx.field(static=True)
+    dropout: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        in_channels: int,
+        *,
+        species,
+        patch_size: int = 32,
+        base_channels: int = 32,
+        embedding_dim: int = 16,
+        dropout: float = 0.1,
+        key: jax.Array,
+    ):
+        self.species = validate_species(species)
+        self.backbone = _UNetBackbone(
+            in_channels,
+            patch_size=patch_size,
+            base_channels=base_channels,
+            embedding_dim=embedding_dim,
+            dropout=dropout,
+            key=key,
+        )
+        head_key = jax.random.split(key, 13)[12]
+        head_keys = jax.vmap(
+            lambda index: jax.lax.cond(
+                index == 0, lambda _: head_key, lambda i: jax.random.fold_in(head_key, i), index
+            )
+        )(jnp.arange(len(self.species)))
+        heads = eqx.filter_vmap(
+            lambda head_key: eqx.nn.Conv2d(
+                base_channels, embedding_dim, 1, dtype=jnp.float32, key=head_key
+            )
+        )(head_keys)
+        self.projection_weight = heads.weight[..., 0, 0]
+        assert heads.bias is not None
+        self.projection_bias = heads.bias[..., 0, 0]
+        self.patch_size = patch_size
+        self.base_channels = base_channels
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+
+    def _split_pooled(self):
+        """Private encoder/tail partition for one regional VJP and bounded tails."""
+        return self.backbone, eqx.tree_at(lambda model: model.backbone, self, None)
+
+    def _pooled_features(self, features, *, inference=True, key=None, patch_batch_size=None):
+        """Private cut shared by native pair kernels and bounded training execution."""
+        return self.backbone(
+            jnp.asarray(features), inference=inference, key=key, patch_batch_size=patch_batch_size
+        )
+
+    def _pairs_from_pooled(self, pooled, selection: PairSelection, species_index, *, context=None):
+        endpoints = pooled.reshape(-1, pooled.shape[-1])[selection.nodes]
+        projected = (
+            endpoints @ self.projection_weight[species_index].T
+            + self.projection_bias[species_index]
+        )
+        return jnp.sum((projected[selection.left] - projected[selection.right]) ** 2, axis=-1)
+
+    def _embedding_grid(
+        self, features, species_index, *, inference=True, key=None, patch_batch_size=None
+    ):
+        pooled = self._pooled_features(
+            features, inference=inference, key=key, patch_batch_size=patch_batch_size
+        )
+        return (
+            pooled @ self.projection_weight[species_index].T + self.projection_bias[species_index]
+        )
+
+    def _pair_distances(
+        self,
+        features,
+        selection,
+        species_index,
+        *,
+        context=None,
+        inference=True,
+        key=None,
+        patch_batch_size=None,
+    ):
+        pooled = self._pooled_features(
+            features, inference=inference, key=key, patch_batch_size=patch_batch_size
+        )
+        return self._pairs_from_pooled(pooled, selection, species_index, context=context)

@@ -1,7 +1,9 @@
-"""In-memory fitting with sequential, equally weighted regional contributions."""
+"""Species-balanced full-group fitting through native numerical pair kernels."""
 
+import hashlib
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import NamedTuple, cast, final
 
 import equinox as eqx
@@ -10,12 +12,14 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from .calibration import DirectCalibrationModule, MLPECalibrationModule
+from . import _training_execution as execution
+from ._pairs import PairSelection
+from .calibration import DirectCalibrationModule, UnpooledMLPECalibrationModule
 from .config import TrainingConfig
 from .data import ObservationPartition, PairwiseObservations, RegionBatch
 from .mlpe import (
+    MLPECalibration,
     MLPEConfig,
-    RegionalMLPECalibration,
     finalize_mlpe_fit,
     mlpe_ml_negative_log_likelihood,
     profiled_mlpe_ml_fit,
@@ -25,300 +29,476 @@ from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .resistance import ResistanceSolverContext
 
-RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
-ObservationCollection = (
-    PairwiseObservations | Sequence[PairwiseObservations] | Mapping[str, PairwiseObservations]
-)
-PartitionCollection = (
-    ObservationPartition
-    | Sequence[ObservationPartition | None]
-    | Mapping[str, ObservationPartition | None]
-    | None
-)
-Parameters = tuple[AbstractDistanceModel, dict[str, jax.Array] | None]
+RegionCollection = Sequence[RegionBatch] | Mapping[str, RegionBatch]
+ObservationCollection = Mapping[str, Mapping[str, PairwiseObservations]]
+PartitionCollection = Mapping[str, Mapping[str, ObservationPartition | None]] | None
+GroupPairs = dict[str, dict[str, tuple[tuple[str, str], ...]]]
 
 
 @final
-class EpochRecord(eqx.Module):
-    """Inference objectives after an update; zero is initialization.
+class StepRecord(eqx.Module):
+    """One fully evaluated snapshot, with available species/group coverage."""
 
-    The aggregate is the arithmetic mean of regional, per-pair means.
-    """
-
-    epoch: int
+    step: int
     training_loss: float
     validation_loss: float | None = None
-    training_by_region: dict[str, float] = eqx.field(default_factory=dict)
-    validation_by_region: dict[str, float] = eqx.field(default_factory=dict)
+    training_by_species: dict[str, float] = eqx.field(default_factory=dict)
+    training_by_group: dict[str, dict[str, float]] = eqx.field(default_factory=dict)
+    validation_by_species: dict[str, float] = eqx.field(default_factory=dict)
+    validation_by_group: dict[str, dict[str, float]] = eqx.field(default_factory=dict)
+    validation_missing_groups: tuple[tuple[str, str], ...] = ()
+    validation_missing_species: tuple[str, ...] = ()
 
 
 @final
 class TrainingState(eqx.Module):
-    """Complete fitting result and continuation state, returned directly by ``fit``.
+    """Latest trainable parameters and an independently selected evaluated model.
 
-    The latest model, variance parameters and Adam state describe the latest
-    epoch. ``model`` selects ``best_model``, which retains its own distance model and
-    regional calibrations. MLPE ``raw_variances`` maps each region identity to
-    its two nuisance parameters; direct fits use ``None``. Progress derives
-    from history, and the input contract records structure rather than values.
-    RNG uses a serializable legacy uint32 key.
+    Optimizer progress is explicit; history records evaluated snapshots, not a
+    progress counter. MLPE nuisance arrays have one two-variance row per entry in
+    input_contract["training"], ordered by region name then registry order. The
+    selected array matches best_model; the latest array follows optimizer progress.
+    Names/provenance belong to host state, never numeric kernels.
     """
 
-    raw_variances: dict[str, jax.Array] | None
+    step: int
+    selected_step: int
+    latest_distance_model: AbstractDistanceModel
+    raw_variances: jax.Array | None
+    selected_raw_variances: jax.Array | None
     optimizer_state: optax.OptState
     rng_key: jax.Array
     config: TrainingConfig
     input_contract: dict
-    history: tuple[EpochRecord, ...]
-    latest_model: LandscapeGeneticsModel
+    history: tuple[StepRecord, ...]
     best_model: LandscapeGeneticsModel
-    selected_epoch: int
 
     @property
     def model(self) -> LandscapeGeneticsModel:
-        """The model selected by the declared validation or final-epoch policy."""
         return self.best_model
 
     @property
     def distance_model(self) -> AbstractDistanceModel:
-        return self.latest_model.distance_model
-
-    @property
-    def epoch(self) -> int:
-        return self.history[-1].epoch
-
-    @property
-    def step(self) -> int:
-        return self.epoch
+        return self.latest_distance_model
 
     @property
     def region_names(self) -> tuple[str, ...]:
-        return tuple(self.latest_model.training_pairs)
+        return tuple(self.best_model.training_pairs)
 
     @property
     def selection(self) -> str:
-        return "validation" if self.latest_model.validation_pairs else "final"
+        return "validation" if self.best_model.validation_pairs else "final"
 
     @property
     def best_loss(self) -> float:
-        record = self.history[self.selected_epoch]
+        record = next(record for record in self.history if record.step == self.selected_step)
         return record.training_loss if record.validation_loss is None else record.validation_loss
 
 
+class _GroupInput(NamedTuple):
+    region: RegionBatch
+    species: str
+    observations: PairwiseObservations
+    partition: ObservationPartition | None
+
+
 class _TrainingPayload(NamedTuple):
-    """Named numerical inputs passed intact through JAX objective kernels."""
+    """Numerical data only; array IDs select fixed parameter rows dynamically."""
 
     features: jax.Array
     nodes: jax.Array
     pairs: tuple[jax.Array, jax.Array]
     targets: jax.Array
-
-
-class _RegionalInput(NamedTuple):
-    region: RegionBatch
-    observations: PairwiseObservations
-    partition: ObservationPartition | None
+    distance_pairs: PairSelection
+    species_index: jax.Array
+    group_index: jax.Array
+    weight: jax.Array
 
 
 @dataclass(frozen=True)
-class _RegionalBatch:
-    """Keep each region's observations and solver state separate from its shared distance_model."""
-
-    region: RegionBatch
-    observations: PairwiseObservations
+class _GroupBatch:
+    source: _GroupInput
     payload: _TrainingPayload
-    context: ResistanceSolverContext | None = None
-
-
-def _prepared(
-    region: RegionBatch,
-    observations: PairwiseObservations,
-    partition: ObservationPartition | None = None,
-    *,
-    role: str = "training",
-    objective: str = "direct_log1p",
-) -> _TrainingPayload:
-    if partition is not None and partition.role != role:
-        raise ValueError(f"Expected a {role} partition, got {partition.role}")
-    pairs, values = observations.aligned_pairs(region, partition)
-    if objective == "direct_log1p" and (
-        observations.target.kind != "dissimilarity" or jnp.any(values < 0)
-    ):
-        raise ValueError(
-            "direct_log1p requires nonnegative dissimilarities; relatedness is unsupported"
-        )
-    if objective == "mlpe":
-        if observations.target.kind != "dissimilarity":
-            raise ValueError("Population MLPE requires declared dissimilarities")
-        kinds = region.sampling_unit_kinds
-        assert kinds is not None
-        if any(kind != "population" for kind in kinds):
-            raise ValueError("Population MLPE does not support individual sampling units")
-        if role == "training" and len(values) < 3:
-            raise ValueError("MLPE training requires at least three observed pairs")
-        if role == "training":
-            degree = jnp.bincount(jnp.concatenate(pairs), length=len(region.sampling_unit_ids))
-            if degree.max() <= 1:
-                raise ValueError("MLPE variances are unidentifiable: pairs share no endpoints")
-    targets = observations.target.forward(values)
-    return _TrainingPayload(
-        features=region.feature_array,
-        nodes=region.pixel_nodes,
-        pairs=pairs,
-        targets=targets.astype(jnp.float64) if objective == "mlpe" else targets,
-    )
-
-
-def _align_collection(values: object, names: Sequence[str], description: str) -> tuple[object, ...]:
-    """Align one labelled collection without assigning it a statistical role."""
-    if isinstance(values, Mapping):
-        if set(values) != set(names):
-            raise ValueError(f"{description} mapping keys must match region names exactly")
-        return tuple(values[name] for name in names)
-    if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
-        if len(values) != len(names):
-            raise ValueError(f"{description} sequence must align with all supplied regions")
-        return tuple(values)
-    if len(names) == 1:
-        return (values,)
-    raise ValueError(f"{description} must align with the supplied region collection")
+    context: ResistanceSolverContext | None
+    region_index: int
 
 
 def _normalize_inputs(
     regions: RegionCollection,
     observations: ObservationCollection,
     partitions: PartitionCollection,
-) -> tuple[_RegionalInput, ...]:
-    """Align explicit collections, then sort stable region identities for RNG order."""
-    if isinstance(regions, RegionBatch):
-        ordered = [regions]
-    elif isinstance(regions, Mapping):
+    *,
+    species=None,
+) -> tuple[_GroupInput, ...]:
+    """Validate nested host collections and sort presentation-independent groups."""
+    if isinstance(regions, Mapping):
         ordered = list(regions.values())
         if any(
             not isinstance(value, RegionBatch) or key != value.name
             for key, value in regions.items()
         ):
-            raise ValueError("Region mapping keys must match each prepared region's name")
+            raise ValueError("Region mapping keys must match RegionBatch names")
     elif isinstance(regions, Sequence) and not isinstance(regions, (str, bytes)):
         ordered = list(regions)
     else:
-        raise ValueError("Provide a prepared region or a nonempty region sequence/mapping")
+        raise ValueError("regions must be a nonempty collection, including for one region")
     if not ordered or any(not isinstance(region, RegionBatch) for region in ordered):
-        raise ValueError("Regions must be a nonempty collection of RegionBatch inputs")
+        raise ValueError("regions must contain RegionBatch values")
     names = [region.name for region in ordered]
     if len(set(names)) != len(names):
-        raise ValueError("Region names must be unique; duplicate names cannot share a fit")
-
-    observed = _align_collection(observations, names, "Observations")
-    selected = (
-        (None,) * len(ordered)
-        if partitions is None
-        else _align_collection(partitions, names, "Partitions")
+        raise ValueError("Region names must be unique")
+    if not isinstance(observations, Mapping) or set(observations) != set(names):
+        raise ValueError("Observations must be region-then-species mappings matching region names")
+    if partitions is not None and (
+        not isinstance(partitions, Mapping) or set(partitions) != set(names)
+    ):
+        raise ValueError("Partitions must be region-then-species mappings matching region names")
+    registry = (
+        tuple(species)
+        if species is not None
+        else tuple(sorted({name for region in ordered for name in region.sampling_units}))
     )
-    inputs = []
-    for region, observation, partition in zip(ordered, observed, selected, strict=True):
-        if not isinstance(observation, PairwiseObservations):
-            raise ValueError("Observations contain unsupported input types")
-        if partition is not None and not isinstance(partition, ObservationPartition):
-            raise ValueError("Partitions contain unsupported input types")
-        inputs.append(_RegionalInput(region, observation, partition))
-    return tuple(sorted(inputs, key=lambda item: item.region.name))
+    output = []
+    for region in sorted(ordered, key=lambda value: value.name):
+        if set(region.sampling_units) - set(registry):
+            raise ValueError("Region sampling units include unknown registered species")
+        groups = observations[region.name]
+        if not isinstance(groups, Mapping) or set(groups) - set(region.sampling_units):
+            raise ValueError("Observed species must have registered sampling units in their region")
+        if not groups:
+            raise ValueError("Each supplied region requires at least one observed species group")
+        selections = None if partitions is None else partitions[region.name]
+        if selections is not None and (
+            not isinstance(selections, Mapping) or set(selections) != set(groups)
+        ):
+            raise ValueError("Partition species keys must match observed groups exactly")
+        for name in registry:
+            if name not in groups:
+                continue
+            observed = groups[name]
+            selected = None if selections is None else selections[name]
+            if not isinstance(observed, PairwiseObservations):
+                raise ValueError("Observation groups require PairwiseObservations")
+            if selected is not None and not isinstance(selected, ObservationPartition):
+                raise ValueError("Partition groups require ObservationPartition or None")
+            output.append(_GroupInput(region, name, observed, selected))
+    if not output:
+        raise ValueError("At least one eligible observed group is required")
+    return tuple(output)
 
 
-def _regional_loss(
-    distance_model: AbstractDistanceModel,
-    payload: _TrainingPayload,
-    *,
-    context: ResistanceSolverContext | None = None,
-    inference: bool = True,
-    key: jax.Array | None = None,
-) -> jax.Array:
+def _validate_contract(training, validation, registry):
+    first = training[0]
+    all_inputs = (*training, *validation)
+    if set(registry) - {item.species for item in training}:
+        raise ValueError("Every registered species requires observed training coverage")
+    if len({item.region.name for item in all_inputs}) > 1 and first.region.feature_names is None:
+        raise ValueError("Multiple regions require explicit feature_names")
+    assigned, regions, checked = {}, {}, set()
+    for item in all_inputs:
+        region = item.region
+        if item.observations.target != first.observations.target:
+            raise ValueError("All region-species target contracts must match")
+        # Flattened observed groups can share one RegionBatch. Validate all its
+        # declarations once, including unobserved species. Separate validation
+        # RegionBatch objects still require a complete consistency check.
+        if id(region) in checked:
+            continue
+        checked.add(id(region))
+        if (
+            region.feature_array.shape[-1] != first.region.feature_array.shape[-1]
+            or region.feature_names != first.region.feature_names
+        ):
+            raise ValueError("Regional feature contracts must match meanings and order")
+        if region.name in regions and not np.array_equal(
+            regions[region.name].feature_array, region.feature_array
+        ):
+            raise ValueError("A named region must have the same raster across training/validation")
+        regions[region.name] = region
+        for name, units in region.sampling_units.items():
+            for label, position, kind in zip(
+                units.ids, np.asarray(units.grid_positions), units.kinds, strict=True
+            ):
+                identity = (name, label)
+                definition = (region.name, tuple(position), kind)
+                if identity in assigned and assigned[identity] != definition:
+                    raise ValueError(
+                        "A sampling unit must have one consistent region assignment "
+                        "within its species"
+                    )
+                assigned[identity] = definition
+
+
+def _prepared(item: _GroupInput, model, *, role, group_index, weight, objective):
+    if item.partition is not None and item.partition.role != role:
+        raise ValueError(f"Expected a {role} partition, got {item.partition.role}")
+    pairs, values = item.observations.aligned_pairs(item.region, item.species, item.partition)
+    if objective == "direct_log1p" and (
+        item.observations.target.kind != "dissimilarity" or bool((values < 0).any())
+    ):
+        raise ValueError("direct_log1p requires nonnegative dissimilarities")
+    if objective == "mlpe":
+        if item.observations.target.kind != "dissimilarity":
+            raise ValueError("Population MLPE requires declared dissimilarities")
+        units = item.region.sampling_units[item.species]
+        assert units.kinds is not None
+        if any(kind != "population" for kind in units.kinds):
+            raise ValueError("Population MLPE does not support individual sampling units")
+        if role == "training":
+            if len(values) < 3:
+                raise ValueError("MLPE training requires at least three observed pairs")
+            degree = jnp.bincount(jnp.concatenate(pairs), length=len(units.ids))
+            if degree.max() <= 1:
+                raise ValueError("MLPE variances are unidentifiable: pairs share no endpoints")
+    targets = item.observations.target.forward(values)
+    if objective == "mlpe":
+        targets = targets.astype(jnp.float64)
+    nodes = item.region._pixel_nodes(item.species)
+    return _TrainingPayload(
+        item.region.feature_array,
+        nodes,
+        pairs,
+        targets,
+        model._prepare_pairs(item.region.feature_array, nodes, pairs),
+        jnp.asarray(model.species.index(item.species), dtype=jnp.int32),
+        jnp.asarray(group_index, dtype=jnp.int32),
+        jnp.asarray(weight),
+    )
+
+
+def _prepare_batches(inputs, model, *, role, objective):
+    coverage = Counter(item.species for item in inputs)
+    present_species = len(coverage)
+    region_indices = {
+        name: index for index, name in enumerate(sorted({item.region.name for item in inputs}))
+    }
+    contexts = {}
+    batches = []
+    for index, item in enumerate(inputs):
+        shape = item.region.feature_array.shape
+        if shape not in contexts:
+            contexts[shape] = model.prepare(item.region.feature_array)
+        payload = _prepared(
+            item,
+            model,
+            role=role,
+            objective=objective,
+            group_index=index,
+            weight=1 / (present_species * coverage[item.species]),
+        )
+        batches.append(
+            _GroupBatch(item, payload, contexts[shape], region_indices[item.region.name])
+        )
+    return tuple(batches)
+
+
+def _by_region(batches):
+    regions = {}
+    for batch in batches:
+        regions.setdefault(batch.region_index, []).append(batch)
+    return tuple(tuple(groups) for groups in regions.values())
+
+
+def _sample_regions(regions, key, config):
+    """Horvitz–Thompson weights for uniform region-then-species sampling."""
+    count = len(regions)
+    selected_count = min(count, config.region_batch_size or count)
+    sampling_key = jax.random.fold_in(key, 0x53414D50)
+    indices = (
+        range(count)
+        if selected_count == count
+        else sorted(
+            np.asarray(
+                jax.random.choice(sampling_key, count, (selected_count,), replace=False)
+            ).tolist()
+        )
+    )
+    for index in indices:
+        groups = regions[index]
+        chosen_count = min(len(groups), config.species_batch_size or len(groups))
+        chosen = (
+            range(len(groups))
+            if chosen_count == len(groups)
+            else sorted(
+                np.asarray(
+                    jax.random.choice(
+                        jax.random.fold_in(sampling_key, index + 1),
+                        len(groups),
+                        (chosen_count,),
+                        replace=False,
+                    )
+                ).tolist()
+            )
+        )
+        probability = (selected_count / count) * (chosen_count / len(groups))
+        yield tuple(
+            replace(
+                groups[j],
+                payload=groups[j].payload._replace(weight=groups[j].payload.weight / probability),
+            )
+            for j in chosen
+        )
+
+
+def _labelled_pairs(batch):
+    ids = batch.source.region.sampling_units[batch.source.species].ids
+    return tuple(
+        (ids[int(left)], ids[int(right)]) for left, right in zip(*batch.payload.pairs, strict=True)
+    )
+
+
+def _access(batches) -> GroupPairs:
+    result = {}
+    for batch in batches:
+        result.setdefault(batch.source.region.name, {})[batch.source.species] = _labelled_pairs(
+            batch
+        )
+    return result
+
+
+def _input_contract(training, validation, registry):
+    def fingerprint(array):
+        value = np.asarray(array)
+        return hashlib.sha256(value.tobytes()).hexdigest()
+
+    region_records = {}
+    for item in (*training, *validation):
+        region = item.region
+        if id(region) not in region_records:
+            region_records[id(region)] = dict(
+                region=region.name,
+                shape=tuple(region.feature_array.shape),
+                feature_dtype=str(region.feature_array.dtype),
+                feature_sha256=fingerprint(region.feature_array),
+                feature_names=region.feature_names,
+                sampling_units=tuple(
+                    dict(
+                        species=name,
+                        units=region.sampling_units[name].ids,
+                        positions=tuple(
+                            map(
+                                tuple,
+                                np.asarray(region.sampling_units[name].grid_positions).tolist(),
+                            )
+                        ),
+                        kinds=region.sampling_units[name].kinds,
+                    )
+                    for name in registry
+                    if name in region.sampling_units
+                ),
+            )
+
+    def declared(inputs):
+        return tuple(
+            region_records[id(region)]
+            for region in {item.region.name: item.region for item in inputs}.values()
+        )
+
+    def encode(inputs):
+        return tuple(
+            dict(
+                region=item.region.name,
+                species=item.species,
+                shape=tuple(item.region.feature_array.shape),
+                feature_dtype=str(item.region.feature_array.dtype),
+                feature_sha256=region_records[id(item.region)]["feature_sha256"],
+                observation_sha256=fingerprint(item.observations.values),
+                target_dtype=str(item.observations.values.dtype),
+                units=item.region.sampling_units[item.species].ids,
+                positions=tuple(
+                    map(
+                        tuple,
+                        np.asarray(
+                            item.region.sampling_units[item.species].grid_positions
+                        ).tolist(),
+                    )
+                ),
+                kinds=item.region.sampling_units[item.species].kinds,
+                pairs=item.observations.observed_pairs,
+                selected=None if item.partition is None else item.partition.pairs,
+                target=asdict(item.observations.target),
+                feature_names=item.region.feature_names,
+            )
+            for item in inputs
+        )
+
+    return dict(
+        species=registry,
+        training=encode(training),
+        validation=encode(validation),
+        training_regions=declared(training),
+        validation_regions=declared(validation),
+    )
+
+
+def _selected_distances(model, payload, *, context=None, inference=True, key=None):
+    distances = model._pair_distances(
+        payload.features,
+        payload.distance_pairs,
+        payload.species_index,
+        context=context,
+        inference=inference,
+        key=key,
+    )
+    if distances.shape != payload.targets.shape:
+        raise ValueError("Distance model must return one value per prepared pair")
+    distances = eqx.error_if(
+        distances,
+        jnp.any(~jnp.isfinite(distances) | (distances < 0)),
+        "Distance model produced nonfinite or negative distances",
+    )
+    return distances
+
+
+def _group_loss(model, payload, *, context=None, inference=True, key=None):
+    distances = _selected_distances(model, payload, context=context, inference=inference, key=key)
+    return jnp.mean((jnp.log1p(distances) - jnp.log1p(payload.targets)) ** 2)
+
+
+def _weighted_loss(model, payload, *, context=None, key=None):
+    return payload.weight * _group_loss(model, payload, context=context, inference=False, key=key)
+
+
+_gradient = eqx.filter_value_and_grad(_weighted_loss)
+_compiled_gradient = eqx.filter_jit(_gradient)
+_compiled_loss = eqx.filter_jit(_group_loss)
+
+
+def _mlpe_loss(parameters, payload, *, config, context=None, key=None):
+    model, raw = parameters
     distances = _selected_distances(
-        distance_model, payload, context=context, inference=inference, key=key
-    )
-    return jnp.mean(jnp.square(jnp.log1p(distances) - jnp.log1p(payload.targets)))
-
-
-def _selected_distances(
-    distance_model: AbstractDistanceModel,
-    payload: _TrainingPayload,
-    *,
-    context: ResistanceSolverContext | None = None,
-    inference: bool = True,
-    key: jax.Array | None = None,
-) -> jax.Array:
-    distances = distance_model.predict_distances(
-        payload.features, payload.nodes, context=context, inference=inference, key=key
-    )
-    return distances[payload.pairs]
-
-
-def _joint_loss(
-    parameters: Parameters,
-    payload: _TrainingPayload,
-    *,
-    region_name: str,
-    config: TrainingConfig,
-    context: ResistanceSolverContext | None = None,
-    key: jax.Array | None = None,
-) -> jax.Array:
-    distance_model, raw_variances = parameters
-    if config.objective == "direct_log1p":
-        return _regional_loss(distance_model, payload, context=context, inference=False, key=key)
-    assert raw_variances is not None
-    distances = _selected_distances(
-        distance_model, payload, context=context, inference=False, key=key
+        model, payload, context=context, inference=False, key=key
     ).astype(jnp.float64)
     nll, _ = profiled_mlpe_ml_fit(
         distances,
         payload.targets,
         *payload.pairs,
         n_populations=len(payload.nodes),
-        raw_variances=raw_variances[region_name],
+        raw_variances=raw[payload.group_index],
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
     )
-    return nll / len(distances)
+    return payload.weight * nll / len(distances)
 
 
-def _joint_value_and_grad(
-    parameters: Parameters,
-    payload: _TrainingPayload,
-    *,
-    region_name: str,
-    config: TrainingConfig,
-    context: ResistanceSolverContext | None = None,
-    key: jax.Array | None = None,
-) -> tuple[jax.Array, Parameters]:
-    value, gradient = eqx.filter_value_and_grad(_joint_loss)(
-        parameters,
-        payload,
-        region_name=region_name,
-        config=config,
-        context=context,
-        key=key,
+def _mlpe_gradient(parameters, payload, *, config, context=None, key=None):
+    value, gradient = eqx.filter_value_and_grad(_mlpe_loss)(
+        parameters, payload, config=config, context=context, key=key
     )
     bad = ~jnp.isfinite(value)
     for leaf in jax.tree.leaves(gradient):
         if eqx.is_inexact_array(leaf):
-            bad = bad | jnp.any(~jnp.isfinite(leaf))
+            bad |= jnp.any(~jnp.isfinite(leaf))
     return eqx.error_if(
         (value, gradient),
         bad,
-        "Nonfinite objective or gradient; check distance variation, "
+        "Nonfinite objective or gradient; check nonconstant distances, "
         "identifiable endpoints and variance conditioning",
     )
 
 
-def _refresh_mlpe(
-    distance_model: AbstractDistanceModel,
-    raw: jax.Array,
-    payload: _TrainingPayload,
-    *,
-    config: TrainingConfig,
-    context: ResistanceSolverContext | None = None,
-) -> MLPEFit:
-    distances = _selected_distances(distance_model, payload, context=context).astype(jnp.float64)
+def _refresh_mlpe(model, raw, payload, *, config, context=None):
+    distances = _selected_distances(model, payload, context=context).astype(jnp.float64)
     return finalize_mlpe_fit(
         distances,
         payload.targets,
@@ -330,18 +510,10 @@ def _refresh_mlpe(
     )
 
 
-def _frozen_validation_loss(
-    distance_model: AbstractDistanceModel,
-    raw: jax.Array,
-    moments: tuple[jax.Array, jax.Array, jax.Array],
-    payload: _TrainingPayload,
-    *,
-    config: TrainingConfig,
-    context: ResistanceSolverContext | None = None,
-) -> jax.Array:
-    distances = _selected_distances(distance_model, payload, context=context).astype(jnp.float64)
+def _frozen_validation_loss(model, raw, moments, payload, *, config, context=None):
+    distances = _selected_distances(model, payload, context=context).astype(jnp.float64)
     center, scale, beta = moments
-    nll = mlpe_ml_negative_log_likelihood(
+    return mlpe_ml_negative_log_likelihood(
         distances,
         payload.targets,
         *payload.pairs,
@@ -352,260 +524,320 @@ def _frozen_validation_loss(
         distance_scale=scale,
         variance_floor=config.mlpe_variance_floor,
         jitter=config.mlpe_jitter,
-    )
-    return nll / len(distances)
+    ) / len(distances)
 
 
-_compiled_loss = eqx.filter_jit(_regional_loss)
-_compiled_joint_gradient = eqx.filter_jit(_joint_value_and_grad)
+_compiled_mlpe_gradient = eqx.filter_jit(_mlpe_gradient)
 _compiled_refresh = eqx.filter_jit(_refresh_mlpe)
 _compiled_validation = eqx.filter_jit(_frozen_validation_loss)
 
 
-def _labelled_pairs(batch: _RegionalBatch) -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (
-            min(batch.region.sampling_unit_ids[i], batch.region.sampling_unit_ids[j]),
-            max(batch.region.sampling_unit_ids[i], batch.region.sampling_unit_ids[j]),
-        )
-        for i, j in zip(*batch.payload.pairs, strict=True)
-    )
-
-
-def _input_contract(
-    training_inputs: Sequence[_RegionalInput], validation_inputs: Sequence[_RegionalInput]
-) -> dict:
-    """Cheap resume structure; unchanged measurement contents remain caller responsibility."""
-    return {
-        role: [
-            {
-                "region_name": region.name,
-                "sampling_unit_ids": list(region.sampling_unit_ids),
-                "sampling_unit_kinds": list(region.sampling_unit_kinds or ()),
-                "feature_shape": list(region.feature_array.shape),
-                "feature_dtype": str(region.feature_array.dtype),
-                "position_dtype": str(cast(jax.Array, region.grid_positions).dtype),
-                "observation_dtype": str(observations.values.dtype),
-            }
-            for region, observations, _ in inputs
-        ]
-        for role, inputs in (("training", training_inputs), ("validation", validation_inputs))
-    }
-
-
-def _initial_raw_variances(
-    batches: Sequence[_RegionalBatch], config: TrainingConfig
-) -> dict[str, jax.Array]:
-    values = {}
+def _initial_raw_variances(batches, config):
+    rows = []
     for batch in batches:
         if config.mlpe_initial_variances is None:
             variance = jnp.maximum(
-                jnp.var(batch.payload.targets, ddof=1),
-                config.mlpe_variance_floor * 100,
+                jnp.var(batch.payload.targets, ddof=1), config.mlpe_variance_floor * 100
             )
             pair = jnp.maximum(variance * jnp.asarray([0.25, 0.5]), config.mlpe_variance_floor * 10)
         else:
             pair = jnp.asarray(config.mlpe_initial_variances, dtype=jnp.float64)
         positive = pair - config.mlpe_variance_floor
-        # log(expm1(x)) without overflowing for large user-supplied initial variances.
-        raw = positive + jnp.log(-jnp.expm1(-positive))
-        values[batch.region.name] = raw
-    return values
+        rows.append(positive + jnp.log(-jnp.expm1(-positive)))
+    return jnp.stack(rows)
 
 
-def _prepare_batches(
-    training_inputs: Sequence[_RegionalInput],
-    validation_inputs: Sequence[_RegionalInput],
-    distance_model: AbstractDistanceModel,
-    config: TrainingConfig,
-) -> tuple[tuple[_RegionalBatch, ...], tuple[_RegionalBatch, ...]]:
-    """Prepare independent regional targets and reuse graph-shape solver contexts."""
-    contexts: dict[tuple[int, int], ResistanceSolverContext | None] = {}
-
-    def make_batch(inputs: _RegionalInput, role: str) -> _RegionalBatch:
-        region, observations, partition = inputs
-        payload = _prepared(region, observations, partition, role=role, objective=config.objective)
-        shape = (region.feature_array.shape[0], region.feature_array.shape[1])
-        if shape not in contexts:
-            contexts[shape] = distance_model.prepare(region.feature_array)
-        context = contexts[shape]
-        return _RegionalBatch(region, observations, payload, context)
-
-    training = tuple(make_batch(inputs, "training") for inputs in training_inputs)
-    validation = tuple(make_batch(inputs, "validation") for inputs in validation_inputs)
-    training_by_name = {batch.region.name: batch for batch in training}
-    for batch in validation:
-        training_batch = training_by_name.get(batch.region.name)
-        if training_batch is None:
-            if config.objective == "mlpe":
-                raise ValueError(
-                    "MLPE validation requires a training calibration for the same region"
-                )
-            continue
-        if set(_labelled_pairs(training_batch)) & set(_labelled_pairs(batch)):
-            raise ValueError("Training and validation observations overlap within the same region")
-        if not np.array_equal(training_batch.region.feature_array, batch.region.feature_array):
-            raise ValueError(
-                "Training and validation inputs for the same region must share a landscape"
-            )
-        locations = dict(
-            zip(
-                training_batch.region.sampling_unit_ids,
-                cast(jax.Array, training_batch.region.grid_positions),
-                strict=True,
-            )
-        )
-        if any(
-            label in locations and not np.array_equal(locations[label], position)
-            for label, position in zip(
-                batch.region.sampling_unit_ids,
-                cast(jax.Array, batch.region.grid_positions),
-                strict=True,
-            )
-        ):
-            raise ValueError("Sampling-unit locations disagree within the same region")
-    return training, validation
+def _aggregate(group_values):
+    species_values = {}
+    for groups in group_values.values():
+        for species, value in groups.items():
+            species_values.setdefault(species, []).append(value)
+    by_species = {name: float(np.mean(values)) for name, values in species_values.items()}
+    return float(np.mean(list(by_species.values()))), by_species, group_values
 
 
 def _checked_call[T](
     function: Callable[..., T],
     *args,
-    batch: _RegionalBatch,
-    epoch: int,
+    batch: _GroupBatch | Sequence[_GroupBatch] | None,
+    step: int,
     training_config: TrainingConfig,
     **kwargs,
 ) -> T:
-    """Attach the regional numerical context without changing a failed calculation."""
+    """Synchronize numerical work and attach identities without changing failures."""
     try:
         return jax.block_until_ready(function(*args, **kwargs))
     except RuntimeError as error:
+        groups = () if batch is None else ((batch,) if isinstance(batch, _GroupBatch) else batch)
+        identity = (
+            "joint groups"
+            if not groups
+            else "; ".join(
+                f"region {group.source.region.name!r}, species {group.source.species!r}"
+                for group in groups
+            )
+        )
+        solver = None if not groups or groups[0].context is None else groups[0].context.config
         raise RuntimeError(
-            f"{batch.region.name}: {training_config.objective} calculation failed "
-            f"at epoch {epoch}; "
-            f"check finite distances, gradients, distance variation, identifiable pair endpoints "
-            f"and variance conditioning; "
-            f"solver={batch.context.config if batch.context is not None else None}. {error}"
+            f"{identity}: {training_config.objective} calculation failed at step {step}; "
+            f"check finite distances/gradients and numerical conditioning; solver={solver}. "
+            f"{error}"
         ) from error
 
 
-def _apply_gradient(
-    parameters: Parameters,
-    optimizer_state: optax.OptState,
-    gradient: Parameters,
-    *,
-    optimizer: optax.GradientTransformation,
-) -> tuple[Parameters, optax.OptState]:
-    # Optax accepts registered Equinox pytrees; its array-container alias omits Modules.
+def _apply_gradient(model, optimizer_state, gradient, *, learning_rate):
+    optimizer = optax.adam(learning_rate)
     updates, optimizer_state = optimizer.update(
-        cast(optax.Updates, gradient), optimizer_state, cast(optax.Params, parameters)
+        cast(optax.Updates, gradient), optimizer_state, cast(optax.Params, model)
     )
-    parameters = eqx.apply_updates(parameters, updates)
-    bad = jnp.array(False)
-    for leaf in jax.tree.leaves((parameters, optimizer_state)):
+    model = eqx.apply_updates(model, updates)
+    bad = jnp.asarray(False)
+    for leaf in jax.tree.leaves((model, optimizer_state)):
         if eqx.is_inexact_array(leaf):
             bad = bad | jnp.any(~jnp.isfinite(leaf))
-    return eqx.error_if((parameters, optimizer_state), bad, "Nonfinite optimizer update")
+    return eqx.error_if((model, optimizer_state), bad, "Nonfinite optimizer update")
 
 
-def _evaluate_regions(
-    parameters: Parameters,
-    batches: Sequence[_RegionalBatch],
-    heads: Mapping[str, RegionalMLPECalibration],
-    config: TrainingConfig,
-    epoch: int,
-) -> tuple[float, dict[str, float]]:
-    """Score with frozen training calibration and equal regional weighting."""
-    evaluate = _compiled_loss if config.jit else _regional_loss
-    validate = _compiled_validation if config.jit else _frozen_validation_loss
-    values = {}
-    distance_model, raw_variances = parameters
-    for batch in batches:
-        if config.objective == "mlpe":
-            assert raw_variances is not None
-            head = heads[batch.region.name]
+_compiled_update = eqx.filter_jit(_apply_gradient)
+
+
+def _region_gradient(model, raw, groups, *, config, step, key):
+    """Finish each tail backward before releasing its bounded intermediates."""
+    batch = groups[0]
+    if not execution.supports_pooled(model):
+        parameters = model if raw is None else (model, raw)
+        gradient = (
+            (_compiled_gradient if config.jit else _gradient)
+            if raw is None
+            else (_compiled_mlpe_gradient if config.jit else _mlpe_gradient)
+        )
+        options = {} if raw is None else {"config": execution.settings(config)}
+        accumulated = None
+        for group in groups:
+            _, contribution = _checked_call(
+                gradient,
+                parameters,
+                group.payload,
+                context=group.context,
+                key=key,
+                **options,
+                batch=group,
+                step=step,
+                training_config=config,
+            )
+            accumulated = execution.add_gradients(accumulated, contribution)
+        return accumulated
+    chunks = tuple(execution.shape_chunks(groups, config.species_chunk_size))
+    # One selected group has bounded intermediates inside a fused call. Larger
+    # selections keep the numerical encoder/tail/backward boundaries below.
+    if len(groups) == 1 and config.jit:
+        _, contribution = _checked_call(
+            execution.compiled_group_gradient,
+            model,
+            raw,
+            tuple(group.payload for group in chunks[0]),
+            config=execution.settings(config),
+            context=batch.context,
+            key=key,
+            batch=chunks[0],
+            step=step,
+            training_config=config,
+        )
+        return contribution
+    tail, pooled, pullback = _checked_call(
+        execution.compiled_pooled_region if config.jit else execution.pooled_region,
+        model,
+        batch.payload.features,
+        jit=config.jit,
+        inference=False,
+        key=key,
+        batch=batch,
+        step=step,
+        training_config=config,
+    )
+    gradient = execution.compiled_chunk_gradient if config.jit else execution.chunk_gradient
+    accumulated = None
+    for chunk in chunks:
+        _, contribution = _checked_call(
+            gradient,
+            (tail, pooled, raw),
+            execution.stack_payload(chunk),
+            context=batch.context,
+            config=execution.settings(config),
+            batch=chunk,
+            step=step,
+            training_config=config,
+        )
+        accumulated = execution.add_gradients(accumulated, contribution)
+    assert accumulated is not None
+    tail_gradient, feature_gradient, raw_gradient = accumulated
+    if pullback is not None:
+        (backbone_gradient,) = _checked_call(
+            pullback, feature_gradient, batch=batch, step=step, training_config=config
+        )
+        model_gradient = execution.join_backbone(tail_gradient, backbone_gradient)
+    else:
+        model_gradient = tail_gradient
+    return model_gradient if raw is None else (model_gradient, raw_gradient)
+
+
+def _group_results(model, raw, groups, *, tail, pooled, heads, group_indices, mode, config, step):
+    """Yield synchronized bounded outputs; only final posterior output persists."""
+    options = execution.settings(config)
+    if pooled is not None:
+        evaluate = execution.compiled_chunk_evaluate if config.jit else execution.chunk_evaluate
+        for chunk in execution.shape_chunks(groups, config.species_chunk_size):
+            payload = execution.stack_payload(chunk)
+            moments = jnp.zeros((len(chunk), 4), dtype=payload.targets.dtype)
+            if mode == "validation":
+                indices, rows = [], []
+                for batch in chunk:
+                    source = batch.source
+                    head = heads[source.region.name][source.species]
+                    indices.append(group_indices[(source.region.name, source.species)])
+                    rows.append(
+                        (head.distance_center, head.distance_scale, head.intercept, head.slope)
+                    )
+                payload = payload._replace(group_index=jnp.asarray(indices, dtype=jnp.int32))
+                moments = jnp.asarray(rows)
+            result = _checked_call(
+                evaluate,
+                tail,
+                pooled,
+                raw,
+                payload,
+                moments,
+                config=options,
+                context=chunk[0].context,
+                mode=mode,
+                batch=chunk,
+                step=step,
+                training_config=config,
+            )
+            for index, batch in enumerate(chunk):
+                yield batch, jax.tree.map(lambda leaf, index=index: leaf[index], result)
+        return
+    for batch in groups:
+        source = batch.source
+        if mode == "direct":
+            evaluate = _compiled_loss if config.jit else _group_loss
+            args, kwargs = (model, batch.payload), {}
+        elif mode == "refresh":
+            evaluate = _compiled_refresh if config.jit else _refresh_mlpe
+            args, kwargs = (
+                (model, raw[batch.payload.group_index], batch.payload),
+                {"config": options},
+            )
+        else:
+            evaluate = _compiled_validation if config.jit else _frozen_validation_loss
+            head = heads[source.region.name][source.species]
             moments = (
                 jnp.asarray(head.distance_center),
                 jnp.asarray(head.distance_scale),
                 jnp.asarray((head.intercept, head.slope)),
             )
-            value = _checked_call(
-                validate,
-                distance_model,
-                raw_variances[batch.region.name],
+            args = (
+                model,
+                raw[group_indices[(source.region.name, source.species)]],
                 moments,
                 batch.payload,
-                config=config,
-                context=batch.context,
-                batch=batch,
-                epoch=epoch,
-                training_config=config,
             )
-        else:
-            value = _checked_call(
+            kwargs = {"config": options}
+        yield (
+            batch,
+            _checked_call(
                 evaluate,
-                distance_model,
-                batch.payload,
+                *args,
+                **kwargs,
                 context=batch.context,
                 batch=batch,
-                epoch=epoch,
+                step=step,
+                training_config=config,
+            ),
+        )
+
+
+def _evaluate_snapshot(model, raw, batches, validation, group_indices, *, config, step):
+    # Process the union by region so train/validation share the same inference
+    # encoding without retaining pooled features from every region.
+    regions = {}
+    for batches_for_role, role in ((batches, 0), (validation, 1)):
+        for batch in batches_for_role:
+            regions.setdefault(batch.source.region.name, ([], []))[role].append(batch)
+    heads, training_values, validation_values = {}, {}, {}
+    for training, validating in regions.values():
+        first = (training or validating)[0]
+        tail = pooled = None
+        if execution.supports_pooled(model):
+            tail, pooled, _ = _checked_call(
+                execution.pooled_region,
+                model,
+                first.payload.features,
+                jit=config.jit,
+                batch=first,
+                step=step,
                 training_config=config,
             )
-        if not np.isfinite(float(value)):
-            raise FloatingPointError(
-                f"{batch.region.name}: nonfinite {config.objective} objective at epoch {epoch}; "
-                "check distances and variance conditioning"
-            )
-        values[batch.region.name] = float(value)
-    return float(np.mean(list(values.values()))), values
-
-
-def _refresh_heads(
-    parameters: Parameters,
-    batches: Sequence[_RegionalBatch],
-    training_pairs: Mapping[str, tuple[tuple[str, str], ...]],
-    config: TrainingConfig,
-    epoch: int,
-) -> tuple[dict[str, RegionalMLPECalibration], float, dict[str, float]]:
-    """Refresh fitted regional moments, GLS coefficients and effect posteriors together."""
-    distance_model, raw_variances = parameters
-    assert raw_variances is not None
-    refresh = _compiled_refresh if config.jit else _refresh_mlpe
-    heads, losses = {}, {}
-    for batch in batches:
-        result = _checked_call(
-            refresh,
-            distance_model,
-            raw_variances[batch.region.name],
-            batch.payload,
-            config=config,
-            context=batch.context,
-            batch=batch,
-            epoch=epoch,
-            training_config=config,
-        )
-        if not all(np.isfinite(np.asarray(leaf)).all() for leaf in jax.tree.leaves(result)):
-            raise FloatingPointError(
-                f"{batch.region.name}: nonfinite MLPE calibration at epoch {epoch}; "
-                "check nonconstant distances, identifiable endpoints and variance conditioning"
-            )
-        heads[batch.region.name] = RegionalMLPECalibration.from_fit(
-            result,
-            region_name=batch.region.name,
-            target=batch.observations.target,
-            population_ids=batch.region.sampling_unit_ids,
-            calibration_pairs=training_pairs[batch.region.name],
-            calibration_roles=("training",) * len(batch.payload.targets),
-            config=MLPEConfig(variance_floor=config.mlpe_variance_floor, jitter=config.mlpe_jitter),
-            optimizer_iterations=epoch,
-            optimizer_message="Fixed-budget joint Adam; no variance convergence claim",
-            converged=False,
-        )
-        losses[batch.region.name] = float(result.nll) / len(batch.payload.targets)
-    return heads, float(np.mean(list(losses.values()))), losses
+        for groups, mode, values in (
+            (training, "direct" if raw is None else "refresh", training_values),
+            (validating, "direct" if raw is None else "validation", validation_values),
+        ):
+            for batch, result in _group_results(
+                model,
+                raw,
+                groups,
+                tail=tail,
+                pooled=pooled,
+                heads=heads,
+                group_indices=group_indices,
+                mode=mode,
+                config=config,
+                step=step,
+            ):
+                source = batch.source
+                if not all(np.isfinite(np.asarray(leaf)).all() for leaf in jax.tree.leaves(result)):
+                    calculation = {
+                        "refresh": "MLPE calibration",
+                        "validation": "MLPE validation",
+                        "direct": "objective",
+                    }[mode]
+                    raise FloatingPointError(
+                        f"region {source.region.name!r}, species {source.species!r}: "
+                        f"nonfinite {calculation} at step {step}; check nonconstant distances, "
+                        "identifiable endpoints and variance conditioning"
+                    )
+                if mode == "refresh":
+                    assert isinstance(result, MLPEFit)
+                    head = MLPECalibration.from_fit(
+                        result,
+                        region_name=source.region.name,
+                        species_name=source.species,
+                        target=source.observations.target,
+                        population_ids=source.region.sampling_units[source.species].ids,
+                        calibration_pairs=_labelled_pairs(batch),
+                        calibration_roles=("training",) * len(batch.payload.targets),
+                        config=MLPEConfig(
+                            variance_floor=config.mlpe_variance_floor, jitter=config.mlpe_jitter
+                        ),
+                        optimizer_iterations=step,
+                        optimizer_message="Fixed-budget joint Adam; no variance convergence claim",
+                        converged=False,
+                    )
+                    heads.setdefault(source.region.name, {})[source.species] = head
+                    value = float(result.nll) / len(batch.payload.targets)
+                else:
+                    assert not isinstance(result, MLPEFit)
+                    value = float(result)
+                values.setdefault(source.region.name, {})[source.species] = value
+    return (
+        heads,
+        _aggregate(training_values),
+        ((None, {}, {}) if not validation else _aggregate(validation_values)),
+    )
 
 
 def fit(
-    region: RegionCollection,
+    regions: RegionCollection,
     observations: ObservationCollection,
     *,
     distance_model: AbstractDistanceModel | None = None,
@@ -614,226 +846,184 @@ def fit(
     partition: PartitionCollection = None,
     validation_partition: PartitionCollection = None,
     state: TrainingState | None = None,
-    on_epoch: Callable[[TrainingState], None] | None = None,
+    on_step: Callable[[TrainingState], None] | None = None,
 ) -> TrainingState:
-    """Fit a shared distance model with direct log1p-MSE or full-ML regional MLPE.
+    """Fit native species groups with equal species and within-species region influence.
 
-    Each Adam update averages sequential regional gradients, normalized by pair
-    count. MLPE profiles signed GLS coefficients and updates the distance model and two
-    regional variance parameters together. Updated training distances refresh the
-    regional moments, coefficients and posterior before frozen-head validation.
-    Validation only selects a model; learning rate and stopping use a fixed
-    budget. MLPE explicitly requires enabled JAX float64.
-
-    Fresh fits require an explicit ``distance_model`` and a ``TrainingConfig``
-    declaring the objective. Continuation reuses these saved choices.
-
-    ``state`` continues the latest optimizer/RNG trajectory on identical inputs.
-    Resume checks structure and declared contracts, not measurement contents;
-    keeping landscapes, locations and genetic measurements unchanged is the
-    caller's responsibility.
-    Only the total epoch budget may increase. The returned complete state exposes
-    the selected model through ``model`` and retains both ``latest_model`` and
-    ``best_model`` when validation selects an earlier epoch. Validation never
-    consumes training random keys.
-
-    ``on_epoch`` receives complete latest/best state after initialization and each
-    completed update. It may save a checkpoint; exceptions propagate. A resumed
-    fit with no additional updates does not invoke a synthetic epoch callback.
+    All selected observations contribute their complete per-group mean objective.
+    Validation selects evaluated snapshots and consumes no training random keys.
+    Continuation permits only an increased total step budget on identical contracts.
+    ``on_step`` observes completed optimizer updates, not synthetic initialization.
     """
     if state is not None and not isinstance(state, TrainingState):
         raise ValueError("state must be a TrainingState returned by fit")
-    if state is not None and distance_model is not None:
-        raise ValueError(
-            "A continuation state already contains its distance model; omit distance_model"
-        )
-    if state is None:
-        if distance_model is None:
-            raise ValueError("Fresh fitting requires an explicit distance_model")
-        if config is None:
-            raise ValueError("Fresh fitting requires an explicit TrainingConfig with objective")
-    else:
-        distance_model = state.distance_model
-        config = state.config if config is None else config
-    if on_epoch is not None and not callable(on_epoch):
-        raise ValueError("on_epoch must be callable or None")
     if state is not None:
+        if distance_model is not None:
+            raise ValueError("Continuation already contains a distance_model; omit distance_model")
+        distance_model = state.latest_distance_model
+        config = state.config if config is None else config
         old, new = asdict(state.config), asdict(config)
-        old.pop("epochs")
-        new.pop("epochs")
-        if old != new or config.epochs < state.config.epochs:
-            raise ValueError(
-                "Continuation requires identical configuration except an increased epoch budget"
-            )
+        old.pop("steps")
+        new.pop("steps")
+        if old != new or config.steps < state.config.steps:
+            raise ValueError("Continuation requires unchanged policy and an increased step budget")
+    if not isinstance(distance_model, AbstractDistanceModel) or not isinstance(
+        config, TrainingConfig
+    ):
+        raise ValueError("Fresh fit requires an explicit native distance_model and TrainingConfig")
+    if on_step is not None and not callable(on_step):
+        raise ValueError("on_step must be callable or None")
     if config.objective == "mlpe" and not jax.config.read("jax_enable_x64"):
-        raise RuntimeError(
-            "MLPE fitting requires float64: set JAX_ENABLE_X64=1 or use jax.enable_x64()"
-        )
-    training_inputs = _normalize_inputs(region, observations, partition)
+        raise RuntimeError("MLPE training requires float64; set JAX_ENABLE_X64=true")
+    training = _normalize_inputs(regions, observations, partition, species=distance_model.species)
     if validation is None and validation_partition is not None:
         raise ValueError("validation_partition requires validation observations")
     if validation is not None and (not isinstance(validation, tuple) or len(validation) != 2):
-        raise ValueError("validation must be a (regions, observations) tuple")
-    validation_inputs = (
+        raise ValueError("validation must contain regions and nested observations")
+    validating = (
         ()
         if validation is None
-        else _normalize_inputs(validation[0], validation[1], validation_partition)
-    )
-    first_region, first_observations, _ = training_inputs[0]
-    regional_names = {inputs[0].name for inputs in (*training_inputs, *validation_inputs)}
-    if len(regional_names) > 1 and first_region.feature_names is None:
-        raise ValueError(
-            "Shared multi-region fitting requires explicit feature_names meanings and order"
+        else _normalize_inputs(
+            validation[0], validation[1], validation_partition, species=distance_model.species
         )
-    for prepared_region, regional_observations, _ in (*training_inputs, *validation_inputs):
-        if regional_observations.target != first_observations.target:
-            raise ValueError("Regional training and validation target scales must match")
-        if prepared_region.feature_array.shape[-1] != first_region.feature_array.shape[-1]:
-            raise ValueError("Regional training and validation feature channels must match")
-        if prepared_region.feature_names != first_region.feature_names:
-            raise ValueError("Regional feature contracts must match meanings and order")
-    input_contract = _input_contract(training_inputs, validation_inputs)
-    if state is not None:
-        if state.input_contract != input_contract:
-            raise ValueError(
-                "Continuation input shapes, precision or sampling-unit identities changed"
-            )
-        if (
-            state.latest_model.target != first_observations.target
-            or state.latest_model.feature_names != first_region.feature_names
-        ):
-            raise ValueError("Continuation target or feature meanings/order changed")
-
-    random_key = (
-        jax.random.split(jax.random.PRNGKey(config.seed))[1] if state is None else state.rng_key
     )
-    training_batches, validation_batches = _prepare_batches(
-        training_inputs, validation_inputs, distance_model, config
+    _validate_contract(training, validating, distance_model.species)
+    contract = _input_contract(training, validating, distance_model.species)
+    if state is not None and state.input_contract != contract:
+        raise ValueError("Continuation species, input, identity or target contracts changed")
+    batches = _prepare_batches(
+        training, distance_model, role="training", objective=config.objective
     )
-
-    raw_variances = (
-        state.raw_variances
-        if state is not None
-        else _initial_raw_variances(training_batches, config)
-        if config.objective == "mlpe"
-        else None
+    validation_batches = _prepare_batches(
+        validating, distance_model, role="validation", objective=config.objective
     )
-    parameters = (distance_model, raw_variances)
-    optimizer = optax.adam(config.learning_rate)
-    optimizer_state = (
-        state.optimizer_state
-        if state is not None
-        else optimizer.init(eqx.filter(parameters, eqx.is_inexact_array))
-    )
-
-    gradient_function = _compiled_joint_gradient if config.jit else _joint_value_and_grad
-    apply_update = eqx.filter_jit(_apply_gradient) if config.jit else _apply_gradient
-
-    training_pairs = {batch.region.name: _labelled_pairs(batch) for batch in training_batches}
-    validation_pairs = {batch.region.name: _labelled_pairs(batch) for batch in validation_batches}
-    if state is not None and (
-        state.latest_model.training_pairs != training_pairs
-        or state.latest_model.validation_pairs != validation_pairs
+    group_indices = {
+        (b.source.region.name, b.source.species): index for index, b in enumerate(batches)
+    }
+    if config.objective == "mlpe" and any(
+        (b.source.region.name, b.source.species) not in group_indices for b in validation_batches
     ):
-        raise ValueError("Continuation training/validation pair partitions changed")
-
-    def make_model(heads: dict[str, RegionalMLPECalibration]) -> LandscapeGeneticsModel:
-        return LandscapeGeneticsModel(
-            parameters[0],
-            (
-                MLPECalibrationModule(first_observations.target, heads)
-                if config.objective == "mlpe"
-                else DirectCalibrationModule(first_observations.target)
-            ),
-            first_region.feature_array.shape[-1],
-            feature_names=first_region.feature_names,
-            training_objective=config.objective,
-            training_pairs=training_pairs,
-            validation_pairs=validation_pairs,
+        raise ValueError(
+            "MLPE validation requires a training calibration for the same region-species group"
         )
+    training_pairs, validation_pairs = _access(batches), _access(validation_batches)
+    for region, groups in validation_pairs.items():
+        for species, pairs in groups.items():
+            if set(map(lambda pair: tuple(sorted(pair)), pairs)) & set(
+                tuple(sorted(pair)) for pair in training_pairs.get(region, {}).get(species, ())
+            ):
+                raise ValueError("Training and validation pairs overlap in a region-species group")
+    missing_groups = tuple(
+        (region, species)
+        for region, groups in training_pairs.items()
+        for species in groups
+        if species not in validation_pairs.get(region, {})
+    )
+    validated_species = {name for groups in validation_pairs.values() for name in groups}
+    missing_species = tuple(
+        name for name in distance_model.species if name not in validated_species
+    )
+    raw = (
+        (None if config.objective == "direct_log1p" else _initial_raw_variances(batches, config))
+        if state is None
+        else state.raw_variances
+    )
+    parameters = distance_model if raw is None else (distance_model, raw)
+    optimizer_state = (
+        optax.adam(config.learning_rate).init(eqx.filter(parameters, eqx.is_inexact_array))
+        if state is None
+        else state.optimizer_state
+    )
+    random_key = jax.random.PRNGKey(config.seed) if state is None else state.rng_key
+    model = distance_model
+    history = [] if state is None else list(state.history)
+    selected = None if state is None else state.best_model
+    selected_raw = None if state is None else state.selected_raw_variances
+    selected_step = 0 if state is None else state.selected_step
+    best_loss = float("inf") if state is None else state.best_loss
+    progress = 0 if state is None else state.step
+    update = _compiled_update if config.jit else _apply_gradient
+    region_batches = _by_region(batches)
 
-    history = list(state.history) if state is not None else []
-    selected = state.best_model if state is not None else None
-    latest = state.latest_model if state is not None else None
-    selected_epoch = state.selected_epoch if state is not None else 0
-    best_loss = state.best_loss if state is not None else float("inf")
-
-    def continuation() -> TrainingState:
-        assert latest is not None and selected is not None
+    def snapshot():
+        assert selected is not None
         return TrainingState(
-            raw_variances=parameters[1],
-            optimizer_state=optimizer_state,
-            rng_key=random_key,
-            config=config,
-            input_contract=input_contract,
-            history=tuple(history),
-            latest_model=latest,
-            best_model=selected,
-            selected_epoch=selected_epoch,
+            progress,
+            selected_step,
+            model,
+            raw,
+            selected_raw,
+            optimizer_state,
+            random_key,
+            config,
+            contract,
+            tuple(history),
+            selected,
         )
 
-    start_epoch = state.epoch + 1 if state is not None else 0
-    for epoch in range(start_epoch, config.epochs + 1):
-        if epoch:
+    start = 0 if state is None else state.step + 1
+    for step in range(start, config.steps + 1):
+        if step:
             random_key, update_key = jax.random.split(random_key)
-            keys = jax.random.split(update_key, len(training_batches))
             accumulated = None
-            # Complete each regional backward pass before retaining the next.
-            for batch, key in zip(training_batches, keys, strict=True):
-                _, gradient = _checked_call(
-                    gradient_function,
-                    parameters,
-                    batch.payload,
-                    region_name=batch.region.name,
-                    config=config,
-                    context=batch.context,
-                    key=key,
-                    batch=batch,
-                    epoch=epoch,
-                    training_config=config,
+            for groups in _sample_regions(region_batches, update_key, config):
+                key = jax.random.fold_in(update_key, groups[0].region_index)
+                contribution = _region_gradient(
+                    model, raw, groups, config=config, step=step, key=key
                 )
-                accumulated = (
-                    gradient
-                    if accumulated is None
-                    else jax.tree.map(
-                        lambda total, contribution: total + contribution, accumulated, gradient
-                    )
-                )
-                accumulated = jax.block_until_ready(accumulated)
-            averaged = jax.tree.map(lambda value: value / len(training_batches), accumulated)
+                accumulated = execution.add_gradients(accumulated, contribution)
             parameters, optimizer_state = _checked_call(
-                apply_update,
+                update,
                 parameters,
                 optimizer_state,
-                averaged,
-                optimizer=optimizer,
-                batch=training_batches[0],
-                epoch=epoch,
+                accumulated,
+                learning_rate=config.learning_rate,
+                batch=None,
+                step=step,
                 training_config=config,
             )
-        heads: dict[str, RegionalMLPECalibration] = {}
-        if config.objective == "mlpe":
-            heads, training_loss, regional_training = _refresh_heads(
-                parameters, training_batches, training_pairs, config, epoch
-            )
+        if isinstance(parameters, tuple):
+            model, raw = parameters
         else:
-            training_loss, regional_training = _evaluate_regions(
-                parameters, training_batches, heads, config, epoch
+            model, raw = parameters, None
+        progress = step
+        if step == 0 or step % config.evaluation_interval == 0 or step == config.steps:
+            heads, (loss, by_species, by_group), (val_loss, val_species, val_group) = (
+                _evaluate_snapshot(
+                    model, raw, batches, validation_batches, group_indices, config=config, step=step
+                )
             )
-        validation_loss, regional_validation = (
-            (None, {})
-            if not validation_batches
-            else _evaluate_regions(parameters, validation_batches, heads, config, epoch)
-        )
-        history.append(
-            EpochRecord(
-                epoch, training_loss, validation_loss, regional_training, regional_validation
+            calibration = (
+                DirectCalibrationModule(training[0].observations.target)
+                if raw is None
+                else UnpooledMLPECalibrationModule(training[0].observations.target, heads)
             )
-        )
-        latest = make_model(heads)
-        if validation_loss is None or validation_loss < best_loss:
-            selected, selected_epoch = latest, epoch
-            best_loss = training_loss if validation_loss is None else validation_loss
-        if on_epoch is not None:
-            on_epoch(continuation())
-    return continuation()
+            history.append(
+                StepRecord(
+                    step,
+                    loss,
+                    val_loss,
+                    by_species,
+                    by_group,
+                    val_species,
+                    val_group,
+                    missing_groups,
+                    missing_species,
+                )
+            )
+            if val_loss is None or val_loss < best_loss:
+                selected_step = step
+                selected_raw = raw
+                best_loss = loss if val_loss is None else val_loss
+                selected = LandscapeGeneticsModel(
+                    model,
+                    calibration,
+                    training[0].region.feature_array.shape[-1],
+                    training[0].region.feature_names,
+                    training_objective=config.objective,
+                    training_pairs=training_pairs,
+                    validation_pairs=validation_pairs,
+                )
+        if step and on_step is not None:
+            on_step(snapshot())
+    return snapshot()

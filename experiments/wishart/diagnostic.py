@@ -12,10 +12,8 @@ from numbers import Integral, Real
 
 import numpy as np
 
-from ilg_toolkit.config import ResistanceSolverConfig
 from ilg_toolkit.data import RegionBatch
 from ilg_toolkit.models import ConductanceModel
-from ilg_toolkit.resistance import build_resistance_context
 
 
 def _helmert(populations):
@@ -293,6 +291,7 @@ class WishartDiagnostic:
     """Fixed-parameter reference evidence, including an explicit training gate."""
 
     region_name: str
+    species_name: str
     resistances: np.ndarray
     model_covariance: np.ndarray
     log_likelihood: float
@@ -308,12 +307,12 @@ def diagnose_wishart(
     observations: GaussianMarkerDistances,
     *,
     encoder: ConductanceModel,
+    species: str,
     scale: float,
     nugget: float,
     training_unit_ids,
     anchor_id: str,
     parameter_source: str,
-    solver_config: ResistanceSolverConfig | None = None,
 ) -> WishartDiagnostic:
     """Connect an actual resistance graph to a frozen Gaussian-marker covariance.
 
@@ -326,12 +325,15 @@ def diagnose_wishart(
     _require_marker_observations(observations)
     if not isinstance(encoder, ConductanceModel):
         raise TypeError("Wishart graph diagnostics require a conductance encoder")
-    if region.name != observations.region_name or set(region.sampling_unit_ids) != set(
+    if species not in encoder.species or species not in region.sampling_units:
+        raise ValueError("Diagnostic species must belong to the model and region")
+    units = region.sampling_units[species]
+    if region.name != observations.region_name or set(units.ids) != set(
         observations.sampling_unit_ids
     ):
         raise ValueError("Region identity and sampling-unit labels must match the observations")
-    kinds = region.sampling_unit_kinds
-    assert kinds is not None  # RegionBatch normalizes this optional constructor input.
+    kinds = units.kinds
+    assert kinds is not None  # SamplingUnits normalizes this optional input.
     if any(kind != "population" for kind in kinds):
         raise ValueError(
             "This experimental contract supports declared population sampling units only"
@@ -346,16 +348,10 @@ def diagnose_wishart(
             raise ValueError(
                 f"{name} must be finite and {'nonnegative' if lower_inclusive else 'positive'}"
             )
-    height, width = region.feature_array.shape[:2]
-    if height % encoder.patch_size or width % encoder.patch_size:
-        raise ValueError("Raster dimensions must be divisible by encoder patch_size")
-    context = build_resistance_context(
-        (height // encoder.patch_size, width // encoder.patch_size), solver_config
-    )
-    resistances = np.asarray(
-        encoder.predict_distances(region.feature_array, region.pixel_nodes, context=context)
-    )
-    order = [region.sampling_unit_ids.index(label) for label in observations.sampling_unit_ids]
+    # Explicit full-matrix research diagnostic through the native selected-species
+    # boundary. The distance model owns solver policy and graph preparation.
+    resistances = np.asarray(encoder.ecological_distances(region, species=species)[species])
+    order = [units.ids.index(label) for label in observations.sampling_unit_ids]
     resistances = np.array(resistances[np.ix_(order, order)], dtype=np.float64)
     if not np.isfinite(resistances).all() or np.any(resistances < 0):
         raise FloatingPointError("The graph produced nonfinite or negative effective resistances")
@@ -377,6 +373,7 @@ def diagnose_wishart(
     covariance.setflags(write=False)
     return WishartDiagnostic(
         region.name,
+        species,
         resistances,
         covariance,
         wishart_log_likelihood(observations, covariance),

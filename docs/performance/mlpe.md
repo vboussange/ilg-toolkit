@@ -21,6 +21,8 @@ and $\operatorname{chol}(K)/\sqrt u$ its precision factor. All operations use
 linear solves. Ordinary storage is $O(n^2+m)$ and factorization costs $O(n^3)$,
 compared with $O(m^2)$ storage and $O(m^3)$ dense Cholesky. For complete pairs,
 $m=n(n-1)/2$; the encoder and graph solver may still dominate total training time.
+See [requested-distance execution](requested-pairs.md) for graph/adjoint storage
+and the distinction between selected outputs and complete-group likelihoods.
 
 ## Numerical limits
 

@@ -3,9 +3,13 @@
 Run with JAX_ENABLE_X64=true to retain double-precision fitted coefficients.
 """
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 
 from ilg_toolkit import IBDModel, TargetSpec
+
+jax.config.update("jax_enable_x64", True)
 
 # Raster positions alone have no physical units. Declare row/column pixel sizes
 # explicitly before computing Euclidean separation in metres.
@@ -35,3 +39,6 @@ print(f"Fitted slope: {model.slope:.6f} index/m; intercept: {model.intercept:.6f
 print("Each region has equal weight, despite its different number of observed pairs.")
 print("Original-scale genetic predictions (structural zero diagonal):")
 print(prediction)
+
+# This is a converged numerical optimization, not an exact algebraic solve.
+np.testing.assert_allclose([model.slope, model.intercept], [0.003, 0.1], rtol=1e-7, atol=1e-9)

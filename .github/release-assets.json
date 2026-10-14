@@ -1,0 +1,11 @@
+{
+  "0.0.3": {
+    "production_source_tree": "9d8c31b784f4d716bc00898838220382bc2b5da7",
+    "assets": [
+      {
+        "name": "ilg-toolkit-v0.0.3-benchmark-evidence.tar.gz",
+        "sha256": "f7ffc3fd09f5d63bda82aafd1aa7c37583a2ef252ccdd9f18f07c93200d88594"
+      }
+    ]
+  }
+}

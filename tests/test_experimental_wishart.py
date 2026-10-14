@@ -17,7 +17,13 @@ from experiments.wishart import (
     heldout_log_likelihood,
     wishart_log_likelihood,
 )
-from ilg_toolkit import PairwiseObservations, RegionBatch, ResistanceSolverConfig, TargetSpec
+from ilg_toolkit import (
+    PairwiseObservations,
+    RegionBatch,
+    ResistanceSolverConfig,
+    SamplingUnits,
+    TargetSpec,
+)
 from ilg_toolkit.models import ConductanceModel
 
 
@@ -137,6 +143,7 @@ def test_population_holdout_matches_independent_gaussian_regression_decompositio
 @final
 class UniformConductance(ConductanceModel):
     scale: jax.Array
+    species: tuple[str, ...] = eqx.field(static=True, default=("fox",))
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()
@@ -145,7 +152,7 @@ class UniformConductance(ConductanceModel):
     def __init__(self, scale: jax.Array):
         self.scale = scale
 
-    def conductance(self, features, *, patch_batch_size=None):
+    def _conductance(self, features, species_index, *, patch_batch_size=None):
         return self.scale * features[..., 0]
 
 
@@ -154,8 +161,8 @@ def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
     region = RegionBatch(
         "valley",
         cx.Field(np.ones((2, 2, 1)), dims=("row", "column", "feature")),
-        labels,
-        np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
+        {"fox": SamplingUnits(labels, np.array([[0, 0], [0, 1], [1, 0], [1, 1]]))},
+        feature_names=("constant",),
     )
     resistance = np.array(
         [[0, 0.75, 0.75, 1], [0.75, 0, 1, 0.75], [0.75, 1, 0, 0.75], [1, 0.75, 0.75, 0]]
@@ -172,6 +179,7 @@ def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
             region,
             observations,
             encoder=UniformConductance(jnp.array(1.0)),
+            species="fox",
             scale=1.3,
             nugget=0.2,
             training_unit_ids=labels[:2],
@@ -182,6 +190,7 @@ def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
     np.testing.assert_allclose(report.model_covariance, covariance, atol=1e-6)
     assert np.isclose(report.log_likelihood, wishart_log_likelihood(observations, covariance))
     assert np.isfinite(report.heldout_score.log_likelihood)
+    assert report.species_name == "fox"
     assert report.scale_nugget_rank == 2
     assert report.training_gate == "no_go"
     assert any("normalization" in reason for reason in report.gate_reasons)
@@ -286,8 +295,8 @@ def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible
     region = RegionBatch(
         "coincident",
         cx.Field(np.ones((2, 2, 1)), dims=("row", "column", "feature")),
-        labels,
-        np.zeros((3, 2), dtype=int),
+        {"fox": SamplingUnits(labels, np.zeros((3, 2), dtype=int))},
+        feature_names=("constant",),
     )
 
     def diagnostic(scale: float, nugget: float):
@@ -297,6 +306,7 @@ def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible
             scale=scale,
             nugget=nugget,
             encoder=UniformConductance(jnp.array(1.0)),
+            species="fox",
             training_unit_ids=labels[:2],
             anchor_id=labels[0],
             parameter_source="fixed",

@@ -5,6 +5,14 @@ Gaussian-marker reference with fixed model parameters. Its density, covariance
 and held-out scoring assumptions are defined below. These diagnostics are
 excluded from the installed toolkit.
 
+The graph diagnostic takes an explicit `species` registered in its native
+`ConductanceModel` and present in the region's `SamplingUnits` mapping. Its
+`WishartDiagnostic.species_name` retains that selection. Marker population labels
+are scoped to that species; the diagnostic reorders the explicit complete
+`ecological_distances(region, species=...)[species]` matrix to marker-label order.
+The supplied distance model owns solver policy and graph preparation; there is
+no separate diagnostic solver override. The example uses one registered species.
+
 Experimental fitting and fitted MLPE-versus-Wishart comparisons are deferred to
 [#17](https://github.com/vboussange/ilg-toolkit/issues/17), which requires evidence
 and an independently reviewed GO decision on the unresolved requirements below.
