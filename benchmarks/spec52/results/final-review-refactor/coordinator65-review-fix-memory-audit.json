@@ -1,0 +1,100 @@
+[
+  {
+    "case": "resnet-s100-c1.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 100,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "resnet-s100-c4.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 100,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "resnet-s1000-c1.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 1000,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "resnet-s1000-c4.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 1000,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "resnet-s4-c1-ragged.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 4,
+    "embedded_reports_verified": 7
+  },
+  {
+    "case": "resnet-s4-c1.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 4,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "resnet-s4-c4.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 4,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "unet-s100-c1.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 100,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "unet-s100-c4.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 100,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "unet-s1000-c1.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 1000,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "unet-s1000-c4.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 1000,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "unet-s4-c1-ragged.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 4,
+    "embedded_reports_verified": 7
+  },
+  {
+    "case": "unet-s4-c1.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 4,
+    "embedded_reports_verified": 5
+  },
+  {
+    "case": "unet-s4-c4.json",
+    "measured_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+    "source_files_verified": 28,
+    "fixture_groups_verified": 4,
+    "embedded_reports_verified": 5
+  }
+]

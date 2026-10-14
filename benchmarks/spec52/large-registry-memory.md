@@ -1,3 +1,5 @@
+> Historical evidence for source `8d92e023`. Final source `9d8c31b7` is measured in the [final b2088e6 report](large-registry-memory-final-b2088e6.md); the original results below are preserved.
+
 # Large-registry memory and compilation evidence
 
 **Complete: all 14 public-fit cases passed** on clean measured commit

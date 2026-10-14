@@ -1,0 +1,31 @@
+{
+  "outputs_and_all_parameter_pooled_gradients_bit_identical": true,
+  "invalid_context_policy_and_order_identical": true,
+  "kernels": {
+    "loglinear-context1": {
+      "stablehlo_exact": true,
+      "optimized_hlo_exact": false,
+      "optimized_hlo_without_debug_metadata_equal": true,
+      "normalized_optimized_hlo_sha256": "d3927052a790326a0d6b9840fe7b4998ba695b2b95d888dd80602d3f38b93f18"
+    },
+    "loglinear-context0": {
+      "stablehlo_exact": true,
+      "optimized_hlo_exact": false,
+      "optimized_hlo_without_debug_metadata_equal": true,
+      "normalized_optimized_hlo_sha256": "9a6227a0187a3034c654b630369876cf45e79770495bd02ca308491f88a40c0f"
+    },
+    "resnet-context1": {
+      "stablehlo_exact": true,
+      "optimized_hlo_exact": false,
+      "optimized_hlo_without_debug_metadata_equal": true,
+      "normalized_optimized_hlo_sha256": "09cae235bda911e509a7aab894b8d2c4531d7367c1da622bf1a93a1bc4a0d20c"
+    },
+    "resnet-context0": {
+      "stablehlo_exact": true,
+      "optimized_hlo_exact": false,
+      "optimized_hlo_without_debug_metadata_equal": true,
+      "normalized_optimized_hlo_sha256": "5c50f8a85f0d3b710befd7a029b6c461a3781b56fafc29342d627f7bc8c264c6"
+    }
+  },
+  "normalization": "Remove HLO source FileNames/FunctionNames/FileLocations/StackFrames tables and per-op metadata only; preserve all instructions/shapes/layouts/constants/scheduling/backend configuration."
+}

@@ -1,0 +1,802 @@
+{
+  "schema": "spec52-large-registry-v2",
+  "family": "resnet",
+  "registry_size": 4,
+  "species_batch_size": 4,
+  "species_chunk_size": 1,
+  "ragged": false,
+  "source_commit": "b2088e6c390e943ce90f2d14e678358c9f33afa0",
+  "source_tree": "9d8c31b784f4d716bc00898838220382bc2b5da7",
+  "source_sha256": {
+    "benchmarks/spec52/large_registry_probe.py": "bdf8edde206794ad31eb9c4f0c7b381ebd7e430ee780b20baabe4c8a56c1ad3c",
+    "src/ilg_toolkit/training.py": "2d4a6f4eb7dbe48cdab9a5a4b34cea615cf6236fb8f1b0371cbf0cbc568a3814",
+    "src/ilg_toolkit/resistance.py": "72172c556fec56e342c798d0bad8f46468a01938c82f845260c19a2366dfdfb0",
+    "src/ilg_toolkit/prediction.py": "9eeab2a0a2795afc1302e8334a3852c13fe477e76d57bcf964a9e51628bd4cad",
+    "src/ilg_toolkit/persistence.py": "f271047bd3aa640a3f33897df8bdd6071e647f87570902648a1a2dda5a226778",
+    "src/ilg_toolkit/model.py": "8967a1e37a2933b8712ca9ea02c1675f3774462c22b2e0483702788545dfde67",
+    "src/ilg_toolkit/ibd.py": "7d60fc0724b79a604fdc15ec0e6ce159bb07c2fdbca2b2e84136f18f65de0f1b",
+    "src/ilg_toolkit/evaluation.py": "80e02c0007f5571e5a62a8ca775f5f9d5bbcd1da6f02abd5649f7cb5f0676dcf",
+    "src/ilg_toolkit/ensemble.py": "fb1528b132b64b8c877690ca4f24693109c4bbae62a020d94f57a435f50076e3",
+    "src/ilg_toolkit/data.py": "4d0d3115a6575608e0849c42f1be2e74caecbcd2480188e43af2601f93b3f960",
+    "src/ilg_toolkit/config.py": "f0d250c80b31c0915bf44018e58cf0227147e1d5e4c4c839b3a6a9cddf39bad7",
+    "src/ilg_toolkit/checkpoint.py": "0240c5412705e0f818a4ad85e216516bc367176c500b1f55e3387a6f457fb080",
+    "src/ilg_toolkit/calibration.py": "cfa109266f9140a4abdc8d1b10588cb848e780077fe1d609e6447e4c03347697",
+    "src/ilg_toolkit/_training_execution.py": "dca6612c2528e73c88f770c2b2497184bcef04f49ea73231a766576da666e48d",
+    "src/ilg_toolkit/_pairs.py": "5099e372d0145adc4c904e7aa84de9c7dc41bd9dd35810d2d5497fda08cccbf4",
+    "src/ilg_toolkit/_artifact.py": "03167f1d2bdf01d33dc3b9b110e84721dfbe75b458a72b0803b1a5f45add05b3",
+    "src/ilg_toolkit/__init__.py": "519e2fd4cfec0d8c0efa7373ac0c4d7b46e7ad6854973ce32eecd6d1acb48cf0",
+    "src/ilg_toolkit/models/resnet.py": "3ea06cd2c4e3bd8e78dca5876d02495f31bbe3f7de3389588137e20b857c72c3",
+    "src/ilg_toolkit/models/loglinear.py": "1463c3c80fac510ff637c6d102c098d06792412966f187cae73822da1ba68ee9",
+    "src/ilg_toolkit/models/base.py": "add73c64a8c9a701960594167dd2d6f4a3f336ca8aedb2abd6de293aa948f3ab",
+    "src/ilg_toolkit/models/unet.py": "b007434f3824413d7570ee8e1a51ec8042f73cc14ed0caf873b1207d59733018",
+    "src/ilg_toolkit/models/common.py": "6bce5325899d423cb8fd66ce2fceded1915e19afc86fdcb4b772f7b96572aa8b",
+    "src/ilg_toolkit/models/__init__.py": "b796041f11dd90748273b327742fabe0b6899d73d6ba67e7b906dfe8df3e24fd",
+    "src/ilg_toolkit/mlpe/system.py": "d0dd79577b2782c5b5e84992cfa0a8299fa9d68ebe5b828c3096ef677d10b480",
+    "src/ilg_toolkit/mlpe/prediction.py": "d1d90139138557e840ab9cf0eb678a6286b589426ec41c9eacadbe7e93cfc3c1",
+    "src/ilg_toolkit/mlpe/likelihood.py": "74f8c6695cd279b615bc732628c84a395892293f5ad75172cd557243a294172b",
+    "src/ilg_toolkit/mlpe/fit.py": "00bbbcecbd0559ec2fb8879935971d5aa413af08e7fbf7f167f78db013b04166",
+    "src/ilg_toolkit/mlpe/__init__.py": "587e8efb41fb68189cfc31e01f4e4361ab69ae0c2382e401a7b0a368ccddd325"
+  },
+  "fixture_sha256": "2e28771adb9d64f1600d7517c0ddb3c74af6f2eabd4c4bec204f7fd7ad36f0fe",
+  "fixture_groups": {
+    "species-0": {
+      "units": 8,
+      "pairs": 28,
+      "targets_sha256": "a7bdebdd7df461e38ca236719a4be68b8593ce2ad33593e59306fedced2169d3"
+    },
+    "species-1": {
+      "units": 8,
+      "pairs": 28,
+      "targets_sha256": "2aae737e678b6d9b93ab8ea7bb6daa4662bd0696852d9fb641cdbac723110206"
+    },
+    "species-2": {
+      "units": 8,
+      "pairs": 28,
+      "targets_sha256": "e4140a516962965d4dbc2d06ea9e6856b841754c0a3a290e4e3afcfaa9a96cbb"
+    },
+    "species-3": {
+      "units": 8,
+      "pairs": 28,
+      "targets_sha256": "57337dcb1e53380522c737f580be36d103700167f5a48249cb6efda5014f106d"
+    }
+  },
+  "training_config": {
+    "objective": "mlpe",
+    "steps": 2,
+    "region_batch_size": null,
+    "species_batch_size": 4,
+    "species_chunk_size": 1,
+    "evaluation_interval": 2,
+    "learning_rate": 0.001,
+    "seed": 7304,
+    "jit": true,
+    "mlpe_variance_floor": 1e-10,
+    "mlpe_jitter": 0.0,
+    "mlpe_initial_variances": [
+      0.2,
+      0.4
+    ]
+  },
+  "environment": {
+    "platform": "Linux-5.15.0-194-generic-x86_64-with-glibc2.35",
+    "python": "3.13.13",
+    "jax": "0.10.2",
+    "equinox": "0.13.8",
+    "numpy": "2.5.4",
+    "affinity": [
+      2,
+      3
+    ],
+    "devices": [
+      "cpu:0"
+    ],
+    "xla_flags": "--xla_dump_to=/tmp/ilg-spec52/memory65-final-b2088e6/resnet-s4-c1 --xla_dump_hlo_as_text",
+    "persistent_compilation_cache": false
+  },
+  "public_fit_seconds_including_compilation_and_instrumentation": 15.045005346182734,
+  "process_peak_rss_bytes_including_compiler": 893861888,
+  "persistent_bytes": {
+    "initial_distance_model_retained_by_driver": 2967824,
+    "latest_distance_model": 2967824,
+    "latest_backbone": 2963712,
+    "latest_species_projection": 4112,
+    "optimizer": 5935780,
+    "latest_nuisance": 64,
+    "selected_nuisance": 64,
+    "selected_distance_model": 2967824,
+    "selected_calibration_arrays": 4352,
+    "prepared_region_arrays": 8448,
+    "observation_arrays": 2048,
+    "note": "Logical category sizes; shared/aliased initial/latest/selected buffers are not additive allocations."
+  },
+  "payload_shapes_by_signature": {
+    "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464": [
+      [
+        [
+          1,
+          0
+        ],
+        "float32"
+      ],
+      [
+        [
+          1,
+          8
+        ],
+        "int32"
+      ],
+      [
+        [
+          1,
+          28
+        ],
+        "int64"
+      ],
+      [
+        [
+          1,
+          28
+        ],
+        "int64"
+      ],
+      [
+        [
+          1,
+          28
+        ],
+        "float64"
+      ],
+      [
+        [
+          1,
+          8
+        ],
+        "int32"
+      ],
+      [
+        [
+          1,
+          28
+        ],
+        "int64"
+      ],
+      [
+        [
+          1,
+          28
+        ],
+        "int64"
+      ],
+      [
+        [
+          1
+        ],
+        "int32"
+      ],
+      [
+        [
+          1
+        ],
+        "int32"
+      ],
+      [
+        [
+          1
+        ],
+        "float64"
+      ]
+    ]
+  },
+  "events": [
+    {
+      "kind": "encoder_inference",
+      "step": 0,
+      "started_ns": 1806197965598524,
+      "finished_ns": 1806198973583312,
+      "new_memory_reports": [
+        "module_0342.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+      ]
+    },
+    {
+      "kind": "tail_evaluation",
+      "step": 0,
+      "started_ns": 1806199176245067,
+      "species_indices": [
+        0
+      ],
+      "group_indices": [
+        0
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806201210197345,
+      "new_memory_reports": [
+        "module_0360.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt"
+      ]
+    },
+    {
+      "kind": "tail_evaluation",
+      "step": 0,
+      "started_ns": 1806201461035175,
+      "species_indices": [
+        1
+      ],
+      "group_indices": [
+        1
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806201462077073,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_evaluation",
+      "step": 0,
+      "started_ns": 1806201468702365,
+      "species_indices": [
+        2
+      ],
+      "group_indices": [
+        2
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806201469530773,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_evaluation",
+      "step": 0,
+      "started_ns": 1806201475123628,
+      "species_indices": [
+        3
+      ],
+      "group_indices": [
+        3
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806201475987446,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "encoder_training_forward",
+      "step": 1,
+      "started_ns": 1806201614651607,
+      "finished_ns": 1806202665556163,
+      "new_memory_reports": [
+        "module_0416.jit_pooled_region.cpu_after_optimizations-memory-usage-report.txt"
+      ]
+    },
+    {
+      "kind": "tail_forward_backward",
+      "step": 1,
+      "started_ns": 1806202672073337,
+      "species_indices": [
+        0
+      ],
+      "group_indices": [
+        0
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806205409389743,
+      "new_memory_reports": [
+        "module_0418.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt"
+      ]
+    },
+    {
+      "kind": "tail_forward_backward",
+      "step": 1,
+      "started_ns": 1806205420136652,
+      "species_indices": [
+        1
+      ],
+      "group_indices": [
+        1
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806205422036246,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_forward_backward",
+      "step": 1,
+      "started_ns": 1806205643540971,
+      "species_indices": [
+        2
+      ],
+      "group_indices": [
+        2
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806205646438593,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_forward_backward",
+      "step": 1,
+      "started_ns": 1806205657115772,
+      "species_indices": [
+        3
+      ],
+      "group_indices": [
+        3
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806205659757915,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "encoder_backward",
+      "step": 1,
+      "started_ns": 1806205669329608,
+      "finished_ns": 1806208933015170,
+      "new_memory_reports": [
+        "module_0496.jit__encode.cpu_after_optimizations-memory-usage-report.txt"
+      ]
+    },
+    {
+      "kind": "optimizer_update",
+      "step": 1,
+      "started_ns": 1806208942318124,
+      "finished_ns": 1806210295343424,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "encoder_training_forward",
+      "step": 2,
+      "started_ns": 1806210302702943,
+      "finished_ns": 1806210317661690,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_forward_backward",
+      "step": 2,
+      "started_ns": 1806210323667483,
+      "species_indices": [
+        0
+      ],
+      "group_indices": [
+        0
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806210325308298,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_forward_backward",
+      "step": 2,
+      "started_ns": 1806210330645032,
+      "species_indices": [
+        1
+      ],
+      "group_indices": [
+        1
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806210331795289,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_forward_backward",
+      "step": 2,
+      "started_ns": 1806210336741275,
+      "species_indices": [
+        2
+      ],
+      "group_indices": [
+        2
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806210337988192,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_forward_backward",
+      "step": 2,
+      "started_ns": 1806210342843418,
+      "species_indices": [
+        3
+      ],
+      "group_indices": [
+        3
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806210345036022,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "encoder_backward",
+      "step": 2,
+      "started_ns": 1806210349857418,
+      "finished_ns": 1806210392271606,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "optimizer_update",
+      "step": 2,
+      "started_ns": 1806210398002160,
+      "finished_ns": 1806210406280006,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "encoder_inference",
+      "step": 2,
+      "started_ns": 1806210411971390,
+      "finished_ns": 1806210423895685,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_evaluation",
+      "step": 2,
+      "started_ns": 1806210429734548,
+      "species_indices": [
+        0
+      ],
+      "group_indices": [
+        0
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806210430985355,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_evaluation",
+      "step": 2,
+      "started_ns": 1806210438682263,
+      "species_indices": [
+        1
+      ],
+      "group_indices": [
+        1
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806210439535751,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_evaluation",
+      "step": 2,
+      "started_ns": 1806210446365281,
+      "species_indices": [
+        2
+      ],
+      "group_indices": [
+        2
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806210447616587,
+      "new_memory_reports": []
+    },
+    {
+      "kind": "tail_evaluation",
+      "step": 2,
+      "started_ns": 1806210454354328,
+      "species_indices": [
+        3
+      ],
+      "group_indices": [
+        3
+      ],
+      "payload_signature": "502d5799c2ea5883a88fc42dc176a3076083d98661916afc6ba5df67ab977464",
+      "finished_ns": 1806210455170855,
+      "new_memory_reports": []
+    }
+  ],
+  "counts": {
+    "encoder_inference": 2,
+    "tail_evaluation": 8,
+    "encoder_training_forward": 2,
+    "tail_forward_backward": 8,
+    "encoder_backward": 2,
+    "optimizer_update": 2
+  },
+  "live_array_boundary_snapshots": [
+    {
+      "phase": "before_fit",
+      "live_array_objects": 41,
+      "logical_array_bytes": 2978512,
+      "same_address_deduplicated_span_bytes": 2978512,
+      "distinct_start_addresses": 41,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_encoder_inference_step0",
+      "live_array_objects": 152,
+      "logical_array_bytes": 8996204,
+      "same_address_deduplicated_span_bytes": 8996204,
+      "distinct_start_addresses": 152,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_evaluation_step0",
+      "live_array_objects": 197,
+      "logical_array_bytes": 9003068,
+      "same_address_deduplicated_span_bytes": 9003044,
+      "distinct_start_addresses": 194,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_encoder_training_forward_step1",
+      "live_array_objects": 202,
+      "logical_array_bytes": 11976628,
+      "same_address_deduplicated_span_bytes": 11976628,
+      "distinct_start_addresses": 202,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_forward_backward_step1",
+      "live_array_objects": 218,
+      "logical_array_bytes": 12047548,
+      "same_address_deduplicated_span_bytes": 12047548,
+      "distinct_start_addresses": 218,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_forward_backward_step1",
+      "live_array_objects": 223,
+      "logical_array_bytes": 12117268,
+      "same_address_deduplicated_span_bytes": 12117268,
+      "distinct_start_addresses": 223,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_forward_backward_step1",
+      "live_array_objects": 227,
+      "logical_array_bytes": 12186980,
+      "same_address_deduplicated_span_bytes": 12186980,
+      "distinct_start_addresses": 227,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_forward_backward_step1",
+      "live_array_objects": 227,
+      "logical_array_bytes": 12186980,
+      "same_address_deduplicated_span_bytes": 12186980,
+      "distinct_start_addresses": 227,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_encoder_backward_step1",
+      "live_array_objects": 239,
+      "logical_array_bytes": 15079772,
+      "same_address_deduplicated_span_bytes": 15079772,
+      "distinct_start_addresses": 239,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_optimizer_update_step1",
+      "live_array_objects": 294,
+      "logical_array_bytes": 20806624,
+      "same_address_deduplicated_span_bytes": 20806624,
+      "distinct_start_addresses": 294,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_encoder_training_forward_step2",
+      "live_array_objects": 264,
+      "logical_array_bytes": 17912404,
+      "same_address_deduplicated_span_bytes": 17912404,
+      "distinct_start_addresses": 264,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_forward_backward_step2",
+      "live_array_objects": 280,
+      "logical_array_bytes": 17983324,
+      "same_address_deduplicated_span_bytes": 17983324,
+      "distinct_start_addresses": 280,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_forward_backward_step2",
+      "live_array_objects": 285,
+      "logical_array_bytes": 18053044,
+      "same_address_deduplicated_span_bytes": 18053044,
+      "distinct_start_addresses": 285,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_forward_backward_step2",
+      "live_array_objects": 289,
+      "logical_array_bytes": 18122756,
+      "same_address_deduplicated_span_bytes": 18122756,
+      "distinct_start_addresses": 289,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_forward_backward_step2",
+      "live_array_objects": 289,
+      "logical_array_bytes": 18122756,
+      "same_address_deduplicated_span_bytes": 18122756,
+      "distinct_start_addresses": 289,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_encoder_backward_step2",
+      "live_array_objects": 301,
+      "logical_array_bytes": 21015548,
+      "same_address_deduplicated_span_bytes": 21015548,
+      "distinct_start_addresses": 301,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_optimizer_update_step2",
+      "live_array_objects": 325,
+      "logical_array_bytes": 23774512,
+      "same_address_deduplicated_span_bytes": 23774512,
+      "distinct_start_addresses": 325,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_encoder_inference_step2",
+      "live_array_objects": 232,
+      "logical_array_bytes": 14936380,
+      "same_address_deduplicated_span_bytes": 14936380,
+      "distinct_start_addresses": 232,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "after_tail_evaluation_step2",
+      "live_array_objects": 277,
+      "logical_array_bytes": 14943244,
+      "same_address_deduplicated_span_bytes": 14943220,
+      "distinct_start_addresses": 274,
+      "device_memory_stats": [
+        null
+      ]
+    },
+    {
+      "phase": "returned_complete_state",
+      "live_array_objects": 148,
+      "logical_array_bytes": 11886540,
+      "same_address_deduplicated_span_bytes": 11886540,
+      "distinct_start_addresses": 148,
+      "device_memory_stats": [
+        null
+      ]
+    }
+  ],
+  "history_steps": [
+    0,
+    2
+  ],
+  "latest_step": 2,
+  "selected_step": 2,
+  "final_loss": 0.9458875910107847,
+  "calibrated_groups": 4,
+  "selected_prediction_checks": {
+    "passed": true,
+    "selected_species": [
+      "species-0",
+      "species-3"
+    ],
+    "numerical": {
+      "species-0": {
+        "pairs": [
+          [
+            "unit-3",
+            "unit-0"
+          ],
+          [
+            "unit-1",
+            "unit-2"
+          ]
+        ],
+        "raw_distances": [
+          7.2201972007751465,
+          7.7162604331970215
+        ],
+        "genetic_predictions": [
+          1.1495134776520766,
+          1.1997965301856681
+        ]
+      },
+      "species-3": {
+        "pairs": [
+          [
+            "unit-3",
+            "unit-0"
+          ],
+          [
+            "unit-1",
+            "unit-2"
+          ]
+        ],
+        "raw_distances": [
+          8.651082038879395,
+          9.938286781311035
+        ],
+        "genetic_predictions": [
+          1.1841882232106413,
+          1.308993608326828
+        ]
+      },
+      "independent_reference": "NumPy dense graph Laplacian pseudoinverse",
+      "maximum_absolute_errors": [
+        6.532906162703966e-07,
+        3.3646383457153206e-07
+      ]
+    }
+  },
+  "cpu_compiled_allocation_reports": [
+    {
+      "file": "module_0342.jit__encode.cpu_after_optimizations-memory-usage-report.txt",
+      "role": "encoder_inference",
+      "total_allocated_bytes": 6061428,
+      "entry_layout": "HloModule jit__encode, is_scheduled=true, entry_computation_layout={(f32[64,2,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[128,64,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[256,128,3,3]{3,2,1,0}, /*index=5*/f32[256,1,1]{2,1,0}, f32[64]{0}, f32[64]{0}, f32[128]{0}, f32[128]{0}, /*index=10*/f32[256]{0}, f32[256]{0}, f32[64,64,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[64,64,3,3]{3,2,1,0}, /*index=15*/f32[64,1,1]{2,1,0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, /*index=20*/f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128]{0}, /*index=25*/f32[128]{0}, f32[128]{0}, f32[128]{0}, f32[32,32,2]{2,1,0})->(s64[], f32[8,8,256]{2,1,0})}, allow_spmd_sharding_propagation_to_parameters={true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true}, allow_spmd_sharding_propagation_to_output={true,true}",
+      "report": "Memory Space: default (color=0)\nTotal bytes: 6061428 (5.78MiB)\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    1.12MiB( 39%);    1.12MiB;            0;                3; f32[256,128,3,3], f32[8,8,2,4,4], f32[8,8]\n    1.69MiB( 58%);   576.0KiB;      1769472;                3; f32[128,128,3,3], f32[8,128,1,1], f32[8,8]\n    2.25MiB( 77%);   576.0KiB;      1179648;                3; f32[128,128,3,3], f32[8,256,1,1], f32[8,8]\n    2.53MiB( 87%);   288.0KiB;      2359296;                5; f32[128,64,3,3], f32[8,128,1,1], f32[8,2,2,128], 2\u00d7f32[8,8,16,2,2]\n    2.67MiB( 92%);   144.0KiB;      2801664;                1; f32[64,64,3,3]\n    2.81MiB( 97%);   144.0KiB;      2654208;                2; f32[64,64,3,3], f32[8,128,2,2]\n    2.84MiB( 98%);    32.0KiB;      2981888;                4; f32[8,2,4,4], f32[8,4,4,64], 2\u00d7f32[8,8,8,4,4]\n    2.88MiB( 99%);    32.0KiB;      2949120;                2; f32[8,2,2,64], f32[8,64,4,4]\n    2.88MiB( 99%);     8.0KiB;      2957312;                2; 2\u00d7f32[8,64,2,2]\n    2.89MiB( 99%);     8.0KiB;      2965504;                3; 3\u00d7f32[8,64,2,2]\n    2.90MiB(100%);     8.0KiB;      3014656;                1; f32[8,8,2,4,4]\n    2.90MiB(100%);     4.0KiB;      1773568;                1; f32[8,128,1,1]\n    2.91MiB(100%);     4.0KiB;      2375680;                3; f32[8,8], 2\u00d7f32[8,128,1,1]\n    2.91MiB(100%);       256B;      3023104;                2; 2\u00d7f32[8,8]\n    2.91MiB(100%);       256B;      2973696;                2; 2\u00d7f32[8,8]\n    2.91MiB(100%);       256B;      2973952;                2; 2\u00d7f32[8,8]\n    2.91MiB(100%);       256B;      2375936;                2; 2\u00d7f32[8,8]\n    2.91MiB(100%);       256B;      1769728;                1; f32[8,8]\n    2.91MiB(100%);       256B;      1179904;                1; f32[8,8]\n    2.91MiB(100%);       256B;          256;                1; f32[8,8]\n    2.91MiB(100%);       256B;      3022848;                2; f32[8,8], pred[]\n    2.91MiB(100%);       248B;      3023488;                5; 5\u00d7(s64[], f32[8,8,256], f32[8,8,2,4,4], f32[64,2,3,3], f32[64,1,1], /*index=5*/f32[128,64,3,3], f32[128,1,1], f32[256,128,3,3], f32[256,1,1], f32[64], /*index=10*/f32[64], f32[128], f32[128], f32[256], f32[256], /*index=15*/f32[64,64,3,3], f32[64,1,1], f32[64,64,3,3], f32[64,1,1], f32[64], /*index=20*/f32[64], f32[64], f32[64], f32[128,128,3,3], f32[128,1,1], /*index=25*/f32[128,128,3,3], f32[128,1,1], f32[128], f32[128], f32[128], /*index=30*/f32[128])\n    2.91MiB(100%);         8B;      3023360;                1; s64[]\n    2.91MiB(100%);         8B;      3023424;                5; 5\u00d7s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    1.12MiB(100%);    1.12MiB;            0;                1; f32[256,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                1; f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                1; f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   288.0KiB(100%);   288.0KiB;            0;                1; f32[128,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                1; f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                1; f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    64.0KiB(100%);    64.0KiB;            0;                5; 5\u00d7f32[8,8,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     8.0KiB(100%);     8.0KiB;            0;                1; f32[32,32,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.5KiB(100%);     4.5KiB;            0;                1; f32[64,2,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        16B(100%);        16B;            0;                1; (s64[], f32[8,8,256])\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         4B(100%);         4B;            0;                1; f32[]\n\n\n",
+      "report_sha256": "25faf1ae931c025aceef1669c2799a5802c7bbb4a272ef6e3fab0a1ac55c763b",
+      "hlo_sha256": "375bc527a4dfd9fd127817d1be037babf3f12724171751c4021075bc31179fd1"
+    },
+    {
+      "file": "module_0360.jit_chunk_evaluate.cpu_after_optimizations-memory-usage-report.txt",
+      "role": "tail_evaluation",
+      "total_allocated_bytes": 176141,
+      "entry_layout": "HloModule jit_chunk_evaluate, is_scheduled=true, entry_computation_layout={(f32[4,256]{1,0}, f32[4]{0}, f32[8,8,256]{2,1,0}, f64[4,2]{1,0}, s64[1,28]{1,0}, /*index=5*/s64[1,28]{1,0}, f64[1,28]{1,0}, s32[1,8]{1,0}, s64[1,28]{1,0}, s64[1,28]{1,0}, /*index=10*/s32[1]{0}, s32[1]{0}, s32[112]{0}, s32[112]{0}, s32[442,2]{1,0}, /*index=15*/s64[442]{0}, f64[442]{0})->(s64[], f64[1]{0}, f64[1,2]{1,0}, f64[1]{0}, f64[1]{0}, /*index=5*/f64[1,2]{1,0}, f64[1,8]{1,0}, f64[1,8,8]{2,1,0}, f64[1,8,8]{2,1,0})}, allow_spmd_sharding_propagation_to_parameters={true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true}, allow_spmd_sharding_propagation_to_output={true,true,true,true,true,true,true,true,true}, frontend_attributes={xla.sdy.meshes={maximal_mesh_0 = #sdy.mesh<[], device_ids=[0]>}}",
+      "report": "Memory Space: default (color=0)\nTotal bytes: 176141 (172.0KiB)\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    27.6KiB( 28%);    27.6KiB;            0;               11; f64[1,28,3], f64[1,63,8], f64[1,64,8], f64[28,1,1], f64[63], 2\u00d7f64[442,1,8,1], 4\u00d7f64[1,8,63]\n    31.6KiB( 32%);     3.9KiB;        56512;                2; 2\u00d7f64[1,8,63]\n    35.5KiB( 36%);     3.9KiB;        60544;                2; 2\u00d7f64[1,8,63]\n    39.4KiB( 40%);     3.9KiB;        64576;                3; f64[1,8,2], 2\u00d7f64[1,8,63]\n    43.4KiB( 44%);     3.9KiB;        44416;                4; f64[8,63], s32[2,1,442,1], 2\u00d7f64[1,8,63]\n    47.3KiB( 48%);     3.9KiB;        28288;                1; f64[1,63,8]\n    51.2KiB( 52%);     3.9KiB;        32320;                1; f64[1,63,8]\n    55.2KiB( 56%);     3.9KiB;        40384;                5; 5\u00d7f64[1,8,63]\n    59.1KiB( 60%);     3.9KiB;        52480;                5; 5\u00d7f64[1,8,63]\n    63.1KiB( 64%);     3.9KiB;        48448;               10; f64[8], 2\u00d7f64[8,63], 7\u00d7f64[1,8,63]\n    67.0KiB( 68%);     3.9KiB;        36352;                7; 7\u00d7f64[1,8,63]\n    70.5KiB( 71%);     3.5KiB;        82944;                1; s32[2,1,1,442,1]\n    73.9KiB( 75%);     3.5KiB;        48000;                2; f32[256,1], s32[442,2]\n    77.4KiB( 78%);     3.5KiB;        75776;                2; f64[1,442], s32[28,3]\n    80.8KiB( 82%);     3.5KiB;        79360;                4; f64[1,8,2], s32[442,2], 2\u00d7f64[1,63]\n    84.3KiB( 85%);     3.5KiB;        51584;                2; f64[442,1,1], s32[2,1,1,442,1]\n    87.7KiB( 88%);     3.5KiB;        68608;                1; s32[1,442,2]\n    91.2KiB( 92%);     3.5KiB;        72192;                1; s32[1,442,2]\n    91.8KiB( 93%);       672B;         1408;                1; f64[28,1,1,3]\n    92.5KiB( 93%);       672B;          704;                2; 2\u00d7f64[28,1,1,3]\n    93.1KiB( 94%);       672B;         2816;                1; f64[28,3]\n    93.8KiB( 95%);       672B;         2112;                2; f64[28,1], f64[3,28]\n    94.3KiB( 95%);       512B;        86528;                3; 3\u00d7f64[1,8,8]\n    94.7KiB( 96%);       442B;        87040;                5; f64[28,1,1,1], f64[3,3], f64[8,1], f64[8,3], pred[1,442,1]\n    95.1KiB( 96%);       336B;        76544;                1; s32[28,3]\n    95.4KiB( 96%);       336B;        76160;                1; s32[28,3]\n    95.6KiB( 96%);       256B;        76928;                1; f32[64,1]\n    95.9KiB( 97%);       256B;        79872;                3; f32[8,8], 2\u00d7f32[1,8,8]\n    96.1KiB( 97%);       224B;        77184;                1; f64[28,1,1,1]\n    96.3KiB( 97%);       224B;        88000;                1; s32[28,2]\n    96.5KiB( 97%);       224B;        88512;                1; s32[1,28,2]\n    96.8KiB( 98%);       224B;        88768;                1; s32[1,28,2]\n    97.0KiB( 98%);       224B;          256;                1; f64[28,1,1]\n    97.2KiB( 98%);       224B;        88256;                1; s32[28,2]\n    97.4KiB( 98%);       224B;        87488;                1; s32[1,28,2]\n    97.6KiB( 98%);       224B;        87744;                1; s32[1,28,2]\n    97.8KiB( 99%);       192B;        89024;                5; 5\u00d7f64[1,8,3]\n    97.9KiB( 99%);       128B;        87232;                1; f64[8,2]\n    98.1KiB( 99%);       112B;        89216;                4; s32[28,1,1], 3\u00d7s32[1,2]\n    98.2KiB( 99%);       112B;        89344;                2; s32[28,1,1], s32[2]\n    98.3KiB( 99%);       112B;        87296;                3; f32[28], 2\u00d7f32[1,28]\n    98.4KiB( 99%);       104B;        91520;                5; 5\u00d7(f64[1,8,63], f64[1,8,63], f64[1,8,63], f64[1,8,63], f64[1,8], /*index=5*/s64[1,8], f64[1,63,8], s32[442,2], f64[1,442], f64[1,63,8], /*index=10*/s32[1,442,2], pred[1,442,1], s32[1,442,2])\n    98.4KiB( 99%);        72B;        87360;                1; f64[3,3]\n    98.5KiB( 99%);        64B;        89600;                1; f64[1,8]\n    98.6KiB( 99%);        64B;        89728;                1; f64[1,8]\n    98.6KiB(100%);        64B;        89664;                1; f64[1,8]\n    98.7KiB(100%);        64B;        89536;                1; s64[1,8]\n    98.8KiB(100%);        64B;        89472;                7; pred[1], s32[], 5\u00d7s64[1,8]\n    98.8KiB(100%);        32B;        91456;                1; (s32[442,2], f64[1,8,63], f64[1,442], f64[1,8,63])\n    98.8KiB(100%);        32B;        89792;                3; s32[8], 2\u00d7s32[1,8]\n    98.8KiB(100%);        24B;        91264;                1; (f64[1,8], f64[1,8,63], f64[1,8,63])\n  The rest 28 values are less than 5% of the total size and not shown.\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    64.0KiB(100%);    64.0KiB;            0;                1; f32[8,8,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.0KiB(100%);     4.0KiB;            0;                1; f32[4,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     3.5KiB(100%);     3.5KiB;            0;                1; s32[442,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     3.5KiB(100%);     3.5KiB;            0;                1; f64[442]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     3.5KiB(100%);     3.5KiB;            0;                1; s64[442]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                9; f32[1,8,8], f32[8,8], pred[1,63,8], s32[28,3], s32[8], 4\u00d7f64[1,8,8]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;               18; f32[28], f64[1,8], f64[28,1,1,1], f64[28,2], f64[3,8], f64[63], pred[1,8,63], 2\u00d7f64[1,8,2], 3\u00d7f64[8,2], 6\u00d7f64[1,8,8]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       448B(100%);       448B;            0;                1; s32[112]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       448B(100%);       448B;            0;                1; s32[112]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; s64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; s64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; f64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; s64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; s64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        72B(100%);        72B;            0;                1; (s64[], f64[1], f64[1,2], f64[1], f64[1], /*index=5*/f64[1,2], f64[1,8], f64[1,8,8], f64[1,8,8])\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        64B(100%);        64B;            0;               13; f64[8,1,1,1], s32[8,2], s32[], 3\u00d7f64[1,2,2], 7\u00d7f64[1,8]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        64B(100%);        64B;            0;                1; f64[4,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        32B(100%);        32B;            0;                1; s32[1,8]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        16B(100%);        16B;            0;                9; f64[1,2], f64[1], f64[2,1], pred[1,2,8], pred[1,8,2], pred[], s32[1], s32[], s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        16B(100%);        16B;            0;                1; f64[1,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        16B(100%);        16B;            0;                1; f32[4]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                2; f64[1], s32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                9; pred[1,8], pred[], s32[1], s32[], s64[], 2\u00d7f64[1], 2\u00d7s32[1,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                6; f64[1], pred[1,8], s64[], 3\u00d7s32[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s32[2,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s32[2,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n\n",
+      "report_sha256": "b5c4581ac5f09b3006eaa041da1c75137c2660b05a3bbbdeb68e65204accf697",
+      "hlo_sha256": "a412424e0afa747d799301aa6134524f924b99d80fff766a2643ec8a6af4685f"
+    },
+    {
+      "file": "module_0416.jit_pooled_region.cpu_after_optimizations-memory-usage-report.txt",
+      "role": "encoder_training_forward",
+      "total_allocated_bytes": 9049996,
+      "entry_layout": "HloModule jit_pooled_region, is_scheduled=true, entry_computation_layout={(f32[64,2,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[128,64,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[256,128,3,3]{3,2,1,0}, /*index=5*/f32[256,1,1]{2,1,0}, f32[64]{0}, f32[64]{0}, f32[128]{0}, f32[128]{0}, /*index=10*/f32[256]{0}, f32[256]{0}, f32[64,64,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[64,64,3,3]{3,2,1,0}, /*index=15*/f32[64,1,1]{2,1,0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, /*index=20*/f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128]{0}, /*index=25*/f32[128]{0}, f32[128]{0}, f32[128]{0}, f32[4,256]{1,0}, f32[4]{0}, /*index=30*/f32[32,32,2]{2,1,0})->(s64[], f32[4,256]{1,0}, f32[4]{0}, f32[8,8,256]{2,1,0}, f32[64,2,3,3]{3,2,1,0}, /*index=5*/f32[64,1,1]{2,1,0}, f32[128,64,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[256,128,3,3]{3,2,1,0}, f32[256,1,1]{2,1,0}, /*index=10*/f32[64]{0}, f32[64]{0}, f32[128]{0}, f32[128]{0}, f32[256]{0}, /*index=15*/f32[256]{0}, f32[64,64,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[64,64,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, /*index=20*/f32[64]{0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, f32[128,128,3,3]{3,2,1,0}, /*index=25*/f32[128,1,1]{2,1,0}, f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128]{0}, f32[128]{0}, /*index=30*/f32[128]{0}, f32[128]{0}, f32[8,8,2,4,4]{4,3,2,1,0})}, allow_spmd_sharding_propagation_to_parameters={true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true}, allow_spmd_sharding_propagation_to_output={true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true}",
+      "report": "Memory Space: default (color=0)\nTotal bytes: 9049996 (8.63MiB)\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    1.12MiB( 38%);    1.12MiB;            0;                3; f32[256,128,3,3], f32[8,8,2,4,4], f32[8,8]\n    1.69MiB( 58%);   576.0KiB;      1769472;                3; f32[128,128,3,3], f32[8,128,1,1], f32[8,8]\n    2.25MiB( 77%);   576.0KiB;      1179648;                3; f32[128,128,3,3], f32[8,256,1,1], f32[8,8]\n    2.53MiB( 86%);   288.0KiB;      2359296;                5; f32[128,64,3,3], f32[8,128,1,1], f32[8,2,2,128], 2\u00d7f32[8,8,16,2,2]\n    2.67MiB( 91%);   144.0KiB;      2801664;                3; f32[64,64,3,3], f32[8,64,2,2], f32[8,8]\n    2.81MiB( 96%);   144.0KiB;      2654208;                3; f32[64,64,3,3], f32[8,128,2,2], f32[8,8]\n    2.84MiB( 97%);    32.0KiB;      2981888;                4; f32[8,2,4,4], f32[8,4,4,64], 2\u00d7f32[8,8,8,4,4]\n    2.88MiB( 98%);    32.0KiB;      2949120;                2; f32[8,2,2,64], f32[8,64,4,4]\n    2.88MiB( 98%);     8.0KiB;      2965504;                1; f32[8,64,2,2]\n    2.89MiB( 99%);     8.0KiB;      2957312;                1; f32[8,64,2,2]\n    2.90MiB( 99%);     8.0KiB;      2809856;                1; f32[8,64,2,2]\n    2.91MiB( 99%);     8.0KiB;      2670592;                1; f32[8,64,2,2]\n    2.91MiB( 99%);     4.0KiB;      1773568;                1; f32[8,128,1,1]\n    2.91MiB( 99%);     4.0KiB;      2375680;                3; f32[8,8], 2\u00d7f32[8,128,1,1]\n    2.92MiB(100%);     4.0KiB;      3014656;                1; f32[1,64,4,4]\n    2.92MiB(100%);     4.0KiB;      3018752;                1; f32[1,64,4,4]\n    2.92MiB(100%);     2.0KiB;      3022848;                1; f32[1,128,2,2]\n    2.93MiB(100%);     2.0KiB;      3024896;                1; f32[1,128,2,2]\n    2.93MiB(100%);     1.0KiB;      3026944;                1; f32[1,64,2,2]\n    2.93MiB(100%);     1.0KiB;      3027968;                1; f32[1,64,2,2]\n    2.93MiB(100%);     1.0KiB;      3028992;                1; f32[1,64,2,2]\n    2.93MiB(100%);     1.0KiB;      3030016;                1; f32[1,64,2,2]\n    2.93MiB(100%);       256B;      3031296;                2; 2\u00d7f32[8,8]\n    2.93MiB(100%);       256B;      2801920;                1; f32[8,8]\n    2.93MiB(100%);       256B;      2654464;                1; f32[8,8]\n    2.93MiB(100%);       256B;      2375936;                2; 2\u00d7f32[8,8]\n    2.93MiB(100%);       256B;      1769728;                1; f32[8,8]\n    2.93MiB(100%);       256B;      1179904;                1; f32[8,8]\n    2.93MiB(100%);       256B;          256;                1; f32[8,8]\n    2.93MiB(100%);       256B;      3031040;                2; f32[8,8], pred[]\n    2.93MiB(100%);       248B;      3031680;                5; 5\u00d7(s64[], f32[8,8,256], f32[8,8,2,4,4], f32[1,256,1,1], f32[1,128,1,1], /*index=5*/f32[1,128,1,1], f32[1,128,2,2], f32[1,64,2,2], f32[1,64,2,2], f32[1,64,4,4], /*index=10*/f32[64,2,3,3], f32[1,64,1,1], f32[1,64,4,4], f32[64,64,3,3], f32[1,64,1,1], /*index=15*/f32[1,64,2,2], f32[64,64,3,3], f32[1,64,1,1], f32[1,64,2,2], f32[128,64,3,3], /*index=20*/f32[1,128,1,1], f32[1,128,2,2], f32[128,128,3,3], f32[1,128,1,1], f32[1,128,1,1], /*index=25*/f32[128,128,3,3], f32[1,128,1,1], f32[1,128,1,1], f32[256,128,3,3], f32[1,256,1,1], /*index=30*/f32[1,256,1,1])\n    2.93MiB(100%);         8B;      3031552;                1; s64[]\n    2.93MiB(100%);         8B;      3031616;                5; 5\u00d7s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    1.12MiB(100%);    1.12MiB;            0;                1; f32[256,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    1.12MiB(100%);    1.12MiB;            0;                1; f32[256,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                1; f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                1; f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                1; f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                1; f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   288.0KiB(100%);   288.0KiB;            0;                1; f32[128,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   288.0KiB(100%);   288.0KiB;            0;                1; f32[128,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                1; f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                1; f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                1; f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                1; f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    64.0KiB(100%);    64.0KiB;            0;                5; 5\u00d7f32[8,8,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     8.0KiB(100%);     8.0KiB;            0;                1; f32[8,8,2,4,4]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     8.0KiB(100%);     8.0KiB;            0;                1; f32[32,32,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.5KiB(100%);     4.5KiB;            0;                1; f32[64,2,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.5KiB(100%);     4.5KiB;            0;                1; f32[64,2,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.0KiB(100%);     4.0KiB;            0;                1; f32[4,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.0KiB(100%);     4.0KiB;            0;                1; f32[4,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       264B(100%);       264B;            0;                1; (s64[], f32[4,256], f32[4], f32[8,8,256], f32[64,2,3,3], /*index=5*/f32[64,1,1], f32[128,64,3,3], f32[128,1,1], f32[256,128,3,3], f32[256,1,1], /*index=10*/f32[64], f32[64], f32[128], f32[128], f32[256], /*index=15*/f32[256], f32[64,64,3,3], f32[64,1,1], f32[64,64,3,3], f32[64,1,1], /*index=20*/f32[64], f32[64], f32[64], f32[64], f32[128,128,3,3], /*index=25*/f32[128,1,1], f32[128,128,3,3], f32[128,1,1], f32[128], f32[128], /*index=30*/f32[128], f32[128], f32[8,8,2,4,4])\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64]\n\n\n",
+      "report_sha256": "13c997803c7ef826bf25d20be6381403174edbd6448f095df15676f150cd3fea",
+      "hlo_sha256": "7fe80e704efc18b018b12ed4de8e3a928ab53c1b613a7e0d4fbdbb5c6407d185"
+    },
+    {
+      "file": "module_0418.jit_chunk_gradient.cpu_after_optimizations-memory-usage-report.txt",
+      "role": "tail_forward_backward",
+      "total_allocated_bytes": 251235,
+      "entry_layout": "HloModule jit_chunk_gradient, is_scheduled=true, entry_computation_layout={(f32[4,256]{1,0}, f32[4]{0}, f32[8,8,256]{2,1,0}, f64[4,2]{1,0}, s64[1,28]{1,0}, /*index=5*/s64[1,28]{1,0}, f64[1,28]{1,0}, s32[1,8]{1,0}, s64[1,28]{1,0}, s64[1,28]{1,0}, /*index=10*/s32[1]{0}, s32[1]{0}, f64[1]{0}, s32[112]{0}, s32[112]{0}, /*index=15*/s32[442,2]{1,0}, s64[442]{0}, f64[442]{0})->(s64[], f64[], f32[4,256]{1,0}, f32[4]{0}, f32[8,8,256]{2,1,0}, /*index=5*/f64[4,2]{1,0})}, allow_spmd_sharding_propagation_to_parameters={true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true}, allow_spmd_sharding_propagation_to_output={true,true,true,true,true,true}, frontend_attributes={xla.sdy.meshes={maximal_mesh_0 = #sdy.mesh<[], device_ids=[0]>}}",
+      "report": "Memory Space: default (color=0)\nTotal bytes: 251235 (245.3KiB)\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    64.0KiB( 36%);    64.0KiB;            0;                7; f32[8,8,256], pred[4,256], pred[8,8,256], 2\u00d7f64[1,64,8], 2\u00d7f64[1,8,63]\n    68.0KiB( 38%);     4.0KiB;        65536;                1; f32[4,256]\n    71.9KiB( 41%);     3.9KiB;        48448;                3; f64[1,8,2], 2\u00d7f64[1,8,63]\n    75.9KiB( 43%);     3.9KiB;        44416;                3; s32[442,2], 2\u00d7f64[1,8,63]\n    79.8KiB( 45%);     3.9KiB;        40384;                4; 4\u00d7f64[1,8,63]\n    83.8KiB( 47%);     3.9KiB;        36352;                7; f64[8,2], f64[8,63], 5\u00d7f64[1,8,63]\n    87.7KiB( 49%);     3.9KiB;        28288;                9; f64[442,1,1], s32[2,1,442,1], 2\u00d7f64[8,63], 5\u00d7f64[1,8,63]\n    91.6KiB( 52%);     3.9KiB;        16192;                2; 2\u00d7f64[1,63,8]\n    95.6KiB( 54%);     3.9KiB;        12160;                9; f32[256,1], f64[63], f64[8,1,1,1], 2\u00d7f64[1,63,8], 4\u00d7f64[28,1,1,3]\n    99.5KiB( 56%);     3.9KiB;        32320;                7; 7\u00d7f64[1,8,63]\n   103.4KiB( 58%);     3.9KiB;        20224;                7; 7\u00d7f64[1,8,63]\n   107.4KiB( 61%);     3.9KiB;         8128;                5; 5\u00d7f64[1,8,63]\n   111.3KiB( 63%);     3.9KiB;        24256;               11; f64[8,63], 10\u00d7f64[1,8,63]\n   115.2KiB( 65%);     3.9KiB;         4096;                7; 7\u00d7f64[1,8,63]\n   118.7KiB( 67%);     3.5KiB;        77568;                1; s32[2,1,1,442,1]\n   122.2KiB( 69%);     3.5KiB;        48000;                1; s32[2,1,1,442,1]\n   125.6KiB( 71%);     3.5KiB;        31872;                1; s32[442,2]\n   129.1KiB( 73%);     3.5KiB;        73984;                8; f64[1,8], s32[442,2], 2\u00d7f64[1,63], 2\u00d7f64[1,8,2], 2\u00d7f64[8,2]\n   132.5KiB( 75%);     3.5KiB;        66816;                1; s32[1,442,2]\n   136.0KiB( 77%);     3.5KiB;        70400;                1; s32[1,442,2]\n   139.4KiB( 79%);     3.5KiB;        35456;                1; s32[2,1,442,1]\n   142.9KiB( 81%);     3.5KiB;        39040;                1; s32[442,2]\n   146.3KiB( 83%);     3.5KiB;        52480;                1; s32[442,2]\n   149.8KiB( 85%);     3.5KiB;        63232;                2; f64[1,442], s32[2,1,1,442,1]\n   153.2KiB( 86%);     3.5KiB;        56064;                1; s32[1,442,2]\n   156.7KiB( 88%);     3.5KiB;        59648;                1; s32[1,442,2]\n   158.4KiB( 89%);     1.7KiB;        81152;                1; s32[442,1]\n   159.4KiB( 90%);     1.0KiB;        16384;                1; f32[1,256]\n   160.3KiB( 90%);       896B;        82944;                2; 2\u00d7f64[1,112]\n   161.0KiB( 91%);       768B;        83840;               11; f64[1,64], f64[63], pred[1,63,8], s32[64,3], 2\u00d7f64[1,8,2], 2\u00d7f64[8,2], 3\u00d7f64[1,8,8]\n   161.7KiB( 91%);       672B;        14272;                1; f64[28,3]\n   162.4KiB( 92%);       672B;        13568;                3; f64[3,28], 2\u00d7f64[8,8]\n   163.0KiB( 92%);       672B;        12864;                2; 2\u00d7f64[28,1,1,3]\n   163.5KiB( 92%);       512B;        87168;                5; 5\u00d7f64[1,8,8]\n   164.0KiB( 93%);       512B;        14080;                1; f64[8,8]\n   164.5KiB( 93%);       512B;        86656;                5; f64[64,1,1,1], pred[1,2,8], 3\u00d7f64[1,8,8]\n   165.0KiB( 93%);       512B;        86144;                5; f64[8,8], pred[1,63,8], s32[28,3], 2\u00d7f64[1,8,8]\n   165.5KiB( 93%);       512B;        85120;                2; 2\u00d7f64[1,64]\n   166.0KiB( 94%);       512B;        84608;                2; 2\u00d7f64[1,64]\n   166.5KiB( 94%);       512B;        85632;                3; f32[64,1], f64[1,63], f64[1,8,8]\n   167.0KiB( 94%);       504B;        87680;                2; 2\u00d7f64[1,63]\n   167.4KiB( 94%);       448B;        14976;                1; f64[28,2]\n   167.9KiB( 95%);       448B;        88640;                1; s32[112,1]\n   168.3KiB( 95%);       448B;        88192;                1; s32[112,1]\n   168.7KiB( 95%);       442B;        89536;                8; f64[1,28], f64[28,1,1,1], f64[28,1,1], f64[3,8], pred[1,442,1], s32[2], 2\u00d7f64[1,8,3]\n   169.2KiB( 95%);       442B;        89088;                2; pred[1,442,1], s32[28,3]\n   169.5KiB( 96%);       336B;        74496;                1; s32[28,3]\n   169.8KiB( 96%);       336B;        86528;                1; s32[28,3]\n   170.2KiB( 96%);       336B;        90368;                3; f64[1], f64[28,1,1,1], s32[1,28,3]\n   170.5KiB( 96%);       336B;        89984;                3; f64[1], f64[28,1,1,1], s32[1,28,3]\n   170.7KiB( 96%);       256B;        90752;                1; f32[1,8,8]\n  The rest 101 values are less than 5% of the total size and not shown.\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    64.0KiB(100%);    64.0KiB;            0;               47; f32[1,8,8], f32[28], f32[8,8], f64[1,63,8], f64[1,64,8], f64[1,8], f64[112,1,1], f64[28,1,1], f64[8,8], s32[2,1,1,442,1], s32[8], 2\u00d7f64[1,28,3], 2\u00d7f64[442,1,1], 2\u00d7f64[63], 2\u00d7f64[8,63], 2\u00d7pred[1,8,63], 2\u00d7pred[1,8], 3\u00d7f32[8,8,256], 4\u00d7f64[442,1,8,1], 17\u00d7f64[1,8,63]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    64.0KiB(100%);    64.0KiB;            0;                1; f32[8,8,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.0KiB(100%);     4.0KiB;            0;                4; 4\u00d7f32[4,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.0KiB(100%);     4.0KiB;            0;                1; f32[4,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     3.5KiB(100%);     3.5KiB;            0;                1; s32[442,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     3.5KiB(100%);     3.5KiB;            0;                1; f64[442]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     3.5KiB(100%);     3.5KiB;            0;                1; s64[442]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       448B(100%);       448B;            0;                1; s32[112]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       448B(100%);       448B;            0;                1; s32[112]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; s64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; s64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; f64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; s64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       224B(100%);       224B;            0;                1; s64[1,28]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        64B(100%);        64B;            0;                4; 4\u00d7f64[4,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        64B(100%);        64B;            0;                1; f64[4,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        48B(100%);        48B;            0;                1; (s64[], f64[], f32[4,256], f32[4], f32[8,8,256], /*index=5*/f64[4,2])\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        32B(100%);        32B;            0;                1; s32[1,8]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        16B(100%);        16B;            0;                4; 4\u00d7f32[4]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n        16B(100%);        16B;            0;                1; f32[4]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;               10; pred[1,8], s32[2], s64[], 2\u00d7s32[1,2], 2\u00d7s32[], 3\u00d7f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s32[2,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s32[2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s32[1,2]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s32[2,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s32[2,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; s64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n         8B(100%);         8B;            0;                1; f64[]\n\n\n",
+      "report_sha256": "acb911555d13c2a310f820e9bdfac6a1ba524488818955e19c853ced2c9a825c",
+      "hlo_sha256": "ccab05e40bfba6ba161f11d703006c909827243590258595ee5071abcc6bd177"
+    },
+    {
+      "file": "module_0496.jit__encode.cpu_after_optimizations-memory-usage-report.txt",
+      "role": "encoder_backward",
+      "total_allocated_bytes": 9437624,
+      "entry_layout": "HloModule jit__encode, is_scheduled=true, entry_computation_layout={(f32[64,2,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[128,64,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[256,128,3,3]{3,2,1,0}, /*index=5*/f32[256,1,1]{2,1,0}, f32[64]{0}, f32[64]{0}, f32[128]{0}, f32[128]{0}, /*index=10*/f32[256]{0}, f32[256]{0}, f32[64,64,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[64,64,3,3]{3,2,1,0}, /*index=15*/f32[64,1,1]{2,1,0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, /*index=20*/f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128]{0}, /*index=25*/f32[128]{0}, f32[128]{0}, f32[128]{0}, f32[8,8,2,4,4]{4,3,2,1,0}, f32[8,8,256]{2,1,0})->(f32[64,2,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[128,64,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[256,128,3,3]{3,2,1,0}, /*index=5*/f32[256,1,1]{2,1,0}, f32[64]{0}, f32[64]{0}, f32[128]{0}, f32[128]{0}, /*index=10*/f32[256]{0}, f32[256]{0}, f32[64,64,3,3]{3,2,1,0}, f32[64,1,1]{2,1,0}, f32[64,64,3,3]{3,2,1,0}, /*index=15*/f32[64,1,1]{2,1,0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, f32[64]{0}, /*index=20*/f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128,128,3,3]{3,2,1,0}, f32[128,1,1]{2,1,0}, f32[128]{0}, /*index=25*/f32[128]{0}, f32[128]{0}, f32[128]{0})}, allow_spmd_sharding_propagation_to_parameters={true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true}, allow_spmd_sharding_propagation_to_output={true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true}",
+      "report": "Memory Space: default (color=0)\nTotal bytes: 9437624 (9.00MiB)\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    1.12MiB( 32%);    1.12MiB;            0;               10; f32[128,64,3,3], f32[64,2,3,3], f32[8,64,4,4], pred[], 2\u00d7f32[128,128,3,3], 2\u00d7f32[256,128,3,3], 2\u00d7f32[64,64,3,3]\n    1.69MiB( 48%);   576.0KiB;      1179648;                1; f32[128,128,3,3]\n    2.25MiB( 64%);   576.0KiB;      1769472;                1; f32[128,128,3,3]\n    2.53MiB( 72%);   288.0KiB;      2359296;                1; f32[128,64,3,3]\n    2.67MiB( 76%);   144.0KiB;      2801664;                2; f32[64,64,3,3], s32[2048,5]\n    2.81MiB( 80%);   144.0KiB;      2654208;                2; f32[64,64,3,3], f32[8,64,2,2]\n    2.84MiB( 81%);    32.0KiB;      2949120;                1; f32[8,64,4,4]\n    2.88MiB( 82%);    32.0KiB;      3244032;                2; f32[8,1,4,4,64], f32[8,8]\n    2.91MiB( 83%);    32.0KiB;      3211264;                1; s32[8,1,4,4,64]\n    2.94MiB( 84%);    32.0KiB;      3112960;                1; s32[8,1,4,4,64]\n    2.97MiB( 85%);    32.0KiB;      3145728;                1; s32[8,1,4,4,64]\n    3.00MiB( 86%);    32.0KiB;      3178496;                1; s32[8,1,4,4,64]\n    3.03MiB( 87%);    32.0KiB;      2981888;                3; f32[8,8,8,4,4], 2\u00d7f32[8,1,4,4,64]\n    3.06MiB( 87%);    32.0KiB;      3014656;                3; f32[8,8], 2\u00d7f32[8,8,8,4,4]\n    3.09MiB( 88%);    32.0KiB;        32768;                3; f32[8,64,4,4], 2\u00d7f32[8,8,8,4,4]\n    3.12MiB( 89%);    32.0KiB;        65536;                1; f32[8,8,8,4,4]\n    3.16MiB( 90%);    32.0KiB;      3047424;                2; f32[8,64,4,4], f32[8,8,1,1,1]\n    3.19MiB( 91%);    32.0KiB;      3080192;                3; f32[64], f32[8,64,2,2], s32[8,1,4,4,64]\n    3.21MiB( 92%);    20.0KiB;      2842624;                7; f32[2048,1,1,1,1,1], f32[8,1,2,2,128], f32[8,128,2,2], f32[8,8,16,2,2], s32[1024,5], 2\u00d7f32[8,64,2,2]\n    3.22MiB( 92%);    16.0KiB;      2863104;                1; f32[8,128,2,2]\n    3.24MiB( 92%);    16.0KiB;      3358720;                1; s32[8,1,2,2,128]\n    3.25MiB( 93%);    16.0KiB;      3325952;                1; s32[8,1,2,2,128]\n    3.27MiB( 93%);    16.0KiB;      3342336;                1; s32[8,1,2,2,128]\n    3.29MiB( 94%);    16.0KiB;      3293184;                2; f32[8,128,1,1], s32[8,1,2,2,128]\n    3.30MiB( 94%);    16.0KiB;      3309568;                3; s32[8,1,2,2,128], 2\u00d7f32[8,128,1,1]\n    3.32MiB( 95%);    16.0KiB;      3276800;                2; 2\u00d7f32[8,1,2,2,128]\n    3.33MiB( 95%);    16.0KiB;      2912256;                8; f32[8,256,1,1], f32[8,8,1,1], f32[8,8,16,2,2], s32[8,1,1,1,128], 2\u00d7f32[8,128,1,1], 2\u00d7f32[8,8]\n    3.35MiB( 96%);    16.0KiB;      2879488;                3; f32[8,128,2,2], 2\u00d7f32[8,8,16,2,2]\n    3.36MiB( 96%);    16.0KiB;      2895872;                3; f32[8,128,2,2], 2\u00d7f32[8,8,16,2,2]\n    3.37MiB( 96%);     8.0KiB;      3424256;                1; f32[8,1,2,2,64]\n    3.38MiB( 96%);     8.0KiB;      3391488;                1; s32[8,1,2,2,64]\n    3.39MiB( 97%);     8.0KiB;      3399680;                1; s32[8,1,2,2,64]\n    3.39MiB( 97%);     8.0KiB;      3407872;                1; s32[8,1,2,2,64]\n    3.40MiB( 97%);     8.0KiB;      3416064;                1; s32[8,1,2,2,64]\n    3.41MiB( 97%);     8.0KiB;      3375104;                1; f32[8,2,2,64]\n    3.42MiB( 98%);     8.0KiB;      3088384;                1; f32[8,64,2,2]\n    3.43MiB( 98%);     8.0KiB;      3383296;                2; f32[8,8], s32[8,1,2,2,64]\n    3.43MiB( 98%);     8.0KiB;      2928640;                1; f32[8,64,2,2]\n    3.44MiB( 98%);     8.0KiB;      2920448;                4; f32[8,256,1,1], f32[8,8,1,1], f32[8,8], s32[8,1,1,1,128]\n    3.45MiB( 98%);     8.0KiB;      2936832;                3; f32[8,8], 2\u00d7f32[8,64,2,2]\n    3.46MiB( 99%);     8.0KiB;      2850816;                1; f32[8,64,2,2]\n    3.46MiB( 99%);     8.0KiB;      2859008;                5; f32[128], f32[8,1,1,1,128], f32[8,8], 2\u00d7f32[8,64,2,2]\n    3.47MiB( 99%);     4.0KiB;      2924544;                1; s32[8,1,1,1,128]\n    3.47MiB( 99%);     4.0KiB;      2662400;                1; s32[8,1,1,1,128]\n    3.48MiB( 99%);     4.0KiB;      3297280;                1; f32[8,128,1,1]\n    3.48MiB( 99%);     4.0KiB;      3301376;                1; f32[8,128,1,1]\n    3.48MiB( 99%);     4.0KiB;      3305472;                1; f32[8,128,1,1]\n    3.49MiB(100%);     4.0KiB;      2916352;                3; s32[8,1,1,1,128], 2\u00d7f32[8,128,1,1]\n    3.49MiB(100%);     4.0KiB;      2945024;                7; f32[1024,1,1,1,1,1], f32[128,1,1], f32[8,128,1,1], 4\u00d7f32[8,8]\n    3.49MiB(100%);     1.0KiB;      3432448;                1; f32[8,2,4,4]\n    3.49MiB(100%);       512B;      2859520;                1; f32[128]\n  The rest 46 values are less than 5% of the total size and not shown.\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    1.12MiB(100%);    1.12MiB;            0;                5; 5\u00d7f32[256,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    1.12MiB(100%);    1.12MiB;            0;                1; f32[256,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                5; 5\u00d7f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                5; 5\u00d7f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                1; f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   576.0KiB(100%);   576.0KiB;            0;                1; f32[128,128,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   288.0KiB(100%);   288.0KiB;            0;                5; 5\u00d7f32[128,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   288.0KiB(100%);   288.0KiB;            0;                1; f32[128,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                5; 5\u00d7f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                5; 5\u00d7f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                1; f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n   144.0KiB(100%);   144.0KiB;            0;                1; f32[64,64,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n    64.0KiB(100%);    64.0KiB;            0;                1; f32[8,8,256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     8.0KiB(100%);     8.0KiB;            0;                1; f32[8,8,2,4,4]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.5KiB(100%);     4.5KiB;            0;                5; 5\u00d7f32[64,2,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     4.5KiB(100%);     4.5KiB;            0;                1; f32[64,2,3,3]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                5; 5\u00d7f32[256,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                5; 5\u00d7f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                5; 5\u00d7f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n     1.0KiB(100%);     1.0KiB;            0;                1; f32[256]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                5; 5\u00d7f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       512B(100%);       512B;            0;                1; f32[128]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64,1,1]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                5; 5\u00d7f32[64]\n\n  cumulative_size;       size;       offset; used_by_n_values; shapes_list\n  ------------------------------------------------------------\n       256B(100%);       256B;            0;                1; f32[64,1,1]\n\n\n",
+      "report_sha256": "346df537c0c90b4b25df5fd9beb96915768d7dcea7ec5ddf114b1c804661fd62",
+      "hlo_sha256": "ec7e3672ba3c8a99da21f1e5efa0bde2ce1e4d305c2cb6a940a87cd36d15cb8c"
+    }
+  ],
+  "scope": "CPU compiled buffer estimates and synchronized boundary live-array spans, not an end-to-end GPU/device peak; RSS includes host/compiler/output storage."
+}

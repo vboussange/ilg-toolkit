@@ -1,0 +1,656 @@
+{
+  "reports_and_hlo_verified": 74,
+  "original_numerical_and_allocation_results_exact": true,
+  "cases": [
+    {
+      "case": "resnet-s100-c1.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s100-c1.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": [
+        [
+          100
+        ],
+        [
+          100,
+          2
+        ],
+        [
+          100,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s100-c1.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": [
+        [
+          100
+        ],
+        [
+          100,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s100-c1.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": [
+        [
+          100
+        ],
+        [
+          100,
+          2
+        ],
+        [
+          100,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s100-c1.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s100-c4.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s100-c4.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": [
+        [
+          100
+        ],
+        [
+          100,
+          2
+        ],
+        [
+          100,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s100-c4.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": [
+        [
+          100
+        ],
+        [
+          100,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s100-c4.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": [
+        [
+          100
+        ],
+        [
+          100,
+          2
+        ],
+        [
+          100,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s100-c4.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s1000-c1.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s1000-c1.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000
+        ],
+        [
+          1000,
+          2
+        ],
+        [
+          1000,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s1000-c1.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000
+        ],
+        [
+          1000,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s1000-c1.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000
+        ],
+        [
+          1000,
+          2
+        ],
+        [
+          1000,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s1000-c1.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s1000-c4.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s1000-c4.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000
+        ],
+        [
+          1000,
+          2
+        ],
+        [
+          1000,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s1000-c4.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000
+        ],
+        [
+          1000,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s1000-c4.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000
+        ],
+        [
+          1000,
+          2
+        ],
+        [
+          1000,
+          256
+        ]
+      ]
+    },
+    {
+      "case": "resnet-s1000-c4.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1-ragged.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1-ragged.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1-ragged.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1-ragged.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1-ragged.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1-ragged.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1-ragged.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c1.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c4.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c4.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c4.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c4.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "resnet-s4-c4.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s100-c1.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s100-c1.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": [
+        [
+          100,
+          2
+        ],
+        [
+          100,
+          3
+        ],
+        [
+          100,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s100-c1.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": [
+        [
+          100,
+          3
+        ],
+        [
+          100,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s100-c1.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": [
+        [
+          100,
+          2
+        ],
+        [
+          100,
+          3
+        ],
+        [
+          100,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s100-c1.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s100-c4.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s100-c4.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": [
+        [
+          100,
+          2
+        ],
+        [
+          100,
+          3
+        ],
+        [
+          100,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s100-c4.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": [
+        [
+          100,
+          3
+        ],
+        [
+          100,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s100-c4.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": [
+        [
+          100,
+          2
+        ],
+        [
+          100,
+          3
+        ],
+        [
+          100,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s100-c4.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s1000-c1.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s1000-c1.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000,
+          2
+        ],
+        [
+          1000,
+          3
+        ],
+        [
+          1000,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s1000-c1.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000,
+          3
+        ],
+        [
+          1000,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s1000-c1.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000,
+          2
+        ],
+        [
+          1000,
+          3
+        ],
+        [
+          1000,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s1000-c1.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s1000-c4.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s1000-c4.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000,
+          2
+        ],
+        [
+          1000,
+          3
+        ],
+        [
+          1000,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s1000-c4.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000,
+          3
+        ],
+        [
+          1000,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s1000-c4.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": [
+        [
+          1000,
+          2
+        ],
+        [
+          1000,
+          3
+        ],
+        [
+          1000,
+          3,
+          4
+        ]
+      ]
+    },
+    {
+      "case": "unet-s1000-c4.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1-ragged.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1-ragged.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1-ragged.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1-ragged.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1-ragged.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1-ragged.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1-ragged.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c1.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c4.json",
+      "role": "encoder_inference",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c4.json",
+      "role": "tail_evaluation",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c4.json",
+      "role": "encoder_training_forward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c4.json",
+      "role": "tail_forward_backward",
+      "registry_shapes_in_full_hlo": []
+    },
+    {
+      "case": "unet-s4-c4.json",
+      "role": "encoder_backward",
+      "registry_shapes_in_full_hlo": []
+    }
+  ]
+}

@@ -1,3 +1,5 @@
+> Historical evidence for source `8d92e023`. Final source `9d8c31b7` is measured in the [final b2088e6 report](runtime-results-final-b2088e6.md); the original results below are preserved.
+
 # Runtime acceptance for native multispecies workflows
 
 Status: **PASS**. All 32 PR workloads completed with ten synchronized full-fit repetitions each on clean commit `df7aea21ec55ce39bf34d78e53668ab8d4c86f44`; production source tree `8d92e023e4d4b29beca50e0c7028572ef7dd78ba`. The final candidate uniformly uses species chunk 4. The frozen protocol, scientific work and thresholds are unchanged.
