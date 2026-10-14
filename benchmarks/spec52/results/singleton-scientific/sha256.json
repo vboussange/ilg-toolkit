@@ -1,0 +1,18 @@
+{
+  "one-chunk-fusion-rejected.patch": "0af273664e24193d077c042f25257fe2b90dc6a24c44aaae96b11b52d879a00c",
+  "singleton-after.json": "7d279bb451a328022212fae5150194d70ff0f66e8b1cd7f1c06ac34ac1d9dc26",
+  "singleton-after.npz": "5a7e66cf4476b11be7bbf8450a94e2dc0016bc3ffd2fdf97ce68426f320c14c8",
+  "singleton-before.json": "cd88ad8d0ac67b2ea049f9e6f34334cff8f47824a8fc1e6f9a7884146ebe51c2",
+  "singleton-before.npz": "ee26805284e545ccc532891b6e7331449ed4df9b305305eed0e152f7be3b5317",
+  "singleton-fused-barriers.json": "7d279bb451a328022212fae5150194d70ff0f66e8b1cd7f1c06ac34ac1d9dc26",
+  "singleton-fused-barriers.npz": "da3031e5b03656264f5dd20b567550fe2274f6541f870b779004f69eb0f59f9b",
+  "singleton-fused-pooled.json": "7d279bb451a328022212fae5150194d70ff0f66e8b1cd7f1c06ac34ac1d9dc26",
+  "singleton-fused-pooled.npz": "da3031e5b03656264f5dd20b567550fe2274f6541f870b779004f69eb0f59f9b",
+  "singleton-independent-numpy-review.json": "574868e952a1ed7affa74a5349bb3f87e7c7cc9f47dc92e18ee6c46aa664d02e",
+  "singleton-public-after.json": "7d279bb451a328022212fae5150194d70ff0f66e8b1cd7f1c06ac34ac1d9dc26",
+  "singleton-public-after.npz": "03e70eb0f85ac9cb12aaa3c4160200716f87f1a1e2ca3da6b26e3ed4fcb97046",
+  "singleton-public-before.json": "cd88ad8d0ac67b2ea049f9e6f34334cff8f47824a8fc1e6f9a7884146ebe51c2",
+  "singleton-public-before.npz": "b5e0a5c251fad616b58471d38ccddc267570e346b95bd5ceee5ed5cd1d6d4a0c",
+  "singleton-public-comparison.json": "784d6576d647c4e9993f57fd3924b90c11caa39104ad3e8574266724a5288dec",
+  "singleton-scientific-review.md": "7e6189b4686ac9d30fcdfb4cdf10d3d4cfa5669c1d59030f03db57a07e26fbf1"
+}

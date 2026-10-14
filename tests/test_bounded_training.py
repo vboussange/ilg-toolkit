@@ -465,7 +465,8 @@ def test_sparse_mlpe_selection_keeps_complete_matching_calibrations_and_rng():
     assert result.history[-1].validation_missing_groups == (("alpine", "fox"), ("alpine", "lynx"))
 
 
-def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog):
+@pytest.mark.parametrize("species_batch_size", [1, 2])
+def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog, species_batch_size):
     import jax
     from test_species_workflow import observations, region
 
@@ -477,25 +478,30 @@ def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog):
     model = UNetEmbeddingDistance(
         1, species=species, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(912)
     )
-    config = TrainingConfig(objective="direct_log1p", steps=1, species_batch_size=1, seed=51)
+    config = TrainingConfig(
+        objective="direct_log1p",
+        steps=1,
+        species_batch_size=species_batch_size,
+        evaluation_interval=3,
+        seed=51,
+    )
     with jax.log_compiles(True):
         fit([prepared], observed, distance_model=model, config=config)
     compiled = [
-        record.getMessage()
-        for record in caplog.records
-        if "Compiling jit(chunk_gradient)" in record.getMessage()
+        record.getMessage() for record in caplog.records if "Compiling jit(" in record.getMessage()
     ]
-    assert len(compiled) == 1
+    assert compiled
     caplog.clear()
+    snapshots = []
     with jax.log_compiles(True):
         state = fit(
-            [prepared], observed, distance_model=model, config=replace(config, steps=12, seed=72)
+            [prepared],
+            observed,
+            distance_model=model,
+            config=replace(config, steps=12, seed=72),
+            on_step=snapshots.append,
         )
-    assert not [
-        record
-        for record in caplog.records
-        if "Compiling jit(chunk_gradient)" in record.getMessage()
-    ]
+    assert not [record for record in caplog.records if "Compiling jit(" in record.getMessage()]
     assert isinstance(state.optimizer_state, tuple)
     adam = state.optimizer_state[0]
     assert isinstance(adam, optax.ScaleByAdamState)
@@ -509,6 +515,9 @@ def test_dynamic_species_sampling_reuses_compiled_neural_tail(caplog):
         config=replace(config, steps=12, seed=72),
     )
     assert eqx.tree_equal(reordered, state)
+    resumed = fit([prepared], observed, state=snapshots[4], config=state.config)
+    assert snapshots[4].step == 5 and snapshots[4].selected_step == 3
+    assert eqx.tree_equal(resumed, state)
 
 
 @pytest.mark.parametrize("family", ["unet", "loglinear"])

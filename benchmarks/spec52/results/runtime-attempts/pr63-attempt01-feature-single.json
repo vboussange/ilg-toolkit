@@ -1,0 +1,637 @@
+{
+  "protocol": {
+    "protocol_version": 1,
+    "frozen_main_commit": "8439f99ea37f04273a1868b8009e1076239ad316",
+    "data_seed": 52053,
+    "model_seed": 6,
+    "training_seed": 7,
+    "steps": 3,
+    "warm_fit_calls": 1,
+    "fit_repeats": 3,
+    "prediction_repeats": 5,
+    "learning_rate": 0.0001,
+    "dtype": {
+      "features": "float32",
+      "neural_parameters": "float32",
+      "targets": "float64",
+      "resistance_and_mlpe": "float64"
+    },
+    "solver": {
+      "rtol": 1e-08,
+      "atol": 1e-10,
+      "max_steps": 1000,
+      "use_amg": false
+    },
+    "mlpe": {
+      "variance_floor": 1e-10,
+      "jitter": 0.0,
+      "initial_variances": [
+        0.1,
+        0.2
+      ]
+    },
+    "resnet": {
+      "min_conductance": 1e-06,
+      "patch_batch_size": 16
+    },
+    "unet": {
+      "base_channels": 8,
+      "embedding_dim": 4,
+      "dropout": 0.1
+    },
+    "execution": {
+      "backend": "cpu",
+      "affinity_cpu_count": 2,
+      "native_threads": 1,
+      "persistent_compilation_cache": false,
+      "xla_preallocate": false,
+      "cpu_affinity": [
+        0,
+        1
+      ]
+    },
+    "thresholds": {
+      "all_cases_required": true,
+      "all_outputs_finite": true,
+      "raw_nonnegative_atol": 1e-07,
+      "raw_symmetry_atol": 1e-06,
+      "raw_diagonal_atol": 1e-06,
+      "raw_mlpe_min_standard_deviation": 1e-08,
+      "dense_resistance_rtol": 1e-05,
+      "dense_resistance_atol": 1e-07,
+      "warm_fit_median_ratio_pr_over_main_max": 1.1,
+      "no_claim_when_uncertainty_overlaps_threshold": true,
+      "warm_training_step_median_ratio_pr_over_main_max": 1.1,
+      "marginal_joint_fit_over_added_independent_fit_max": 0.5,
+      "startup_material_regression_report_ratio": 2.0,
+      "warm_predict_material_regression_report_ratio": 1.5,
+      "process_peak_rss_material_regression_report_ratio": 1.5
+    },
+    "cases": [
+      {
+        "name": "resnet-direct-one",
+        "family": "resnet",
+        "objective": "direct_log1p",
+        "regions": 1,
+        "side": 16,
+        "channels": 3,
+        "patch_size": 4,
+        "units": 8
+      },
+      {
+        "name": "resnet-direct-multi",
+        "family": "resnet",
+        "objective": "direct_log1p",
+        "regions": 2,
+        "side": 16,
+        "channels": 3,
+        "patch_size": 4,
+        "units": 8
+      },
+      {
+        "name": "resnet-mlpe-one",
+        "family": "resnet",
+        "objective": "mlpe",
+        "regions": 1,
+        "side": 16,
+        "channels": 3,
+        "patch_size": 4,
+        "units": 8
+      },
+      {
+        "name": "resnet-mlpe-multi",
+        "family": "resnet",
+        "objective": "mlpe",
+        "regions": 2,
+        "side": 16,
+        "channels": 3,
+        "patch_size": 4,
+        "units": 8
+      },
+      {
+        "name": "unet-direct-one",
+        "family": "unet",
+        "objective": "direct_log1p",
+        "regions": 1,
+        "side": 16,
+        "channels": 3,
+        "patch_size": 4,
+        "units": 8
+      },
+      {
+        "name": "unet-direct-multi",
+        "family": "unet",
+        "objective": "direct_log1p",
+        "regions": 2,
+        "side": 16,
+        "channels": 3,
+        "patch_size": 4,
+        "units": 8
+      },
+      {
+        "name": "unet-mlpe-one",
+        "family": "unet",
+        "objective": "mlpe",
+        "regions": 1,
+        "side": 16,
+        "channels": 3,
+        "patch_size": 4,
+        "units": 8
+      },
+      {
+        "name": "unet-mlpe-multi",
+        "family": "unet",
+        "objective": "mlpe",
+        "regions": 2,
+        "side": 16,
+        "channels": 3,
+        "patch_size": 4,
+        "units": 8
+      },
+      {
+        "name": "resnet-feature-heavy",
+        "family": "resnet",
+        "objective": "direct_log1p",
+        "regions": 1,
+        "side": 64,
+        "channels": 16,
+        "patch_size": 8,
+        "units": 12
+      },
+      {
+        "name": "unet-feature-heavy",
+        "family": "unet",
+        "objective": "direct_log1p",
+        "regions": 1,
+        "side": 64,
+        "channels": 16,
+        "patch_size": 8,
+        "units": 12
+      },
+      {
+        "name": "resnet-solver-stress",
+        "family": "resnet",
+        "objective": "mlpe",
+        "regions": 1,
+        "side": 64,
+        "channels": 4,
+        "patch_size": 4,
+        "units": 48
+      },
+      {
+        "name": "unet-mlpe-stress",
+        "family": "unet",
+        "objective": "mlpe",
+        "regions": 1,
+        "side": 64,
+        "channels": 4,
+        "patch_size": 4,
+        "units": 128
+      }
+    ],
+    "gated_representative_cases": [
+      "resnet-feature-heavy",
+      "unet-feature-heavy"
+    ],
+    "joint_species_counts": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "results": [
+    {
+      "experiment": {
+        "id": "resnet-feature-heavy-single",
+        "case": {
+          "name": "resnet-feature-heavy",
+          "family": "resnet",
+          "objective": "direct_log1p",
+          "regions": 1,
+          "side": 64,
+          "channels": 16,
+          "patch_size": 8,
+          "units": 12
+        },
+        "kind": "single",
+        "species_indices": [
+          0
+        ],
+        "chunk": 1
+      },
+      "case": {
+        "name": "resnet-feature-heavy",
+        "family": "resnet",
+        "objective": "direct_log1p",
+        "regions": 1,
+        "side": 64,
+        "channels": 16,
+        "patch_size": 8,
+        "units": 12
+      },
+      "machine": {
+        "source_path": "/tmp/ilg-spec52/issue-63",
+        "source_tree": "a3c07b8e868bc7a2cba735d06f2e20053a038aa1",
+        "frozen_main_commit": "8439f99ea37f04273a1868b8009e1076239ad316",
+        "benchmark_commit": "3d3a4c1198eac0f4740f512358f9a63409824a8e",
+        "protocol_sha256": "91b5c0a6a2d58b162e013df6b1982a72c0e42e4338eeeb18add48a590f13ae80",
+        "driver_sha256": "4f95182fbe8a57809c6af6894c47249105ec090805056bfa2bdfa46d7651be7c",
+        "fixtures_sha256": "0431916beca5db9334f983a4dc64d2d8c4d01b3b36d2ad61fd01d5c026c05616",
+        "platform": "Linux-5.15.0-194-generic-x86_64-with-glibc2.35",
+        "python": "3.13.13",
+        "interpreter": "/home/boussang/ilg-toolkit/.venv/bin/python",
+        "cpu": "AMD EPYC 7742 64-Core Processor",
+        "cpu_affinity": [
+          0,
+          1
+        ],
+        "mem_total": "MemTotal:       528174084 kB",
+        "devices": [
+          "cpu:0"
+        ],
+        "backend": "cpu",
+        "software": {
+          "jax": "0.10.2",
+          "jaxlib": "0.10.2",
+          "numpy": "2.5.4",
+          "scipy": "1.18.1",
+          "equinox": "0.13.8",
+          "optax": "0.2.8",
+          "lineax": "0.1.1",
+          "jaxscape": "0.0.10",
+          "coordax": "0.2.9",
+          "chex": "0.1.92"
+        },
+        "environment": {
+          "PYTHONPATH": "/tmp/ilg-spec52/issue-63/src",
+          "JAX_ENABLE_X64": "true",
+          "JAX_PLATFORMS": "cpu",
+          "JAX_ENABLE_COMPILATION_CACHE": "false",
+          "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+          "XLA_PYTHON_CLIENT_ALLOCATOR": null,
+          "OMP_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "XLA_FLAGS": null
+        },
+        "measured_commit": "3d3a4c1198eac0f4740f512358f9a63409824a8e",
+        "native_driver_sha256": "fbc3a8c35df3c89e639447d6b5961bbb8d810dc25d3ac4e62d9597f9d5f6497c",
+        "multispecies_fixtures_sha256": "1fe3624cf7463f17ced66ba228d7045738e39807a9b25078e42b9bf2fc0e9178",
+        "smoke": false,
+        "dirty_source_or_driver": ""
+      },
+      "scientific_eligibility": "passed",
+      "checks": [
+        {
+          "region": "region-0",
+          "species": "species-0",
+          "pairs": 66,
+          "raw_dtype": "float32",
+          "raw_min": 0.0,
+          "raw_max": 1.2350448369979858,
+          "raw_pair_std": 0.19739320874214172,
+          "dense_resistance_max_absolute_error": 3.388548297511562e-08
+        }
+      ],
+      "initialization": {
+        "backbone": "633c011143dc266a4de109460a7e9f4045852b4a4271ed28f5f6a896155e7ae2",
+        "projection_rows": {
+          "species-0": "1e0012b292c95b99429bdf9bca231a124db277dc3029d3594eb75cc764a19c23"
+        },
+        "matched_exactly": true
+      },
+      "input_sha256": {
+        "species-0": {
+          "region-0": "032deabc1d546295ddcc2f5095912e2ffab5c500905584bef6dffff107efe281"
+        }
+      },
+      "prepare_and_model_init_seconds": 10.949938870035112,
+      "parameter_count": 749249,
+      "parameter_bytes": 2996996,
+      "compile_plus_first_fit_seconds": 14.614990500966087,
+      "cold_callback_intervals": [
+        {
+          "step": 1,
+          "seconds": 13.732347656972706
+        },
+        {
+          "step": 2,
+          "seconds": 0.44406179804354906
+        },
+        {
+          "step": 3,
+          "seconds": 0.4367852888535708
+        }
+      ],
+      "cold_training_steps_seconds": [
+        8.397361021023244,
+        0.3689932650886476,
+        0.3613895080052316
+      ],
+      "warm_fit": {
+        "samples_seconds": [
+          1.4324041930958629,
+          1.43780930317007,
+          1.4418922958429903
+        ],
+        "median_seconds": 1.43780930317007,
+        "minimum_seconds": 1.4324041930958629,
+        "maximum_seconds": 1.4418922958429903,
+        "sample_std_seconds": 0.004759379123048563,
+        "median_bootstrap_95_percent_seconds": [
+          1.4324041930958629,
+          1.4418922958429903
+        ],
+        "bootstrap_resamples": 10000,
+        "bootstrap_seed": 52053
+      },
+      "warm_training_steps_by_fit_seconds": [
+        [
+          0.36635898891836405,
+          0.3724534190259874,
+          0.3685350848827511
+        ],
+        [
+          0.3671322681475431,
+          0.3761340018827468,
+          0.3696475741453469
+        ],
+        [
+          0.36784334597177804,
+          0.3724477088544518,
+          0.3736248870845884
+        ]
+      ],
+      "first_predict_seconds": 5.413557496853173,
+      "warm_predict": {
+        "samples_seconds": [
+          1.3034933060407639,
+          1.1880069798789918,
+          1.2449794211424887,
+          1.2523272070102394,
+          1.2224583709612489
+        ],
+        "median_seconds": 1.2449794211424887,
+        "minimum_seconds": 1.1880069798789918,
+        "maximum_seconds": 1.3034933060407639,
+        "sample_std_seconds": 0.042408006734672536,
+        "median_bootstrap_95_percent_seconds": [
+          1.1880069798789918,
+          1.3034933060407639
+        ],
+        "bootstrap_resamples": 10000,
+        "bootstrap_seed": 52053
+      },
+      "process_peak_rss_after_timed_work_mib": 928.93359375,
+      "process_peak_rss_after_validation_mib": 951.72265625,
+      "device_allocator_statistics": [
+        null
+      ],
+      "training_history": [
+        0.11539112405281785,
+        0.010686943630460044,
+        0.0033888423235433718,
+        0.009671892089361535
+      ],
+      "accounting": {
+        "species": 1,
+        "optimizer_updates": 3,
+        "group_update_exposure": 3,
+        "regions": 1,
+        "pairs_per_group": 66,
+        "full_evaluations": 4,
+        "finalized_group_calibrations": 0,
+        "observed": {
+          "encodings": 7,
+          "group_contributions": 3,
+          "evaluated_groups": 4
+        },
+        "species_chunk_size": 1,
+        "region_batch_size": null,
+        "species_batch_size": null
+      }
+    },
+    {
+      "experiment": {
+        "id": "unet-feature-heavy-single",
+        "case": {
+          "name": "unet-feature-heavy",
+          "family": "unet",
+          "objective": "direct_log1p",
+          "regions": 1,
+          "side": 64,
+          "channels": 16,
+          "patch_size": 8,
+          "units": 12
+        },
+        "kind": "single",
+        "species_indices": [
+          0
+        ],
+        "chunk": 1
+      },
+      "case": {
+        "name": "unet-feature-heavy",
+        "family": "unet",
+        "objective": "direct_log1p",
+        "regions": 1,
+        "side": 64,
+        "channels": 16,
+        "patch_size": 8,
+        "units": 12
+      },
+      "machine": {
+        "source_path": "/tmp/ilg-spec52/issue-63",
+        "source_tree": "a3c07b8e868bc7a2cba735d06f2e20053a038aa1",
+        "frozen_main_commit": "8439f99ea37f04273a1868b8009e1076239ad316",
+        "benchmark_commit": "3d3a4c1198eac0f4740f512358f9a63409824a8e",
+        "protocol_sha256": "91b5c0a6a2d58b162e013df6b1982a72c0e42e4338eeeb18add48a590f13ae80",
+        "driver_sha256": "4f95182fbe8a57809c6af6894c47249105ec090805056bfa2bdfa46d7651be7c",
+        "fixtures_sha256": "0431916beca5db9334f983a4dc64d2d8c4d01b3b36d2ad61fd01d5c026c05616",
+        "platform": "Linux-5.15.0-194-generic-x86_64-with-glibc2.35",
+        "python": "3.13.13",
+        "interpreter": "/home/boussang/ilg-toolkit/.venv/bin/python",
+        "cpu": "AMD EPYC 7742 64-Core Processor",
+        "cpu_affinity": [
+          0,
+          1
+        ],
+        "mem_total": "MemTotal:       528174084 kB",
+        "devices": [
+          "cpu:0"
+        ],
+        "backend": "cpu",
+        "software": {
+          "jax": "0.10.2",
+          "jaxlib": "0.10.2",
+          "numpy": "2.5.4",
+          "scipy": "1.18.1",
+          "equinox": "0.13.8",
+          "optax": "0.2.8",
+          "lineax": "0.1.1",
+          "jaxscape": "0.0.10",
+          "coordax": "0.2.9",
+          "chex": "0.1.92"
+        },
+        "environment": {
+          "PYTHONPATH": "/tmp/ilg-spec52/issue-63/src",
+          "JAX_ENABLE_X64": "true",
+          "JAX_PLATFORMS": "cpu",
+          "JAX_ENABLE_COMPILATION_CACHE": "false",
+          "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+          "XLA_PYTHON_CLIENT_ALLOCATOR": null,
+          "OMP_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1",
+          "XLA_FLAGS": null
+        },
+        "measured_commit": "3d3a4c1198eac0f4740f512358f9a63409824a8e",
+        "native_driver_sha256": "fbc3a8c35df3c89e639447d6b5961bbb8d810dc25d3ac4e62d9597f9d5f6497c",
+        "multispecies_fixtures_sha256": "1fe3624cf7463f17ced66ba228d7045738e39807a9b25078e42b9bf2fc0e9178",
+        "smoke": false,
+        "dirty_source_or_driver": ""
+      },
+      "scientific_eligibility": "passed",
+      "checks": [
+        {
+          "region": "region-0",
+          "species": "species-0",
+          "pairs": 66,
+          "raw_dtype": "float32",
+          "raw_min": 0.0,
+          "raw_max": 2.5947718620300293,
+          "raw_pair_std": 0.5557914972305298
+        }
+      ],
+      "initialization": {
+        "backbone": "79e7e06105f68f8fa09a43aade3c9094f3f1152291a24809a28104a032edd6b6",
+        "projection_rows": {
+          "species-0": "1aa243ff371f4df6e437c9c9ecd4bb6002ede702c59922fc2114182c951187a2"
+        },
+        "matched_exactly": true
+      },
+      "input_sha256": {
+        "species-0": {
+          "region-0": "032deabc1d546295ddcc2f5095912e2ffab5c500905584bef6dffff107efe281"
+        }
+      },
+      "prepare_and_model_init_seconds": 16.467999924905598,
+      "parameter_count": 53004,
+      "parameter_bytes": 212016,
+      "compile_plus_first_fit_seconds": 12.601944378111511,
+      "cold_callback_intervals": [
+        {
+          "step": 1,
+          "seconds": 12.531559072900563
+        },
+        {
+          "step": 2,
+          "seconds": 0.04190483805723488
+        },
+        {
+          "step": 3,
+          "seconds": 0.02546986611559987
+        }
+      ],
+      "cold_training_steps_seconds": [
+        8.501351037062705,
+        0.033698241924867034,
+        0.018709905911237
+      ],
+      "warm_fit": {
+        "samples_seconds": [
+          0.1081216458696872,
+          0.10846369410865009,
+          0.11007535015232861
+        ],
+        "median_seconds": 0.10846369410865009,
+        "minimum_seconds": 0.1081216458696872,
+        "maximum_seconds": 0.11007535015232861,
+        "sample_std_seconds": 0.0010433433938477552,
+        "median_bootstrap_95_percent_seconds": [
+          0.1081216458696872,
+          0.11007535015232861
+        ],
+        "bootstrap_resamples": 10000,
+        "bootstrap_seed": 52053
+      },
+      "warm_training_steps_by_fit_seconds": [
+        [
+          0.01857815613038838,
+          0.018772076116874814,
+          0.018551426008343697
+        ],
+        [
+          0.018785845953971148,
+          0.01875865482725203,
+          0.0185866157989949
+        ],
+        [
+          0.02032178989611566,
+          0.018541686004027724,
+          0.01837873598560691
+        ]
+      ],
+      "first_predict_seconds": 5.59529712703079,
+      "warm_predict": {
+        "samples_seconds": [
+          0.0322088859975338,
+          0.03303485503420234,
+          0.03192222700454295,
+          0.03146180813200772,
+          0.03184700710698962
+        ],
+        "median_seconds": 0.03192222700454295,
+        "minimum_seconds": 0.03146180813200772,
+        "maximum_seconds": 0.03303485503420234,
+        "sample_std_seconds": 0.0005891902114322332,
+        "median_bootstrap_95_percent_seconds": [
+          0.03146180813200772,
+          0.03303485503420234
+        ],
+        "bootstrap_resamples": 10000,
+        "bootstrap_seed": 52053
+      },
+      "process_peak_rss_after_timed_work_mib": 986.703125,
+      "process_peak_rss_after_validation_mib": 998.42578125,
+      "device_allocator_statistics": [
+        null
+      ],
+      "training_history": [
+        0.4795238377700286,
+        0.30398292880376926,
+        0.15677278375432638,
+        0.11089855161644017
+      ],
+      "accounting": {
+        "species": 1,
+        "optimizer_updates": 3,
+        "group_update_exposure": 3,
+        "regions": 1,
+        "pairs_per_group": 66,
+        "full_evaluations": 4,
+        "finalized_group_calibrations": 0,
+        "observed": {
+          "encodings": 7,
+          "group_contributions": 3,
+          "evaluated_groups": 4
+        },
+        "species_chunk_size": 1,
+        "region_batch_size": null,
+        "species_batch_size": null
+      }
+    }
+  ],
+  "failures": [],
+  "command": [
+    "benchmarks/spec52/pr_driver.py",
+    "--case",
+    "resnet-feature-heavy-single",
+    "--case",
+    "unet-feature-heavy-single",
+    "--output",
+    "/tmp/ilg-spec52/pr63-attempt01-feature-single.json"
+  ],
+  "smoke": false
+}
