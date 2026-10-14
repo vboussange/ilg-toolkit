@@ -45,3 +45,23 @@ def test_readme_relative_links_and_images_resolve_to_repository_files():
         if not (ROOT / target).resolve().is_relative_to(ROOT) or not (ROOT / target).is_file()
     ]
     assert not missing, f"README links to missing repository files: {missing}"
+
+
+def test_example_catalogue_has_seven_single_species_and_one_neural_multispecies_script():
+    expected = {
+        "quickstart.py",
+        "conductance.py",
+        "pooled_regions.py",
+        "mlpe_calibration.py",
+        "region_transfer.py",
+        "ensemble.py",
+        "ibd.py",
+        "multispecies.py",
+    }
+    assert {path.name for path in (ROOT / "examples").glob("*.py")} == expected
+    linked = {
+        Path(target).name
+        for target, _ in LINK_TARGET.findall(readme_section("Examples"))
+        if target.startswith("examples/")
+    }
+    assert linked == expected
