@@ -6,6 +6,12 @@ import pytest
 from ilg_toolkit import PairwiseObservations, TrainingConfig, fit
 
 
+@pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "2"])
+def test_region_batch_size_rejects_invalid_counts(value):
+    with pytest.raises(ValueError):
+        TrainingConfig(objective="direct_log1p", region_batch_size=value)
+
+
 def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_them(
     observation_problem,
 ):
