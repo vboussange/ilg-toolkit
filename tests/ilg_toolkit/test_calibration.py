@@ -124,7 +124,7 @@ def test_transfer_distances_are_label_free_and_each_region_requires_its_own_head
     ).model
     calibrated = calibrate(original, region, observations)
     new_region = replace(region, name="unseen-catchment")
-    distances = calibrated.distance_model.predict(new_region).as_matrix()
+    distances = calibrated.distance_model.predict(new_region).values
     assert np.isfinite(distances).all()
     with pytest.raises(ValueError):
         calibrated.predict(new_region)

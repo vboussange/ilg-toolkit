@@ -19,6 +19,18 @@ from ilg_toolkit import (
 from ilg_toolkit.models import ConductanceModel
 
 
+def test_conductance_surface_uses_prediction_mode_for_custom_dropout(
+    DropoutConductance, observation_problem
+):
+    region, _, _ = observation_problem()
+    model = DropoutConductance()
+    np.testing.assert_allclose(model.conductance_surface(region), [[1.0, np.e, np.e**2]])
+    np.testing.assert_allclose(
+        model.predict(region, pairs=[("unit/7", "unit/99")]).values,
+        [2 / (1 + np.e) + 2 / (np.e + np.e**2)],
+    )
+
+
 def test_custom_conductance_hooks_fit_and_predict_requested_pairs(ConstantConductance):
     region = RegionBatch(
         "river",

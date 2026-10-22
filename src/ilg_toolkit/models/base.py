@@ -103,7 +103,8 @@ class ConductanceModel(AbstractDistanceModel):
     def conductance_surface(self, region: RegionBatch, *, species: str | None = None) -> jax.Array:
         """Positive conductance surface for a single-species region batch."""
         _single_species(self, species)
-        surface = self.conductance(self.backbone(region.feature_array), 0)
+        latent = backbone_with_randomness(self, region.feature_array, inference=True, key=None)
+        surface = self.conductance(latent, 0)
         return eqx.error_if(
             surface,
             jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
