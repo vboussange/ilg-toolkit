@@ -70,7 +70,8 @@ def test_explicit_development_recalibration_keeps_encoder_and_prior_history_froz
     }
     assert not np.allclose(calibrated.predict(region).values, developed.predict(region).values)
     np.testing.assert_array_equal(
-        developed.ecological_distances(region), calibrated.ecological_distances(region)
+        developed.distance_model.predict(region).as_matrix(),
+        calibrated.distance_model.predict(region).as_matrix(),
     )
 
 
@@ -123,7 +124,7 @@ def test_transfer_distances_are_label_free_and_each_region_requires_its_own_head
     ).model
     calibrated = calibrate(original, region, observations)
     new_region = replace(region, name="unseen-catchment")
-    distances = calibrated.ecological_distances(new_region)
+    distances = calibrated.distance_model.predict(new_region).values
     assert np.isfinite(distances).all()
     with pytest.raises(ValueError):
         calibrated.predict(new_region)
@@ -227,6 +228,6 @@ def test_recalibration_rejects_incompatible_features_roles_targets_and_individua
     with pytest.raises(ValueError):
         calibrate(model, individuals, observations)
     calibrated = calibrate(model, region, observations)
-    assert np.isfinite(calibrated.ecological_distances(individuals)).all()
+    assert np.isfinite(calibrated.distance_model.predict(individuals).values).all()
     with pytest.raises(ValueError):
         calibrated.predict(individuals)

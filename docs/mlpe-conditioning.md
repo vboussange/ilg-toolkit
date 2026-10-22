@@ -65,7 +65,7 @@ The variance scale is `model`, meaning the target scale after its declared
 transform (squared transformed units, or squared original units for identity).
 
 Each standalone or conditional result composes one pair-oriented `prediction`.
-Point predictions in `prediction.values` are `prediction.target.inverse(model_values)` on original
+Point predictions in `prediction.values` are `model.target.inverse(model_values)` on original
 measurement units. For nonlinear transforms they are inverse-transformed Gaussian
 means, rather than expectations on the original scale. The reported variance
 remains on the model scale. The API does not construct an original-scale Gaussian
@@ -73,12 +73,9 @@ confidence interval, and predictions are neither clipped nor repaired.
 
 `prediction.pairs` retains requested order and orientation. Use
 `prediction.as_matrix()` to represent only those points symmetrically, with
-missing off-diagonal entries and structural zero dissimilarity diagonals. Model
-operations retain the full query-region sampling-unit order; standalone operations
-default to distinct query endpoints in first-appearance order, without adding
-calibration or support endpoints. An explicit order must contain every predicted
-endpoint and may add other units with missing off-diagonal entries. Conversion
-does not turn the separate pair variances into a covariance matrix.
+NaN on the diagonal and for unrequested pairs. Model operations retain the
+query-region sampling-unit order; standalone operations use distinct query
+sampling units in first-appearance order.
 
 Prediction provenance records the region, prediction mode, canonical calibration
 pairs and their roles, supplied support pairs and their support roles, and the

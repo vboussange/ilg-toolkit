@@ -11,7 +11,7 @@ import numpy as np
 from .config import TrainingConfig
 from .data import ObservationPartition, RegionBatch
 from .model import LandscapeGeneticsModel
-from .models import AbstractDistanceModel
+from .models import AbstractDistanceModel, ConductanceModel
 from .prediction import Prediction
 from .training import TrainingState, _normalize_inputs, fit
 
@@ -263,27 +263,11 @@ def aggregate_predictions(
     *,
     expected_member_ids: Sequence[str] | None = None,
 ) -> EnsemblePrediction:
-    """Average aligned original-scale points with complete member composition.
+    """Equal-weight means and descriptive spread of aligned member predictions.
 
-    Args:
-        predictions: Nonempty member-ID mapping to common ``Prediction``
-            records already inverse-transformed into original target units.
-            Regions, target contracts, ordered/oriented pairs, sampling-unit
-            matrix orders and finite vector shapes must agree exactly.
-        expected_member_ids: Optional unique complete member order. Defaults to
-            mapping insertion order. Missing or extra members are rejected,
-            rather than silently reducing the requested ensemble.
-
-    Returns:
-        ``EnsemblePrediction`` containing equal-weight original-scale means,
-        member values ``(k, m)`` and descriptive population SD ``(m,)``. Scoped
-        float64 aggregation leaves global JAX precision unchanged and performs
-        no additional prediction, calibration or model mutation.
-
-    Raises:
-        ValueError: Composition, labelled identities, targets, shapes or finite
-            member values are incompatible.
-        FloatingPointError: Aggregated mean or spread is nonfinite.
+    Region, species, query pairs, sampling-unit order and finite values must agree.
+    Callers supply values in common units; fitted ensembles validate target
+    compatibility on their models.
     """
     if not predictions:
         raise ValueError("An ensemble aggregate requires at least one member prediction")
@@ -296,11 +280,10 @@ def aggregate_predictions(
     values = []
     for member_id in ids:
         prediction = predictions[member_id]
-        if prediction.target != first.target or prediction.scale != "original":
-            raise ValueError("Ensemble predictions require compatible original target scales")
         if (
             prediction.sampling_unit_ids != first.sampling_unit_ids
             or prediction.pairs != first.pairs
+            or prediction.species != first.species
             or prediction.region_name != first.region_name
         ):
             raise ValueError(
@@ -313,7 +296,7 @@ def aggregate_predictions(
     stacked = jnp.stack(values)
     mean, spread = _summarize_members(stacked)
     return EnsemblePrediction(
-        Prediction(mean, first.pairs, first.region_name, first.target, first.sampling_unit_ids),
+        Prediction(mean, first.pairs, first.region_name, first.sampling_unit_ids, first.species),
         ids,
         stacked,
         spread,
@@ -454,24 +437,26 @@ class Ensemble:
         models = self._completed()
         pairs = None if pairs is None else tuple(pairs)
         predictions = {
-            member_id: model.predict(region, pairs) for member_id, model in models.items()
+            member_id: model.predict(region, pairs=pairs) for member_id, model in models.items()
         }
         return aggregate_predictions(predictions, expected_member_ids=self.expected_member_ids)
 
     def ecological_distances(self, region: RegionBatch) -> dict[str, jax.Array]:
         """Return each member's ecological distances separately; their scales can differ."""
         return {
-            member_id: model.ecological_distances(region)
+            member_id: model.distance_model.predict(region).as_matrix()
             for member_id, model in self._completed().items()
         }
 
     @jax.enable_x64()
     def conductance_surfaces(self, region: RegionBatch) -> EnsembleSurface:
         """Return an explicitly descriptive surface mean, separate from genetic means."""
-        surfaces = {
-            member_id: model.conductance_surface(region)
-            for member_id, model in self._completed().items()
-        }
+        surfaces = {}
+        for member_id, model in self._completed().items():
+            model._validate_region(region)
+            if not isinstance(model.distance_model, ConductanceModel):
+                raise TypeError("This distance model does not produce a conductance surface")
+            surfaces[member_id] = model.distance_model.conductance_surface(region)
         ids = self.expected_member_ids
         assert ids is not None
         stacked = jnp.stack(

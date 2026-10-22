@@ -114,7 +114,6 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
     np.testing.assert_allclose(prediction.prediction.values, member_values.mean(axis=0), atol=1e-12)
     np.testing.assert_allclose(prediction.member_spread, member_values.std(axis=0), atol=1e-12)
     np.testing.assert_array_equal(prediction.member_values, member_values)
-    assert prediction.prediction.target.units == "index"
     for member in result.members:
         model, fitted = completed_fit(member)
         assert fitted.history[-1].training_loss < fitted.history[0].training_loss
@@ -181,14 +180,13 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
 
 
 def test_original_scale_known_outputs_are_averaged_after_inverse_transformation():
-    from ilg_toolkit import Prediction, TargetSpec, aggregate_predictions
+    from ilg_toolkit import Prediction, aggregate_predictions
 
-    target = TargetSpec("divergence", units="index", transform="log1p")
     transformed = [np.log(2), np.log(10)]
     with jax.enable_x64():
         predictions = {
             str(i): Prediction(
-                jnp.asarray([np.expm1(value)]), (("b", "a"),), "alpine", target, ("a", "b", "extra")
+                jnp.asarray([np.expm1(value)]), (("b", "a"),), "alpine", ("a", "b", "extra")
             )
             for i, value in enumerate(transformed)
         }
@@ -201,28 +199,24 @@ def test_original_scale_known_outputs_are_averaged_after_inverse_transformation(
     np.testing.assert_allclose(result.member_spread, [4], atol=1e-14)
     np.testing.assert_allclose(result.member_values, [[1], [9]], atol=1e-14)
     np.testing.assert_allclose(
-        result.prediction.as_matrix(), [[0, 5, np.nan], [5, 0, np.nan], [np.nan, np.nan, 0]]
+        result.prediction.as_matrix(),
+        [[np.nan, 5, np.nan], [5, np.nan, np.nan], [np.nan, np.nan, np.nan]],
     )
     assert result.prediction.pairs == (("b", "a"),)
     assert result.prediction.region_name == "alpine"
     assert not np.allclose(result.prediction.values, np.expm1(np.mean(transformed)))
-    assert result.prediction.scale == "original"
-    assert result.prediction.target == target
 
 
 def test_original_scale_aggregation_preserves_large_finite_means_and_spreads():
-    from ilg_toolkit import Prediction, TargetSpec, aggregate_predictions
+    from ilg_toolkit import Prediction, aggregate_predictions
 
     with jax.enable_x64():
-        target = TargetSpec("signed synthetic measurement")
         for levels, expected_mean, expected_spread in [
             ((1e308, 1e308), 1e308, 0),
             ((-1e308, 1e308), 0, 1e308),
         ]:
             predictions = {
-                str(i): Prediction(
-                    jnp.asarray([level]), (("a", "b"),), "alpine", target, ("a", "b")
-                )
+                str(i): Prediction(jnp.asarray([level]), (("a", "b"),), "alpine", ("a", "b"))
                 for i, level in enumerate(levels)
             }
             result = aggregate_predictions(predictions)
@@ -319,16 +313,12 @@ def test_incompatible_scales_and_invalid_fold_membership_fail_clearly(
         ObservationPartition,
         PopulationFold,
         Prediction,
-        TargetSpec,
         aggregate_predictions,
     )
 
-    target = TargetSpec("divergence", units="index")
-    first = Prediction(jnp.zeros(1), (("a", "b"),), "alpine", target, ("a", "b"))
-    with pytest.raises(ValueError):
-        replace(first, scale="model")
+    first = Prediction(jnp.zeros(1), (("a", "b"),), "alpine", ("a", "b"))
     for second in [
-        replace(first, target=replace(target, units="percent")),
+        replace(first, species="frog"),
         replace(first, sampling_unit_ids=("b", "a")),
         replace(first, pairs=(("b", "a"),)),
         replace(first, region_name="other"),

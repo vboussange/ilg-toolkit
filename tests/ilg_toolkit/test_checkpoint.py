@@ -20,7 +20,7 @@ from ilg_toolkit import (
     load_checkpoint,
     save_checkpoint,
 )
-from ilg_toolkit.models import UNetEmbeddingDistance
+from ilg_toolkit.models import UNet
 from ilg_toolkit.training import (
     ObservationCollection,
     PartitionCollection,
@@ -73,13 +73,12 @@ def test_resume_equals_uninterrupted(
             )
         else:
             validation_regions = tuple(replace(r, name=r.name + "-validation") for r in regions)
+            predictions = tuple(encoder.predict(r) for r in regions)
             validation_targets = tuple(
-                PairwiseObservations.from_matrix(
-                    r.sampling_unit_ids,
-                    encoder.predict_distances(r.feature_array, r.pixel_nodes),
-                    target=o.target,
+                PairwiseObservations.from_pairs(
+                    prediction.pairs, prediction.values, target=o.target
                 )
-                for r, o in zip(regions, targets, strict=True)
+                for prediction, o in zip(predictions, targets, strict=True)
             )
             options = _ValidationOptions(validation=(validation_regions, validation_targets))
     states = []
@@ -118,7 +117,7 @@ class _ValidationOptions(TypedDict, total=False):
 class _FitOptions(_ValidationOptions, total=False):
     region: RegionCollection
     observations: ObservationCollection
-    distance_model: UNetEmbeddingDistance
+    distance_model: UNet
     config: TrainingConfig
     state: TrainingState
 
@@ -371,7 +370,7 @@ def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
     with pytest.raises(ArtifactError):
         load_checkpoint(
             path,
-            distance_model=UNetEmbeddingDistance(
+            distance_model=UNet(
                 2,
                 patch_size=1,
                 base_channels=4,

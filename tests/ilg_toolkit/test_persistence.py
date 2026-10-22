@@ -22,7 +22,7 @@ from ilg_toolkit import (
     save_checkpoint,
     save_model,
 )
-from ilg_toolkit.models import UNetEmbeddingDistance
+from ilg_toolkit.models import ConductanceModel, UNet
 
 
 @pytest.mark.parametrize("kind", ["model", "checkpoint"])
@@ -68,7 +68,7 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
     region, observations = persistence_problem()
 
     def encoder(seed):
-        return UNetEmbeddingDistance(
+        return UNet(
             2,
             patch_size=1,
             base_channels=2,
@@ -87,14 +87,15 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
     save_model(path, model)
     restored = load_model(path, distance_model=encoder(7))
     np.testing.assert_array_equal(
-        restored.ecological_distances(region), model.ecological_distances(region)
+        restored.distance_model.predict(region).as_matrix(),
+        model.distance_model.predict(region).as_matrix(),
     )
     np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
     assert restored.target == model.target
     assert restored.feature_names == model.feature_names
     assert restored.training_pairs == model.training_pairs
     assert restored.training_objective == "direct_log1p"
-    assert cast(UNetEmbeddingDistance, restored.distance_model).encoder1.dropout.p == 0.23
+    assert cast(UNet, restored.distance_model).encoder1.dropout.p == 0.23
 
 
 def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
@@ -204,7 +205,7 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_
             2,
             patch_size=4,
             min_conductance=0.02,
-            patch_batch_size=3,
+            patch_microbatch_size=3,
             solver_config=ResistanceSolverConfig(rtol=1e-9, atol=1e-10)
             if seed == 3
             else ResistanceSolverConfig(),
@@ -222,26 +223,26 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_
     save_model(path, model)
     restored = load_model(path, distance_model=encoder(9))
     np.testing.assert_array_equal(
-        restored.conductance_surface(region), model.conductance_surface(region)
+        cast(ConductanceModel, restored.distance_model).conductance_surface(region),
+        cast(ConductanceModel, model.distance_model).conductance_surface(region),
     )
     np.testing.assert_array_equal(
-        restored.ecological_distances(region), model.ecological_distances(region)
+        restored.distance_model.predict(region).as_matrix(),
+        model.distance_model.predict(region).as_matrix(),
     )
     np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
     assert (
         cast(ResNet9Conductance, restored.distance_model).solver_config
         == cast(ResNet9Conductance, model.distance_model).solver_config
     )
-    assert cast(ResNet9Conductance, restored.distance_model).patch_batch_size == 3
+    assert cast(ResNet9Conductance, restored.distance_model).patch_microbatch_size == 3
     assert cast(ResNet9Conductance, restored.distance_model).min_conductance == 0.02
 
 
 def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
     from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
 
-    encoder = UNetEmbeddingDistance(
-        2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0)
-    )
+    encoder = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0))
     model = LandscapeGeneticsModel(
         encoder,
         DirectCalibrationModule(TargetSpec("divergence")),
@@ -250,9 +251,7 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
     )
     path = tmp_path / "model.ilg"
     save_model(path, model)
-    wrong_shape = UNetEmbeddingDistance(
-        2, patch_size=1, base_channels=2, embedding_dim=3, key=jax.random.key(0)
-    )
+    wrong_shape = UNet(2, patch_size=1, base_channels=2, embedding_dim=3, key=jax.random.key(0))
     with pytest.raises(ArtifactError):
         load_model(path, distance_model=wrong_shape)
     wrong_dtype = jax.tree.map(
@@ -266,9 +265,7 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
 def test_model_reload_rejects_truncated_leaves(tmp_path):
     from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
 
-    encoder = UNetEmbeddingDistance(
-        2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0)
-    )
+    encoder = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0))
     model = LandscapeGeneticsModel(
         encoder,
         DirectCalibrationModule(TargetSpec("divergence")),
@@ -294,9 +291,7 @@ def test_interrupted_model_replacement_preserves_previous_predictions(
 
     def model(seed):
         return LandscapeGeneticsModel(
-            UNetEmbeddingDistance(
-                2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(seed)
-            ),
+            UNet(2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(seed)),
             DirectCalibrationModule(TargetSpec("divergence")),
             2,
             feature_names=region.feature_names,

@@ -1,5 +1,7 @@
 """Fit a conductance model to synthetic genetic dissimilarities, then save and reload it."""
 
+from typing import cast
+
 import coordax as cx
 import jax
 import jax.numpy as jnp
@@ -13,7 +15,7 @@ from ilg_toolkit import (
     load_model,
     save_model,
 )
-from ilg_toolkit.models import ResNet9Conductance
+from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
@@ -48,8 +50,14 @@ result = fit(
 )
 model = result.model  # The selected landscape genetics model.
 
-print("Conductance surface:\n", model.conductance_surface(region))
-print("Ecological distances (effective resistance):\n", model.ecological_distances(region))
+print(
+    "Conductance surface:\n",
+    cast(ConductanceModel, model.distance_model).conductance_surface(region),
+)
+print(
+    "Ecological distances (effective resistance):\n",
+    model.distance_model.predict(region).as_matrix(),
+)
 # predict returns one calibrated value per distinct pair, in the target's units;
 # as_matrix lays them out symmetrically in sampling-unit order.
 prediction = model.predict(region)

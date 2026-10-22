@@ -152,9 +152,7 @@ def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
     np.testing.assert_allclose(
         result.model_variance, result.effect_variance + result.residual_variance + result.jitter
     )
-    assert result.prediction.scale == known.prediction.scale == "original"
     assert result.variance_scale == known.variance_scale == "model"
-    assert result.prediction.target == target
     assert set(result.excluded_uncertainty) == {
         "encoder",
         "fixed_effect_coefficients",

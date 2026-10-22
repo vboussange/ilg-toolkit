@@ -48,7 +48,7 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder(
     known = model.predict_known_effects(region, pairs)
     assert known.prediction.sampling_unit_ids == region.sampling_unit_ids
     assert known.prediction.pairs == pairs
-    distances = model.ecological_distances(region)
+    distances = model.distance_model.predict(region).as_matrix()
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
 
     def selected_distances(selected):
@@ -120,11 +120,8 @@ def test_explicit_transform_returns_original_units_and_separate_ecological_dista
     )
     prediction = result.model.predict(region)
     assert result.history[0].training_loss < 1e-12
-    assert prediction.scale == "original"
-    assert prediction.target.transform == "log1p"
-    assert prediction.target.units == "index"
     np.testing.assert_allclose(prediction.as_matrix()[0, 1], np.e - 1, rtol=1e-6)
-    np.testing.assert_allclose(result.model.ecological_distances(region)[0, 1], 1)
+    np.testing.assert_allclose(result.model.distance_model.predict(region).as_matrix()[0, 1], 1)
 
 
 def test_composed_calibration_owns_inference_and_preserves_training_objective(

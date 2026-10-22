@@ -135,20 +135,17 @@ and unknown or malformed labels.
 
 ## Read points, coverage and metrics
 
-Ordinary results use the common `Prediction`: `values` has shape `(m,)` in original
-`target.units`, aligned with `pairs`, `region_name`, `target` and
-`sampling_unit_ids`. Conditional and deployment ensemble results compose this as
-`.prediction`. OOF uses `.predictions[region_name]` for each regional record.
-Its flat `.keys` and `.values` derive from those records in canonical order.
+Ordinary results use `Prediction`: `values` has shape `(m,)`, aligned with `pairs`,
+`region_name`, optional `species`, and `sampling_unit_ids`. Named `extras` contain
+arrays aligned with those same pairs. Conditional and deployment ensemble
+results compose this as `.prediction`. Out-of-fold results use
+`.predictions[region_name]` for each regional record and retain the target on the
+`OOFPrediction` for scoring.
 
-A common prediction's `.as_matrix(order=None)` explicitly represents stored
-points as a symmetric `(n, n)` JAX array. The default order is the full prepared
-query-region order; standalone MLPE results instead record query endpoints in
-first-appearance order. An explicit order must be unique and include every
-predicted endpoint; additional units are allowed. Unrequested off-diagonals are
-NaN. The zero diagonal is a structural **dissimilarity** convention, not fitted
-self-prediction; conversion refuses other target kinds without that convention.
-It computes no additional points, covariance or uncertainty transformation.
+`prediction.as_matrix(name=None)` rearranges stored values, or a named extra,
+into a symmetric matrix in the record's sampling-unit order. Both the diagonal
+and unrequested pairs are NaN. Model results retain the query region's order;
+standalone MLPE results use query sampling units in first-appearance order.
 
 For `k` requested members and `m` unique regional queries, `OOFPrediction` exposes:
 

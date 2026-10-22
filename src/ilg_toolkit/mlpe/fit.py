@@ -213,7 +213,6 @@ class RegionalMLPECalibration(eqx.Module):
                 self.target.inverse(model_values),
                 pairs,
                 self.region_name,
-                self.target,
                 tuple(dict.fromkeys(label for pair in pairs for label in pair)),
             ),
             model_values,

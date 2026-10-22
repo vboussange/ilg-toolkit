@@ -8,9 +8,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ..config import validate_patch_batch_size
-from .base import EmbeddingDistanceModel
-from .common import patchify
+from ..config import validate_patch_microbatch_size
+from .base import EmbeddingModel
+from .common import encode_patches
 
 
 def _match_shape(values: jax.Array, reference: jax.Array) -> jax.Array:
@@ -56,25 +56,19 @@ class ResidualConvBlock(eqx.Module):
         )
         self.norm1 = eqx.nn.GroupNorm(min(8, outputs), outputs, dtype=jnp.float32)
         self.norm2 = eqx.nn.GroupNorm(min(8, outputs), outputs, dtype=jnp.float32)
-        self.dropout = eqx.nn.Dropout(dropout)
+        self.dropout = eqx.nn.Dropout(dropout, inference=True)
 
-    def __call__(
-        self,
-        values: jax.Array,
-        *,
-        inference: bool,
-        key: jax.Array | None,
-    ) -> jax.Array:
+    def __call__(self, values: jax.Array) -> jax.Array:
         """Apply the block to one channel-first feature map."""
         residual = values if self.projection is None else self.projection(values)
         values = jax.nn.gelu(self.norm1(self.conv1(values)))
         values = self.norm2(self.conv2(values))
-        values = self.dropout(values, inference=inference, key=key)
+        values = self.dropout(values)
         return jax.nn.gelu(values + residual)
 
 
 @final
-class UNetEmbeddingDistance(EmbeddingDistanceModel):
+class UNet(EmbeddingModel):
     """Predict patch embeddings and squared distances between population nodes."""
 
     patch_embedding: eqx.nn.Linear
@@ -95,6 +89,8 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
     merge1_norm: eqx.nn.GroupNorm
     decoder1: ResidualConvBlock
     embedding_head: eqx.nn.Conv2d
+    num_species: int = eqx.field(static=True, default=1, kw_only=True)
+    patch_microbatch_size: int | None = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
     base_channels: int = eqx.field(static=True)
     embedding_dim: int = eqx.field(static=True)
@@ -107,12 +103,14 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         base_channels: int = 32,
         embedding_dim: int = 16,
         dropout: float = 0.1,
+        patch_microbatch_size: int | None = None,
         key: jax.Array,
     ):
         if patch_size <= 0 or base_channels <= 0 or embedding_dim <= 0:
             raise ValueError("patch_size, base_channels, and embedding_dim must be positive")
         if not 0 <= dropout < 1:
             raise ValueError("dropout must lie in [0, 1)")
+        validate_patch_microbatch_size(patch_microbatch_size)
         keys = jax.random.split(key, 13)
         stage2, bottleneck = 2 * base_channels, 4 * base_channels
         self.patch_embedding = eqx.nn.Linear(
@@ -173,52 +171,36 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         self.embedding_head = eqx.nn.Conv2d(
             base_channels, embedding_dim, 1, dtype=jnp.float32, key=keys[12]
         )
+        self.patch_microbatch_size = patch_microbatch_size
         self.patch_size = patch_size
         self.base_channels = base_channels
         self.embedding_dim = embedding_dim
 
-    def embedding_grid(
-        self,
-        features: jax.Array,
-        *,
-        inference: bool = True,
-        key: jax.Array | None = None,
-        patch_batch_size: int | None = None,
-    ) -> jax.Array:
-        """Return an ``(patch rows, patch columns, embedding_dim)`` tensor.
-
-        patch_batch_size only chunks the linear patch embedding; it does not
-        checkpoint or split the subsequent spatial U-Net computation.
-        """
-        validate_patch_batch_size(patch_batch_size)
-        if not inference and key is None:
-            raise ValueError("Training-mode U-Net evaluation requires a PRNG key")
-        patches, grid_shape = patchify(features, self.patch_size)
-        flattened = jnp.asarray(
-            patches.reshape(patches.shape[0], -1),
-            dtype=self.patch_embedding.weight.dtype,
+    def backbone(self, features: jax.Array) -> jax.Array:
+        """Pooled landscape features with a region-wide receptive field."""
+        values = encode_patches(
+            self,
+            features,
+            lambda patch: self.patch_embedding(
+                patch.reshape(-1).astype(self.patch_embedding.weight.dtype)
+            ),
         )
-        batch_size = flattened.shape[0] if patch_batch_size is None else patch_batch_size
-        embedded = jnp.concatenate(
-            [
-                eqx.filter_vmap(self.patch_embedding)(flattened[start : start + batch_size])
-                for start in range(0, flattened.shape[0], batch_size)
-            ]
-        )
-        values = embedded.reshape(grid_shape[0], grid_shape[1], self.base_channels)
         values = jnp.moveaxis(values, -1, 0)
         values = jax.nn.gelu(self.patch_norm(values))
-        keys = [None] * 5 if key is None else list(jax.random.split(key, 5))
 
-        skip1 = self.encoder1(values, inference=inference, key=keys[0])
+        skip1 = self.encoder1(values)
         values = jax.nn.gelu(self.down1_norm(self.down1(skip1)))
-        skip2 = self.encoder2(values, inference=inference, key=keys[1])
+        skip2 = self.encoder2(values)
         values = jax.nn.gelu(self.down2_norm(self.down2(skip2)))
-        values = self.bottleneck(values, inference=inference, key=keys[2])
+        values = self.bottleneck(values)
         values = _match_shape(self.up2(values), skip2)
         values = self.merge2_norm(self.merge2(jnp.concatenate([values, skip2], axis=0)))
-        values = self.decoder2(jax.nn.gelu(values), inference=inference, key=keys[3])
+        values = self.decoder2(jax.nn.gelu(values))
         values = _match_shape(self.up1(values), skip1)
         values = self.merge1_norm(self.merge1(jnp.concatenate([values, skip1], axis=0)))
-        values = self.decoder1(jax.nn.gelu(values), inference=inference, key=keys[4])
-        return jnp.moveaxis(self.embedding_head(values), 0, -1)
+        values = self.decoder1(jax.nn.gelu(values))
+        return jnp.moveaxis(values, 0, -1)
+
+    def embedding(self, latent: jax.Array, species_index: int) -> jax.Array:
+        """Embedding grid from pooled landscape features."""
+        return jnp.moveaxis(self.embedding_head(jnp.moveaxis(latent, -1, 0)), 0, -1)

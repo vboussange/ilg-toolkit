@@ -33,9 +33,9 @@ from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
 from ilg_toolkit.models import (
     AbstractDistanceModel,
     ConductanceModel,
-    EmbeddingDistanceModel,
+    EmbeddingModel,
     ResNet9Conductance,
-    UNetEmbeddingDistance,
+    UNet,
 )
 
 
@@ -160,7 +160,7 @@ def _checkpoint_problem(name="alpine", seed=14):
 
 
 def _checkpoint_model():
-    return UNetEmbeddingDistance(
+    return UNet(
         2,
         patch_size=1,
         base_channels=2,
@@ -200,6 +200,7 @@ class _PointConductance(ConductanceModel):
     """Distance model that scales one landscape feature into a conductance surface."""
 
     log_scale: jax.Array
+    num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()
@@ -209,29 +210,27 @@ class _PointConductance(ConductanceModel):
         self.log_scale = log_scale
         self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
 
-    def conductance(self, features, *, patch_batch_size=None):
-        return jnp.exp(self.log_scale) * features[..., 0]
+    def backbone(self, features):
+        return features
+
+    def conductance(self, latent, species_index):
+        return jnp.exp(self.log_scale) * latent[..., 0]
 
 
 @final
 class _CustomDistance(AbstractDistanceModel):
     scale: jax.Array
 
-    def prepare(self, features):
-        return None
+    num_species: int = eqx.field(static=True, default=1)
+    patch_size: int = eqx.field(static=True, default=1)
 
-    def predict_distances(
-        self,
-        features,
-        pixel_nodes,
-        *,
-        context=None,
-        inference=True,
-        key=None,
-        patch_batch_size=None,
-    ):
-        values = jnp.asarray(features).reshape(-1)[jnp.asarray(pixel_nodes)]
-        return self.scale**2 * (values[:, None] - values[None, :]) ** 2
+    def backbone(self, features):
+        return features.reshape(-1) * self.scale
+
+    def ecological_distances(self, latent, pairs, species_index):
+        nodes, (left, right) = pairs
+        values = latent[nodes]
+        return (values[left] - values[right]) ** 2
 
 
 def _model_factory(key):
@@ -248,25 +247,53 @@ def _completed_fit(member: EnsembleMember) -> tuple[LandscapeGeneticsModel, Trai
 @final
 class _ConstantConductance(ConductanceModel):
     level: jax.Array
+    num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()
     )
 
-    def conductance(self, features, *, patch_batch_size=None):
-        return jnp.ones(features.shape[:2]) * self.level
+    def backbone(self, features):
+        return features
+
+    def conductance(self, latent, species_index):
+        return jnp.ones(latent.shape[:2]) * self.level
 
 
 @final
-class _FeatureEmbedding(EmbeddingDistanceModel):
+class _DropoutConductance(ConductanceModel):
+    dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
+    conductance_dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
+    num_species: int = eqx.field(static=True, default=1)
+    patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
+
+    def backbone(self, features):
+        return self.dropout(features)
+
+    def conductance(self, latent, species_index):
+        return jnp.exp(self.conductance_dropout(latent)[..., 0])
+
+
+@pytest.fixture(name="DropoutConductance", scope="session")
+def dropout_conductance_class():
+    return _DropoutConductance
+
+
+@final
+class _FeatureEmbedding(EmbeddingModel):
     weight: jax.Array
+    num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
 
     def __init__(self, weight: jax.Array):
         self.weight = weight
 
-    def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-        return features * self.weight
+    def backbone(self, features):
+        return features
+
+    def embedding(self, latent, species_index):
+        return latent * self.weight
 
 
 def _completed_model(member: EnsembleMember) -> LandscapeGeneticsModel:
@@ -356,17 +383,21 @@ def _joint_gaussian_reference(
 
 
 @final
-class _WeightedEmbedding(EmbeddingDistanceModel):
+class _WeightedEmbedding(EmbeddingModel):
     """Distance model with a learned scale for each embedding feature."""
 
     log_weights: jax.Array
+    num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
 
     def __init__(self, log_weights: jax.Array):
         self.log_weights = log_weights
 
-    def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-        return features * jnp.exp(self.log_weights)
+    def backbone(self, features):
+        return features
+
+    def embedding(self, latent, species_index):
+        return latent * jnp.exp(self.log_weights)
 
 
 def _embedding_problem(name="alpine", offset=0.0, seed=14):
@@ -429,6 +460,7 @@ def _dense_profile(distances, targets, left, right, n_populations, variances, *,
 @final
 class _CovariateConductance(ConductanceModel):
     weight: jax.Array
+    num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()
@@ -437,20 +469,27 @@ class _CovariateConductance(ConductanceModel):
     def __init__(self, weight: jax.Array):
         self.weight = weight
 
-    def conductance(self, features, *, patch_batch_size=None):
-        return jnp.exp(self.weight * features[..., 0])
+    def backbone(self, features):
+        return features
+
+    def conductance(self, latent, species_index):
+        return jnp.exp(self.weight * latent[..., 0])
 
 
 @final
-class _ScalarEmbedding(EmbeddingDistanceModel):
+class _ScalarEmbedding(EmbeddingModel):
     weight: jax.Array
+    num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
 
     def __init__(self, weight: jax.Array):
         self.weight = weight
 
-    def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-        return features[..., :1] * self.weight
+    def backbone(self, features):
+        return features
+
+    def embedding(self, latent, species_index):
+        return latent[..., :1] * self.weight
 
 
 def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObservations]]:
@@ -481,25 +520,25 @@ def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObserva
 
 
 @final
-class _StochasticEmbedding(EmbeddingDistanceModel):
+class _StochasticEmbedding(EmbeddingModel):
     distance_model: _ScalarEmbedding
+    dropout: eqx.nn.Dropout
+    num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
 
     def __init__(self, weight: jax.Array):
         self.distance_model = _ScalarEmbedding(weight)
+        self.dropout = eqx.nn.Dropout(0.3, inference=True)
 
     @property
     def weight(self) -> jax.Array:
         return self.distance_model.weight
 
-    def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-        values = self.distance_model.embedding_grid(
-            features, inference=inference, key=key, patch_batch_size=patch_batch_size
-        )
-        if inference:
-            return values
-        assert key is not None
-        return values * jax.random.bernoulli(key, 0.7, values.shape) / 0.7
+    def backbone(self, features):
+        return self.dropout(features)
+
+    def embedding(self, latent, species_index):
+        return self.distance_model.embedding(latent, species_index)
 
 
 def _observation_problem() -> tuple[RegionBatch, TargetSpec, _ScalarEmbedding]:
@@ -569,7 +608,7 @@ def _synthetic_problem():
     observations = PairwiseObservations.from_matrix(
         region.sampling_unit_ids, targets, target=TargetSpec("synthetic divergence", units="index")
     )
-    model = UNetEmbeddingDistance(
+    model = UNet(
         2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(3)
     )
     return region, observations, model
@@ -887,7 +926,7 @@ def training_problem():
             target=TargetSpec("synthetic divergence", units="index"),
         )
         if family == "unet":
-            model = UNetEmbeddingDistance(
+            model = UNet(
                 2,
                 patch_size=1,
                 base_channels=2,
@@ -899,7 +938,7 @@ def training_problem():
             model = ResNet9Conductance(
                 2,
                 patch_size=4,
-                patch_batch_size=3,
+                patch_microbatch_size=3,
                 key=jax.random.key(6),
             )
         elif family == "embedding":

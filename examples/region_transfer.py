@@ -18,7 +18,7 @@ from ilg_toolkit import (
     calibrate,
     fit,
 )
-from ilg_toolkit.models import UNetEmbeddingDistance
+from ilg_toolkit.models import UNet
 
 rng = np.random.default_rng(4)
 region = RegionBatch(
@@ -28,10 +28,8 @@ region = RegionBatch(
     np.array([[0, 0], [0, 3], [1, 1], [2, 2], [3, 0], [3, 3]]),
     feature_names=("elevation", "canopy"),
 )
-model = UNetEmbeddingDistance(
-    2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4)
-)
-initial_distances = model.predict_distances(region.feature_array, region.pixel_nodes)
+model = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4))
+initial_distances = model.predict(region).as_matrix()
 effects = np.array([0.2, -0.1, 0.15, -0.2, 0.25, -0.05])
 noise = rng.normal(scale=0.08, size=(6, 6))
 targets = 2 + 0.5 * initial_distances + effects[:, None] + effects[None, :] + (noise + noise.T) / 2
@@ -52,7 +50,8 @@ new_region = replace(
     features=cx.field(region.feature_array * 1.1, "row", "column", "feature"),
 )
 print(
-    "Label-free ecological distances in new region:\n", calibrated.ecological_distances(new_region)
+    "Label-free ecological distances in new region:\n",
+    calibrated.distance_model.predict(new_region).as_matrix(),
 )
 try:
     calibrated.predict(new_region)

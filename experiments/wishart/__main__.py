@@ -23,7 +23,8 @@ def main():
         np.array([[0, 0], [0, 7], [7, 0], [7, 7]]),
     )
     encoder = ResNet9Conductance(2, patch_size=4, key=jax.random.key(6))
-    resistances = np.asarray(encoder.predict_distances(region.feature_array, region.pixel_nodes))
+    resistances = np.array(encoder.predict(region).as_matrix())
+    np.fill_diagonal(resistances, 0)
     basis = helmert(len(labels))
     scale, nugget, marker_count = 1.3, 0.2, 20
     covariance = -0.5 * scale * basis @ resistances @ basis.T + nugget * np.eye(3)

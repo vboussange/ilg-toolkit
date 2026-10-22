@@ -1,13 +1,13 @@
 """Landscape encoders extracted from the cleaned research architecture."""
 
-from .base import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
+from .base import AbstractDistanceModel, ConductanceModel, EmbeddingModel
 from .resnet import ResNet9Conductance
-from .unet import UNetEmbeddingDistance
+from .unet import UNet
 
 __all__ = [
     "AbstractDistanceModel",
     "ConductanceModel",
-    "EmbeddingDistanceModel",
+    "EmbeddingModel",
     "ResNet9Conductance",
-    "UNetEmbeddingDistance",
+    "UNet",
 ]

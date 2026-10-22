@@ -1,5 +1,7 @@
 """Scientific behavior of models.base."""
 
+from typing import cast
+
 import coordax as cx
 import jax.numpy as jnp
 import numpy as np
@@ -14,6 +16,50 @@ from ilg_toolkit import (
     load_model,
     save_model,
 )
+from ilg_toolkit.models import ConductanceModel
+
+
+def test_conductance_surface_uses_prediction_mode_for_custom_dropout(
+    DropoutConductance, observation_problem
+):
+    region, _, _ = observation_problem()
+    model = DropoutConductance()
+    np.testing.assert_allclose(model.conductance_surface(region), [[1.0, np.e, np.e**2]])
+    np.testing.assert_allclose(
+        model.predict(region, pairs=[("unit/7", "unit/99")]).values,
+        [2 / (1 + np.e) + 2 / (np.e + np.e**2)],
+    )
+
+
+def test_custom_conductance_hooks_fit_and_predict_requested_pairs(ConstantConductance):
+    region = RegionBatch(
+        "river",
+        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        ("a", "b", "c"),
+        np.array([[0, 0], [0, 1], [0, 2]]),
+    )
+    distance_model = ConstantConductance(jnp.array(2.0))
+    prediction = distance_model.predict(region, pairs=[("c", "a"), ("b", "a")])
+    np.testing.assert_allclose(prediction.values, [1.0, 0.5], atol=1e-6)
+    observations = PairwiseObservations.from_pairs(
+        [("a", "b"), ("a", "c"), ("b", "c")],
+        [1.0, 2.0, 1.0],
+        target=TargetSpec("dissimilarity"),
+    )
+    state = fit(
+        region,
+        observations,
+        distance_model=distance_model,
+        config=TrainingConfig(objective="direct_log1p", epochs=3, learning_rate=0.1),
+    )
+    assert state.history[-1].training_loss < state.history[0].training_loss
+    np.testing.assert_allclose(
+        state.model.predict(region).values,
+        state.model.distance_model.predict(region).values,
+    )
+    assert np.all(
+        cast(ConductanceModel, state.model.distance_model).conductance_surface(region) > 0
+    )
 
 
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
@@ -42,7 +88,8 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
     save_model(path, state.model)
     restored = load_model(path, distance_model=CustomDistance(jnp.array(0.0)))
     np.testing.assert_array_equal(
-        restored.ecological_distances(region), state.model.ecological_distances(region)
+        restored.distance_model.predict(region).as_matrix(),
+        state.model.distance_model.predict(region).as_matrix(),
     )
     np.testing.assert_array_equal(
         restored.predict(region).values, state.model.predict(region).values
