@@ -137,6 +137,7 @@ def test_population_holdout_matches_independent_gaussian_regression_decompositio
 @final
 class UniformConductance(ConductanceModel):
     scale: jax.Array
+    num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()
@@ -145,8 +146,11 @@ class UniformConductance(ConductanceModel):
     def __init__(self, scale: jax.Array):
         self.scale = scale
 
-    def conductance(self, features, *, patch_batch_size=None):
-        return self.scale * features[..., 0]
+    def backbone(self, features):
+        return features
+
+    def conductance(self, latent, species_index):
+        return self.scale * latent[..., 0]
 
 
 def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():

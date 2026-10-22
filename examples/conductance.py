@@ -1,5 +1,7 @@
 """Fit a tiny conductance graph: JAX_ENABLE_X64=true python examples/conductance.py."""
 
+from typing import cast
+
 import coordax as cx
 import jax
 import jax.numpy as jnp
@@ -12,7 +14,7 @@ from ilg_toolkit import (
     TrainingConfig,
     fit,
 )
-from ilg_toolkit.models import ResNet9Conductance
+from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 
 region = RegionBatch(
     name="synthetic-valley",
@@ -50,6 +52,12 @@ result = fit(
 )
 print("Training loss:", result.history[0].training_loss, "->", result.history[-1].training_loss)
 # Neither operation requires genetic observations at the query locations.
-print("Conductance surface:\n", result.model.conductance_surface(region))
-print("Ecological distances (effective resistance):\n", result.model.ecological_distances(region))
+print(
+    "Conductance surface:\n",
+    cast(ConductanceModel, result.model.distance_model).conductance_surface(region),
+)
+print(
+    "Ecological distances (effective resistance):\n",
+    result.model.distance_model.predict(region).as_matrix(),
+)
 print("Direct genetic predictions:\n", result.model.predict(region).as_matrix())

@@ -172,10 +172,9 @@ class OOFPrediction:
     Attributes:
         predictions: Region-name mapping to common ``Prediction`` records.
             Each contains original-scale mean values ``(m_region,)``, canonical
-            pairs, the shared target and the full prepared-region sampling-unit
+            pairs and the full prepared-region sampling-unit
             order. Uncovered points are NaN. ``as_matrix()`` represents stored
-            points only, with missing off-diagonals and structural zero diagonal
-            for dissimilarities.
+            points with NaN on the diagonal and for unrequested pairs.
         regime: Endpoint, prediction and support policies actually requested.
         member_ids: Complete requested member order, length ``k``, including
             failed and pending members.
@@ -229,6 +228,7 @@ class OOFPrediction:
     """
 
     predictions: dict[str, Prediction]
+    target: TargetSpec
     regime: EvaluationRegime
     member_ids: tuple[str, ...]
     member_values: jax.Array
@@ -268,14 +268,9 @@ class OOFPrediction:
             return jnp.concatenate(values)
 
     @property
-    def target(self) -> TargetSpec:
-        """Return the shared target meaning, original units and fitted transform."""
-        return next(iter(self.predictions.values())).target
-
-    @property
     def scale(self) -> str:
         """Return ``"original"`` for the regional and derived point values."""
-        return next(iter(self.predictions.values())).scale
+        return "original"
 
     @property
     def eligible_member_ids(self):
@@ -468,7 +463,7 @@ def _member_predict(model, region, pairs, regime, support, access):
     provenance = None
     variances = None
     if regime.prediction_mode == "marginal":
-        values = model.predict(region, pairs).values
+        values = model.predict(region, pairs=pairs).values
     else:
         if regime.prediction_mode == "known_effects":
             result = model.predict_known_effects(region, pairs)
@@ -478,9 +473,7 @@ def _member_predict(model, region, pairs, regime, support, access):
             )
         provenance = result.provenance
         if (
-            result.prediction.scale != "original"
-            or result.prediction.target != model.target
-            or result.prediction.region_name != region.name
+            result.prediction.region_name != region.name
             or tuple(tuple(sorted(pair)) for pair in result.prediction.pairs) != pairs
             or result.variance_scale != "model"
             or provenance.region_name != region.name
@@ -658,10 +651,11 @@ def predict_out_of_fold(
             [index for index, (region_name, _) in enumerate(keys) if region_name == name]
         )
         regional_predictions[name] = Prediction(
-            mean[columns], queries[name], name, target, regions[name].sampling_unit_ids
+            mean[columns], queries[name], name, regions[name].sampling_unit_ids
         )
     return OOFPrediction(
         regional_predictions,
+        target,
         regime,
         member_ids,
         values,

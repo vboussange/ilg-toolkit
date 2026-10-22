@@ -69,14 +69,27 @@ enables differentiating through that solve, so that gradients reach the encoder.
 **Ecological distance.** A distance model's pairwise separation between two
 sampling units, derived from the landscape before any genetic calibration. It is
 not a genetic prediction and is not in genetic units. For a conductance model it is
-$R_{ij}$; `model.ecological_distances(region)` returns the full matrix.
+$R_{ij}$; `model.distance_model.predict(region)` returns these values for query pairs.
 
 **Distance model.** Any model that maps landscape features and sampling-unit
 locations to ecological distances without access to genetic data. The conductance
-model above is the main instance. An alternative, `UNetEmbeddingDistance`, embeds
+model above is the main instance. An alternative, `UNet`, embeds
 each location and uses the squared Euclidean distance between embeddings (see the
 [shared-regions example](examples/shared_regions.py)). Custom models subclass
 `AbstractDistanceModel`.
+
+The model hierarchy is:
+
+```text
+AbstractDistanceModel: backbone(features), ecological_distances(latent, pairs, species_index)
+├── ConductanceModel: conductance(latent, species_index)
+│   └── ResNet9Conductance: patch-based conductance surfaces
+└── EmbeddingModel: embedding(latent, species_index)
+    └── UNet: landscape embeddings
+```
+
+Concrete models carry a static `num_species` of one. `patch_microbatch_size` sets
+the number of raster patches processed together without changing predictions.
 
 **Sampling units and pairwise genetic observations.** A sampling unit is an
 identified population or individual located at a raster cell. A pairwise genetic
@@ -90,9 +103,9 @@ $\hat D_{ij}$ of the declared genetic target. Direct calibration applies the
 inverse of the declared target transform. MLPE calibration fits a linear mixed model
 with population effects for each region, so one distance model can serve several
 regions. A **landscape genetics model** (`LandscapeGeneticsModel`) is a distance
-model composed with a calibration: `ecological_distances(region)` returns the
-distance model's output, and `predict(region)` returns calibrated genetic
-predictions in the target's units.
+model composed with a calibration: `model.distance_model.predict(region)` returns
+ecological distances, and `model.predict(region)` returns genetic predictions in
+the target's original units.
 
 **Fitting.** `fit` trains the distance model end to end. It computes ecological
 distances for the observed pairs, compares them with the genetic observations
@@ -126,6 +139,8 @@ then save and reload it. This is [examples/quickstart.py](examples/quickstart.py
 ```python
 """Fit a conductance model to synthetic genetic dissimilarities, then save and reload it."""
 
+from typing import cast
+
 import coordax as cx
 import jax
 import jax.numpy as jnp
@@ -139,7 +154,7 @@ from ilg_toolkit import (
     load_model,
     save_model,
 )
-from ilg_toolkit.models import ResNet9Conductance
+from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
@@ -174,8 +189,8 @@ result = fit(
 )
 model = result.model  # The selected landscape genetics model.
 
-print("Conductance surface:\n", model.conductance_surface(region))
-print("Ecological distances (effective resistance):\n", model.ecological_distances(region))
+print("Conductance surface:\n", cast(ConductanceModel, model.distance_model).conductance_surface(region))
+print("Ecological distances (effective resistance):\n", model.distance_model.predict(region).as_matrix())
 # predict returns one calibrated value per distinct pair, in the target's units;
 # as_matrix lays them out symmetrically in sampling-unit order.
 prediction = model.predict(region)
@@ -195,7 +210,7 @@ print("Restored predictions:\n", restored.predict(region).as_matrix())
 
 - [quickstart.py](examples/quickstart.py): the quickstart above.
 - [conductance.py](examples/conductance.py): a conductance model with an explicit
-  resistance-solver tolerance; on large rasters, `patch_batch_size` bounds encoder
+  resistance-solver tolerance; on large rasters, `patch_microbatch_size` bounds encoder
   memory.
 - [shared_regions.py](examples/shared_regions.py): one U-Net embedding distance
   model shared across regions of different extents.

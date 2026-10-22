@@ -23,6 +23,7 @@ from .mlpe import (
 from .mlpe.likelihood import MLPEFit
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
+from .models.base import distance_values, prepare_distance_context
 from .resistance import ResistanceSolverContext
 
 RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
@@ -247,10 +248,15 @@ def _selected_distances(
     inference: bool = True,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    distances = distance_model.predict_distances(
-        payload.features, payload.nodes, context=context, inference=inference, key=key
+    return distance_values(
+        distance_model,
+        payload.features,
+        payload.nodes,
+        payload.pairs,
+        context=context,
+        inference=inference,
+        key=key,
     )
-    return distances[payload.pairs]
 
 
 def _joint_loss(
@@ -427,7 +433,7 @@ def _prepare_batches(
         payload = _prepared(region, observations, partition, role=role, objective=config.objective)
         shape = (region.feature_array.shape[0], region.feature_array.shape[1])
         if shape not in contexts:
-            contexts[shape] = distance_model.prepare(region.feature_array)
+            contexts[shape] = prepare_distance_context(distance_model, region.feature_array)
         context = contexts[shape]
         return _RegionalBatch(region, observations, payload, context)
 

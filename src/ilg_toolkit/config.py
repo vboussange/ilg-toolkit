@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from numbers import Integral, Real
 
 
-def validate_patch_batch_size(value: int | None) -> None:
-    """Validate the optional encoder chunk size."""
+def validate_patch_microbatch_size(value: int | None) -> None:
+    """Validate the optional number of raster patches processed together."""
     if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
-        raise ValueError("patch_batch_size must be a positive integer or None")
+        raise ValueError("patch_microbatch_size must be a positive integer or None")
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, final
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 
 from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
 from .mlpe import MLPEConfig, RegionalMLPECalibration, calibrate_mlpe
@@ -139,11 +138,10 @@ def calibrate(
             if any(kinds[label] != "population" for label in pair):
                 raise ValueError("Population MLPE calibration requires population sampling units")
             roles[pair] = partition.role
-    distances = model.ecological_distances(region)
-    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-    observed_distances = jnp.asarray(
-        [distances[lookup[a], lookup[b]] for a, b in observations.observed_pairs]
-    )
+    model._validate_region(region)
+    observed_distances = model.distance_model.predict(
+        region, pairs=observations.observed_pairs
+    ).values
     selected = ObservationPartition(region.name, tuple(roles), role="calibration")
     regions = (
         dict(model.calibration.regions)

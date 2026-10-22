@@ -18,6 +18,7 @@ from ilg_toolkit import (
     TrainingConfig,
     fit,
 )
+from ilg_toolkit.models import ConductanceModel
 
 
 def test_failed_solver_reports_region_and_epoch_without_changing_solver(PointConductance):
@@ -66,14 +67,13 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
 
         assert result.raw_variances is not None
         prediction = result.model.predict(region)
-        distances = result.model.ecological_distances(region)
+        distances = result.model.distance_model.predict(region).as_matrix()
     assert result.history[-1].training_loss < result.history[0].training_loss - 0.1
     assert not np.allclose(cast(Any, result.model.distance_model).log_weights, model.log_weights)
     head = cast(MLPECalibrationModule, result.model.calibration).regions[region.name]
     assert not np.allclose([head.unit_variance, head.residual_variance], [0.05, 0.1])
     assert head.slope < 0
     assert result.model.training_objective == "mlpe"
-    assert prediction.target.units == "index"
     assert np.isfinite(prediction.values).all()
     assert not np.allclose(prediction.as_matrix(), distances)
     left, right = np.triu_indices(6, 1)
@@ -156,8 +156,9 @@ def test_mlpe_updates_match_dense_reference(
     for index, (region, observed) in enumerate(problems):
         embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(expected[:2])
         distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)
+        np.fill_diagonal(distances, np.nan)
         np.testing.assert_allclose(
-            result.model.ecological_distances(region),
+            result.model.distance_model.predict(region).as_matrix(),
             distances,
             rtol=1e-8,
             atol=1e-9,
@@ -218,7 +219,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
             )
             for validation_observations in (observations, altered)
         ]
-        distances = np.asarray(runs[0].latest_model.ecological_distances(region))
+        distances = np.asarray(runs[0].latest_model.distance_model.predict(region).as_matrix())
     first, second = runs
 
     assert first.raw_variances is not None
@@ -328,11 +329,11 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
         assert result.history[-1].training_loss < result.history[0].training_loss - 0.2
         assert float(cast(Any, result.model.distance_model).weight) > 0.6
         assert np.isfinite(result.model.predict(region).values).all()
-        surface = result.model.conductance_surface(region)
-        actual_distances = result.model.ecological_distances(region)
-    np.testing.assert_allclose(
-        actual_distances, dense_resistance(surface, region.pixel_nodes), atol=1e-7
-    )
+        surface = cast(ConductanceModel, result.model.distance_model).conductance_surface(region)
+        actual_distances = result.model.distance_model.predict(region).as_matrix()
+    expected = dense_resistance(surface, region.pixel_nodes)
+    np.fill_diagonal(expected, np.nan)
+    np.testing.assert_allclose(actual_distances, expected, atol=1e-7)
 
 
 def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
@@ -491,10 +492,14 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
             result.history[0].training_loss, independent_objective(initial), rtol=1e-8
         )
         for region in regions:
-            surface = result.model.conductance_surface(region)
+            surface = cast(ConductanceModel, result.model.distance_model).conductance_surface(
+                region
+            )
+            expected_distances = dense_resistance(surface, region.pixel_nodes)
+            np.fill_diagonal(expected_distances, np.nan)
             np.testing.assert_allclose(
                 result.model.predict(region).as_matrix(),
-                dense_resistance(surface, region.pixel_nodes),
+                expected_distances,
                 rtol=1e-7,
             )
 
@@ -613,9 +618,9 @@ def test_validation_on_another_region_requires_declared_feature_meanings(
 def test_validation_selects_model_without_refitting_on_validation_targets(synthetic_problem):
     region, observations, model = synthetic_problem()
     # This deliberately prefers the initial model while training targets differ.
-    initial = np.asarray(model.predict_distances(region.feature_array, region.pixel_nodes))
-    validation = PairwiseObservations.from_matrix(
-        region.sampling_unit_ids, initial, target=observations.target
+    initial = model.predict(region)
+    validation = PairwiseObservations.from_pairs(
+        initial.pairs, initial.values, target=observations.target
     )
     from dataclasses import replace
 
@@ -633,7 +638,7 @@ def test_validation_selects_model_without_refitting_on_validation_targets(synthe
     initial_loss = result.history[0].validation_loss
     assert final_loss is not None and initial_loss is not None
     assert final_loss > initial_loss
-    np.testing.assert_allclose(result.model.predict(region).as_matrix(), initial, atol=1e-5)
+    np.testing.assert_allclose(result.model.predict(region).values, initial.values, atol=1e-5)
 
 
 def test_observation_labels_are_aligned_and_signed_relatedness_is_refused(synthetic_problem):

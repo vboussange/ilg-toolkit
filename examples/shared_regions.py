@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
-from ilg_toolkit.models import UNetEmbeddingDistance
+from ilg_toolkit.models import UNet
 
 
 def synthetic_region(name, width, locations):
@@ -37,9 +37,7 @@ for region in regions:
     observations.append(
         PairwiseObservations.from_matrix(region.sampling_unit_ids, dissimilarities, target=target)
     )
-model = UNetEmbeddingDistance(
-    2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4)
-)
+model = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4))
 result = fit(
     regions,
     observations,

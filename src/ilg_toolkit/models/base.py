@@ -1,11 +1,9 @@
-"""Raster encoders and their ecological-distance boundary.
-
-Extracted from the cleaned deepilg architecture. Distance models return
-ecological distances; calibration determines how those distances relate to genetic
-targets.
-"""
+"""Distance models with pooled backbones and species-specific relationships."""
 
 from abc import abstractmethod
+from collections.abc import Sequence
+from itertools import combinations
+from typing import cast
 
 import equinox as eqx
 import jax
@@ -13,140 +11,178 @@ import jax.numpy as jnp
 from numpy.typing import ArrayLike
 
 from ..config import ResistanceSolverConfig
+from ..data import ObservationPartition, RegionBatch
+from ..prediction import Prediction
 from ..resistance import ResistanceSolverContext, build_resistance_context, effective_resistance
-from .common import pixel_to_patch_nodes, squared_embedding_distances
+from .common import backbone_with_randomness, pixel_to_patch_nodes
+
+# Sampling-unit nodes, followed by pairs indexing those sampling units.
+type DistancePairs = tuple[jax.Array, tuple[jax.Array, jax.Array]]
 
 
 class AbstractDistanceModel(eqx.Module):
-    """Derive ecological distances from features and locations without genetic labels.
+    """A pooled backbone composed with a relationship deriving ecological distances.
 
-    Custom implementations implement ``prepare`` and ``predict_distances``,
-    accepting the common inference, random-key and preparation arguments.
-    Preparation returns ``None`` when no numerical setup is needed; otherwise it
-    is local to an operation, outside model parameters and JAX transformations.
+    Custom models implement ``backbone`` and ``ecological_distances`` and declare
+    static ``num_species`` and ``patch_size`` fields, both defaulting to one.
     """
 
-    @abstractmethod
-    def prepare(self, features: ArrayLike) -> ResistanceSolverContext | None:
-        """Prepare shape-dependent numerical work before predicting distances, or return none."""
+    num_species: eqx.AbstractVar[int]
+    patch_size: eqx.AbstractVar[int]
 
     @abstractmethod
-    def predict_distances(
-        self,
-        features: ArrayLike,
-        pixel_nodes: ArrayLike,
-        *,
-        context: ResistanceSolverContext | None = None,
-        inference: bool = True,
-        key: jax.Array | None = None,
-        patch_batch_size: int | None = None,
+    def backbone(self, features: jax.Array) -> jax.Array:
+        """Pooled landscape features derived from a row, column, feature raster."""
+
+    @abstractmethod
+    def ecological_distances(
+        self, latent: jax.Array, pairs: DistancePairs, species_index: int
     ) -> jax.Array:
-        """Return the square ecological-distance matrix at row-major pixel locations."""
+        """Ecological distances aligned with pairs of sampling-unit indices.
+
+        ``pairs`` contains the sampling-unit graph nodes and two arrays indexing
+        those nodes, one for each sampling unit in a pair.
+        """
+
+    def predict(
+        self,
+        region: RegionBatch,
+        *,
+        species: str | None = None,
+        pairs: Sequence[tuple[str, str]] | None = None,
+    ) -> Prediction:
+        """Ecological distances for query pairs in a single-species region batch.
+
+        Omitted pairs request every distinct pair in sampling-unit order.
+        """
+        _single_species(self, species)
+        labels, indices = _query_pairs(region, pairs)
+        context = prepare_distance_context(self, region.feature_array)
+        values = distance_values(
+            self, region.feature_array, region.pixel_nodes, indices, context=context
+        )
+        values = eqx.error_if(
+            values,
+            jnp.any(~jnp.isfinite(values) | (values < 0)),
+            "Distance model produced nonfinite or negative ecological distances",
+        )
+        return Prediction(values, labels, region.name, region.sampling_unit_ids)
 
 
 class ConductanceModel(AbstractDistanceModel):
-    """Encode positive patch conductance and measure graph resistance.
+    """A distance model deriving effective resistance from a conductance surface.
 
-    Initial encoders use stateless GroupNorm; their entire Equinox model is
-    retained by training and prediction. ``inference`` and ``key`` provide the
-    common distance model signature and are unused by this deterministic family.
-    Final implementations declare ``patch_size`` and immutable ``solver_config``
-    as static fields alongside their other fields and initialization.
+    Custom models implement ``backbone`` and ``conductance`` and declare a static
+    ``solver_config`` alongside their other model fields.
     """
 
-    patch_size: eqx.AbstractVar[int]
     solver_config: eqx.AbstractVar[ResistanceSolverConfig]
 
-    def prepare(self, features: ArrayLike) -> ResistanceSolverContext:
-        """Build the model's solver for this post-patch graph outside JIT/grad."""
-        shape = jnp.asarray(features).shape
-        if len(shape) != 3 or shape[0] % self.patch_size or shape[1] % self.patch_size:
-            raise ValueError("Raster dimensions must be divisible by model patch_size")
-        return build_resistance_context(
-            (shape[0] // self.patch_size, shape[1] // self.patch_size), self.solver_config
-        )
-
     @abstractmethod
-    def conductance(self, features: jax.Array, *, patch_batch_size: int | None = None) -> jax.Array:
-        """Return a positive patch-grid surface from row, column, feature data."""
+    def conductance(self, latent: jax.Array, species_index: int) -> jax.Array:
+        """Positive conductance surface for one species from pooled landscape features."""
 
-    def resistance_and_conductance(
+    def ecological_distances(
         self,
-        features: ArrayLike,
-        pixel_nodes: ArrayLike,
+        latent: jax.Array,
+        pairs: DistancePairs,
+        species_index: int,
         *,
         context: ResistanceSolverContext | None = None,
-        patch_batch_size: int | None = None,
-    ) -> tuple[jax.Array, jax.Array]:
-        """Return effective resistances and the conductance surface that induced them."""
-        features = jnp.asarray(features)
-        if context is None:
-            context = self.prepare(features)
-        if context.config != self.solver_config:
+    ) -> jax.Array:
+        """Effective resistance aligned with the requested sampling-unit pairs."""
+        nodes, indices = pairs
+        surface = self.conductance(latent, species_index)
+        if context is not None and context.config != self.solver_config:
             raise ValueError("Solver context policy does not match the conductance model settings")
-        surface = self.conductance(features, patch_batch_size=patch_batch_size)
-        nodes = pixel_to_patch_nodes(
-            pixel_nodes,
-            raster_shape=(features.shape[0], features.shape[1]),
-            patch_size=self.patch_size,
+        context = context or build_resistance_context(
+            (surface.shape[0], surface.shape[1]), self.solver_config
         )
-        return effective_resistance(surface, nodes, context=context), surface
+        return effective_resistance(surface, nodes, context=context)[indices]
 
-    def predict_distances(
-        self,
-        features: ArrayLike,
-        pixel_nodes: ArrayLike,
-        *,
-        context: ResistanceSolverContext | None = None,
-        inference: bool = True,
-        key: jax.Array | None = None,
-        patch_batch_size: int | None = None,
-    ) -> jax.Array:
-        """Return all pairwise effective resistances independently of genetic labels."""
-        resistances, _ = self.resistance_and_conductance(
-            features, pixel_nodes, context=context, patch_batch_size=patch_batch_size
+    def conductance_surface(self, region: RegionBatch, *, species: str | None = None) -> jax.Array:
+        """Positive conductance surface for a single-species region batch."""
+        _single_species(self, species)
+        surface = self.conductance(self.backbone(region.feature_array), 0)
+        return eqx.error_if(
+            surface,
+            jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
+            "Distance model produced nonfinite or nonpositive conductance",
         )
-        return resistances
 
 
-class EmbeddingDistanceModel(AbstractDistanceModel):
-    """Encode a raster and measure squared Euclidean separation of node embeddings."""
-
-    patch_size: eqx.AbstractVar[int]
-
-    def prepare(self, features: ArrayLike) -> None:
-        """Embedding distances need no shape-dependent numerical preparation."""
-        return None
+class EmbeddingModel(AbstractDistanceModel):
+    """A distance model deriving squared embedding distances from landscape features."""
 
     @abstractmethod
-    def embedding_grid(
-        self,
-        features: jax.Array,
-        *,
-        inference: bool = True,
-        key: jax.Array | None = None,
-        patch_batch_size: int | None = None,
-    ) -> jax.Array:
-        """Return embeddings with row, column and embedding dimensions."""
+    def embedding(self, latent: jax.Array, species_index: int) -> jax.Array:
+        """Embedding grid for one species from pooled landscape features."""
 
-    def predict_distances(
-        self,
-        features: ArrayLike,
-        pixel_nodes: ArrayLike,
-        *,
-        context: ResistanceSolverContext | None = None,
-        inference: bool = True,
-        key: jax.Array | None = None,
-        patch_batch_size: int | None = None,
+    def ecological_distances(
+        self, latent: jax.Array, pairs: DistancePairs, species_index: int
     ) -> jax.Array:
-        """Return all pairwise squared embedding distances at row-major pixel nodes."""
-        features = jnp.asarray(features)
-        grid = self.embedding_grid(
-            features, inference=inference, key=key, patch_batch_size=patch_batch_size
-        )
-        nodes = pixel_to_patch_nodes(
-            pixel_nodes,
-            raster_shape=(features.shape[0], features.shape[1]),
-            patch_size=self.patch_size,
-        )
-        return squared_embedding_distances(grid.reshape(-1, grid.shape[-1])[nodes])
+        """Squared embedding distances aligned with the requested sampling-unit pairs."""
+        nodes, (left, right) = pairs
+        grid = self.embedding(latent, species_index)
+        embeddings = grid.reshape(-1, grid.shape[-1])[nodes]
+        return jnp.sum(jnp.square(embeddings[left] - embeddings[right]), axis=-1)
+
+
+def _single_species(model: AbstractDistanceModel, species: str | None) -> None:
+    if model.num_species != 1 or species is not None:
+        raise ValueError("This workflow requires one unnamed species")
+
+
+def _query_pairs(
+    region: RegionBatch, pairs: Sequence[tuple[str, str]] | None
+) -> tuple[tuple[tuple[str, str], ...], tuple[jax.Array, jax.Array]]:
+    raw = tuple(combinations(region.sampling_unit_ids, 2)) if pairs is None else tuple(pairs)
+    try:
+        if any(isinstance(pair, str) for pair in raw):
+            raise ValueError("Each pair requires two labels")
+        labels = cast(tuple[tuple[str, str], ...], tuple(tuple(pair) for pair in raw))
+        ObservationPartition(region.name, labels, role="query")
+        lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
+        indices = jnp.asarray([(lookup[a], lookup[b]) for a, b in labels], dtype=jnp.int32)
+    except (TypeError, ValueError, KeyError) as error:
+        raise ValueError(
+            "Query pairs require unique distinct sampling units in the region"
+        ) from error
+    return labels, (indices[:, 0], indices[:, 1])
+
+
+def prepare_distance_context(
+    model: AbstractDistanceModel, features: ArrayLike
+) -> ResistanceSolverContext | None:
+    """Reusable resistance solver for the region's conductance graph."""
+    if not isinstance(model, ConductanceModel):
+        return None
+    shape = jnp.asarray(features).shape
+    if len(shape) != 3 or shape[0] % model.patch_size or shape[1] % model.patch_size:
+        raise ValueError("Raster dimensions must be divisible by model patch_size")
+    return build_resistance_context(
+        (shape[0] // model.patch_size, shape[1] // model.patch_size), model.solver_config
+    )
+
+
+def distance_values(
+    model: AbstractDistanceModel,
+    features: jax.Array,
+    pixel_nodes: jax.Array,
+    indices: tuple[jax.Array, jax.Array],
+    *,
+    context: ResistanceSolverContext | None = None,
+    inference: bool = True,
+    key: jax.Array | None = None,
+) -> jax.Array:
+    """Ecological distances for located sampling-unit pairs."""
+    latent = backbone_with_randomness(model, features, inference=inference, key=key)
+    nodes = pixel_to_patch_nodes(
+        pixel_nodes,
+        raster_shape=(features.shape[0], features.shape[1]),
+        patch_size=model.patch_size,
+    )
+    pairs = (nodes, indices)
+    if isinstance(model, ConductanceModel):
+        return model.ecological_distances(latent, pairs, 0, context=context)
+    return model.ecological_distances(latent, pairs, 0)

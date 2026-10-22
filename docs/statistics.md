@@ -97,13 +97,13 @@ objective; calibration determines inference independently of that provenance.
 Query regions need only features and sampling-unit locations, with the training
 feature meanings and order; locations are integer `(row, column)` cell positions.
 `model.predict(region)` returns a `Prediction` with one original-scale value per
-distinct pair, in region sampling-unit order. `predict(region, [("south", "east")])`
+distinct pair, in region sampling-unit order. `predict(region, pairs=[("south", "east")])`
 preserves the requested pair order and orientation. `prediction.as_matrix()`
-explicitly converts the stored points into a symmetric matrix in full
-query-region order. Unrequested off-diagonal entries are `NaN`; dissimilarity
-diagonals are structural zeros, not fitted self-pair predictions. An explicit
-`as_matrix(order=...)` must be unique and contain every predicted endpoint; it may
-include additional units.
+rearranges stored values into a symmetric matrix in query-region sampling-unit
+order. The diagonal and unrequested pairs are `NaN` for every target kind.
+`as_matrix(name="effect_variance")` rearranges a named per-pair extra in the same
+way when that extra is present. Target meaning and units remain on the model's
+calibration.
 
 Marginal prediction uses $\hat\alpha+\hat\beta x$ and zero population-effect
 means, including for unseen populations. Known-effect prediction adds the saved

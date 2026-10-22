@@ -26,7 +26,7 @@ distance_model_template = ResNet9Conductance(
     2,
     patch_size=4,
     min_conductance=0.02,
-    patch_batch_size=3,
+    patch_microbatch_size=3,
     key=jax.random.key(0),
 )
 model = load_model("model.ilg", distance_model=distance_model_template)

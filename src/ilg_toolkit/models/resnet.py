@@ -10,15 +10,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ..config import ResistanceSolverConfig, validate_patch_batch_size
+from ..config import ResistanceSolverConfig, validate_patch_microbatch_size
 from .base import ConductanceModel
-from .common import patchify
-
-
-@eqx.filter_checkpoint
-def _encode_patch(model: ResNet9Conductance, patch: jax.Array) -> jax.Array:
-    """Recompute CNN activations in the backward pass instead of retaining them."""
-    return model.encode_patch(patch)
+from .common import encode_patches
 
 
 @final
@@ -58,9 +52,10 @@ class ResNet9Conductance(ConductanceModel):
     residual1: ResidualBlock
     residual2: ResidualBlock
     output: eqx.nn.Linear
+    num_species: int = eqx.field(static=True, default=1, kw_only=True)
     patch_size: int = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
-    patch_batch_size: int | None = eqx.field(static=True)
+    patch_microbatch_size: int | None = eqx.field(static=True)
     solver_config: ResistanceSolverConfig = eqx.field(static=True)
 
     def __init__(
@@ -69,7 +64,7 @@ class ResNet9Conductance(ConductanceModel):
         *,
         patch_size: int = 4,
         min_conductance: float = 1e-6,
-        patch_batch_size: int | None = None,
+        patch_microbatch_size: int | None = None,
         solver_config: ResistanceSolverConfig | None = None,
         key: jax.Array,
     ):
@@ -83,7 +78,7 @@ class ResNet9Conductance(ConductanceModel):
             raise ValueError("ResNet9Conductance requires integer patch_size >= 4")
         if not math.isfinite(min_conductance) or min_conductance <= 0:
             raise ValueError("min_conductance must be finite and positive")
-        validate_patch_batch_size(patch_batch_size)
+        validate_patch_microbatch_size(patch_microbatch_size)
         solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
         if not isinstance(solver_config, ResistanceSolverConfig):
             raise TypeError("solver_config must be a ResistanceSolverConfig")
@@ -99,11 +94,11 @@ class ResNet9Conductance(ConductanceModel):
         self.output = eqx.nn.Linear(256, 1, dtype=jnp.float32, key=keys[5])
         self.patch_size = patch_size
         self.min_conductance = min_conductance
-        self.patch_batch_size = patch_batch_size
+        self.patch_microbatch_size = patch_microbatch_size
         self.solver_config = solver_config
 
-    def encode_patch(self, patch: jax.Array) -> jax.Array:
-        """Return softplus(logit) plus the explicit positive conductance floor."""
+    def _encode_patch(self, patch: jax.Array) -> jax.Array:
+        """Pooled landscape features for one raster patch."""
         patch = jnp.asarray(patch, dtype=self.conv1.weight.dtype)
         values = jax.nn.relu(self.norm1(self.conv1(patch)))
         values = eqx.nn.MaxPool2d(2, stride=2)(values)
@@ -113,33 +108,17 @@ class ResNet9Conductance(ConductanceModel):
         values = self.residual2(values)
         values = jax.nn.relu(self.norm3(self.conv3(values)))
         values = jnp.mean(values, axis=(1, 2))
-        return jax.nn.softplus(self.output(values).squeeze()) + self.min_conductance
+        return values
 
-    def conductance(self, features: jax.Array, *, patch_batch_size: int | None = None) -> jax.Array:
-        """Return the patch-grid conductance surface from row, column, feature data.
-
-        An omitted override uses the constructor's patch_batch_size. None at
-        construction encodes the complete region without checkpointing. A positive
-        integer checkpoints every encoder chunk, even if all patches fit in one
-        chunk, trading backward recomputation for lower activation memory.
-        """
-        if patch_batch_size is None:
-            patch_batch_size = self.patch_batch_size
-        validate_patch_batch_size(patch_batch_size)
+    def backbone(self, features: jax.Array) -> jax.Array:
+        """Pooled landscape features for each raster patch."""
         if features.ndim != 3 or features.shape[-1] != self.conv1.weight.shape[1]:
             raise ValueError(
                 f"Expected row, column, feature data with {self.conv1.weight.shape[1]} features"
             )
-        patches, grid_shape = patchify(features, self.patch_size)
-        if patch_batch_size is None:
-            return eqx.filter_vmap(self.encode_patch)(patches).reshape(grid_shape)
-        # lax.map batches with vmap inside a compiled loop, including a ragged
-        # final chunk. This avoids unrolling one CNN graph per chunk under JIT.
-        conductance = jax.lax.map(
-            lambda patch: _encode_patch(self, patch), patches, batch_size=patch_batch_size
-        )
-        return conductance.reshape(grid_shape)
+        return encode_patches(self, features, self._encode_patch)
 
-    def __call__(self, features: jax.Array, *, patch_batch_size: int | None = None) -> jax.Array:
-        """Alias for :meth:`conductance`."""
-        return self.conductance(features, patch_batch_size=patch_batch_size)
+    def conductance(self, latent: jax.Array, species_index: int) -> jax.Array:
+        """Positive conductance surface from pooled landscape features."""
+        logits = eqx.filter_vmap(eqx.filter_vmap(self.output))(latent).squeeze(-1)
+        return jax.nn.softplus(logits) + self.min_conductance

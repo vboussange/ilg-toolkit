@@ -1,17 +1,14 @@
 """Label-free ecological distances and explicit target-scale predictions."""
 
-from collections.abc import Sequence
-from typing import cast, final
+from typing import final
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
-import numpy as np
 
 from .calibration import AbstractCalibrationModule, MLPECalibrationModule
 from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
 from .mlpe import MLPEConditionalPrediction, RegionalMLPECalibration
-from .models import AbstractDistanceModel, ConductanceModel
+from .models import AbstractDistanceModel
 from .prediction import Prediction
 
 
@@ -63,27 +60,6 @@ class LandscapeGeneticsModel(eqx.Module):
                 "Query feature contract must match training feature meanings and order"
             )
 
-    def ecological_distances(self, region: RegionBatch) -> jax.Array:
-        """Return pairwise ecological distances at query locations without genetic observations."""
-        self._validate_region(region)
-        context = self.distance_model.prepare(region.feature_array)
-        values = self.distance_model.predict_distances(
-            region.feature_array, region.pixel_nodes, context=context
-        )
-        if not bool(jnp.isfinite(values).all()) or bool((values < 0).any()):
-            raise FloatingPointError("Distance model produced nonfinite or negative distances")
-        return values
-
-    def conductance_surface(self, region: RegionBatch) -> jax.Array:
-        """Expose a fitted conductance surface separately from genetic predictions."""
-        if not isinstance(self.distance_model, ConductanceModel):
-            raise TypeError("This distance model does not produce a conductance surface")
-        self._validate_region(region)
-        surface = self.distance_model.conductance(region.feature_array)
-        if not bool(jnp.all(jnp.isfinite(surface) & (surface > 0))):
-            raise FloatingPointError("Distance model produced nonfinite or nonpositive conductance")
-        return surface
-
     def _regional_head(self, region: RegionBatch) -> RegionalMLPECalibration:
         self._validate_region(region)
         if not isinstance(self.calibration, MLPECalibrationModule):
@@ -95,54 +71,22 @@ class LandscapeGeneticsModel(eqx.Module):
             raise ValueError("Population MLPE prediction requires population sampling units")
         return head
 
-    def predict(self, region: RegionBatch, pairs=None) -> Prediction:
-        """Return original-scale predictions; MLPE uses the region's marginal head.
+    def predict(self, region: RegionBatch, *, species: str | None = None, pairs=None) -> Prediction:
+        """Genetic predictions on the target's original scale for query pairs.
 
-        No query targets are accepted. An unseen MLPE region requires explicit
-        calibration even though its ecological distances can already be computed.
-
-        Args:
-            region: Query features and locations matching the model's feature
-                contract; no genetic observations are required.
-            pairs: Optional nonempty unique unordered pair selection. Values
-                retain caller order and orientation. Omission requests every
-                distinct pair in region order.
-
-        Returns:
-            Original-scale pair points retaining the full region sampling-unit
-            order. Use ``as_matrix()`` for explicit matrix representation.
-            Requested distances are selected before calibration or inverse
-            transformation, excluding unrequested transform failures.
-
-        Raises:
-            ValueError: Features, pair labels, locations or regional calibration
-                are incompatible, or pairs are empty, self-pairs or duplicates.
-            FloatingPointError: Distance prediction or inverse transformation
-                produces invalid numerical values.
+        Maximum-likelihood population effects (MLPE) predictions use the region's
+        marginal calibration. Omitted pairs request every distinct pair in
+        sampling-unit order.
         """
-        if pairs is None:
-            left, right = np.triu_indices(len(region.sampling_unit_ids), 1)
-            pairs = tuple(
-                (region.sampling_unit_ids[i], region.sampling_unit_ids[j])
-                for i, j in zip(left, right, strict=True)
-            )
         self._validate_region(region)
-        try:
-            raw_pairs = tuple(pairs)
-            if any(isinstance(pair, str) for pair in raw_pairs):
-                raise ValueError("Each pair requires two labels")
-            pairs = cast(tuple[tuple[str, str], ...], tuple(tuple(pair) for pair in raw_pairs))
-            ObservationPartition(region.name, pairs, role="query")
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "Pairs require distinct labels and unique unordered identities"
-            ) from error
         if isinstance(self.calibration, MLPECalibrationModule):
             self._regional_head(region)
-        distances = _distances_for_pairs(self.ecological_distances(region), region, pairs)
-        values = self.calibration.predict(distances, pairs, region_name=region.name)
+        distances = self.distance_model.predict(region, species=species, pairs=pairs)
+        values = self.calibration.predict(
+            distances.values, distances.pairs, region_name=region.name
+        )
         return Prediction(
-            jnp.asarray(values), pairs, region.name, self.target, region.sampling_unit_ids
+            jnp.asarray(values), distances.pairs, region.name, region.sampling_unit_ids
         )
 
     def calibrate(self, region: RegionBatch, observations, *, partitions=None, config=None):
@@ -183,7 +127,7 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         head = self._regional_head(region)
         pairs = tuple(pairs)
-        distances = _distances_for_pairs(self.ecological_distances(region), region, pairs)
+        distances = self.distance_model.predict(region, pairs=pairs).values
         result = head.predict_known_effects(distances, pairs)
         return eqx.tree_at(
             lambda value: value.prediction.sampling_unit_ids, result, region.sampling_unit_ids
@@ -236,29 +180,14 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         head = self._regional_head(region)
         pairs = tuple(pairs)
-        distances = self.ecological_distances(region)
-        support_distances = _distances_for_pairs(
-            distances, region, support_observations.observed_pairs
-        )
+        support_distances = self.distance_model.predict(
+            region, pairs=support_observations.observed_pairs
+        ).values
         conditioned = head.condition_on_support(
             support_distances, support_observations, partition=support_partition
         )
-        result = conditioned.predict(_distances_for_pairs(distances, region, pairs), pairs)
+        distances = self.distance_model.predict(region, pairs=pairs).values
+        result = conditioned.predict(distances, pairs)
         return eqx.tree_at(
             lambda value: value.prediction.sampling_unit_ids, result, region.sampling_unit_ids
         )
-
-
-def _distances_for_pairs(
-    distances: jax.Array, region: RegionBatch, pairs: Sequence[tuple[str, str]]
-) -> jax.Array:
-    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-    try:
-        if not pairs:
-            raise ValueError("At least one pair is required")
-        indices = jnp.asarray([(lookup[a], lookup[b]) for a, b in pairs], dtype=jnp.int32)
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(
-            "Pairs must contain two sampling-unit labels with locations in the query region"
-        ) from error
-    return distances[indices[:, 0], indices[:, 1]]

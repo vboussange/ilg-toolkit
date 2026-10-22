@@ -130,7 +130,6 @@ def _predict(head, distances, pairs, population_ids, mean, covariance, provenanc
             values,
             pairs,
             head.region_name,
-            head.target,
             tuple(dict.fromkeys(label for pair in pairs for label in pair)),
         ),
         model_values,

@@ -29,14 +29,12 @@ from ilg_toolkit import (
     save_checkpoint,
     score_out_of_fold,
 )
-from ilg_toolkit.models import UNetEmbeddingDistance
+from ilg_toolkit.models import UNet
 
 
 def model_factory(key):
     # Each member receives jax.random.PRNGKey(its declared initialization seed).
-    return UNetEmbeddingDistance(
-        2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=key
-    )
+    return UNet(2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=key)
 
 
 def continue_members(directory, region, observations, folds, config):

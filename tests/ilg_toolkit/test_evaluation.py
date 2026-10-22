@@ -481,11 +481,9 @@ def test_only_eligible_pairs_are_inverse_transformed(FeatureEmbedding, completed
         assert ensemble.members[0].status == "completed"
         with pytest.raises(ValueError):
             ensemble.predict(region)  # unrelated (a,e) has distance 16 and fitted mean -4
-        marginal = completed_model(ensemble.members[0]).predict(region, [("d", "e")])
+        marginal = completed_model(ensemble.members[0]).predict(region, pairs=[("d", "e")])
         assert marginal.pairs == (("d", "e"),)
-        assert marginal.target == target
         assert marginal.region_name == region.name
-        assert marginal.scale == "original"
         selected = predict_out_of_fold(ensemble, region, [("d", "e")])
     assert selected.coverage == 1
     np.testing.assert_allclose(selected.values, [12.25], atol=1e-12)
@@ -563,11 +561,9 @@ def test_direct_pair_predictions_share_oof_policy_and_skip_unrequested_inverse_o
         model = completed_model(member)
         with pytest.raises(FloatingPointError):
             model.predict(region)
-        selected = model.predict(region, [("d", "c")])
+        selected = model.predict(region, pairs=[("d", "c")])
         assert selected.pairs == (("d", "c"),)
-        assert selected.target == target
         assert selected.region_name == region.name
-        assert selected.scale == "original"
         np.testing.assert_allclose(selected.values, [value], rtol=1e-7)
         matrix = selected.as_matrix()
         assert matrix.shape == (4, 4)
@@ -587,4 +583,4 @@ def test_pair_queries_require_unique_distinct_labels_with_query_locations(
     model = completed_model(ensemble.members[0])
     for pairs in ([], [("a", "a")], [("a", "b"), ("b", "a")], [("a",)], ["ab"], [("a", "unknown")]):
         with pytest.raises(ValueError):
-            model.predict(region, pairs)
+            model.predict(region, pairs=pairs)
