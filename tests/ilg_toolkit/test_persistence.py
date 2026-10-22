@@ -1,6 +1,6 @@
 """Scientific behavior of persistence."""
 
-from typing import cast, final
+from typing import cast
 
 import coordax as cx
 import equinox as eqx
@@ -98,25 +98,11 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
 
 
 def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
-    persistence_problem, tmp_path
+    persistence_problem, WeightedEmbedding, tmp_path
 ):
     from dataclasses import replace
 
-    import equinox as eqx
-
     from ilg_toolkit import ObservationPartition
-    from ilg_toolkit.models import EmbeddingDistanceModel
-
-    @final
-    class ScaledEmbedding(EmbeddingDistanceModel):
-        log_weights: jax.Array
-        patch_size: int = eqx.field(static=True, default=1)
-
-        def __init__(self, log_weights: jax.Array):
-            self.log_weights = log_weights
-
-        def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-            return features * jnp.exp(self.log_weights)
 
     region, observations = persistence_problem()
     other = replace(region, name="second-calibration")
@@ -130,7 +116,7 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
     model = fit(
         (region, other),
         (observations, other_observations),
-        distance_model=ScaledEmbedding(jnp.asarray([0.2, -0.7])),
+        distance_model=WeightedEmbedding(jnp.asarray([0.2, -0.7])),
         config=TrainingConfig(epochs=0, objective="mlpe"),
         partition=(training, replace(training, region_name=other.name)),
         validation=(region, observations),
@@ -138,8 +124,8 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
     ).model
     path = tmp_path / "custom-mlpe.ilg"
     save_model(path, model)
-    restored = load_model(path, distance_model=ScaledEmbedding(jnp.asarray([4.0, 3.0])))
-    assert type(restored.distance_model) is ScaledEmbedding
+    restored = load_model(path, distance_model=WeightedEmbedding(jnp.asarray([4.0, 3.0])))
+    assert type(restored.distance_model) is WeightedEmbedding
     for prepared in (region, other):
         np.testing.assert_array_equal(
             restored.predict(prepared).values, model.predict(prepared).values

@@ -283,7 +283,7 @@ def test_explicit_validation_retains_selection_target_access_on_every_member(
         fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)[
             0
         ]
-        # Explicitly reuse held-out observations for selection. Later OOF
+        # Reuse held-out observations for selection. Later out-of-fold
         # eligibility must see this target access even though fold.query remains.
         validation = {
             region.name: ObservationPartition(

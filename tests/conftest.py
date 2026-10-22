@@ -1,4 +1,4 @@
-"""Shared scientific data and independent numerical reference fixtures."""
+"""Shared scientific data and numerical reference fixtures."""
 
 import itertools
 from collections.abc import Iterator
@@ -171,12 +171,12 @@ def _checkpoint_model():
 
 
 def _assert_same_state(actual, expected):
-    # Includes history, both calibrated models, posterior arrays, optimizer and RNG.
+    # Includes history, both calibrated models, posteriors, optimizer and random generator.
     assert eqx.tree_equal(actual, expected)
 
 
 def _dense_resistance(surface, nodes):
-    """NumPy full Laplacian oracle; shares no production graph/solve helpers."""
+    """Dense Laplacian reference for effective resistance, constructed with NumPy."""
     rows, columns = surface.shape
     laplacian = np.zeros((surface.size, surface.size))
     for row in range(rows):
@@ -197,7 +197,7 @@ def _dense_resistance(surface, nodes):
 
 @final
 class _PointConductance(ConductanceModel):
-    """Tiny learnable encoder keeps failure tests independent of CNN compilation."""
+    """Distance model that scales one landscape feature into a conductance surface."""
 
     log_scale: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
@@ -338,7 +338,7 @@ def _calibrated():
 def _joint_gaussian_reference(
     head, observed_pairs, observed_distances, targets, query_pairs, distances
 ):
-    """Dense joint-observation oracle; never uses the stored effect posterior."""
+    """Gaussian conditioning reference built from the joint observation covariance."""
     all_pairs = tuple(observed_pairs) + tuple(query_pairs)
     labels = sorted({label for pair in all_pairs for label in pair})
     incidence = np.array([[float(label in pair) for label in labels] for pair in all_pairs])
@@ -357,7 +357,7 @@ def _joint_gaussian_reference(
 
 @final
 class _WeightedEmbedding(EmbeddingDistanceModel):
-    """Actual squared embedding distances with a learnable feature relationship."""
+    """Distance model with a learned scale for each embedding feature."""
 
     log_weights: jax.Array
     patch_size: int = eqx.field(static=True, default=1)
@@ -403,7 +403,7 @@ def _embedding_problem(name="alpine", offset=0.0, seed=14):
 
 
 def _dense_profile(distances, targets, left, right, n_populations, variances, *, jitter: float = 0):
-    """Independent dense full-covariance oracle retained for acceleration checks."""
+    """Dense Gaussian likelihood reference for fitted calibration parameters."""
     distances = np.asarray(distances, dtype=np.float64)
     z = np.zeros((len(distances), n_populations))
     for row, (a, b) in enumerate(zip(left, right, strict=True)):
@@ -513,7 +513,9 @@ def _observation_problem() -> tuple[RegionBatch, TargetSpec, _ScalarEmbedding]:
     return region, target, _ScalarEmbedding(jnp.asarray(0.7))
 
 
-def _persistence_problem(name="inference"):
+def _population_effect_problem(
+    name: str, target: TargetSpec
+) -> tuple[RegionBatch, PairwiseObservations]:
     coordinates = np.array([0, 0.2, 0.8, 1.1, 1.9, 2.8])
     features = np.stack((coordinates, coordinates * 0.1 + 1), axis=-1).reshape(2, 3, 2)
     labels = tuple(f"population-{index}" for index in range(6))
@@ -530,36 +532,21 @@ def _persistence_problem(name="inference"):
     noise = np.random.default_rng(17).normal(scale=0.12, size=(6, 6))
     observed += (noise + noise.T) / 2
     np.fill_diagonal(observed, 0)
-    observations = PairwiseObservations.from_matrix(
-        labels,
-        observed,
-        target=TargetSpec("synthetic divergence", units="index", transform="log1p"),
-    )
+    observations = PairwiseObservations.from_matrix(labels, observed, target=target)
     return region, observations
+
+
+def _persistence_problem(name="inference"):
+    return _population_effect_problem(
+        name, TargetSpec("synthetic divergence", units="index", transform="log1p")
+    )
 
 
 def _calibration_problem(
     name: str = "original",
 ) -> tuple[RegionBatch, PairwiseObservations, ObservationPartition, ObservationPartition]:
-    coordinates = np.array([0, 0.2, 0.8, 1.1, 1.9, 2.8])
-    features = np.stack((coordinates, coordinates * 0.1 + 1), axis=-1).reshape(2, 3, 2)
-    ids = tuple(f"population-{index}" for index in range(6))
-    region = RegionBatch(
-        name,
-        cx.field(features, "row", "column", "feature"),
-        ids,
-        np.array(list(np.ndindex(2, 3))),
-        feature_names=("east_covariate", "canopy_covariate"),
-    )
-    distances = (coordinates[:, None] - coordinates[None, :]) ** 2
-    effects = np.array([0.2, -0.15, 0.1, 0.3, -0.2, 0.05])
-    rng = np.random.default_rng(17)
-    observed = 2 + 0.7 * distances + effects[:, None] + effects[None, :]
-    noise = rng.normal(scale=0.12, size=(6, 6))
-    observed += (noise + noise.T) / 2
-    np.fill_diagonal(observed, 0)
-    observations = PairwiseObservations.from_matrix(
-        ids, observed, target=TargetSpec("synthetic divergence", units="index")
+    region, observations = _population_effect_problem(
+        name, TargetSpec("synthetic divergence", units="index")
     )
     training = ObservationPartition(name, observations.observed_pairs[:10], role="training")
     validation = ObservationPartition(name, observations.observed_pairs[10:], role="validation")
@@ -575,7 +562,7 @@ def _synthetic_problem():
         grid_positions=np.array([[0, 0], [0, 3], [3, 0], [3, 3]]),
         feature_names=("gradient", "texture"),
     )
-    # Independent simple dissimilarity with known units; no paper assets.
+    # Synthetic dissimilarity values in target units.
     targets = np.array(
         [[0, 0.2, 0.4, 0.6], [0.2, 0, 0.2, 0.4], [0.4, 0.2, 0, 0.2], [0.6, 0.4, 0.2, 0]]
     )
@@ -589,7 +576,7 @@ def _synthetic_problem():
 
 
 def _dense_jax_profile(distances, targets, left, right, n_populations, raw_variances):
-    """Dense autodiff oracle independent of endpoint-system arithmetic."""
+    """Dense Gaussian likelihood and gradient reference using automatic differentiation."""
     import jax
     import jax.numpy as jnp
     from jax.scipy.linalg import cho_solve
@@ -616,10 +603,9 @@ def _dense_jax_profile(distances, targets, left, right, n_populations, raw_varia
 
 
 def _decimal_dense_profile_and_gradients(distances, targets, left, right, raw_variances):
-    """60-digit dense Gaussian oracle when float64 covariance gradients cancel.
+    """60-digit dense Gaussian reference for covariance gradients.
 
-    Uses standard-library Decimal Gaussian elimination, not the Woodbury or
-    positive-bilinear implementation. It is intentionally tiny test machinery.
+    Uses standard-library Decimal Gaussian elimination.
     """
     import math
     from collections.abc import Iterable
@@ -866,7 +852,11 @@ def decimal_dense_profile_and_gradients_fixture():
 
 @pytest.fixture(scope="session")
 def mlpe_reference():
-    """R 4.1.2 / lme4 1.1-28 / ResistanceGA2 1.1.20, full ML, sample-SD scaling."""
+    """Frozen maximum-likelihood population effects (MLPE) reference values.
+
+    Computed with R 4.1.2, lme4 1.1-28 and ResistanceGA2 1.1.20, using full
+    maximum likelihood and sample standard deviation scaling.
+    """
     return SimpleNamespace(
         distances=_R_DISTANCES,
         targets=_R_TARGETS,

@@ -1,4 +1,4 @@
-"""Scientific behavior of ibd."""
+"""Scientific behavior of isolation by distance (IBD)."""
 
 import jax
 import numpy as np
@@ -27,8 +27,8 @@ def test_fit_recovers_shared_affine_geographic_relationship():
 
 def test_regions_have_equal_weight_despite_unequal_pair_counts():
     # At each distance the regional targets plus one differ by a factor of four.
-    # Their geometric mean is 2 * distance + 4, so log1p-MSE has the independently
-    # derived optimum prediction 2 * distance + 3 and loss log(2)**2.
+    # Their geometric mean is 2 * distance + 4, so mean squared error after log1p
+    # has optimum prediction 2 * distance + 3 and loss log(2)**2.
     short = np.array([0.0, 1.0, 3.0, 6.0])
     distances = {"large": np.tile(short, 50), "small": short}
     targets = {"large": distances["large"] + 1.0, "small": 4.0 * short + 7.0}
@@ -53,7 +53,7 @@ def test_regions_have_equal_weight_despite_unequal_pair_counts():
 
 
 def test_matrix_prediction_preserves_structural_zeros_and_uses_euclidean_distance():
-    # Explicit raster-to-metre conversion: row and column pixel sizes differ.
+    # Raster-to-meter conversion uses different row and column pixel sizes.
     grid_positions = np.array([[0, 0], [3, 4]])
     projected_positions = grid_positions * np.array([2.0, 1.0])
     distance = np.linalg.norm(projected_positions[1] - projected_positions[0])
