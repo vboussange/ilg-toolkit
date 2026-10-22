@@ -75,7 +75,7 @@ jobs:
               distance_model=UNet(
                   2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0),
               ),
-              config=ilg.TrainingConfig(objective="direct_log1p", epochs=0),
+              config=ilg.TrainingConfig(objective="direct_log1p", steps=0),
           )
           assert np.isfinite(state.model.predict(region).values).all()
           PY

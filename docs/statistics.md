@@ -10,8 +10,8 @@ predictions.
 Observations can be supplied as labelled pairs or as a symmetric matrix whose
 missing off-diagonal entries are `NaN`. Explicit training, validation,
 calibration, support and query partitions record which measurements were
-accessed. Validation selects the best model, while optimization follows the fixed
-requested epoch budget.
+accessed. Validation determines the selected model, while optimization follows the fixed
+requested step budget.
 
 ## Direct regression
 
@@ -83,14 +83,12 @@ explain the exact population-sized calculation.
 `MLPECalibrationModule.regions` contains one `RegionalMLPECalibration` per fitted
 region. The complete model's `.target` comes from its calibration module.
 
-`calibrate(model, region, observations)` or `model.calibrate(...)` freezes the
-distance model and fits or replaces one regional MLPE relationship. It preserves
-other fitted MLPE regions and defaults to recorded training observations;
-development observations and new regions require explicit partitions.
-Converting a direct module to MLPE replaces it completely: genetic prediction
-then requires a regional calibration, including in previously supported regions.
-The saved `.training_objective` continues to record the original training
-objective; calibration determines inference independently of that provenance.
+`fit(region, observations, distance_model=frozen, config=TrainingConfig(objective="mlpe", steps=0))`
+fits calibration at step zero with the distance model fixed. Coefficients and
+population effects use the training pairs and the initial variances in
+`TrainingConfig.mlpe`, an `MLPEConfig`. The returned model covers the supplied
+regions. Validation observations score that fitted calibration and select among
+evaluated models.
 
 ## Prediction information
 

@@ -28,7 +28,6 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder(
     from ilg_toolkit import (
         PairwiseObservations,
         TrainingConfig,
-        calibrate,
         fit,
     )
 
@@ -39,10 +38,16 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder(
         region,
         observations,
         distance_model=ScalarEmbedding(weight=jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
         partition=training,
     ).model
-    model = calibrate(direct, region, observations)
+    model = fit(
+        region,
+        observations,
+        distance_model=direct.distance_model,
+        partition=training,
+        config=TrainingConfig(objective="mlpe", steps=0),
+    ).selected_model
     head = cast(MLPECalibrationModule, model.calibration).regions[region.name]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict_known_effects(region, pairs)
@@ -116,7 +121,7 @@ def test_explicit_transform_returns_original_units_and_separate_ecological_dista
         region,
         observations,
         distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
     )
     prediction = result.model.predict(region)
     assert result.history[0].training_loss < 1e-12
@@ -124,13 +129,12 @@ def test_explicit_transform_returns_original_units_and_separate_ecological_dista
     np.testing.assert_allclose(result.model.distance_model.predict(region).as_matrix()[0, 1], 1)
 
 
-def test_composed_calibration_owns_inference_and_preserves_training_objective(
+def test_recalibrated_model_retains_target_scale_after_save_and_load(
     ScalarEmbedding, calibration_problem, tmp_path
 ):
     import pytest
 
     from ilg_toolkit import (
-        calibrate,
         load_model,
         save_model,
     )
@@ -140,12 +144,18 @@ def test_composed_calibration_owns_inference_and_preserves_training_objective(
         region,
         observations,
         distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
         partition=training,
     )
     assert state.model.target is state.model.calibration.target
-    converted = calibrate(state.model, region, observations)
-    assert converted.training_objective == state.config.objective == "direct_log1p"
+    converted = fit(
+        region,
+        observations,
+        distance_model=state.model.distance_model,
+        partition=training,
+        config=TrainingConfig(objective="mlpe", steps=0),
+    ).selected_model
+    assert converted.training_objective == "mlpe"
     assert eqx.tree_equal(converted.distance_model, state.model.distance_model)
     unseen = replace(region, name="unseen")
     assert np.isfinite(state.model.predict(unseen).values).all()
@@ -154,6 +164,6 @@ def test_composed_calibration_owns_inference_and_preserves_training_objective(
     path = tmp_path / "converted.ilg"
     save_model(path, converted)
     restored = load_model(path, distance_model=ScalarEmbedding(jnp.asarray(0.0)))
-    assert restored.training_objective == "direct_log1p"
+    assert restored.training_objective == "mlpe"
     assert restored.target == observations.target
     np.testing.assert_array_equal(restored.predict(region).values, converted.predict(region).values)

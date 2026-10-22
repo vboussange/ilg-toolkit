@@ -4,7 +4,7 @@
 population-effect posterior, feature and target contracts, solver settings, and
 observation-use provenance. The artifact supports prediction without training
 measurements. `save_checkpoint` stores the latest optimization state and selected
-best model for continuation; see below.
+model for continuation; see below.
 
 ## Export predictions
 
@@ -45,9 +45,8 @@ training/validation/calibration access are retained. Marginal, known-effect and
 support-conditioned predictions preserve their scientific meaning. A model may
 have MLPE calibration for only some regions: ecological distances remain available
 in compatible regions, while MLPE genetic prediction requires an explicit
-regional relationship. Direct-to-MLPE calibration replaces the entire direct module;
-there is no direct prediction fallback for other regions. The original
-`training_objective` remains provenance after later calibration. See [conditioning](mlpe-conditioning.md) and
+regional relationship. Recalibration through `fit` with zero steps saves the
+supplied regions and the calibration objective. See [conditioning](mlpe-conditioning.md) and
 [evaluation](evaluation.md) for prediction and eligibility rules.
 
 Query regions supply a Coordax field with named row, column and feature dimensions,
@@ -98,18 +97,18 @@ from ilg_toolkit import fit, load_checkpoint, save_checkpoint
 with jax.enable_x64():
     result = fit(
         region, observations, distance_model=distance_model, config=config,
-        on_epoch=lambda state: save_checkpoint("training.ilg", state),
+        on_step=lambda state: save_checkpoint("training.ilg", state),
     )
     state = load_checkpoint("training.ilg", distance_model=distance_model_template)
     continued = fit(
         region, observations, state=state,
-        config=replace(state.config, epochs=100),
+        config=replace(state.config, steps=100),
     )
 ```
 
 Supply the exact distance model configuration used for this fit, just as for `load_model`.
 Include the original training/validation partitions and validation arguments when
-resuming. The default budget is the saved configuration. Only the total epoch
+resuming. The default budget is the saved configuration. Only the total step
 budget may increase or stay equal; reducing the saved requested budget is rejected,
 including for an intermediate checkpoint. Input shapes and precision,
 sampling-unit identities/order/kinds, target meaning/units/transform, feature
@@ -125,15 +124,22 @@ is expected under the same execution conditions. Changed library versions,
 devices or execution settings are not refused automatically, and may change
 numerical results.
 
-`on_epoch(state)` runs after initialization at epoch zero and after each complete
-update, evaluation and model selection. Callback exceptions propagate. A fresh
+`on_step(state)` runs after initialization at step zero and after each optimizer
+update, following evaluation and model selection when scheduled. Callback exceptions propagate. A fresh
 zero-budget fit invokes the callback once; a continuation with no further updates
 invokes it zero times. Saving at the end with `save_checkpoint(path, result)`
 is also supported: `fit` returns `TrainingState` directly, with the selected model
-exposed as `.model`. The checkpoint retains latest distance/nuisance parameters,
-optimizer and random state, declared configuration, history and selected best
-model together. Validation selection preserves the earlier best model while
+exposed as `.model`. The checkpoint retains latest distance and MLPE variance parameters,
+optimizer and random state, declared configuration, history and selected
+model together. Validation selection preserves the earlier selected model while
 continuation follows the latest optimizer trajectory. Individual ensemble members
 use these same functions; `continue_members` in
 [examples/ensemble.py](../examples/ensemble.py) owns filenames and loops over folds
 and declared seeds without a toolkit-managed run directory.
+
+Full evaluations run at step zero, every `eval_every` steps, and the final step.
+History contains only evaluated steps. `selected_model` and `selected_step`
+identify the retained evaluated model; `model` also returns this model.
+Between evaluations, `latest_model` has the latest distance parameters and the
+calibration from the preceding evaluation. Checkpoints at those steps retain the
+optimizer and random state for continuation; use `selected_model` for prediction.

@@ -46,7 +46,7 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions(dense_resi
             distance_model=model,
             config=TrainingConfig(
                 objective="direct_log1p",
-                epochs=4,
+                steps=4,
                 learning_rate=0.001,
             ),
         )

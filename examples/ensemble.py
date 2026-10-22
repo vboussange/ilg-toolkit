@@ -59,7 +59,7 @@ def continue_members(directory, region, observations, folds, config):
                 config=config,
                 model_factory=model_factory,
                 state=state,
-                on_epoch=lambda identity, current, path=checkpoint: save_checkpoint(path, current),
+                on_step=lambda identity, current, path=checkpoint: save_checkpoint(path, current),
             )
             members.append(member)
     return Ensemble(tuple(members))
@@ -99,7 +99,7 @@ with jax.enable_x64():
         fold_seed=47,
         initialization_seeds=(13, 29),
         model_factory=model_factory,
-        config=TrainingConfig(objective="mlpe", epochs=1, learning_rate=0.001),
+        config=TrainingConfig(objective="mlpe", steps=1, learning_rate=0.001),
     )
     if ensemble.failures:
         raise RuntimeError(ensemble.failures)
@@ -200,12 +200,12 @@ with jax.enable_x64():
     folds = tuple({member.fold.fold_id: member.fold for member in ensemble.members}.values())
     with TemporaryDirectory() as directory:
         partial = continue_members(
-            directory, region, observations, folds, TrainingConfig(objective="mlpe", epochs=0)
+            directory, region, observations, folds, TrainingConfig(objective="mlpe", steps=0)
         )
         if partial.failures:
             raise RuntimeError(partial.failures)
         continued = continue_members(
-            directory, region, observations, folds, TrainingConfig(objective="mlpe", epochs=1)
+            directory, region, observations, folds, TrainingConfig(objective="mlpe", steps=1)
         )
         if continued.failures:
             raise RuntimeError(continued.failures)

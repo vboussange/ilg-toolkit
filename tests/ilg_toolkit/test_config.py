@@ -14,7 +14,7 @@ def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_t
     omitted = {}
     with pytest.raises(TypeError):
         TrainingConfig(**omitted)
-    config = TrainingConfig(objective="direct_log1p", epochs=0)
+    config = TrainingConfig(objective="direct_log1p", steps=0)
     with pytest.raises(ValueError):
         fit(region, observations, config=config)
     with pytest.raises(ValueError):

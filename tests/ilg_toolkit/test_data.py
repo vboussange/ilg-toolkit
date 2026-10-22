@@ -73,13 +73,13 @@ def test_labelled_raster_axes_normalize_without_changing_feature_meaning(observa
         plain,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", epochs=1),
+        config=TrainingConfig(objective="direct_log1p", steps=1),
     ).model
     actual = fit(
         labelled,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", epochs=1),
+        config=TrainingConfig(objective="direct_log1p", steps=1),
     ).model
     assert labelled.features.dims == ("row", "column", "feature")
     row_axis = labelled.features.axes["row"]
@@ -113,7 +113,7 @@ def test_array_like_observations_and_targets_follow_configured_precision(
                 region,
                 observations,
                 distance_model=model,
-                config=TrainingConfig(objective="direct_log1p", epochs=0),
+                config=TrainingConfig(objective="direct_log1p", steps=0),
             )
             prediction = fitted.model.predict(region)
             assert prediction.values.dtype == prediction.as_matrix().dtype == dtype
@@ -169,13 +169,13 @@ def test_equivalent_matrix_and_pair_inputs_train_equivalent_models(observation_p
         region,
         matrix,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", epochs=2),
+        config=TrainingConfig(objective="direct_log1p", steps=2),
     )
     right = fit(
         region,
         pairs,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", epochs=2),
+        config=TrainingConfig(objective="direct_log1p", steps=2),
     )
     np.testing.assert_allclose(
         left.model.predict(region).values, right.model.predict(region).values, rtol=1e-6
@@ -195,7 +195,7 @@ def test_incomplete_pairs_remain_absent_through_fitting(ScalarEmbedding, observa
         region,
         observations,
         distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
     )
     assert observations.observed_pairs == (("unit/7", "unit/20"),)
     assert np.isnan(observations.values[0, 2])
@@ -219,7 +219,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership(o
         region,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
         partition=training,
         validation=(region, observations),
         validation_partition=validation,
@@ -230,7 +230,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership(o
             region,
             observations,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            config=TrainingConfig(objective="direct_log1p", steps=0),
             validation=(region, observations),
         )
     wrong_region = ObservationPartition("somewhere-else", training.pairs)
@@ -239,7 +239,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership(o
             region,
             observations,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            config=TrainingConfig(objective="direct_log1p", steps=0),
             partition=wrong_region,
         )
     incomplete = PairwiseObservations.from_pairs(training.pairs, [1], target=target)
@@ -249,7 +249,7 @@ def test_supplied_partitions_select_observations_and_reject_invalid_membership(o
             region,
             incomplete,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            config=TrainingConfig(objective="direct_log1p", steps=0),
             partition=absent,
         )
 
@@ -270,7 +270,7 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit(observation_problem)
         region,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
     )
     assert region.sampling_unit_kinds == ("individual", "population", "individual")
     assert result.model.feature_names == ("elevation", "canopy")
@@ -289,7 +289,7 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit(observation_problem)
             region,
             relatedness,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            config=TrainingConfig(objective="direct_log1p", steps=0),
         )
 
 
@@ -314,7 +314,7 @@ def test_invalid_observations_and_partitions_fail_at_the_public_boundary(observa
             region,
             unknown,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            config=TrainingConfig(objective="direct_log1p", steps=0),
         )
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
     for (partition,) in [
@@ -326,7 +326,7 @@ def test_invalid_observations_and_partitions_fail_at_the_public_boundary(observa
                 region,
                 observations,
                 distance_model=model,
-                config=TrainingConfig(objective="direct_log1p", epochs=0),
+                config=TrainingConfig(objective="direct_log1p", steps=0),
                 partition=partition,
             )
     with pytest.raises(ValueError):

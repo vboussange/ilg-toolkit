@@ -31,7 +31,7 @@ def test_declared_seeds_initialize_readable_members_directly(
         observations,
         folds=folds,
         initialization_seeds=(13, 29),
-        config=TrainingConfig(objective="mlpe", epochs=0),
+        config=TrainingConfig(objective="mlpe", steps=0),
         model_factory=model_factory,
     )
     assert result.expected_member_ids == (
@@ -53,7 +53,7 @@ def test_fresh_ensemble_requires_factory_and_explicit_training_configuration(
 ):
     region, observations = embedding_problem()
     fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2)[0]
-    config = TrainingConfig(objective="mlpe", epochs=0)
+    config = TrainingConfig(objective="mlpe", steps=0)
     with pytest.raises(TypeError):
         fit_ensemble(  # pyright: ignore[reportCallIssue]
             region, observations, folds=[fold], model_factory=model_factory
@@ -75,7 +75,7 @@ def test_factory_cannot_silently_select_a_builtin_model(embedding_problem):
         observations,
         n_folds=1,
         holdout_size=2,
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
         model_factory=lambda key: None,  # pyright: ignore[reportArgumentType]
     )
     member = result.members[0]
@@ -95,7 +95,7 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
             observations,
             folds=folds,
             initialization_seeds=(13, 29),
-            config=TrainingConfig(objective="mlpe", epochs=3, learning_rate=0.03),
+            config=TrainingConfig(objective="mlpe", steps=3, learning_rate=0.03),
             model_factory=model_factory,
         )
         prediction = result.predict(region)
@@ -160,7 +160,7 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
             target=observations.target,
             sampling_unit_ids=region.sampling_unit_ids,
         )
-        config = TrainingConfig(objective="mlpe", epochs=2)
+        config = TrainingConfig(objective="mlpe", steps=2)
         baseline = fit_ensemble(
             region, observations, folds=[fold], config=config, model_factory=model_factory
         )
@@ -248,7 +248,7 @@ def test_failed_members_and_missing_composition_cannot_be_silently_dropped(
         holdout_size=2,
         fold_seed=47,
         initialization_seeds=(1, 2, 3),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
         model_factory=partly_broken_factory,
         on_member=outcomes.append,
     )
@@ -289,7 +289,7 @@ def test_explicit_validation_retains_selection_target_access_on_every_member(
             region,
             observations,
             folds=[fold],
-            config=TrainingConfig(objective="mlpe", epochs=2),
+            config=TrainingConfig(objective="mlpe", steps=2),
             model_factory=model_factory,
         )
     member = result.members[0]
@@ -366,7 +366,7 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
             n_folds=1,
             holdout_size=2,
             fold_seed=47,
-            config=TrainingConfig(objective="mlpe", epochs=2),
+            config=TrainingConfig(objective="mlpe", steps=2),
             model_factory=model_factory,
         )
     member = result.members[0]
@@ -462,7 +462,7 @@ def test_member_callback_failure_interrupts_before_starting_another_member(
             holdout_size=2,
             fold_seed=47,
             initialization_seeds=(1, 2),
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            config=TrainingConfig(objective="direct_log1p", steps=0),
             model_factory=tracked_factory,
             on_member=interrupted_save,
         )
@@ -477,14 +477,14 @@ def test_epoch_hook_resumes_pending_members_without_reinitializing_completed_upd
     with jax.enable_x64():
         region, observations = embedding_problem()
         folds = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)
-        config = TrainingConfig(objective="mlpe", epochs=3)
+        config = TrainingConfig(objective="mlpe", steps=3)
         checkpoints = {}
         completed_members = []
 
         def stop_after_one_update(identity, state):
             checkpoints[identity.member_id] = state
-            if state.epoch == 1:
-                raise RuntimeError("stop epoch for checkpoint")
+            if state.step == 1:
+                raise RuntimeError("stop step for checkpoint")
 
         with pytest.raises(RuntimeError):
             fit_ensemble(
@@ -494,12 +494,12 @@ def test_epoch_hook_resumes_pending_members_without_reinitializing_completed_upd
                 initialization_seeds=(13, 29),
                 config=config,
                 model_factory=model_factory,
-                on_epoch=stop_after_one_update,
+                on_step=stop_after_one_update,
                 on_member=completed_members.append,
             )
         assert completed_members == []
         assert len(checkpoints) == 1
-        epochs = []
+        steps = []
         resumed = fit_ensemble(
             region,
             observations,
@@ -508,10 +508,10 @@ def test_epoch_hook_resumes_pending_members_without_reinitializing_completed_upd
             config=config,
             model_factory=model_factory,
             member_states=checkpoints,
-            on_epoch=lambda identity, state: epochs.append(
-                (identity.initialization_seed, state.epoch)
+            on_step=lambda identity, state: steps.append(
+                (identity.initialization_seed, state.step)
             ),
         )
         assert np.isfinite(resumed.predict(region).prediction.values).all()
-    assert epochs == [(13, 2), (13, 3), (29, 0), (29, 1), (29, 2), (29, 3)]
-    assert [completed_fit(member)[1].epoch for member in resumed.members] == [3, 3]
+    assert steps == [(13, 2), (13, 3), (29, 0), (29, 1), (29, 2), (29, 3)]
+    assert [completed_fit(member)[1].step for member in resumed.members] == [3, 3]

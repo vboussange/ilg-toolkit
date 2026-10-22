@@ -1,8 +1,10 @@
 """Explicit optimization options without study configuration."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Integral, Real
+
+from .mlpe import MLPEConfig
 
 
 def validate_patch_microbatch_size(value: int | None) -> None:
@@ -50,54 +52,27 @@ class ResistanceSolverConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Fixed training budget; validation only changes model selection.
+    """Optimization budget and numerical settings for a landscape genetics model.
 
-    A fixed Adam learning rate is used. Epoch zero is included in the reported
-    history and is eligible for validation selection. No test data is accepted.
-    MLPE uses separate regional variance parameters with the same Adam learning
-    rate, an explicit floor/jitter and optional initial (population, residual)
-    variances. Otherwise initialization uses training-target sample variance.
+    Adam updates run for ``steps`` with a fixed learning rate.
+    Evaluation at step zero, every ``eval_every`` updates, and the final step
+    determines model selection. Maximum-likelihood population effects (MLPE)
+    settings stay fixed during compiled calculations.
     """
 
     objective: str
-    epochs: int = 100
+    steps: int = 100
+    eval_every: int = 1
     learning_rate: float = 0.001
     seed: int = 0
     jit: bool = True
-    mlpe_variance_floor: float = 1e-10
-    mlpe_jitter: float = 0.0
-    mlpe_initial_variances: tuple[float, float] | None = None
+    mlpe: MLPEConfig = field(default_factory=MLPEConfig)
 
     def __post_init__(self):
         if self.objective not in {"direct_log1p", "mlpe"}:
             raise ValueError("objective must be direct_log1p or mlpe")
-        if (
-            isinstance(self.mlpe_variance_floor, bool)
-            or not isinstance(self.mlpe_variance_floor, Real)
-            or not math.isfinite(self.mlpe_variance_floor)
-            or self.mlpe_variance_floor <= 0
-        ):
-            raise ValueError("mlpe_variance_floor must be finite and positive")
-        if (
-            isinstance(self.mlpe_jitter, bool)
-            or not isinstance(self.mlpe_jitter, Real)
-            or not math.isfinite(self.mlpe_jitter)
-            or not 0 <= self.mlpe_jitter <= 1e-6
-        ):
-            raise ValueError("mlpe_jitter must be finite and in [0, 1e-6]")
-        if self.mlpe_initial_variances is not None:
-            values = tuple(self.mlpe_initial_variances)
-            if len(values) != 2 or any(
-                not isinstance(value, Real)
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                or value <= self.mlpe_variance_floor
-                for value in values
-            ):
-                raise ValueError(
-                    "mlpe_initial_variances must be two finite variances above the floor"
-                )
-            object.__setattr__(self, "mlpe_initial_variances", tuple(float(v) for v in values))
+        if not isinstance(self.mlpe, MLPEConfig):
+            raise ValueError("mlpe must be an MLPEConfig")
         if not isinstance(self.jit, bool):
             raise ValueError("jit must be a boolean")
         if (
@@ -106,8 +81,14 @@ class TrainingConfig:
             or not 0 <= self.seed < 2**32
         ):
             raise ValueError("seed must be an integer in [0, 2**32)")
-        if isinstance(self.epochs, bool) or not isinstance(self.epochs, int) or self.epochs < 0:
-            raise ValueError("epochs must be a nonnegative integer")
+        if isinstance(self.steps, bool) or not isinstance(self.steps, int) or self.steps < 0:
+            raise ValueError("steps must be a nonnegative integer")
+        if (
+            isinstance(self.eval_every, bool)
+            or not isinstance(self.eval_every, int)
+            or self.eval_every < 1
+        ):
+            raise ValueError("eval_every must be a positive integer")
         if (
             isinstance(self.learning_rate, bool)
             or not isinstance(self.learning_rate, Real)
@@ -115,5 +96,4 @@ class TrainingConfig:
             or self.learning_rate <= 0
         ):
             raise ValueError("learning_rate must be finite and positive")
-        for name in ("learning_rate", "mlpe_variance_floor", "mlpe_jitter"):
-            object.__setattr__(self, name, float(getattr(self, name)))
+        object.__setattr__(self, "learning_rate", float(self.learning_rate))

@@ -11,11 +11,11 @@ def test_fixed_budget_fit_improves_and_predicts_without_query_targets(synthetic_
         region,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", epochs=20, learning_rate=0.01, seed=3),
+        config=TrainingConfig(objective="direct_log1p", steps=20, learning_rate=0.01, seed=3),
     )
     prediction = result.model.predict(region)
     assert result.history[-1].training_loss < result.history[0].training_loss * 0.75
-    assert result.selected_epoch == 20
+    assert result.selected_step == 20
     assert result.selection == "final"
     assert prediction.as_matrix().shape == (4, 4)
     assert np.all(np.isfinite(prediction.values))

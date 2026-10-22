@@ -4,7 +4,7 @@ Ordinary calibrated prediction is marginal: population effects have mean zero.
 The complete `LandscapeGeneticsModel` owns an `MLPECalibrationModule`; its
 `.calibration.regions[region_name]` is the standalone `RegionalMLPECalibration`
 used below. Obtain it after `fit(..., config=TrainingConfig(objective="mlpe", ...))`
-or explicit frozen `calibrate(...)`.
+including a frozen distance model fitted with `TrainingConfig(objective="mlpe", steps=0)`.
 It uses the saved regional intercept, signed slope and training distance moments.
 `head.predict_known_effects(distances, pairs)` is a separate operation that uses the
 saved posterior effects for known populations. Unseen populations receive

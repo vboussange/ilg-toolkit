@@ -37,7 +37,7 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, kind, objectiv
             region,
             observations,
             distance_model=encoder,
-            config=TrainingConfig(objective=objective, epochs=0),
+            config=TrainingConfig(objective=objective, steps=0),
         )
         if kind == "model":
             save_model(path, state.model)
@@ -81,7 +81,7 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
         region,
         observations,
         distance_model=encoder(3),
-        config=TrainingConfig(epochs=0, objective="direct_log1p"),
+        config=TrainingConfig(steps=0, objective="direct_log1p"),
     ).model
     path = tmp_path / "direct.ilg"
     save_model(path, model)
@@ -118,7 +118,7 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
         (region, other),
         (observations, other_observations),
         distance_model=WeightedEmbedding(jnp.asarray([0.2, -0.7])),
-        config=TrainingConfig(epochs=0, objective="mlpe"),
+        config=TrainingConfig(steps=0, objective="mlpe"),
         partition=(training, replace(training, region_name=other.name)),
         validation=(region, observations),
         validation_partition=validation,

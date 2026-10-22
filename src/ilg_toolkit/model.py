@@ -89,12 +89,6 @@ class LandscapeGeneticsModel(eqx.Module):
             jnp.asarray(values), distances.pairs, region.name, region.sampling_unit_ids
         )
 
-    def calibrate(self, region: RegionBatch, observations, *, partitions=None, config=None):
-        """Fit or replace regional MLPE calibration with this distance model frozen."""
-        from .calibration import calibrate
-
-        return calibrate(self, region, observations, partitions=partitions, config=config)
-
     def predict_known_effects(self, region: RegionBatch, pairs) -> MLPEConditionalPrediction:
         """Predict conditional genetic points using saved MLPE population effects.
 
