@@ -12,6 +12,7 @@ import pytest
 
 from ilg_toolkit import (
     MLPECalibrationModule,
+    ObservationPartition,
     PairwiseObservations,
     TargetSpec,
     TrainingConfig,
@@ -28,14 +29,59 @@ from ilg_toolkit.training import (
 )
 
 
-@pytest.mark.parametrize("family", ["embedding", "conductance", "unet", "resnet"])
-@pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
-def test_resume_equals_uninterrupted(tmp_path, training_problem, family, objective):
+@pytest.mark.parametrize(
+    ("family", "objective", "selection"),
+    [
+        (family, objective, "final")
+        for family in ("embedding", "conductance", "unet", "resnet")
+        for objective in ("direct_log1p", "mlpe")
+    ]
+    + [("unet", objective, "validation") for objective in ("direct_log1p", "mlpe")],
+)
+def test_resume_equals_uninterrupted(
+    tmp_path,
+    training_problem,
+    checkpoint_problem,
+    checkpoint_model,
+    family,
+    objective,
+    selection,
+):
     region, observations, encoder = training_problem(family)
     other = replace(region, name="valley")
     other_observations = replace(observations, values=observations.values * 1.2)
     regions, targets = (region, other), (observations, other_observations)
     config = TrainingConfig(objective=objective, epochs=2, seed=21, learning_rate=1e-4)
+    options = _ValidationOptions()
+    if selection == "validation":
+        problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
+        regions = tuple(problem[0] for problem in problems)
+        targets = tuple(problem[1] for problem in problems)
+        encoder = checkpoint_model()
+        config = replace(config, learning_rate=0.002, mlpe_initial_variances=(0.05, 0.1))
+        if objective == "mlpe":
+            options = _ValidationOptions(
+                partition={
+                    r.name: ObservationPartition(r.name, o.observed_pairs[:-2], role="training")
+                    for r, o in zip(regions, targets, strict=True)
+                },
+                validation=(regions, targets),
+                validation_partition={
+                    r.name: ObservationPartition(r.name, o.observed_pairs[-2:], role="validation")
+                    for r, o in zip(regions, targets, strict=True)
+                },
+            )
+        else:
+            validation_regions = tuple(replace(r, name=r.name + "-validation") for r in regions)
+            validation_targets = tuple(
+                PairwiseObservations.from_matrix(
+                    r.sampling_unit_ids,
+                    encoder.predict_distances(r.feature_array, r.pixel_nodes),
+                    target=o.target,
+                )
+                for r, o in zip(regions, targets, strict=True)
+            )
+            options = _ValidationOptions(validation=(validation_regions, validation_targets))
     states = []
     uninterrupted = fit(
         regions,
@@ -43,14 +89,18 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, family, objecti
         distance_model=encoder,
         config=config,
         on_epoch=states.append,
+        **options,
     )
     partial = states[1]
+    if selection == "validation":
+        assert partial.selected_epoch == 0
+        assert not eqx.tree_equal(partial.latest_model, partial.best_model)
     path = tmp_path / "checkpoint.eqx"
     save_checkpoint(path, partial)
     restored = load_checkpoint(path, distance_model=encoder)
     assert eqx.tree_equal(restored, partial)
     # Reversing region order also checks restoration of the random trajectory.
-    resumed = fit(regions[::-1], targets[::-1], state=restored)
+    resumed = fit(regions[::-1], targets[::-1], state=restored, **options)
     assert eqx.tree_equal(resumed, uninterrupted)
     for prepared in regions:
         np.testing.assert_array_equal(

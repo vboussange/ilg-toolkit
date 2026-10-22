@@ -2,14 +2,13 @@
 
 import itertools
 from types import SimpleNamespace
-from typing import Any, cast, final
+from typing import final
 
 import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 import pytest
 
 from ilg_toolkit import (
@@ -226,17 +225,8 @@ class _CustomDistance(AbstractDistanceModel):
         return self.scale**2 * (values[:, None] - values[None, :]) ** 2
 
 
-@final
-class _InitializedEmbedding(EmbeddingDistanceModel):
-    log_weights: jax.Array
-    patch_size: int = eqx.field(static=True, default=1)
-
-    def embedding_grid(self, features, *, inference=True, key=None, patch_batch_size=None):
-        return features * jnp.exp(self.log_weights)
-
-
 def _model_factory(key):
-    return _InitializedEmbedding(log_weights=jax.random.normal(key, (2,)) * 0.1)
+    return _WeightedEmbedding(log_weights=jax.random.normal(key, (2,)) * 0.1)
 
 
 def _completed_fit(member: EnsembleMember) -> tuple[LandscapeGeneticsModel, TrainingState]:
@@ -370,12 +360,6 @@ class _WeightedEmbedding(EmbeddingDistanceModel):
         return features * jnp.exp(self.log_weights)
 
 
-def _adam_moments(state: TrainingState) -> tuple[_WeightedEmbedding, dict[str, jax.Array]]:
-    """Adam's first moments for checking the magnitude of the objective gradient."""
-    adam = cast(optax.ScaleByAdamState, cast(Any, state.optimizer_state)[0])
-    return cast(tuple[_WeightedEmbedding, dict[str, jax.Array]], adam.mu)
-
-
 def _embedding_problem(name="alpine", offset=0.0, seed=14):
     rng = np.random.default_rng(seed)
     features = rng.normal(size=(2, 3, 2)).astype(np.float32)
@@ -485,21 +469,6 @@ def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObserva
         PairwiseObservations.from_pairs([("x", "y")], [15], target=target),
     ]
     return regions, observations
-
-
-@final
-class _ScaledConductance(ConductanceModel):
-    log_scale: jax.Array
-    patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, kw_only=True, default=ResistanceSolverConfig()
-    )
-
-    def __init__(self, log_scale: jax.Array):
-        self.log_scale = log_scale
-
-    def conductance(self, features, *, patch_batch_size=None):
-        return jnp.exp(self.log_scale) * features[..., 0]
 
 
 @final
@@ -826,11 +795,6 @@ def weighted_embedding_fixture():
     return _WeightedEmbedding
 
 
-@pytest.fixture(name="adam_moments", scope="session")
-def adam_moments_fixture():
-    return _adam_moments
-
-
 @pytest.fixture(name="embedding_problem", scope="session")
 def embedding_problem_fixture():
     return _embedding_problem
@@ -854,11 +818,6 @@ def scalar_embedding_fixture():
 @pytest.fixture(name="regions_and_observations", scope="session")
 def regions_and_observations_fixture():
     return _regions_and_observations
-
-
-@pytest.fixture(name="ScaledConductance", scope="session")
-def scaled_conductance_fixture():
-    return _ScaledConductance
 
 
 @pytest.fixture(name="StochasticEmbedding", scope="session")

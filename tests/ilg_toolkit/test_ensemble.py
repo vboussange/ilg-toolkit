@@ -231,7 +231,7 @@ def test_original_scale_aggregation_preserves_large_finite_means_and_spreads():
 
 
 def test_failed_members_and_missing_composition_cannot_be_silently_dropped(
-    embedding_problem, model_factory
+    model_factory, embedding_problem
 ):
     import pytest
 
@@ -449,7 +449,7 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(Const
 
 
 def test_member_callback_failure_interrupts_before_starting_another_member(
-    embedding_problem, model_factory
+    model_factory, embedding_problem
 ):
     import pytest
 

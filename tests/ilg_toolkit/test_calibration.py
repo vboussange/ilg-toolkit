@@ -19,7 +19,7 @@ from ilg_toolkit import (
 
 
 def test_explicit_development_recalibration_keeps_encoder_and_prior_history_frozen(
-    ScalarEmbedding, calibrated, calibration_problem
+    ScalarEmbedding, calibration_problem
 ):
     from ilg_toolkit import calibrate
 
@@ -107,7 +107,7 @@ def test_regional_mlpe_installation_requires_matching_region_and_target_contract
 
 
 def test_transfer_distances_are_label_free_and_each_region_requires_its_own_head(
-    ScalarEmbedding, calibrated, calibration_problem
+    ScalarEmbedding, calibration_problem
 ):
     import pytest
 
@@ -181,7 +181,7 @@ def test_default_recalibration_ignores_validation_targets_and_records_encoder_ac
 
 
 def test_recalibration_rejects_incompatible_features_roles_targets_and_individual_effects(
-    ScalarEmbedding, calibrated, calibration_problem
+    ScalarEmbedding, calibration_problem
 ):
     import pytest
 

@@ -64,7 +64,9 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions(dense_resi
         assert prediction.target.units == "index"
 
 
-def test_resnet_parameter_gradient_matches_independent_graph_reference(dense_resistance):
+def test_resnet_parameter_gradient_matches_independent_graph_reference(
+    dense_resistance,
+):
     with jax.enable_x64():
         features = jnp.asarray(np.random.default_rng(8).normal(size=(8, 8, 2)), jnp.float32)
         nodes = np.array([0, 3])

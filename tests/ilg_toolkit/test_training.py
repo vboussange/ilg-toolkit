@@ -86,72 +86,108 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
 
 
 @pytest.mark.parametrize("jit", [False, True])
-def test_joint_adam_update_matches_dense_finite_difference_objective(
-    WeightedEmbedding, adam_moments, dense_profile, embedding_problem, jit
+@pytest.mark.parametrize("region_count", [1, 2])
+def test_mlpe_updates_match_dense_reference(
+    WeightedEmbedding, dense_profile, embedding_problem, jit, region_count
 ):
-    # Independent finite differences check signed profiling and both variance gradients.
-
-    with jax.enable_x64():
-        region, observations = embedding_problem()
-        left, right = np.triu_indices(6, 1)
-        targets = observations.values[left, right]
-        initial = np.array(
-            [0.0, 0.0, np.log(np.expm1(0.05 - 1e-10)), np.log(np.expm1(0.1 - 1e-10))]
+    problems = [embedding_problem()]
+    if region_count == 2:
+        region, observed = embedding_problem("valley", offset=3, seed=71)
+        # Unequal observation counts must still give each region equal influence.
+        sparse = PairwiseObservations.from_pairs(
+            observed.observed_pairs[:7],
+            observed.observed_values[:7],
+            target=observed.target,
+            sampling_unit_ids=region.sampling_unit_ids,
         )
+        problems.append((region, sparse))
+    regions = tuple(problem[0] for problem in problems)
+    observations = tuple(problem[1] for problem in problems)
+    raw = np.log(np.expm1(np.array([0.05, 0.1]) - 1e-10))
+    initial = np.concatenate((np.zeros(2), np.tile(raw, region_count)))
 
-        def objective(parameters):
-            embedding = region.feature_array.reshape(6, 2) * np.exp(parameters[:2])
+    def objective(parameters):
+        losses = []
+        for index, (region, observed) in enumerate(problems):
+            (left, right), targets = observed.aligned_pairs(region)
+            embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(parameters[:2])
             distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
-            variances = np.logaddexp(0, parameters[2:]) + 1e-10
-            return dense_profile(distances, targets, left, right, 6, variances)[0] / len(distances)
+            variances = np.logaddexp(0, parameters[2 + 2 * index : 4 + 2 * index]) + 1e-10
+            losses.append(
+                dense_profile(distances, np.asarray(targets), left, right, 6, variances)[0]
+                / len(distances)
+            )
+        return np.mean(losses)
 
-        step = 1e-5
-        gradient = []
-        for index in range(4):
-            delta = np.eye(4)[index] * step
-            gradient.append((objective(initial + delta) - objective(initial - delta)) / (2 * step))
-        gradient = np.array(gradient)
-        assert np.all(np.abs(gradient) > 1e-4)
-        expected = initial - 0.02 * gradient / (np.abs(gradient) + 1e-8)
-        result = fit(
-            region,
-            observations,
-            distance_model=WeightedEmbedding(jnp.zeros(2)),
-            config=TrainingConfig(
-                objective="mlpe",
-                epochs=1,
-                jit=jit,
-                learning_rate=0.02,
-                mlpe_initial_variances=(0.05, 0.1),
-            ),
+    # Two Adam updates retain sensitivity to gradient magnitude, using only the
+    # dense Gaussian objective and finite differences as the numerical reference.
+    expected = initial.copy()
+    first_moment, second_moment = np.zeros_like(initial), np.zeros_like(initial)
+    for step in (1, 2):
+        delta = np.eye(len(initial)) * 1e-5
+        gradient = np.array(
+            [
+                (objective(expected + offset) - objective(expected - offset)) / 2e-5
+                for offset in delta
+            ]
         )
-
-        assert result.raw_variances is not None
-        actual = np.concatenate(
-            (cast(Any, result.distance_model).log_weights, result.raw_variances[region.name])
+        first_moment = 0.9 * first_moment + 0.1 * gradient
+        second_moment = 0.999 * second_moment + 0.001 * gradient**2
+        expected -= (
+            0.02
+            * (first_moment / (1 - 0.9**step))
+            / (np.sqrt(second_moment / (1 - 0.999**step)) + 1e-8)
         )
-        np.testing.assert_allclose(actual, expected, atol=1e-10)
-        moment = adam_moments(result)
-        actual_moment = np.concatenate((moment[0].log_weights, moment[1][region.name]))
-        np.testing.assert_allclose(actual_moment, 0.1 * gradient, rtol=1e-7, atol=1e-10)
-        distances = np.asarray(result.model.ecological_distances(region))[left, right]
-    head = cast(MLPECalibrationModule, result.model.calibration).regions[region.name]
-    expected_nll, beta, mean, posterior = dense_profile(
-        distances,
-        targets,
-        left,
-        right,
-        6,
-        (head.unit_variance, head.residual_variance),
+    result = fit(
+        regions,
+        observations,
+        distance_model=WeightedEmbedding(jnp.zeros(2)),
+        config=TrainingConfig(
+            objective="mlpe",
+            epochs=2,
+            jit=jit,
+            learning_rate=0.02,
+            mlpe_initial_variances=(0.05, 0.1),
+        ),
     )
-    np.testing.assert_allclose([head.intercept, head.slope], beta, rtol=1e-12)
-    np.testing.assert_allclose(head.effect_mean, mean, atol=1e-12)
-    np.testing.assert_allclose(head.effect_covariance, posterior, atol=1e-12)
-    np.testing.assert_allclose(-head.ml_log_likelihood, expected_nll, atol=1e-12)
+    np.testing.assert_allclose(result.history[0].training_loss, objective(initial), atol=1e-12)
+    np.testing.assert_allclose(result.history[-1].training_loss, objective(expected), atol=1e-8)
+    calibration = cast(MLPECalibrationModule, result.model.calibration)
+    for index, (region, observed) in enumerate(problems):
+        embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(expected[:2])
+        distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)
+        np.testing.assert_allclose(
+            result.model.ecological_distances(region),
+            distances,
+            rtol=1e-8,
+            atol=1e-9,
+        )
+        variances = np.logaddexp(0, expected[2 + 2 * index : 4 + 2 * index]) + 1e-10
+        head = calibration.regions[region.name]
+        np.testing.assert_allclose(
+            [head.unit_variance, head.residual_variance],
+            variances,
+            rtol=1e-8,
+            atol=1e-10,
+        )
+        (left, right), targets = observed.aligned_pairs(region)
+        nll, beta, effect_mean, effect_covariance = dense_profile(
+            distances[left, right],
+            np.asarray(targets),
+            left,
+            right,
+            6,
+            variances,
+        )
+        np.testing.assert_allclose([head.intercept, head.slope], beta, rtol=1e-8, atol=1e-10)
+        np.testing.assert_allclose(head.effect_mean, effect_mean, atol=1e-9)
+        np.testing.assert_allclose(head.effect_covariance, effect_covariance, atol=1e-10)
+        np.testing.assert_allclose(-head.ml_log_likelihood, nll, atol=1e-8)
 
 
 def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_supported(
-    WeightedEmbedding, embedding_problem
+    WeightedEmbedding,
+    embedding_problem,
 ):
     from ilg_toolkit import ObservationPartition
 
@@ -353,63 +389,6 @@ def test_continuation_rejects_changed_optimization_policy(WeightedEmbedding, emb
             fit(region, observations, state=result, distance_model=result.distance_model)
 
 
-def test_shared_likelihood_gradient_weights_regions_equally_with_unequal_pair_counts(
-    WeightedEmbedding, adam_moments, dense_profile, embedding_problem
-):
-    with jax.enable_x64():
-        first = embedding_problem()
-        second = embedding_problem("valley", offset=3, seed=71)
-        short_observations = PairwiseObservations.from_pairs(
-            second[1].observed_pairs[:7],
-            second[1].observed_values[:7],
-            target=second[1].target,
-            sampling_unit_ids=second[0].sampling_unit_ids,
-        )
-        regions = (first[0], second[0])
-        observations = (first[1], short_observations)
-        raw = np.log(np.expm1(np.array([0.05, 0.1]) - 1e-10))
-        initial = np.concatenate((np.zeros(2), raw, raw))
-
-        def objective(parameters):
-            losses = []
-            for i, (region, observed) in enumerate(zip(regions, observations, strict=True)):
-                (left, right), targets = observed.aligned_pairs(region)
-                embedding = region.feature_array.reshape(6, 2) * np.exp(parameters[:2])
-                distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
-                variances = np.logaddexp(0, parameters[2 + 2 * i : 4 + 2 * i]) + 1e-10
-                losses.append(
-                    dense_profile(distances, targets, left, right, 6, variances)[0] / len(distances)
-                )
-            return np.mean(losses)
-
-        step = 1e-5
-        gradient = np.array(
-            [
-                (objective(initial + delta) - objective(initial - delta)) / (2 * step)
-                for delta in np.eye(6) * step
-            ]
-        )
-        result = fit(
-            regions,
-            observations,
-            distance_model=WeightedEmbedding(jnp.zeros(2)),
-            config=TrainingConfig(
-                objective="mlpe",
-                epochs=1,
-                mlpe_initial_variances=(0.05, 0.1),
-                learning_rate=0.02,
-            ),
-        )
-
-        assert result.raw_variances is not None
-        moment = adam_moments(result)
-        actual_moment = np.concatenate(
-            (moment[0].log_weights, np.concatenate([moment[1][region.name] for region in regions]))
-        )
-    np.testing.assert_allclose(result.history[0].training_loss, objective(initial), atol=1e-12)
-    np.testing.assert_allclose(actual_moment, 0.1 * gradient, rtol=1e-7, atol=1e-10)
-
-
 def test_shared_embedding_update_matches_independent_equal_region_objective(
     ScalarEmbedding, regions_and_observations
 ):
@@ -450,7 +429,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
 
 
 def test_shared_conductance_update_matches_independent_combined_graph_objective(
-    ScaledConductance, dense_resistance
+    PointConductance, dense_resistance
 ):
     with jax.enable_x64():
         target = TargetSpec("synthetic graph divergence", units="index")
@@ -502,7 +481,7 @@ def test_shared_conductance_update_matches_independent_combined_graph_objective(
         result = fit(
             regions,
             observations,
-            distance_model=ScaledConductance(jnp.asarray(initial, dtype=jnp.float64)),
+            distance_model=PointConductance(jnp.asarray(initial, dtype=jnp.float64)),
             config=TrainingConfig(objective="direct_log1p", epochs=1, learning_rate=0.01),
         )
         np.testing.assert_allclose(

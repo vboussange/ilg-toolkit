@@ -98,7 +98,7 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
 
 
 def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
-    calibrated, persistence_problem, tmp_path
+    persistence_problem, tmp_path
 ):
     from dataclasses import replace
 

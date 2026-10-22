@@ -79,7 +79,7 @@ def test_masked_pairs_are_absent_from_likelihood_and_distance_standardization_un
 @pytest.mark.parametrize("incomplete", [False, True])
 @pytest.mark.parametrize("variances", [(1e-8, 1.0), (1.0, 1.0), (1.0, 1e-8)])
 def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance_reference(
-    decimal_dense_profile_and_gradients, dense_jax_profile, incomplete, variances
+    dense_jax_profile, decimal_dense_profile_and_gradients, incomplete, variances
 ):
     import jax
     import jax.numpy as jnp

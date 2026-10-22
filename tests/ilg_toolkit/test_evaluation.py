@@ -210,7 +210,7 @@ def test_failed_pending_and_unknown_access_members_are_explicit_in_coverage(
 
 
 def test_actual_recalibration_changes_eligibility_and_query_calibration_always_excludes(
-    calibrated, completed_model, fitted_member_problem
+    completed_model, fitted_member_problem
 ):
     from dataclasses import replace
 
@@ -249,7 +249,7 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
 
 
 def test_calibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_training_endpoint(
-    calibrated, completed_model, embedding_problem, model_factory
+    completed_model, embedding_problem, model_factory
 ):
     from dataclasses import replace
 
