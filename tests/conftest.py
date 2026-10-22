@@ -1,6 +1,7 @@
 """Shared scientific data and independent numerical reference fixtures."""
 
 import itertools
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import final
 
@@ -36,6 +37,14 @@ from ilg_toolkit.models import (
     ResNet9Conductance,
     UNetEmbeddingDistance,
 )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def compilation_cache_lifetime() -> Iterator[None]:
+    """Compilation cache shared by the tests in one module."""
+    yield
+    jax.clear_caches()
+
 
 _R_DISTANCES = np.array(
     [
