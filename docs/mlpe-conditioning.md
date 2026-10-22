@@ -50,14 +50,17 @@ treat the distance model, coefficients and variance parameters as fixed.
 Conditional calculations use float64 within the call; resistance calculations
 require float64 to be enabled before prediction.
 
-Values are inverse-transformed model means. With a nonlinear target transform,
-they are not expectations on the original scale; variance stays on the model
+Values are inverse-transformed model means, and variance stays on the model
 scale. `prediction.pairs` retains requested order and orientation, and
 `prediction.as_matrix()` uses the region's sampling-unit order, with NaN on the
 diagonal and for unrequested pairs. `prediction.as_matrix("effect_variance")`
 rearranges the selected extra in the same way.
 
+Note: With a nonlinear target transform, values are not expectations on the
+original scale.
+
 Calibration pairs and roles remain on the model's MLPE calibration. Support use
 is recorded by [out-of-fold evaluation](evaluation.md) when assessing whether a
-sampling unit's observations have been used. Conditional prediction alone
-applies no held-out sampling-unit restriction.
+sampling unit's observations have been used.
+
+Note: Conditional prediction alone applies no held-out sampling-unit restriction.
