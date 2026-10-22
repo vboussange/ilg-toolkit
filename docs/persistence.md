@@ -85,7 +85,7 @@ contains evaluations at step zero, every `eval_every` updates, and the final ste
 `state.model` also returns it. Between evaluations, `latest_model` contains the
 latest distance parameters and the calibration from the preceding evaluation.
 Continuation uses these latest parameters with their optimizer and random state.
-A continuation with no further updates returns the saved state without callbacks.
+Continuing a fit at its step budget returns the saved state.
 
 Reproducing an uninterrupted run requires the same library versions, devices,
 and execution settings. Save individual ensemble members with the same functions;
