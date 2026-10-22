@@ -1,9 +1,6 @@
-"""Custom distance models use the public fitting and native persistence boundary."""
-
-from typing import final
+"""Scientific behavior of models.base."""
 
 import coordax as cx
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -17,33 +14,11 @@ from ilg_toolkit import (
     load_model,
     save_model,
 )
-from ilg_toolkit.models import AbstractDistanceModel
-
-
-@final
-class CustomDistance(AbstractDistanceModel):
-    scale: jax.Array
-
-    def prepare(self, features):
-        return None
-
-    def predict_distances(
-        self,
-        features,
-        pixel_nodes,
-        *,
-        context=None,
-        inference=True,
-        key=None,
-        patch_batch_size=None,
-    ):
-        values = jnp.asarray(features).reshape(-1)[jnp.asarray(pixel_nodes)]
-        return self.scale**2 * (values[:, None] - values[None, :]) ** 2
 
 
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
 def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels(
-    tmp_path, objective
+    CustomDistance, tmp_path, objective
 ):
     region = RegionBatch(
         "custom",

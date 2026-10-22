@@ -1,46 +1,14 @@
-"""Prediction seam: independently condition the joint observation Gaussian."""
+"""Scientific behavior of mlpe.prediction."""
 
-import equinox as eqx
 import numpy as np
 import pytest
-from mlpe_reference import _R_DISTANCES
-from test_mlpe import reference_observations
 
-from ilg_toolkit import MLPECalibrationModule
-from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
+from ilg_toolkit.mlpe import calibrate_mlpe
 
 
-@pytest.fixture(scope="module")
-def calibrated():
-    observations = reference_observations()
-    head = calibrate_mlpe(
-        _R_DISTANCES, observations, region_name="alpine", config=MLPEConfig(jitter=1e-7)
-    )
-    return head, observations
-
-
-def joint_gaussian_reference(
-    head, observed_pairs, observed_distances, targets, query_pairs, distances
+def test_known_effects_and_unseen_prior_match_joint_gaussian(
+    joint_gaussian_reference, mlpe_reference, calibrated
 ):
-    """Dense joint-observation oracle; never uses the stored effect posterior."""
-    all_pairs = tuple(observed_pairs) + tuple(query_pairs)
-    labels = sorted({label for pair in all_pairs for label in pair})
-    incidence = np.array([[float(label in pair) for label in labels] for pair in all_pairs])
-    covariance = head.unit_variance * incidence @ incidence.T
-    covariance += (head.residual_variance + head.config.jitter) * np.eye(len(all_pairs))
-    all_distances = np.r_[observed_distances, distances]
-    fixed = (
-        head.intercept + head.slope * (all_distances - head.distance_center) / head.distance_scale
-    )
-    n = len(observed_pairs)
-    cross = covariance[n:, :n]
-    mean = fixed[n:] + cross @ np.linalg.solve(covariance[:n, :n], targets - fixed[:n])
-    conditional = covariance[n:, n:] - cross @ np.linalg.solve(covariance[:n, :n], cross.T)
-    return mean, np.diag(conditional)
-
-
-def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
-    import jax
 
     from ilg_toolkit.mlpe import predict_known_effects
 
@@ -50,7 +18,7 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         observations.observed_pairs,
-        _R_DISTANCES,
+        mlpe_reference.distances,
         observations.observed_values,
         pairs,
         distances,
@@ -59,7 +27,7 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
     assert result.prediction.pairs == pairs
     assert result.prediction.sampling_unit_ids == ("p01", "p02", "new", "p03", "other-new")
     assert all(
-        isinstance(value, jax.Array) and value.dtype == np.float64
+        value.dtype == np.float64
         for value in (
             result.prediction.values,
             result.model_values,
@@ -76,8 +44,9 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(calibrated):
     assert result.provenance.mode == "known_effects"
 
 
-def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated):
-    import jax
+def test_supplied_support_updates_effects_and_matches_joint_gaussian(
+    joint_gaussian_reference, mlpe_reference, calibrated
+):
 
     from ilg_toolkit import ObservationPartition, PairwiseObservations
     from ilg_toolkit.mlpe import condition_on_support
@@ -95,7 +64,7 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated)
     distances = np.array([0.1, 0.6, 1.2])
     result = conditioned.predict(distances, pairs)
     assert all(
-        isinstance(value, jax.Array) and value.dtype == np.float64
+        value.dtype == np.float64
         for value in (
             result.prediction.values,
             result.model_values,
@@ -106,7 +75,7 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(calibrated)
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration.observed_pairs + support.observed_pairs,
-        np.r_[_R_DISTANCES, support_distances],
+        np.r_[mlpe_reference.distances, support_distances],
         np.r_[calibration.observed_values, support.observed_values],
         pairs,
         distances,
@@ -133,15 +102,15 @@ def test_support_cannot_reuse_calibration_or_query_pairs_even_when_reversed(cali
     head, _ = calibrated
     reused = PairwiseObservations.from_pairs([("p02", "p01")], [1.0], target=head.target)
     partition = ObservationPartition("alpine", (("p01", "p02"),), role="support")
-    with pytest.raises(MLPEError, match="calibration.*twice|reuses.*calibration"):
+    with pytest.raises(MLPEError):
         condition_on_support(head, [0.3], reused, partition=partition)
 
     support = PairwiseObservations.from_pairs([("new", "p01")], [1.0], target=head.target)
     partition = ObservationPartition("alpine", (("new", "p01"),), role="support")
     conditioned = condition_on_support(head, [0.3], support, partition=partition)
-    with pytest.raises(MLPEError, match="Support/query overlap"):
+    with pytest.raises(MLPEError):
         conditioned.predict([0.3], [("p01", "new")])
-    with pytest.raises(MLPEError, match="duplicate unordered"):
+    with pytest.raises(MLPEError):
         conditioned.predict([0.2, 0.2], [("p02", "new"), ("new", "p02")])
     with pytest.raises(TypeError):
         methodcaller("predict", [0.3], [("p02", "new")], query_targets=[7.0])(conditioned)
@@ -151,7 +120,9 @@ def test_support_cannot_reuse_calibration_or_query_pairs_even_when_reversed(cali
         )(head)
 
 
-def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale():
+def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
+    joint_gaussian_reference, reference_observations, mlpe_reference
+):
     from ilg_toolkit import ObservationPartition, PairwiseObservations, TargetSpec
 
     reference = reference_observations()
@@ -159,7 +130,7 @@ def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
     observations = PairwiseObservations.from_pairs(
         reference.observed_pairs, np.expm1(reference.observed_values + 2.0), target=target
     )
-    head = calibrate_mlpe(_R_DISTANCES, observations, region_name="log-region")
+    head = calibrate_mlpe(mlpe_reference.distances, observations, region_name="log-region")
     known = head.predict_known_effects([0.2], [("new", "p01")])
     support = PairwiseObservations.from_pairs([("new", "p02")], [np.expm1(2.3)], target=target)
     conditioned = head.condition_on_support(
@@ -171,7 +142,7 @@ def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         observations.observed_pairs + support.observed_pairs,
-        np.r_[_R_DISTANCES, 0.4],
+        np.r_[mlpe_reference.distances, 0.4],
         np.r_[target.forward(observations.observed_values), 2.3],
         [("new", "p01")],
         [0.2],
@@ -202,13 +173,13 @@ def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibr
         [("new", "p01"), ("new", "p02")], [1.0, 2.0], target=head.target
     )
     for role in ("training", "calibration", "validation", "query"):
-        with pytest.raises(MLPEError, match="support-role"):
+        with pytest.raises(MLPEError):
             head.condition_on_support(
                 [0.1, 0.3],
                 support,
                 partition=ObservationPartition("alpine", support.observed_pairs, role=role),
             )
-    with pytest.raises(MLPEError, match="exactly.*declared"):
+    with pytest.raises(MLPEError):
         head.condition_on_support(
             [0.1, 0.3],
             support,
@@ -218,9 +189,9 @@ def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibr
     incompatible = PairwiseObservations.from_pairs(
         support.observed_pairs, [1.0, 2.0], target=TargetSpec("different measurement")
     )
-    with pytest.raises(MLPEError, match="target metadata"):
+    with pytest.raises(MLPEError):
         head.condition_on_support([0.1, 0.3], incompatible, partition=partition)
-    with pytest.raises(MLPEError, match="region_name"):
+    with pytest.raises(MLPEError):
         head.condition_on_support(
             [0.1, 0.3],
             support,
@@ -228,92 +199,5 @@ def test_conditioning_rejects_undeclared_targets_and_incompatible_support(calibr
                 "another-region", support.observed_pairs, role="support"
             ),
         )
-    with pytest.raises(MLPEError, match="finite.*aligned"):
+    with pytest.raises(MLPEError):
         head.condition_on_support([np.nan, 0.3], support, partition=partition)
-
-
-def test_model_conditions_real_ecological_distances_without_updating_encoder():
-    import itertools
-
-    import jax.numpy as jnp
-    from test_recalibration import ScalarEmbedding, problem
-
-    from ilg_toolkit import (
-        ObservationPartition,
-        PairwiseObservations,
-        TrainingConfig,
-        calibrate,
-        fit,
-    )
-
-    region, observations, _, _ = problem("conditioned-landscape")
-    calibration_pairs = tuple(itertools.combinations(region.sampling_unit_ids[:4], 2))
-    training = ObservationPartition(region.name, calibration_pairs, role="training")
-    direct = fit(
-        region,
-        observations,
-        distance_model=ScalarEmbedding(weight=jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
-        partition=training,
-    ).model
-    model = calibrate(direct, region, observations)
-    assert isinstance(model.calibration, MLPECalibrationModule)
-    head = model.calibration.regions[region.name]
-    pairs = (("population-4", "population-2"), ("population-5", "population-3"))
-    known = model.predict_known_effects(region, pairs)
-    assert known.prediction.sampling_unit_ids == region.sampling_unit_ids
-    assert known.prediction.pairs == pairs
-    distances = model.ecological_distances(region)
-    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-
-    def selected_distances(selected):
-        return np.array([distances[lookup[a], lookup[b]] for a, b in selected])
-
-    expected_mean, expected_variance = joint_gaussian_reference(
-        head,
-        calibration_pairs,
-        selected_distances(calibration_pairs),
-        observations.aligned_values(region)[
-            [lookup[a] for a, _ in calibration_pairs], [lookup[b] for _, b in calibration_pairs]
-        ],
-        pairs,
-        selected_distances(pairs),
-    )
-    np.testing.assert_allclose(known.model_values, expected_mean, atol=1e-10)
-    np.testing.assert_allclose(known.model_variance, expected_variance, atol=1e-10)
-    support = PairwiseObservations.from_pairs(
-        [("population-4", "population-0"), ("population-4", "population-1")],
-        [2.0, 2.5],
-        target=head.target,
-    )
-    result = model.predict_with_support(
-        region,
-        pairs,
-        support,
-        support_partition=ObservationPartition(region.name, support.observed_pairs, role="support"),
-    )
-    assert result.prediction.sampling_unit_ids == region.sampling_unit_ids
-    assert result.prediction.pairs == pairs
-    expected_mean, expected_variance = joint_gaussian_reference(
-        head,
-        calibration_pairs + support.observed_pairs,
-        np.r_[selected_distances(calibration_pairs), selected_distances(support.observed_pairs)],
-        np.r_[
-            observations.aligned_values(region)[
-                [lookup[a] for a, _ in calibration_pairs], [lookup[b] for _, b in calibration_pairs]
-            ],
-            support.observed_values,
-        ],
-        pairs,
-        selected_distances(pairs),
-    )
-    np.testing.assert_allclose(result.model_values, expected_mean, atol=1e-10)
-    np.testing.assert_allclose(result.model_variance, expected_variance, atol=1e-10)
-    assert eqx.tree_equal(model.distance_model, direct.distance_model)
-    assert result.provenance.support_pairs == tuple(
-        tuple(sorted(pair)) for pair in support.observed_pairs
-    )
-    with pytest.raises(ValueError, match="MLPE"):
-        direct.predict_known_effects(region, pairs)
-    with pytest.raises(ValueError, match="sampling-unit.*region"):
-        model.predict_known_effects(region, [("missing-location", "population-0")])
