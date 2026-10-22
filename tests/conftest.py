@@ -263,6 +263,7 @@ class _ConstantConductance(ConductanceModel):
 @final
 class _DropoutConductance(ConductanceModel):
     dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
+    conductance_dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
     num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
@@ -271,7 +272,7 @@ class _DropoutConductance(ConductanceModel):
         return self.dropout(features)
 
     def conductance(self, latent, species_index):
-        return jnp.exp(latent[..., 0])
+        return jnp.exp(self.conductance_dropout(latent)[..., 0])
 
 
 @pytest.fixture(name="DropoutConductance", scope="session")

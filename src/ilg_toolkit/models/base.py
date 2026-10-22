@@ -14,7 +14,7 @@ from ..config import ResistanceSolverConfig
 from ..data import ObservationPartition, RegionBatch
 from ..prediction import Prediction
 from ..resistance import ResistanceSolverContext, build_resistance_context, effective_resistance
-from .common import backbone_with_randomness, pixel_to_patch_nodes
+from .common import pixel_to_patch_nodes, with_dropout_mode
 
 # Sampling-unit nodes, followed by pairs indexing those sampling units.
 type DistancePairs = tuple[jax.Array, tuple[jax.Array, jax.Array]]
@@ -103,8 +103,8 @@ class ConductanceModel(AbstractDistanceModel):
     def conductance_surface(self, region: RegionBatch, *, species: str | None = None) -> jax.Array:
         """Positive conductance surface for a single-species region batch."""
         _single_species(self, species)
-        latent = backbone_with_randomness(self, region.feature_array, inference=True, key=None)
-        surface = self.conductance(latent, 0)
+        model = with_dropout_mode(self, inference=True, key=None)
+        surface = model.conductance(model.backbone(region.feature_array), 0)
         return eqx.error_if(
             surface,
             jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
@@ -177,7 +177,8 @@ def distance_values(
     key: jax.Array | None = None,
 ) -> jax.Array:
     """Ecological distances for located sampling-unit pairs."""
-    latent = backbone_with_randomness(model, features, inference=inference, key=key)
+    model = with_dropout_mode(model, inference=inference, key=key)
+    latent = model.backbone(features)
     nodes = pixel_to_patch_nodes(
         pixel_nodes,
         raster_shape=(features.shape[0], features.shape[1]),

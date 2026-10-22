@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from numpy.typing import ArrayLike
-
-if TYPE_CHECKING:
-    from .base import AbstractDistanceModel
 
 
 class _PatchModel(Protocol):
@@ -32,10 +29,8 @@ def encode_patches(
     return values.reshape(*shape, -1)
 
 
-def backbone_with_randomness(
-    model: AbstractDistanceModel, features: jax.Array, *, inference: bool, key: jax.Array | None
-) -> jax.Array:
-    """Pooled landscape features with dropout set for training or prediction."""
+def with_dropout_mode[Model](model: Model, *, inference: bool, key: jax.Array | None) -> Model:
+    """Distance model with dropout set for training or prediction."""
 
     def is_dropout(value):
         return isinstance(value, eqx.nn.Dropout)
@@ -55,7 +50,7 @@ def backbone_with_randomness(
             model,
             is_leaf=is_dropout,
         )
-    return model.backbone(features)
+    return model
 
 
 def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
