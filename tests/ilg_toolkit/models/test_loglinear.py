@@ -174,7 +174,7 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
         regions,
         observations,
         distance_model=with_parameters(jnp.asarray(initial)),
-        config=TrainingConfig(objective="direct_log1p", epochs=2, learning_rate=0.02),
+        config=TrainingConfig(objective="direct_log1p", steps=2, learning_rate=0.02),
     )
     np.testing.assert_allclose(
         state.history[-1].training_loss, reference_loss(expected), atol=1e-10
