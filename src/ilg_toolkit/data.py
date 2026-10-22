@@ -238,7 +238,7 @@ class PairwiseObservations:
 
     @classmethod
     def from_matrix(cls, sampling_unit_ids, values, *, target, species=None):
-        """Pairwise genetic observations from a labelled matrix for one species.
+        """Pairwise genetic observations from a labeled matrix for one species.
 
         Symmetric off-diagonal NaNs identify absent observations.
         """
@@ -246,7 +246,7 @@ class PairwiseObservations:
 
     @classmethod
     def from_pairs(cls, pairs, values, *, target, sampling_unit_ids=None, species=None):
-        """Pairwise genetic observations from labelled pairs and finite measurements.
+        """Pairwise genetic observations from labeled pairs and finite measurements.
 
         Repeated pairs, including reversed duplicates, are rejected. Optional
         ``sampling_unit_ids`` declares a larger set of sampling units containing
