@@ -36,23 +36,62 @@ def test_patch_microbatch_size_preserves_predictions_and_gradients(family, dtype
         )
         for model in (reference, microbatched)
     )
+
+    def objective(model, multiplier):
+        predictions = model.predict(region).values
+        return jnp.sum(predictions**2) * multiplier, predictions
+
+    def gradient_vector(gradient):
+        return np.concatenate(
+            [np.asarray(leaf, dtype=np.float64).ravel() for leaf in jax.tree.leaves(gradient)]
+        )
+
+    evaluate = eqx.filter_jit(eqx.filter_value_and_grad(objective, has_aux=True))
+    high_precision_model = jax.tree.map(
+        lambda value: value.astype(jnp.float64) if eqx.is_inexact_array(value) else value,
+        reference,
+    )
+    (precise_value, precise_predictions), precise_gradient = evaluate(
+        high_precision_model, jnp.array(1.0, dtype=jnp.float64)
+    )
+    precise_gradient = gradient_vector(precise_gradient)
+    # Reference scales give zero derivatives an error budget in the same units as nonzero ones.
+    absolute_budget = 8 * np.finfo(dtype).eps
+    reference_rtol = 3e-5 if dtype == "float32" else 1e-9
+    value_rtol = 3e-6 if dtype == "float32" else 1e-9
     # Six raster patches exercise a final batch smaller than four.
-    np.testing.assert_allclose(
-        microbatched.predict(region).values,
-        reference.predict(region).values,
-        rtol=1e-6,
-        atol=1e-7,
-    )
-    value_and_grad = eqx.filter_jit(
-        eqx.filter_value_and_grad(lambda model: jnp.sum(model.predict(region).values ** 2))
-    )
-    expected_value, expected_gradient = value_and_grad(reference)
-    actual_value, actual_gradient = value_and_grad(microbatched)
-    np.testing.assert_allclose(actual_value, expected_value, rtol=1e-6, atol=1e-7)
-    # Float32 reductions leave cancellation residuals near 3e-5 in normalization-bias gradients.
-    # Float64 checks the same derivatives with a tighter absolute tolerance.
-    rtol, atol = (3e-5, 5e-5) if dtype == "float32" else (1e-9, 1e-10)
-    for actual, expected in zip(
-        jax.tree.leaves(actual_gradient), jax.tree.leaves(expected_gradient), strict=True
-    ):
-        np.testing.assert_allclose(actual, expected, rtol=rtol, atol=atol)
+    for multiplier in (1e-3, 1.0, 1e3):
+        scale = jnp.asarray(multiplier, dtype=dtype)
+        (expected_value, expected_predictions), expected_gradient = evaluate(reference, scale)
+        (actual_value, actual_predictions), actual_gradient = evaluate(microbatched, scale)
+        expected_gradient = gradient_vector(expected_gradient)
+        actual_gradient = gradient_vector(actual_gradient)
+        comparisons = (
+            (actual_predictions, expected_predictions, precise_predictions, value_rtol),
+            (actual_value, expected_value, precise_value * multiplier, value_rtol),
+            (actual_gradient, expected_gradient, precise_gradient * multiplier, reference_rtol),
+        )
+        for actual, expected, precise, parity_rtol in comparisons:
+            actual, expected, precise = (
+                np.asarray(x, dtype=np.float64) for x in (actual, expected, precise)
+            )
+            magnitude = np.max(np.abs(precise))
+            assert magnitude > 0
+            np.testing.assert_allclose(
+                actual / magnitude,
+                expected / magnitude,
+                rtol=parity_rtol,
+                atol=absolute_budget,
+            )
+            for computed in (actual, expected):
+                np.testing.assert_allclose(
+                    computed / magnitude,
+                    precise / magnitude,
+                    rtol=reference_rtol,
+                    atol=absolute_budget,
+                )
+        for computed in (actual_gradient, expected_gradient):
+            relative_error = np.linalg.norm(
+                computed / multiplier - precise_gradient
+            ) / np.linalg.norm(precise_gradient)
+            assert relative_error < reference_rtol
