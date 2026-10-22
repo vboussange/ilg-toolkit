@@ -46,7 +46,7 @@ result = fit(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(objective="direct_log1p", epochs=4, learning_rate=0.001),
+    config=TrainingConfig(objective="direct_log1p", steps=4, learning_rate=0.001),
 )
 model = result.model  # The selected landscape genetics model.
 

@@ -339,7 +339,7 @@ def _fitted_member_problem():
         observations,
         folds=[fold],
         initialization_seeds=(13,),
-        config=TrainingConfig(objective="mlpe", epochs=1),
+        config=TrainingConfig(objective="mlpe", steps=1),
         model_factory=_model_factory,
     )
     assert ensemble.members[0].status == "completed"

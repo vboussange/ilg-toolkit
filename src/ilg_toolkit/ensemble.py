@@ -499,7 +499,7 @@ def fit_ensemble_member(
     config: TrainingConfig | None = None,
     model_factory: Callable[[jax.Array], AbstractDistanceModel] | None = None,
     state: TrainingState | None = None,
-    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
+    on_step: Callable[[MemberIdentity, TrainingState], None] | None = None,
 ) -> EnsembleMember:
     """Fit or continue one independent member, the persistence orchestration seam.
 
@@ -528,9 +528,9 @@ def fit_ensemble_member(
         )
 
     def progress(current: TrainingState):
-        assert on_epoch is not None
+        assert on_step is not None
         try:
-            on_epoch(identity, current)
+            on_step(identity, current)
         except Exception as error:
             raise _ProgressFailure(error) from error
 
@@ -552,7 +552,7 @@ def fit_ensemble_member(
             validation=validation,
             validation_partition=fold.validation if fold.validation else None,
             state=state,
-            on_epoch=progress if on_epoch is not None else None,
+            on_step=progress if on_step is not None else None,
         )
     except _ProgressFailure as failure:
         raise failure.error from failure
@@ -618,7 +618,7 @@ def fit_ensemble(
     config: TrainingConfig,
     model_factory: Callable[[jax.Array], AbstractDistanceModel] | None = None,
     member_states: Mapping[str, TrainingState] | None = None,
-    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
+    on_step: Callable[[MemberIdentity, TrainingState], None] | None = None,
     on_member: Callable[[EnsembleMember], None] | None = None,
 ) -> Ensemble:
     """Sequential independent fits from explicit or reproducibly generated folds.
@@ -626,7 +626,7 @@ def fit_ensemble(
     Default generated holdouts are query-only. Explicit validation uses its
     targets for encoder selection and is recorded. All requested outcomes are
     returned, including failures; prediction refuses to drop failed members.
-    Per-member continuation and epoch/member callbacks support external durable
+    Per-member continuation and step/member callbacks support external durable
     orchestration without making persistence mandatory.
     """
     folds, seeds, identities = _prepare_ensemble(
@@ -659,7 +659,7 @@ def fit_ensemble(
                 config=config,
                 model_factory=model_factory,
                 state=states.get(identity.member_id),
-                on_epoch=on_epoch,
+                on_step=on_step,
             )
             members.append(member)
             if on_member is not None:

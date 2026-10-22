@@ -46,7 +46,7 @@ result = fit(
     distance_model=encoder,
     config=TrainingConfig(
         objective="direct_log1p",
-        epochs=4,
+        steps=4,
         learning_rate=0.001,
     ),
 )

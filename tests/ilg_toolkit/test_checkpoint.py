@@ -12,6 +12,7 @@ import pytest
 
 from ilg_toolkit import (
     MLPECalibrationModule,
+    MLPEConfig,
     ObservationPartition,
     PairwiseObservations,
     TargetSpec,
@@ -51,14 +52,16 @@ def test_resume_equals_uninterrupted(
     other = replace(region, name="valley")
     other_observations = replace(observations, values=observations.values * 1.2)
     regions, targets = (region, other), (observations, other_observations)
-    config = TrainingConfig(objective=objective, epochs=2, seed=21, learning_rate=1e-4)
+    config = TrainingConfig(objective=objective, steps=2, eval_every=2, seed=21, learning_rate=1e-4)
     options = _ValidationOptions()
     if selection == "validation":
         problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
         regions = tuple(problem[0] for problem in problems)
         targets = tuple(problem[1] for problem in problems)
         encoder = checkpoint_model()
-        config = replace(config, learning_rate=0.002, mlpe_initial_variances=(0.05, 0.1))
+        config = replace(
+            config, learning_rate=0.002, mlpe=MLPEConfig(initial_variances=(0.05, 0.1))
+        )
         if objective == "mlpe":
             options = _ValidationOptions(
                 partition={
@@ -87,13 +90,13 @@ def test_resume_equals_uninterrupted(
         targets,
         distance_model=encoder,
         config=config,
-        on_epoch=states.append,
+        on_step=states.append,
         **options,
     )
     partial = states[1]
     if selection == "validation":
-        assert partial.selected_epoch == 0
-        assert not eqx.tree_equal(partial.latest_model, partial.best_model)
+        assert partial.selected_step == 0
+        assert not eqx.tree_equal(partial.latest_model, partial.selected_model)
     path = tmp_path / "checkpoint.eqx"
     save_checkpoint(path, partial)
     restored = load_checkpoint(path, distance_model=encoder)
@@ -142,31 +145,35 @@ def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(
         },
     )
     config = TrainingConfig(
-        epochs=1, objective="mlpe", seed=21, learning_rate=0.002, mlpe_initial_variances=(0.05, 0.1)
+        steps=1,
+        objective="mlpe",
+        seed=21,
+        learning_rate=0.002,
+        mlpe=MLPEConfig(initial_variances=(0.05, 0.1)),
     )
     with jax.enable_x64():
         partial = fit(
             regions, observations, distance_model=checkpoint_model(), config=config, **arguments
         )
 
-        assert partial.selected_epoch == 0
+        assert partial.selected_step == 0
         path = tmp_path / "selected.ilg"
         save_checkpoint(path, partial)
         restored = load_checkpoint(path, distance_model=checkpoint_model())
         callbacks = []
         unchanged = fit(
-            regions, observations, state=restored, on_epoch=callbacks.append, **arguments
+            regions, observations, state=restored, on_step=callbacks.append, **arguments
         )
 
         assert callbacks == []
         assert_same_state(unchanged, partial)
         continued = fit(
-            regions, observations, state=restored, config=replace(config, epochs=2), **arguments
+            regions, observations, state=restored, config=replace(config, steps=2), **arguments
         )
 
         assert continued.history[-1].validation_loss is not None
-        assert continued.history[-1].validation_loss > partial.best_loss
-        assert continued.selected_epoch == 0
+        assert continued.history[-1].validation_loss > partial.selected_loss
+        assert continued.selected_step == 0
         assert (
             cast(MLPECalibrationModule, continued.model.calibration).regions
             == cast(MLPECalibrationModule, partial.model.calibration).regions
@@ -179,7 +186,7 @@ def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(
             cast(MLPECalibrationModule, continued.latest_model.calibration).regions
             != cast(MLPECalibrationModule, partial.model.calibration).regions
         )
-        assert continued.epoch == 2
+        assert continued.step == 2
 
 
 def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(
@@ -191,7 +198,7 @@ def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(
             region,
             observations,
             distance_model=checkpoint_model(),
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            config=TrainingConfig(objective="direct_log1p", steps=0),
         )
 
         changed_optimizer = jax.tree.map(
@@ -212,13 +219,13 @@ def test_interrupted_replacement_retains_previous_complete_generation(
 
     region, observations = checkpoint_problem()
     completed = []
-    config = TrainingConfig(objective="direct_log1p", epochs=1, seed=21, learning_rate=0.002)
+    config = TrainingConfig(objective="direct_log1p", steps=1, seed=21, learning_rate=0.002)
     result = fit(
         region,
         observations,
         distance_model=checkpoint_model(),
         config=config,
-        on_epoch=completed.append,
+        on_step=completed.append,
     )
 
     assert_same_state(completed[-1], result)
@@ -248,7 +255,7 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(
 
     region, observations = checkpoint_problem()
     training = ObservationPartition(region.name, observations.observed_pairs[:-2], role="training")
-    config = TrainingConfig(objective="direct_log1p", epochs=1, seed=21, learning_rate=0.002)
+    config = TrainingConfig(objective="direct_log1p", steps=1, seed=21, learning_rate=0.002)
     result = fit(
         region, observations, distance_model=checkpoint_model(), config=config, partition=training
     )
@@ -260,7 +267,7 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(
         region=region,
         observations=observations,
         state=state,
-        config=replace(config, epochs=2),
+        config=replace(config, steps=2),
         partition=training,
     )
     changed_target = replace(observations, target=TargetSpec("different target", units="index"))
@@ -306,18 +313,18 @@ def test_disk_continuation_rejects_changed_inputs_config_model_and_partitions(
         _FitOptions(
             partition=ObservationPartition(region.name, training.pairs, role="calibration")
         ),
-        _FitOptions(config=replace(config, epochs=2, learning_rate=0.003)),
-        _FitOptions(config=replace(config, epochs=0)),
+        _FitOptions(config=replace(config, steps=2, learning_rate=0.003)),
+        _FitOptions(config=replace(config, steps=0)),
         _FitOptions(distance_model=checkpoint_model()),
     ]
     callbacks = []
     for change in changes:
         with pytest.raises(ValueError):
-            fit(**(base | change), on_epoch=callbacks.append)
+            fit(**(base | change), on_step=callbacks.append)
     assert callbacks == []
     extended = fit(**base)
 
-    assert extended.epoch == 2
+    assert extended.step == 2
 
 
 def test_same_shape_measurement_edits_are_the_callers_responsibility(
@@ -328,7 +335,7 @@ def test_same_shape_measurement_edits_are_the_callers_responsibility(
         region,
         observations,
         distance_model=checkpoint_model(),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
     )
 
     path = tmp_path / "unchanged-structure.eqx"
@@ -346,7 +353,7 @@ def test_same_shape_measurement_edits_are_the_callers_responsibility(
         sampling_unit_ids=region.sampling_unit_ids,
     )
     callbacks = []
-    resumed = fit(changed_region, changed_observations, state=state, on_epoch=callbacks.append)
+    resumed = fit(changed_region, changed_observations, state=state, on_step=callbacks.append)
 
     assert callbacks == []
     assert_same_state(resumed, state)
@@ -362,7 +369,7 @@ def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
         region,
         observations,
         distance_model=checkpoint_model(),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
     )
 
     path = tmp_path / "incompatible.eqx"

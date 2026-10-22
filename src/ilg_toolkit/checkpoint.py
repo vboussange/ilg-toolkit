@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import optax
 
 from .config import TrainingConfig
+from .mlpe import MLPEConfig
 from .models import AbstractDistanceModel
 from .persistence import (
     ArtifactError,
@@ -16,14 +17,14 @@ from .persistence import (
     _read_header,
     _write_native,
 )
-from .training import EpochRecord, TrainingState
+from .training import StepRecord, TrainingState
 
 
 def save_checkpoint(path, state: TrainingState) -> None:
-    """Atomically save the actual latest/best state, including custom distance models.
+    """Save the latest training state and selected model in an Equinox checkpoint.
 
-    ``fit(..., on_epoch=lambda state: save_checkpoint(path, state))`` saves after
-    every complete epoch. A failed replacement leaves the prior file intact.
+    ``fit(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
+    initialization and every optimizer update. A failed replacement leaves the prior file intact.
     """
     if not isinstance(state, TrainingState):
         raise ArtifactError("save_checkpoint requires a TrainingState returned by fit")
@@ -32,7 +33,7 @@ def save_checkpoint(path, state: TrainingState) -> None:
         "input_contract": state.input_contract,
         "history_length": len(state.history),
         "latest_model": _model_metadata(state.latest_model),
-        "best_model": _model_metadata(state.best_model),
+        "selected_model": _model_metadata(state.selected_model),
     }
     _write_native(path, state, kind="training_checkpoint", metadata=metadata)
 
@@ -40,7 +41,7 @@ def save_checkpoint(path, state: TrainingState) -> None:
 def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingState:
     """Restore native state using the exact full distance model configuration and precision.
 
-    Continue with the original inputs and partitions. Only the total epoch budget
+    Continue with the original inputs and partitions. Only the total step budget
     may increase; unchanged measurements and execution conditions remain caller
     responsibilities. Numerical leaf compatibility is checked by Equinox.
     """
@@ -48,9 +49,10 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
         with Path(path).open("rb") as stream:
             metadata = _read_header(stream, kind="training_checkpoint")
             options = dict(metadata["config"])
+            options["mlpe"] = MLPEConfig(**options["mlpe"])
             config = TrainingConfig(**options)
             latest = _model_template(metadata["latest_model"], distance_model)
-            best = _model_template(metadata["best_model"], distance_model)
+            selected = _model_template(metadata["selected_model"], distance_model)
             raw = (
                 {name: jnp.zeros(2, dtype=jnp.float64) for name in latest.training_pairs}
                 if config.objective == "mlpe"
@@ -63,8 +65,8 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
             if history_length < 1:
                 raise ArtifactError("Checkpoint history is incomplete")
             history = tuple(
-                EpochRecord(
-                    epoch=0,
+                StepRecord(
+                    step=0,
                     training_loss=0.0,
                     validation_loss=0.0 if latest.validation_pairs else None,
                     training_by_region=dict.fromkeys(latest.training_pairs, 0.0),
@@ -80,8 +82,9 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
                 input_contract=metadata["input_contract"],
                 history=history,
                 latest_model=latest,
-                best_model=best,
-                selected_epoch=0,
+                selected_model=selected,
+                selected_step=0,
+                step=0,
             )
             return eqx.tree_deserialise_leaves(stream, template)
     except (KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:

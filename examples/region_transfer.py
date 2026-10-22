@@ -1,4 +1,4 @@
-"""Freeze a tiny encoder, then explicitly calibrate original and unseen regions."""
+"""Fit genetic calibration for a new region with a frozen distance model."""
 
 from dataclasses import replace
 
@@ -10,12 +10,10 @@ import numpy as np
 
 from ilg_toolkit import (
     MLPECalibrationModule,
-    ObservationPartition,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
     TrainingConfig,
-    calibrate,
     fit,
 )
 from ilg_toolkit.models import UNet
@@ -41,9 +39,14 @@ result = fit(
     region,
     observations,
     distance_model=model,
-    config=TrainingConfig(objective="direct_log1p", epochs=3, learning_rate=0.0001, seed=4),
+    config=TrainingConfig(objective="direct_log1p", steps=3, learning_rate=0.0001, seed=4),
 )
-calibrated = calibrate(result.model, region, observations)
+calibrated = fit(
+    region,
+    observations,
+    distance_model=result.selected_model.distance_model,
+    config=TrainingConfig(objective="mlpe", steps=0),
+).selected_model
 new_region = replace(
     region,
     name="new-catchment",
@@ -60,16 +63,16 @@ except ValueError as error:
 new_observations = PairwiseObservations.from_matrix(
     new_region.sampling_unit_ids, observations.values * 2, target=observations.target
 )
-development = ObservationPartition(
-    new_region.name, new_observations.observed_pairs, role="calibration"
-)
-transferred = calibrated.calibrate(new_region, new_observations, partitions=development)
+transferred = fit(
+    new_region,
+    new_observations,
+    distance_model=calibrated.distance_model,
+    config=TrainingConfig(objective="mlpe", steps=0),
+).selected_model
 assert eqx.tree_equal(transferred.distance_model, calibrated.distance_model)
 assert isinstance(calibrated.calibration, MLPECalibrationModule)
 assert isinstance(transferred.calibration, MLPECalibrationModule)
-assert eqx.tree_equal(
-    transferred.calibration.regions[region.name], calibrated.calibration.regions[region.name]
-)
+assert tuple(transferred.calibration.regions) == (new_region.name,)
 print("Calibrated new-region predictions:\n", transferred.predict(new_region).as_matrix())
 assert isinstance(transferred.calibration, MLPECalibrationModule)
 print(

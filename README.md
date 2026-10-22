@@ -117,9 +117,10 @@ the target's original units.
 **Fitting.** `fit` trains the distance model end to end. It computes ecological
 distances for the observed pairs, compares them with the genetic observations
 through a training objective, and updates the distance model's parameters with
-Adam for a fixed number of epochs. Optional validation pairs select the best epoch
-without changing the optimisation. The distance model and the objective are both
-explicit choices.
+Adam for a fixed number of steps. Optional validation pairs select the evaluated
+step with the lowest loss. Full evaluation runs at step zero, every `eval_every`
+steps, and the final step. Set `steps=0` to fit genetic calibration with a frozen
+distance model.
 
 ## Install
 
@@ -192,7 +193,7 @@ result = fit(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(objective="direct_log1p", epochs=4, learning_rate=0.001),
+    config=TrainingConfig(objective="direct_log1p", steps=4, learning_rate=0.001),
 )
 model = result.model  # The selected landscape genetics model.
 

@@ -50,7 +50,7 @@ def test_custom_conductance_hooks_fit_and_predict_requested_pairs(ConstantConduc
         region,
         observations,
         distance_model=distance_model,
-        config=TrainingConfig(objective="direct_log1p", epochs=3, learning_rate=0.1),
+        config=TrainingConfig(objective="direct_log1p", steps=3, learning_rate=0.1),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     np.testing.assert_allclose(
@@ -81,7 +81,7 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
         region,
         observations,
         distance_model=CustomDistance(jnp.array(1.0)),
-        config=TrainingConfig(objective=objective, epochs=3, learning_rate=0.1),
+        config=TrainingConfig(objective=objective, steps=3, learning_rate=0.1),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     path = tmp_path / "custom.ilg"

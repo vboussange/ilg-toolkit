@@ -43,17 +43,19 @@ def _optimizer_value_and_gradient(log_variances, distances, targets, left, right
 
 @dataclass(frozen=True)
 class MLPEConfig:
-    """Explicit constraints; standalone fitting uses scoped JAX float64.
+    """Numerical settings for maximum-likelihood population effects (MLPE).
 
-    Jitter is an explicitly declared addition to residual observation variance,
-    consistently included in likelihood and population-effect posterior. It is
-    never increased automatically. Both fixed coefficients remain signed.
+    Jitter adds to residual observation variance in both the likelihood and
+    population-effect posterior. ``initial_variances`` sets the population and
+    residual variances at training step zero; its default uses training targets.
+    ``max_iterations`` controls standalone calibration optimization.
     """
 
     variance_floor: float = 1e-10
     min_distance_scale: float = 1e-12
     jitter: float = 0.0
     max_iterations: int = 2000
+    initial_variances: tuple[float, float] | None = None
 
     def __post_init__(self):
         for name in ("variance_floor", "min_distance_scale", "jitter", "max_iterations"):
@@ -73,6 +75,17 @@ class MLPEConfig:
         if not isinstance(self.max_iterations, int) or self.max_iterations < 1:
             raise MLPEError("max_iterations must be a positive integer")
         object.__setattr__(self, "jitter", float(self.jitter))
+        if self.initial_variances is not None:
+            values = tuple(self.initial_variances)
+            if len(values) != 2 or any(
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, Real)
+                or not math.isfinite(value)
+                or value <= self.variance_floor
+                for value in values
+            ):
+                raise MLPEError("initial_variances must be two finite variances above the floor")
+            object.__setattr__(self, "initial_variances", tuple(float(value) for value in values))
 
 
 @final

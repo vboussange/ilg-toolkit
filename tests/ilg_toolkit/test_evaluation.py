@@ -17,7 +17,9 @@ from ilg_toolkit import (
     PopulationFold,
     RegionBatch,
     TargetSpec,
+    TrainingConfig,
     evaluate_ensemble,
+    fit,
     predict_out_of_fold,
     score_out_of_fold,
 )
@@ -73,7 +75,7 @@ def test_actual_mlpe_fit_keeps_prior_only_heldout_ids_eligible_and_query_perturb
             observations,
             folds=folds,
             initialization_seeds=(13, 29),
-            config=TrainingConfig(objective="mlpe", epochs=2),
+            config=TrainingConfig(objective="mlpe", steps=2),
             model_factory=model_factory,
         )
         query = folds[0].query[region.name]
@@ -223,18 +225,26 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
         old = next(label for label in region.sampling_unit_ids if label not in held)
         cross = ObservationPartition(region.name, ((held[0], old),), "calibration")
         training = member.fold.training[region.name]
-        calibrated = completed_model(member).calibrate(
-            region, observations, partitions=(training, cross)
-        )
+        calibrated = fit(
+            region,
+            observations,
+            distance_model=completed_model(member).distance_model,
+            partition=ObservationPartition(region.name, training.pairs + cross.pairs, "training"),
+            config=TrainingConfig(objective="mlpe", steps=0),
+        ).selected_model
         changed = Ensemble((replace(member, model=calibrated),))
         strict = predict_out_of_fold(changed, region, [held])
         partial = predict_out_of_fold(
             changed, region, [held], regime=EvaluationRegime(endpoint_regime="at_least_one_unseen")
         )
         own = ObservationPartition(region.name, ((held[0], held[1]),), "calibration")
-        contaminated = completed_model(member).calibrate(
-            region, observations, partitions=(training, own)
-        )
+        contaminated = fit(
+            region,
+            observations,
+            distance_model=completed_model(member).distance_model,
+            partition=ObservationPartition(region.name, training.pairs + own.pairs, "training"),
+            config=TrainingConfig(objective="mlpe", steps=0),
+        ).selected_model
         forbidden = predict_out_of_fold(
             Ensemble((replace(member, model=contaminated),)),
             region,
@@ -287,18 +297,19 @@ def test_calibrated_nominal_holdout_cannot_be_replaced_by_an_unused_nominal_trai
             observed,
             folds=[fold],
             model_factory=model_factory,
-            config=TrainingConfig(objective="mlpe", epochs=0),
+            config=TrainingConfig(objective="mlpe", steps=0),
         )
         member = ensemble.members[0]
         assert member.status == "completed"
-        calibrated = completed_model(member).calibrate(
+        calibrated = fit(
             region,
             observed,
-            partitions=(
-                fold.training[region.name],
-                ObservationPartition(region.name, (cross,), "calibration"),
+            distance_model=completed_model(member).distance_model,
+            partition=ObservationPartition(
+                region.name, fold.training[region.name].pairs + (cross,), "training"
             ),
-        )
+            config=TrainingConfig(objective="mlpe", steps=0),
+        ).selected_model
         result = predict_out_of_fold(
             Ensemble((replace(member, model=calibrated),)),
             region,
@@ -475,7 +486,7 @@ def test_only_eligible_pairs_are_inverse_transformed(FeatureEmbedding, completed
             region,
             observed,
             folds=[fold],
-            config=TrainingConfig(objective="mlpe", epochs=0),
+            config=TrainingConfig(objective="mlpe", steps=0),
             model_factory=lambda key: FeatureEmbedding(jnp.asarray(1.0)),
         )
         assert ensemble.members[0].status == "completed"
