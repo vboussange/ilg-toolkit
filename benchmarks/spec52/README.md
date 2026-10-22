@@ -13,7 +13,8 @@ measure and summarize memory for up to 1,000 species.
 
 ## Runtime
 
-Run from a clean, committed checkout on Linux with CPU cores 0 and 1 available.
+Run from a clean, committed checkout on Linux with central processing unit (CPU)
+cores 0 and 1 available.
 Install Python 3.12 or newer and the development dependencies with `uv sync
 --extra dev`. Use the same dependency environment for both revisions; each
 measurement records package versions, source identities and CPU affinity.
@@ -53,7 +54,9 @@ relative to its separate fit. Inconclusive comparisons require more repetitions;
 Scientific checks include finite predictions, full calibration and dense-reference
 resistance. Use `main_driver.py --list` to list cases. For a quick development
 check, select `pr_driver.py --case unet-direct-one-single --chunk 4 --smoke` with
-an output path; smoke results cannot pass the comparison.
+an output path.
+
+Note: smoke results cannot pass the comparison.
 
 ## Memory
 
@@ -93,5 +96,7 @@ done
 Memory fits use two updates, four selected species per update, and initial/final
 evaluations across every species. The analyzer requires all 14 cases and checks
 calibration coverage, update counts, microbatch sizes and compilation reuse.
-Generated JSON, arrays and compiler output stay local; `benchmarks/**/results/`
-is ignored. The report contains CPU observations, with no GPU-memory estimate.
+Generated measurements, arrays and compiler output stay local;
+`benchmarks/**/results/` is ignored. The report contains CPU observations.
+
+Note: these observations do not estimate graphics processing unit (GPU) memory.

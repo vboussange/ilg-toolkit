@@ -7,7 +7,7 @@ import numpy as np
 
 
 def protocol():
-    """Return the workload and numerical settings for the CPU comparison."""
+    """Return the workload and numerical settings for the runtime comparison."""
     settings = {
         "protocol_version": 1,
         "frozen_main_commit": "8439f99ea37f04273a1868b8009e1076239ad316",

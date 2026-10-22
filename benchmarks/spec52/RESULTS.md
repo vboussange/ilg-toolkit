@@ -13,8 +13,8 @@ measurements; elapsed times depend on hardware, dependencies and system load.
 All 32 candidate workloads completed with ten synchronized public-fit repetitions
 and species microbatch size 4. Features and neural parameters use float32;
 resistance and maximum-likelihood population-effects (MLPE) calculations use
-float64. Workers use CPU cores 0–1, one numerical-library thread and no persistent
-compilation cache. The machine was shared, with no exclusive CPU reservation.
+float64. Workers use central processing unit (CPU) cores 0–1, one numerical-library
+thread and disabled persistent compilation cache. Workers ran on a shared machine.
 
 All ten required comparisons passed. Ratios below compare candidate to baseline;
 brackets show 95% bootstrap intervals from 10,000 separately sampled fit blocks.
@@ -42,7 +42,9 @@ The additional `resnet-direct-multi` steady-update comparison is inconclusive:
 Startup, warmed prediction and process resident set size (RSS) ratios stay below
 the disclosure limits of 2.0, 1.5 and 1.5, respectively.
 
-LogLinear has its own measurements and no baseline counterpart:
+LogLinear has its own measurements. Memory is reported in mebibytes (MiB).
+
+Note: LogLinear has no baseline counterpart.
 
 | Workload | Fit median (s) | Steady-update median (s) | Compile + first fit (s) | Warm prediction median (s) | Peak RSS (MiB) |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -52,9 +54,10 @@ LogLinear has its own measurements and no baseline counterpart:
 | Solver-stress, 4 species | 1.870770 | 0.194101 | 13.417640 | 0.316247 | 929.84 |
 
 Public-fit ratios include evaluation, calibration and the baseline's recurring
-first-update compilation. They describe three-update fits and do not estimate
-long-training or convergence speedups. Compile-plus-first-fit timing includes
-compilation and execution; warmed fits measure recurring work.
+first-update compilation. They describe three-update fits. Compile-plus-first-fit
+timing includes compilation and execution; warmed fits measure recurring work.
+
+Note: these ratios do not estimate long-training or convergence speedups.
 
 ## Memory and compilation
 
@@ -63,6 +66,7 @@ microbatch sizes {1, 4}, plus two unequal-sampling cases. Each fit takes two
 updates with four selected species per update, and evaluates and calibrates every
 species initially and finally. Changing selected species reuses compiled
 operations; unequal sampling-unit counts require two shape specializations.
+Process memory is reported in gibibytes (GiB).
 
 | Family | Species | Microbatch | Species forward/backward compiled allocation (bytes) | Process peak RSS (GiB) |
 | --- | ---: | ---: | ---: | ---: |
@@ -86,7 +90,9 @@ cover species selection, pair order, squared embedding distance and resistance
 against a dense graph reference.
 
 Compiled allocations measure individual operations. Pooled-backbone intermediate
-values remain live during species calculations, and live-array snapshots omit
-internal temporary storage. RSS includes compiler, Python and output storage.
-The CPU backend supplies no device-allocator peak; these observations do not
-establish GPU memory scaling.
+values remain live during species calculations. Live-array snapshots count arrays
+at observation boundaries. RSS includes compiler, Python and output storage.
+
+Note: the CPU backend supplies no device-allocator peak; these observations do
+not establish graphics processing unit (GPU) memory scaling. Live-array snapshots
+omit internal temporary storage.
