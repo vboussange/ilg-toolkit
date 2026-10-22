@@ -206,11 +206,11 @@ print("Genetic predictions:", prediction.pairs, prediction.values)
 print("Genetic prediction matrix:\n", prediction.as_matrix())
 
 # Loading needs a template distance model with the same configuration.
-save_model("model.ilg", model)
+save_model("model.eqx", model)
 template = ResNet9Conductance(
     in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(0)
 )
-restored = load_model("model.ilg", distance_model=template)
+restored = load_model("model.eqx", distance_model=template)
 print("Restored predictions:\n", restored.predict(region).as_matrix())
 ```
 
