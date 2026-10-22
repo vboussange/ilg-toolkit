@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 
 import numpy as np
+from fixtures import fixture, protocol_digest
+from fixtures import protocol as workload_protocol
 
 
 def blocks(values):
@@ -123,10 +125,9 @@ def timing_summary(result):
     )
 
 
-def compare_reports(main_reports, pr_reports, *, frozen_main_report=None) -> dict:
+def compare_reports(main_reports, pr_reports) -> dict:
     """Validate complete work manifests before evaluating every frozen gate."""
-    directory = Path(__file__).parent
-    protocol = json.loads((directory / "protocol.json").read_text())
+    protocol = workload_protocol()
     main, pr = _indexed(main_reports, False), _indexed(pr_reports, True)
     repeated_main_cases = sorted(
         name
@@ -151,32 +152,21 @@ def compare_reports(main_reports, pr_reports, *, frozen_main_report=None) -> dic
             f"Missing workloads: main={sorted(required_main - main.keys())}, "
             f"PR={sorted(required_pr - pr.keys())}"
         )
-    if frozen_main_report is None:
-        path = directory / "results/main.json"
-        if not path.exists():
-            raise ValueError(
-                "Frozen baseline is missing; restore the release evidence archive "
-                "as described in benchmarks/spec52/README.md"
-            )
-        frozen_main_report = json.loads(path.read_text())
-    frozen_main = _indexed([frozen_main_report], False)
-    for name, result in main.items():
-        reference = frozen_main[name]
+    for case in protocol["cases"]:
+        result = main[case["name"]]
+        machine = result["machine"]
+        expected_inputs = {item["name"]: item["sha256"] for item in fixture(case, protocol)}
         if (
-            result["case"] != reference["case"]
-            or result["input_sha256"] != reference["input_sha256"]
-            or any(
-                result["machine"][field] != reference["machine"][field]
-                for field in (
-                    "source_tree",
-                    "frozen_main_commit",
-                    "protocol_sha256",
-                    "fixtures_sha256",
-                    "cpu_affinity",
-                )
-            )
+            result["case"] != case
+            or result["input_sha256"] != expected_inputs
+            or machine["source_tree"] != "8487c17e3d34a683464b3093539a74c8fd276238"
+            or machine["frozen_main_commit"] != protocol["frozen_main_commit"]
+            or machine["protocol_sha256"] != protocol_digest()
+            or machine["fixtures_sha256"]
+            != hashlib.sha256(Path(__file__).with_name("fixtures.py").read_bytes()).hexdigest()
+            or machine["cpu_affinity"] != protocol["execution"]["cpu_affinity"]
         ):
-            raise ValueError(f"Frozen baseline source, inputs or execution mismatch: {name}")
+            raise ValueError(f"Baseline source, workload or execution mismatch: {case['name']}")
     for report in main_reports + pr_reports:
         settings = dict(report["protocol"])
         repeats = settings.pop("fit_repeats")
@@ -200,7 +190,7 @@ def compare_reports(main_reports, pr_reports, *, frozen_main_report=None) -> dic
             for count in (1, 4):
                 expected_cases[f"{fixed['name']}-joint-{count}"] = (fixed, list(range(count)))
     sources, drivers, chunks = set(), set(), set()
-    protocol_hash = hashlib.sha256((directory / "protocol.json").read_bytes()).hexdigest()
+    protocol_hash = protocol_digest()
     for key, result in pr.items():
         _samples(result)
         machine = result["machine"]
@@ -385,9 +375,7 @@ def main():
     result.update(
         raw_inputs=evidence,
         analysis_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        policy_sha256=hashlib.sha256(
-            Path(__file__).with_name("analysis_policy.json").read_bytes()
-        ).hexdigest(),
+        protocol_sha256=protocol_digest(),
     )
     args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
     print(json.dumps(result))

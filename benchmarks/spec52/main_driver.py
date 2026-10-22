@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import cast
 
-from fixtures import PROTOCOL_PATH, fixture, protocol, summary
+from fixtures import fixture, protocol, protocol_digest, summary
 
 
 def git(*args, cwd):
@@ -52,7 +52,7 @@ def environment_report(source, settings):
         source_tree=git("rev-parse", "HEAD:src", cwd=source),
         frozen_main_commit=settings["frozen_main_commit"],
         benchmark_commit=git("rev-parse", "HEAD", cwd=Path(__file__).parent),
-        protocol_sha256=hashlib.sha256(PROTOCOL_PATH.read_bytes()).hexdigest(),
+        protocol_sha256=protocol_digest(),
         driver_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         fixtures_sha256=hashlib.sha256(
             Path(__file__).with_name("fixtures.py").read_bytes()

@@ -1,9 +1,7 @@
 """Run one instrumented public MLPE fit with fixed four-species training selection.
 
-Use fresh processes and empty XLA dump directories for each case. This extends
-bounded_probe.py without editing its historical driver or raw evidence. CPU XLA
-buffer allocations, live-array boundary snapshots and process RSS are different
-quantities; none alone is an end-to-end device allocator peak.
+Use fresh processes and empty compiler dump directories for each case. Report
+compiled allocations, live-array snapshots and process resident memory separately.
 """
 
 import argparse
