@@ -8,7 +8,7 @@ from ilg_toolkit.mlpe import calibrate_mlpe
 
 
 def test_known_effects_and_unseen_prior_match_joint_gaussian(
-    joint_gaussian_reference, mlpe_reference, calibrated
+    joint_gaussian_reference, frozen_r_conditional_reference, mlpe_reference, calibrated
 ):
     head, observations = calibrated
     pairs = (("p01", "p02"), ("new", "p03"), ("new", "other-new"))
@@ -32,13 +32,24 @@ def test_known_effects_and_unseen_prior_match_joint_gaussian(
     )
     r_effects = [mlpe_reference.blups[0] + mlpe_reference.blups[1], mlpe_reference.blups[2], 0]
     np.testing.assert_allclose(result.values, r_fixed + r_effects, atol=2e-5)
+    frozen_expected = frozen_r_conditional_reference(
+        observations.observed_pairs,
+        mlpe_reference.distances,
+        mlpe_reference.targets,
+        pairs,
+        distances,
+        jitter=1e-7,
+    )
+    for quantity, expected in frozen_expected.items():
+        # Frozen R parameters stay fixed; the jittered fit differs by at most 1.3e-7 here.
+        np.testing.assert_allclose(result.extras[quantity], expected, rtol=0, atol=2e-6)
     marginal = head.predict(distances, pairs)
     assert result.values[0] != pytest.approx(marginal.values[0])
     assert result.values[-1] == pytest.approx(marginal.values[-1])
 
 
 def test_supplied_support_updates_effects_and_matches_joint_gaussian(
-    joint_gaussian_reference, mlpe_reference, calibrated
+    joint_gaussian_reference, frozen_r_conditional_reference, mlpe_reference, calibrated
 ):
     head, calibration = calibrated
     support = PairwiseObservations.from_pairs(
@@ -62,6 +73,17 @@ def test_supplied_support_updates_effects_and_matches_joint_gaussian(
     )
     np.testing.assert_allclose(result.extras["model_values"], expected_mean, atol=3e-11)
     np.testing.assert_allclose(result.extras["model_variance"], expected_variance, atol=3e-11)
+    frozen_expected = frozen_r_conditional_reference(
+        calibration.observed_pairs + support.observed_pairs,
+        np.r_[mlpe_reference.distances, support_distances],
+        np.r_[mlpe_reference.targets, support.observed_values],
+        pairs,
+        distances,
+        jitter=1e-7,
+    )
+    for quantity, expected in frozen_expected.items():
+        # Support amplifies the jittered-fit difference to 7.3e-7; R literals have 16+ digits.
+        np.testing.assert_allclose(result.extras[quantity], expected, rtol=0, atol=2e-6)
     np.testing.assert_array_equal(
         head.predict(distances, pairs, known_effects=True).values, known.values
     )

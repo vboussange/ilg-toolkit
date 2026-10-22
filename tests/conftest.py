@@ -120,6 +120,10 @@ _R_FIXED = np.array([1.2422795775895932, -0.6653657702662492])
 _R_VARIANCES = np.array([0.23562746377731067, 0.02879401793899513])
 
 
+_R_DISTANCE_CENTER = -0.14328369260805038
+_R_DISTANCE_SCALE = 1.012896471531856
+
+
 _R_LOG_LIKELIHOOD = -6.137989809270536
 
 
@@ -380,6 +384,37 @@ def _joint_gaussian_reference(
     mean = fixed[n:] + cross @ np.linalg.solve(covariance[:n, :n], targets - fixed[:n])
     conditional = covariance[n:, n:] - cross @ np.linalg.solve(covariance[:n, :n], cross.T)
     return mean, np.diag(conditional)
+
+
+def _frozen_r_conditional_reference(
+    observed_pairs, observed_distances, targets, query_pairs, distances, *, jitter
+):
+    """NumPy conditional expectations derived from frozen R calibration results.
+
+    Coefficients, variance components and distance moments come from the R
+    reference; conditioning uses the supplied observation inputs. Residual
+    variance plus jitter enters observation covariance and model variance.
+    """
+    labels = sorted({label for pair in (*observed_pairs, *query_pairs) for label in pair})
+    observed = np.array([[float(label in pair) for label in labels] for pair in observed_pairs])
+    query = np.array([[float(label in pair) for label in labels] for pair in query_pairs])
+    noise = _R_VARIANCES[1] + jitter
+    covariance = _R_VARIANCES[0] * observed @ observed.T + noise * np.eye(len(observed_pairs))
+    cross = _R_VARIANCES[0] * query @ observed.T
+    fixed_observed = (
+        _R_FIXED[0] + _R_FIXED[1] * (observed_distances - _R_DISTANCE_CENTER) / _R_DISTANCE_SCALE
+    )
+    fixed_query = _R_FIXED[0] + _R_FIXED[1] * (distances - _R_DISTANCE_CENTER) / _R_DISTANCE_SCALE
+    mean = fixed_query + cross @ np.linalg.solve(covariance, targets - fixed_observed)
+    effect_covariance = _R_VARIANCES[0] * query @ query.T - cross @ np.linalg.solve(
+        covariance, cross.T
+    )
+    effect_variance = np.diag(effect_covariance)
+    return {
+        "model_values": mean,
+        "model_variance": effect_variance + noise,
+        "effect_variance": effect_variance,
+    }
 
 
 @final
@@ -822,6 +857,11 @@ def calibrated_fixture():
 @pytest.fixture(name="joint_gaussian_reference", scope="session")
 def joint_gaussian_reference_fixture():
     return _joint_gaussian_reference
+
+
+@pytest.fixture(name="frozen_r_conditional_reference", scope="session")
+def frozen_r_conditional_reference_fixture():
+    return _frozen_r_conditional_reference
 
 
 @pytest.fixture(name="WeightedEmbedding", scope="session")
