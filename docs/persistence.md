@@ -4,7 +4,7 @@
 population-effect posterior, feature and target contracts, solver settings, and
 observation-use provenance. The artifact supports prediction without training
 measurements. `save_checkpoint` stores the latest optimization state and selected
-selected model for continuation; see below.
+model for continuation; see below.
 
 ## Export predictions
 

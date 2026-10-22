@@ -44,7 +44,7 @@ result = fit(
     distance_model=model,
     config=TrainingConfig(objective="direct_log1p", steps=10, learning_rate=0.001, seed=4),
 )
-print("Selected shared encoder at step", result.selected_step)
+print("Selected model at step", result.selected_step)
 print("Per-region training objectives:", result.history[-1].training_by_region)
 for region in regions:
     print(region.name, result.model.predict(region).as_matrix(), result.model.target.units)
