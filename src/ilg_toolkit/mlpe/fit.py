@@ -89,25 +89,6 @@ class MLPEConfig:
 
 
 @final
-class MLPEPrediction(eqx.Module):
-    """Marginal pair means on declared original and fitted target scales.
-
-    Original-scale values inverse-transform the fitted Gaussian mean. For a
-    nonlinear transform this is not the expectation of the original random
-    target; no distributional mean correction is implied.
-
-    Attributes:
-        prediction: Original-scale points and pair identities. Matrix order is
-            distinct query endpoints in first-appearance order.
-        model_values: Fitted Gaussian mean vector, shape ``(m,)``, before the
-            inverse target transform. Marginal predictive variance is unreported.
-    """
-
-    prediction: Prediction
-    model_values: jax.Array
-
-
-@final
 class RegionalMLPECalibration(eqx.Module):
     """Complete regional calibration with auditable observation identities."""
 
@@ -212,37 +193,32 @@ class RegionalMLPECalibration(eqx.Module):
         ):
             raise MLPEError("MLPE head region, sampling-unit identities and provenance must align")
 
-    @jax.enable_x64()
-    def predict_marginal(self, distances, pairs) -> MLPEPrediction:
-        """Predict labelled query pairs without targets; new effects have mean zero."""
-        from .prediction import _query
+    def predict(
+        self,
+        distances,
+        pairs,
+        *,
+        known_effects: bool = False,
+        support: PairwiseObservations | None = None,
+        support_distances=None,
+    ) -> Prediction:
+        """Genetic predictions from ecological distances aligned with query pairs.
 
-        distances, pairs, _ = _query(distances, pairs)
-        model_values = (
-            self.intercept + self.slope * (distances - self.distance_center) / self.distance_scale
-        )
-        return MLPEPrediction(
-            Prediction(
-                self.target.inverse(model_values),
-                pairs,
-                self.region_name,
-                tuple(dict.fromkeys(label for pair in pairs for label in pair)),
-            ),
-            model_values,
-        )
+        The ``model_values`` extra gives model-scale values; conditional modes
+        also give ``model_variance`` and ``effect_variance`` on that scale.
+        ``known_effects`` uses saved population effects, while ``support`` uses
+        disjoint observations and aligned ``support_distances`` to condition them.
+        Residual variance and jitter remain on this calibration.
+        """
+        from .prediction import predict
 
-    def predict_known_effects(self, distances, pairs):
-        """Explicit posterior-effect prediction, with independent priors for unseen units."""
-        from .prediction import predict_known_effects
-
-        return predict_known_effects(self, distances, pairs)
-
-    def condition_on_support(self, support_distances, support_observations, *, partition):
-        """Update effects using only an explicit support-role partition."""
-        from .prediction import condition_on_support
-
-        return condition_on_support(
-            self, support_distances, support_observations, partition=partition
+        return predict(
+            self,
+            distances,
+            pairs,
+            known_effects=known_effects,
+            support=support,
+            support_distances=support_distances,
         )
 
 

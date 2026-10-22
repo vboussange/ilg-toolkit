@@ -142,8 +142,8 @@ with jax.enable_x64():
     member = ensemble.members[0]
     assert member.model is not None
     training_pair = member.fold.training[region.name].pairs[0]
-    known = member.model.predict_known_effects(region, [training_pair])
-    print("Known-effect deployment on a calibration pair:", known.prediction.values)
+    known = member.model.predict(region, pairs=[training_pair], known_effects=True)
+    print("Known-effect deployment on a calibration pair:", known.values)
     excluded = predict_out_of_fold(ensemble, region, [training_pair])
     excluded_score = score_out_of_fold(excluded, observations)
     print("This pair is excluded from OOF because its own target was accessed:")

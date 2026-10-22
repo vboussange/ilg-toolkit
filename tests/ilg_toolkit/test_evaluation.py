@@ -342,19 +342,18 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
                 endpoint_regime="at_least_one_unseen", prediction_mode="known_effects"
             ),
         )
-        expected_known = completed_model(member).predict_known_effects(
-            region, [tuple(sorted(known_pair))]
+        expected_known = completed_model(member).predict(
+            region, pairs=[tuple(sorted(known_pair))], known_effects=True
         )
-        np.testing.assert_allclose(known.values, expected_known.prediction.values, atol=1e-12)
+        np.testing.assert_allclose(known.values, expected_known.values, atol=1e-12)
         assert known.member_model_variances is not None
         assert known.member_model_variances.dtype == jnp.float64
         np.testing.assert_allclose(
-            known.member_model_variances[0], expected_known.model_variance, atol=1e-12
+            known.member_model_variances[0], expected_known.extras["model_variance"], atol=1e-12
         )
         assert known.variance_scale == "model"
         assert (
-            known.conditioning_provenance[member.identity.member_id][region.name].mode
-            == "known_effects"
+            known.access[member.identity.member_id][region.name].prediction_mode == "known_effects"
         )
         support_pair = (held[0], old)
         lookup = {
@@ -385,22 +384,18 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
         conditional = predict_out_of_fold(
             ensemble, region, [held], support=support, regime=permitted
         )
-        expected = completed_model(member).predict_with_support(
-            region, [held], support_observed, support_partition=support.partition
-        )
-        np.testing.assert_allclose(conditional.values, expected.prediction.values, atol=1e-12)
+        expected = completed_model(member).predict(region, pairs=[held], support=support_observed)
+        np.testing.assert_allclose(conditional.values, expected.values, atol=1e-12)
         assert conditional.member_model_variances is not None
         np.testing.assert_allclose(
-            conditional.member_model_variances[0], expected.model_variance, atol=1e-12
+            conditional.member_model_variances[0], expected.extras["model_variance"], atol=1e-12
         )
         assert conditional.coverage == 1
         np.testing.assert_array_equal(conditional.member_spread, [0])
         assert conditional.member_model_variances[0, 0] > 0
         assert conditional.regime.support_endpoint_policy == "allow_declared_support"
         assert (
-            conditional.conditioning_provenance[member.identity.member_id][
-                region.name
-            ].support_pairs
+            conditional.access[member.identity.member_id][region.name].support_pairs
             == support.partition.pairs
         )
         with pytest.raises(ValueError):

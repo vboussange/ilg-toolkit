@@ -104,10 +104,11 @@ way when that extra is present. Target meaning and units remain on the model's
 calibration.
 
 Marginal prediction uses $\hat\alpha+\hat\beta x$ and zero population-effect
-means, including for unseen populations. Known-effect prediction adds the saved
-posterior means of the endpoints. Support-conditioned prediction first updates
-that posterior from explicitly declared support observations while holding the
-encoder, moments, fixed coefficients and variances fixed. Calibration pairs
+means, including for unseen populations. `predict(region, known_effects=True)` adds the saved
+population effects. `predict(region, pairs=pairs, support=observations)` first
+conditions those effects on support observations while holding the distance
+model, distance moments, coefficients and variance parameters fixed.
+The two options are mutually exclusive and require MLPE calibration. Calibration pairs
 cannot be counted twice, and support/query pairs must be disjoint.
 
 For a fitted residual $r=t-X\hat\theta$, the saved Gaussian posterior is
@@ -118,8 +119,9 @@ $$E[b\mid t]=uZ^\top V^{-1}r,\qquad
 Known/support prediction includes endpoint posterior variance and independent
 new-observation residual variance $d$. It excludes encoder, fixed-coefficient and
 variance-parameter uncertainty. Unseen effects have independent prior variance
-$u$. Numerical means and variances are JAX arrays; identity/provenance remains
-host metadata. See [support conditioning](mlpe-conditioning.md) for access rules.
+$u$. Conditional predictions provide pair-aligned `model_values`, `model_variance`
+and `effect_variance` arrays in `extras`. Residual variance and jitter remain on
+the model's MLPE calibration. See [support conditioning](mlpe-conditioning.md) for access rules.
 
 All point predictions return $T^{-1}$ of the fitted mean in original units,
 without clipping. Under nonlinear $T$, this is not the expectation of the

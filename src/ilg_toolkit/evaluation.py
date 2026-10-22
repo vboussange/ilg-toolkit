@@ -22,7 +22,7 @@ complete synthetic workflow and the operation-specific precision contracts.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
@@ -203,10 +203,6 @@ class OOFPrediction:
             failures. Other members may still provide coverage.
         access: Member-ID then region-name mapping to ``EvaluationAccess``
             snapshots, retained when that access was successfully obtained.
-        conditioning_provenance: Member-ID then region-name mapping to
-            successful ``MLPEPredictionProvenance`` records. Marginal mode has
-            no regional records; conditional records must agree with declared
-            calibration/support use.
         member_model_variances: ``None`` for marginal mode (unreported, not zero).
             Conditional modes return a JAX array ``(k, m)`` with per-member
             effect-posterior plus residual and jitter predictive variance;
@@ -240,7 +236,6 @@ class OOFPrediction:
     member_failures: dict[str, MemberFailure]
     prediction_failures: dict[str, dict[str, MemberFailure]]
     access: dict[str, dict[str, EvaluationAccess]]
-    conditioning_provenance: dict = field(default_factory=dict)
     member_model_variances: jax.Array | None = None
     variance_scale: str = "model"
     excluded_uncertainty: tuple[str, ...] = (
@@ -458,35 +453,16 @@ def _exclusion(pair, held_out, access, regime):
     return None
 
 
-def _member_predict(model, region, pairs, regime, support, access):
-    """Accept conditional points only when returned access matches the declaration."""
-    provenance = None
-    variances = None
-    if regime.prediction_mode == "marginal":
-        values = model.predict(region, pairs=pairs).values
-    else:
-        if regime.prediction_mode == "known_effects":
-            result = model.predict_known_effects(region, pairs)
-        else:
-            result = model.predict_with_support(
-                region, pairs, support.observations, support_partition=support.partition
-            )
-        provenance = result.provenance
-        if (
-            result.prediction.region_name != region.name
-            or tuple(tuple(sorted(pair)) for pair in result.prediction.pairs) != pairs
-            or result.variance_scale != "model"
-            or provenance.region_name != region.name
-            or provenance.mode != regime.prediction_mode
-            or set(provenance.calibration_pairs) != set(access.calibration_pairs)
-            or set(provenance.support_pairs) != set(access.support_pairs)
-            or provenance.calibration_roles != access.calibration_roles
-            or provenance.support_roles != ("support",) * len(access.support_pairs)
-        ):
-            raise ValueError(
-                "Conditional prediction target-access provenance differs from its declaration"
-            )
-        values, variances = result.prediction.values, result.model_variance
+def _member_predict(model, region, pairs, regime, support):
+    """Genetic predictions and conditional variance for eligible query pairs."""
+    result = model.predict(
+        region,
+        pairs=pairs,
+        known_effects=regime.prediction_mode == "known_effects",
+        support=None if support is None else support.observations,
+    )
+    values = result.values
+    variances = result.extras.get("model_variance")
     if values.shape != (len(pairs),) or not bool(jnp.isfinite(values).all()):
         raise FloatingPointError(
             "Member prediction must return aligned finite original-scale values"
@@ -495,7 +471,7 @@ def _member_predict(model, region, pairs, regime, support, access):
         variances.shape != values.shape or not bool(jnp.isfinite(variances).all())
     ):
         raise FloatingPointError("Conditional member model variance must be aligned and finite")
-    return values, variances, provenance
+    return values, variances
 
 
 def predict_out_of_fold(
@@ -585,7 +561,7 @@ def predict_out_of_fold(
     by_id = {member.identity.member_id: member for member in ensemble.members}
     values = jnp.full((len(member_ids), len(keys)), jnp.nan)
     variances = None if regime.prediction_mode == "marginal" else jnp.full_like(values, jnp.nan)
-    reasons, failures, prediction_failures, access_records, provenance_records = {}, {}, {}, {}, {}
+    reasons, failures, prediction_failures, access_records = {}, {}, {}, {}
     statuses = {member_id: by_id[member_id].status for member_id in member_ids}
     for row, member_id in enumerate(member_ids):
         member = by_id[member_id]
@@ -599,7 +575,7 @@ def predict_out_of_fold(
             continue
         model = member.model
         assert model is not None  # A completed member retains its inference model.
-        access_records[member_id], provenance_records[member_id] = {}, {}
+        access_records[member_id] = {}
         for name, prepared in regions.items():
             columns = [index for index, (region_name, _) in enumerate(keys) if region_name == name]
             try:
@@ -615,20 +591,17 @@ def predict_out_of_fold(
                         eligible.append(column)
                 if not eligible:
                     continue
-                predicted, model_variance, provenance = _member_predict(
+                predicted, model_variance = _member_predict(
                     model,
                     prepared,
                     tuple(keys[column][1] for column in eligible),
                     regime,
                     supports.get(name),
-                    access,
                 )
                 values = values.at[row, jnp.asarray(eligible)].set(predicted)
                 if model_variance is not None:
                     assert variances is not None
                     variances = variances.at[row, jnp.asarray(eligible)].set(model_variance)
-                if provenance is not None:
-                    provenance_records[member_id][name] = provenance
             except Exception as error:
                 prediction_failures.setdefault(member_id, {})[name] = MemberFailure(
                     "prediction", type(error).__name__, str(error)
@@ -667,7 +640,6 @@ def predict_out_of_fold(
         failures,
         prediction_failures,
         access_records,
-        provenance_records,
         variances,
     )
 

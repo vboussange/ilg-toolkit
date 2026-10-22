@@ -45,11 +45,11 @@ observations = PairwiseObservations.from_pairs(
     target=TargetSpec("synthetic divergence", units="index"),
 )
 head = calibrate_mlpe(distances, observations, region_name=region.name)
-prediction = head.predict_marginal(distances, observations.observed_pairs)
+prediction = head.predict(distances, observations.observed_pairs)
 print("Ecological distances:", distances[:4])
 print(
     "Calibrated genetic predictions:",
-    prediction.prediction.values[:4],
+    prediction.values[:4],
     head.target.units,
 )
 print("Signed fitted slope:", head.slope)
