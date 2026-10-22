@@ -11,6 +11,40 @@ import pytest
 from ilg_toolkit import PairwiseObservations, TargetSpec, TrainingConfig, fit
 
 
+def test_species_observations_align_repeated_ids_without_cross_species_pairs(observation_problem):
+    from dataclasses import replace
+
+    region, target, _ = observation_problem()
+    region = replace(
+        region,
+        sampling_unit_ids=("a", "b", "a", "b"),
+        grid_positions=[[0, 0], [0, 1], [0, 1], [0, 2]],
+        sampling_unit_kinds=None,
+        species=("frog", "frog", "newt", "newt"),
+    )
+    for species, value, indices in (("frog", 2.0, (0, 1)), ("newt", 5.0, (2, 3))):
+        observations = PairwiseObservations.from_pairs(
+            [("b", "a")], [value], target=target, species=species
+        )
+        matrix_observations = PairwiseObservations.from_matrix(
+            ("a", "b"), [[0, value], [value, 0]], target=target, species=species
+        )
+        for observed in (observations, matrix_observations):
+            pairs, values = observed.aligned_pairs(region)
+            np.testing.assert_array_equal(pairs, np.asarray(indices)[:, None])
+            np.testing.assert_array_equal(values, [value])
+            aligned = observed.aligned_values(region)
+            assert np.isnan(aligned[0, 2])
+    with pytest.raises(ValueError):
+        replace(region, species=("frog",) * 4)
+    with pytest.raises(ValueError):
+        replace(region, species=("frog",))
+    with pytest.raises(ValueError):
+        replace(observations, species=None).aligned_pairs(region)
+    with pytest.raises(ValueError):
+        replace(observations, species="absent").aligned_pairs(region)
+
+
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_observation_dtype_and_absent_pairs_survive_matrix_pair_and_region_alignment(
     observation_problem, dtype

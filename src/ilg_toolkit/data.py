@@ -66,10 +66,10 @@ class TargetSpec:
 
 @dataclass(frozen=True)
 class RegionBatch:
-    """Named row, column and feature dimensions with labelled sampling-unit locations.
+    """Prepared landscape features and sampling-unit locations for one region.
 
-    Features are already prepared. This boundary performs no raster alignment,
-    coordinate conversion, or implicit normalization.
+    Optional species labels distinguish sampling units whose identifiers repeat
+    across species. Features use named row, column, and feature dimensions.
     """
 
     name: str
@@ -78,6 +78,7 @@ class RegionBatch:
     grid_positions: ArrayLike
     feature_names: tuple[str, ...] | None = None
     sampling_unit_kinds: tuple[str, ...] | None = None
+    species: tuple[str, ...] | None = None
 
     def __post_init__(self):
         names = None if self.feature_names is None else tuple(self.feature_names)
@@ -97,6 +98,13 @@ class RegionBatch:
             names = labels
         features = jnp.asarray(field.data)
         ids = tuple(self.sampling_unit_ids)
+        species = None if self.species is None else tuple(self.species)
+        if species is not None and (
+            len(species) != len(ids)
+            or any(not isinstance(name, str) or not name for name in species)
+        ):
+            raise ValueError("species must label each sampling unit with a nonempty name")
+        identities = ids if species is None else tuple(zip(species, ids, strict=True))
         positions = jnp.asarray(self.grid_positions)
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("Region name must be a nonempty string")
@@ -105,9 +113,9 @@ class RegionBatch:
         if (
             len(ids) < 2
             or any(not isinstance(x, str) or not x for x in ids)
-            or len(set(ids)) != len(ids)
+            or len(set(identities)) != len(ids)
         ):
-            raise ValueError("sampling_unit_ids must contain at least two unique nonempty labels")
+            raise ValueError("Sampling-unit ids must be nonempty and unique within each species")
         if positions.shape != (len(ids), 2) or not jnp.issubdtype(positions.dtype, jnp.integer):
             raise ValueError(
                 "grid_positions must be an integer (sampling units, 2) row/column array"
@@ -139,6 +147,7 @@ class RegionBatch:
             self, "features", cx.Field(features, dims=("row", "column", "feature"), axes=axes)
         )
         object.__setattr__(self, "sampling_unit_ids", ids)
+        object.__setattr__(self, "species", species)
         object.__setattr__(self, "grid_positions", positions.astype(jnp.int32))
 
     @property
@@ -201,8 +210,11 @@ class PairwiseObservations:
     sampling_unit_ids: tuple[str, ...]
     values: jax.Array
     target: TargetSpec
+    species: str | None = None
 
     def __post_init__(self):
+        if self.species is not None and (not isinstance(self.species, str) or not self.species):
+            raise ValueError("Observation species must be a nonempty name or None")
         ids = tuple(self.sampling_unit_ids)
         values = jnp.asarray(self.values)
         if (
@@ -225,16 +237,19 @@ class PairwiseObservations:
         object.__setattr__(self, "values", values)
 
     @classmethod
-    def from_matrix(cls, sampling_unit_ids, values, *, target):
-        """Declare matrix identities and scale; symmetric off-diagonal NaNs are absent."""
-        return cls(tuple(sampling_unit_ids), values, target)
+    def from_matrix(cls, sampling_unit_ids, values, *, target, species=None):
+        """Pairwise genetic observations from a labelled matrix for one species.
+
+        Symmetric off-diagonal NaNs identify absent observations.
+        """
+        return cls(tuple(sampling_unit_ids), values, target, species)
 
     @classmethod
-    def from_pairs(cls, pairs, values, *, target, sampling_unit_ids=None):
-        """Build from explicit unordered endpoint labels and finite measurements.
+    def from_pairs(cls, pairs, values, *, target, sampling_unit_ids=None, species=None):
+        """Pairwise genetic observations from labelled pairs and finite measurements.
 
         Repeated pairs, including reversed duplicates, are rejected. Optional
-        ``sampling_unit_ids`` declares a larger endpoint universe containing
+        ``sampling_unit_ids`` declares a larger set of sampling units containing
         sampling units with no observed pairs.
         """
         pairs = tuple(tuple(pair) for pair in pairs)
@@ -272,7 +287,7 @@ class PairwiseObservations:
             seen.add(canonical)
             left, right = (lookup[endpoint] for endpoint in pair)
             matrix = matrix.at[left, right].set(value).at[right, left].set(value)
-        return cls(ids, matrix, target)
+        return cls(ids, matrix, target, species)
 
     @property
     def observed_pairs(self) -> tuple[tuple[str, str], ...]:
@@ -292,10 +307,13 @@ class PairwiseObservations:
 
     def aligned_values(self, region: RegionBatch) -> jax.Array:
         """Align known observation labels to a region, retaining NaNs for absent pairs."""
-        if not set(self.sampling_unit_ids).issubset(region.sampling_unit_ids):
-            raise ValueError(
-                "Observation labels contain endpoints outside region sampling_unit_ids"
-            )
+        lookup = {
+            label: index
+            for index, label in enumerate(region.sampling_unit_ids)
+            if region.species is None or region.species[index] == self.species
+        }
+        if not set(self.sampling_unit_ids).issubset(lookup):
+            raise ValueError("Observation labels must belong to their species in the region")
         dtype = (
             self.values.dtype
             if jnp.issubdtype(self.values.dtype, jnp.inexact)
@@ -305,7 +323,6 @@ class PairwiseObservations:
             (len(region.sampling_unit_ids), len(region.sampling_unit_ids)), jnp.nan, dtype=dtype
         )
         matrix = matrix.at[jnp.diag_indices(len(region.sampling_unit_ids))].set(0)
-        lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
         order = jnp.asarray([lookup[label] for label in self.sampling_unit_ids])
         return matrix.at[jnp.ix_(order, order)].set(self.values)
 
