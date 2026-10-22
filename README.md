@@ -83,13 +83,20 @@ The model hierarchy is:
 ```text
 AbstractDistanceModel: backbone(features), ecological_distances(latent, pairs, species_index)
 ├── ConductanceModel: conductance(latent, species_index)
+│   ├── LogLinearConductance: log-linear conductance from patch-averaged covariates
 │   └── ResNet9Conductance: patch-based conductance surfaces
 └── EmbeddingModel: embedding(latent, species_index)
     └── UNet: landscape embeddings
 ```
 
-Concrete models carry a static `num_species` of one. `patch_microbatch_size` sets
+Concrete models default to a static `num_species` of one. `patch_microbatch_size` sets
 the number of raster patches processed together without changing predictions.
+
+`LogLinearConductance` learns one coefficient per feature and one intercept per
+species index, pooled across regions. Its conductance is `min_conductance + exp(predictor)`,
+capped at `max_conductance`; defaults are 0.01 and 1000. Coefficients follow the
+raster feature order and start at zero, as do intercepts. The model uses
+`patch_size=32` by default and accepts the same `fit` and `predict` workflow.
 
 **Sampling units and pairwise genetic observations.** A sampling unit is an
 identified population or individual located at a raster cell. A pairwise genetic
