@@ -1,4 +1,4 @@
-"""Atomic native Equinox continuation checkpoints with caller distance-model templates."""
+"""Training checkpoints saved as Equinox files for continuing a fit."""
 
 from dataclasses import asdict
 from pathlib import Path
@@ -17,7 +17,7 @@ from .persistence import (
     _read_header,
     _write_native,
 )
-from .training import StepRecord, TrainingState
+from .training import StepRecord, TrainingState, _validate_state
 
 
 def save_checkpoint(path, state: TrainingState) -> None:
@@ -28,9 +28,9 @@ def save_checkpoint(path, state: TrainingState) -> None:
     """
     if not isinstance(state, TrainingState):
         raise ArtifactError("save_checkpoint requires a TrainingState returned by fit")
+    _validate_state(state)
     metadata = {
         "config": asdict(state.config),
-        "input_contract": state.input_contract,
         "history_length": len(state.history),
         "latest_model": _model_metadata(state.latest_model),
         "selected_model": _model_metadata(state.selected_model),
@@ -39,11 +39,11 @@ def save_checkpoint(path, state: TrainingState) -> None:
 
 
 def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingState:
-    """Restore native state using the exact full distance model configuration and precision.
+    """Load a training state using a caller-constructed distance model.
 
-    Continue with the original inputs and partitions. Only the total step budget
-    may increase; unchanged measurements and execution conditions remain caller
-    responsibilities. Numerical leaf compatibility is checked by Equinox.
+    The template supplies the model class, static settings, and numerical shapes
+    and dtypes. Reproducing uninterrupted training requires the original inputs
+    and execution conditions. Only the total step budget may increase.
     """
     try:
         with Path(path).open("rb") as stream:
@@ -62,8 +62,8 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
                 eqx.filter((latest.distance_model, raw), eqx.is_inexact_array)
             )
             history_length = metadata["history_length"]
-            if history_length < 1:
-                raise ArtifactError("Checkpoint history is incomplete")
+            if not 1 <= history_length <= config.steps + 1:
+                raise ArtifactError("Checkpoint history length must be within the step budget")
             history = tuple(
                 StepRecord(
                     step=0,
@@ -79,14 +79,15 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
                 optimizer_state=optimizer_state,
                 rng_key=jnp.zeros(2, dtype=jnp.uint32),
                 config=config,
-                input_contract=metadata["input_contract"],
                 history=history,
                 latest_model=latest,
                 selected_model=selected,
                 selected_step=0,
                 step=0,
             )
-            return eqx.tree_deserialise_leaves(stream, template)
+            state = eqx.tree_deserialise_leaves(stream, template)
+            _validate_state(state)
+            return state
     except (KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:
         if isinstance(error, ArtifactError):
             raise

@@ -66,7 +66,6 @@ class TrainingState(eqx.Module):
     optimizer_state: optax.OptState
     rng_key: jax.Array
     config: TrainingConfig
-    input_contract: dict
     history: tuple[StepRecord, ...]
     latest_model: LandscapeGeneticsModel
     selected_model: LandscapeGeneticsModel
@@ -94,6 +93,15 @@ class TrainingState(eqx.Module):
     def selected_loss(self) -> float:
         record = next(record for record in self.history if record.step == self.selected_step)
         return record.training_loss if record.validation_loss is None else record.validation_loss
+
+
+def _validate_state(state: TrainingState) -> None:
+    if not 0 <= state.step <= state.config.steps:
+        raise ValueError("Training step must be within the configured budget")
+    if not 0 <= state.selected_step <= state.step:
+        raise ValueError("Selected step must be within the completed training steps")
+    if not 1 <= len(state.history) <= state.step + 1:
+        raise ValueError("History length must be within the completed training steps plus one")
 
 
 class _TrainingPayload(NamedTuple):
@@ -298,27 +306,6 @@ def _labelled_pairs(batch: _RegionalBatch) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _input_contract(
-    training_inputs: Sequence[_RegionalInput], validation_inputs: Sequence[_RegionalInput]
-) -> dict:
-    """Cheap resume structure; unchanged measurement contents remain caller responsibility."""
-    return {
-        role: [
-            {
-                "region_name": region.name,
-                "sampling_unit_ids": list(region.sampling_unit_ids),
-                "sampling_unit_kinds": list(region.sampling_unit_kinds or ()),
-                "feature_shape": list(region.feature_array.shape),
-                "feature_dtype": str(region.feature_array.dtype),
-                "position_dtype": str(cast(jax.Array, region.grid_positions).dtype),
-                "observation_dtype": str(observations.values.dtype),
-            }
-            for region, observations, _ in inputs
-        ]
-        for role, inputs in (("training", training_inputs), ("validation", validation_inputs))
-    }
-
-
 def _initial_raw_variances(
     batches: Sequence[_RegionalBatch], config: TrainingConfig
 ) -> dict[str, jax.Array]:
@@ -496,6 +483,7 @@ def fit(
         if config is None:
             raise ValueError("Fresh fitting requires an explicit TrainingConfig with objective")
     else:
+        _validate_state(state)
         distance_model = state.distance_model
         config = state.config if config is None else config
     if on_step is not None and not callable(on_step):
@@ -535,18 +523,6 @@ def fit(
             raise ValueError("Regional training and validation feature channels must match")
         if prepared_region.feature_names != first_region.feature_names:
             raise ValueError("Regional feature contracts must match meanings and order")
-    input_contract = _input_contract(training_inputs, validation_inputs)
-    if state is not None:
-        if state.input_contract != input_contract:
-            raise ValueError(
-                "Continuation input shapes, precision or sampling-unit identities changed"
-            )
-        if (
-            state.latest_model.target != first_observations.target
-            or state.latest_model.feature_names != first_region.feature_names
-        ):
-            raise ValueError("Continuation target or feature meanings/order changed")
-
     random_key = (
         jax.random.split(jax.random.PRNGKey(config.seed))[1] if state is None else state.rng_key
     )
@@ -574,11 +550,6 @@ def fit(
 
     training_pairs = {batch.region.name: _labelled_pairs(batch) for batch in training_batches}
     validation_pairs = {batch.region.name: _labelled_pairs(batch) for batch in validation_batches}
-    if state is not None and (
-        state.latest_model.training_pairs != training_pairs
-        or state.latest_model.validation_pairs != validation_pairs
-    ):
-        raise ValueError("Continuation training/validation pair partitions changed")
 
     def make_model(calibrations: dict[str, RegionalMLPECalibration]) -> LandscapeGeneticsModel:
         return LandscapeGeneticsModel(
@@ -608,7 +579,6 @@ def fit(
             optimizer_state=optimizer_state,
             rng_key=random_key,
             config=config,
-            input_contract=input_contract,
             history=tuple(history),
             latest_model=latest,
             selected_model=selected,

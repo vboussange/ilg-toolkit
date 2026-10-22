@@ -83,7 +83,7 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
         distance_model=encoder(3),
         config=TrainingConfig(steps=0, objective="direct_log1p"),
     ).model
-    path = tmp_path / "direct.ilg"
+    path = tmp_path / "direct.eqx"
     save_model(path, model)
     restored = load_model(path, distance_model=encoder(7))
     np.testing.assert_array_equal(
@@ -123,7 +123,7 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
         validation=(region, observations),
         validation_partition=validation,
     ).model
-    path = tmp_path / "custom-mlpe.ilg"
+    path = tmp_path / "custom-mlpe.eqx"
     save_model(path, model)
     restored = load_model(path, distance_model=WeightedEmbedding(jnp.asarray([4.0, 3.0])))
     assert type(restored.distance_model) is WeightedEmbedding
@@ -219,7 +219,7 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_
         feature_names=region.feature_names,
         training_objective="direct_log1p",
     )
-    path = tmp_path / "conductance.ilg"
+    path = tmp_path / "conductance.eqx"
     save_model(path, model)
     restored = load_model(path, distance_model=encoder(9))
     np.testing.assert_array_equal(
@@ -249,7 +249,7 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
         2,
         training_objective="direct_log1p",
     )
-    path = tmp_path / "model.ilg"
+    path = tmp_path / "model.eqx"
     save_model(path, model)
     wrong_shape = UNet(2, patch_size=1, base_channels=2, embedding_dim=3, key=jax.random.key(0))
     with pytest.raises(ArtifactError):
@@ -272,9 +272,9 @@ def test_model_reload_rejects_truncated_leaves(tmp_path):
         2,
         training_objective="direct_log1p",
     )
-    path = tmp_path / "model.ilg"
+    path = tmp_path / "model.eqx"
     save_model(path, model)
-    truncated = tmp_path / "truncated.ilg"
+    truncated = tmp_path / "truncated.eqx"
     truncated.write_bytes(path.read_bytes()[:-10])
     with pytest.raises(ArtifactError):
         load_model(truncated, distance_model=encoder)
@@ -299,7 +299,7 @@ def test_interrupted_model_replacement_preserves_previous_predictions(
         )
 
     first, replacement = model(3), model(7)
-    path = tmp_path / "model.ilg"
+    path = tmp_path / "model.eqx"
     save_model(path, first)
 
     def interrupt(source, destination):

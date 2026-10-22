@@ -1,145 +1,93 @@
-# Save a calibrated model or continue one fit
+# Save models and continue training
 
-`save_model` stores the selected distance model, genetic calibration module and
-population-effect posterior, feature and target contracts, solver settings, and
-observation-use provenance. The artifact supports prediction without training
-measurements. `save_checkpoint` stores the latest optimization state and selected
-model for continuation; see below.
+`save_model` stores a landscape genetics model in an `.eqx` file, including its
+genetic calibration, population effects, feature meanings, target specification,
+and training and validation pair lists. `save_checkpoint` stores a training state
+for continuation, including the latest model, optimizer state, random state,
+history, selected model, and selected step.
 
-## Export predictions
+## Save and load a model
 
-Loading requires a caller-supplied distance model with the exact full configuration used
-for training. Construct the same class with the same static settings, including
-patch size, minimum conductance, patch batching, dropout and custom activation
-choices. Its initial parameter values may differ: saved numerical leaves replace
-them. Conductance solver settings are owned by the distance model and restored
-from the artifact, overriding the template's solver policy. Shape-specific CG or
-AMG preparation is rebuilt when needed and is never saved with model parameters.
+Construct a distance model with the same class and static settings used for
+training, including patch size, patch microbatch size, dropout, and custom
+activation functions. Its initial parameter values may differ: Equinox replaces
+them with the saved values. Conductance solver settings are restored from the
+file; shape-specific solver preparation is rebuilt when needed.
 
 ```python
 import jax
 from ilg_toolkit import load_model, save_model
 from ilg_toolkit.models import ResNet9Conductance
 
-save_model("model.ilg", result.model)
-distance_model_template = ResNet9Conductance(
+save_model("model.eqx", result.model)
+template = ResNet9Conductance(
     2,
     patch_size=4,
     min_conductance=0.02,
     patch_microbatch_size=3,
     key=jax.random.key(0),
 )
-model = load_model("model.ilg", distance_model=distance_model_template)
-prediction = model.predict(prepared_query_region)
-matrix = prediction.as_matrix()  # Explicit representation in query-region order.
+model = load_model("model.eqx", distance_model=template)
+prediction = model.predict(query_region)
 ```
 
-This example assumes the fitted distance model uses the shown settings. Matching leaf
-shapes cannot establish matching static configuration; keeping that configuration
-is the caller's responsibility. Compatible custom Equinox distance models use the same
-save/load operations without registration or a toolkit-specific codec.
+The same operations support custom distance models. The caller supplies the
+matching static settings; Equinox checks numerical structure, shapes, and dtypes.
+Saved calibration preserves genetic predictions and population effects. Query
+regions supply landscape features, sampling-unit locations, and matching feature
+meanings. See [models](models.md) for model construction and
+[evaluation](evaluation.md) for ensemble predictions.
 
-Loading does not refit calibration. Regional normalization, coefficients,
-variances, posterior quantities, population identities and actual
-training/validation/calibration access are retained. Marginal, known-effect and
-support-conditioned predictions preserve their scientific meaning. A model may
-have MLPE calibration for only some regions: ecological distances remain available
-in compatible regions, while MLPE genetic prediction requires an explicit
-regional relationship. Recalibration through `fit` with zero steps saves the
-supplied regions and the calibration objective. See [conditioning](mlpe-conditioning.md) and
-[evaluation](evaluation.md) for prediction and eligibility rules.
+## Format and precision
 
-Query regions supply a Coordax field with named row, column and feature dimensions,
-sampling-unit locations, and matching feature meanings/order. Raw landscape and
-genetic measurements are not embedded in inference artifacts. Save individual
-ensemble members with these same operations and assemble the desired in-memory
-ensemble in an ordinary script; [examples/ensemble.py](../examples/ensemble.py)
-demonstrates the ensemble workflow.
+The first line is a JavaScript Object Notation (JSON) header containing `format`,
+`kind`, `requires_x64`, and `metadata`. Metadata includes the target specification,
+feature meanings, calibration information, and training and validation pair lists.
+The rest of the file is written by `equinox.tree_serialise_leaves` and loaded by
+`equinox.tree_deserialise_leaves` using the caller's distance model template.
 
-## Native format and precision
-
-Each file contains a short JSON header followed by native Equinox leaves
-of the actual `LandscapeGeneticsModel` or `TrainingState`. Both are Equinox modules,
-so their learned numerical fields also participate in ordinary JAX tree
-operations. The header holds nonnumerical
-contracts and the structure needed to construct the distance/calibration composition. Learned
-coefficients and posterior arrays remain ordinary numerical leaves. There is no
-architecture registry, separate numerical payload, content checksum, pickle,
-format version or runtime-version gate.
-
-Equinox checks numerical leaf compatibility with the caller's template. Invalid
-headers, truncated leaves and representative structural incompatibilities raise
-`ArtifactError`. Keep the original precision: artifacts with 64-bit JAX real or
-integer arrays, or complex128 arrays, require `JAX_ENABLE_X64=true` or an active
-`jax.enable_x64()` context when loading.
-
-Inputs follow ordinary JAX conversion: compatible lists and NumPy arrays,
-including NumPy-backed Coordax fields, are accepted. Supplied JAX floating
-observation dtypes are preserved; other inputs follow the configured JAX
-precision. Effective resistance and population-effect calculations require
-float64. Enable x64, with `jax.config.update("jax_enable_x64", True)` or
-`JAX_ENABLE_X64=true`, before creating or converting inputs when those
-measurements need float64 precision; enabling it later cannot recover information
-already rounded. Neither loading nor any other toolkit operation changes global
-JAX precision.
+Enable `JAX_ENABLE_X64=true` or use `jax.enable_x64()` before creating inputs that
+need float64 precision and before loading files with 64-bit JAX values.
+Resistance calculation and maximum-likelihood population effects (MLPE) fitting
+require float64. Loading checks the saved precision requirement and preserves the
+current JAX configuration. Incompatible files or templates raise `ArtifactError`.
 
 Saves write and flush a temporary file in the destination directory, then replace
-the destination atomically. An interrupted replacement preserves the preceding
-complete model. The destination's parent directory must already exist.
+the destination atomically. An interrupted replacement preserves the previous
+file. The destination's parent directory must exist.
 
-## Continue one fit
+## Continue a fit
 
 ```python
-import jax
 from dataclasses import replace
 from ilg_toolkit import fit, load_checkpoint, save_checkpoint
 
-with jax.enable_x64():
-    result = fit(
-        region, observations, distance_model=distance_model, config=config,
-        on_step=lambda state: save_checkpoint("training.ilg", state),
-    )
-    state = load_checkpoint("training.ilg", distance_model=distance_model_template)
-    continued = fit(
-        region, observations, state=state,
-        config=replace(state.config, steps=100),
-    )
+result = fit(
+    region, observations, distance_model=distance_model, config=config,
+    on_step=lambda state: save_checkpoint("training.eqx", state),
+)
+state = load_checkpoint("training.eqx", distance_model=template)
+continued = fit(
+    region, observations, state=state,
+    config=replace(state.config, steps=100),
+)
 ```
 
-Supply the exact distance model configuration used for this fit, just as for `load_model`.
-Include the original training/validation partitions and validation arguments when
-resuming. The default budget is the saved configuration. Only the total step
-budget may increase or stay equal; reducing the saved requested budget is rejected,
-including for an intermediate checkpoint. Input shapes and precision,
-sampling-unit identities/order/kinds, target meaning/units/transform, feature
-meanings/order, selected training/validation pairs, and optimization settings must
-agree. The restored conductance model retains the saved solver policy. Regional
-mapping order does not change this contract.
+Supply the original observations, region batches, training and validation
+partitions, and validation arguments to reproduce uninterrupted training. Keeping
+these inputs unchanged is the caller's responsibility. The configuration stays
+fixed except that its total step budget may increase. State validation checks
+bounds on the training step, selected step, and history length.
 
-Keep the original landscape measurements, sampling locations and genetic values
-unchanged yourself. Checkpoints do not fingerprint these contents: same-shape edits
-cannot be detected. Do not supply a replacement model to `fit(state=...)`; the
-checkpoint already contains its latest distance model. Exact deterministic continuation
-is expected under the same execution conditions. Changed library versions,
-devices or execution settings are not refused automatically, and may change
-numerical results.
+`on_step` receives state after initialization and each optimizer update. History
+contains evaluations at step zero, every `eval_every` updates, and the final step.
+`selected_model` and `selected_step` identify the retained evaluated model;
+`state.model` also returns it. Between evaluations, `latest_model` contains the
+latest distance parameters and the calibration from the preceding evaluation.
+Continuation uses these latest parameters with their optimizer and random state.
+A continuation with no further updates returns the saved state without callbacks.
 
-`on_step(state)` runs after initialization at step zero and after each optimizer
-update, following evaluation and model selection when scheduled. Callback exceptions propagate. A fresh
-zero-budget fit invokes the callback once; a continuation with no further updates
-invokes it zero times. Saving at the end with `save_checkpoint(path, result)`
-is also supported: `fit` returns `TrainingState` directly, with the selected model
-exposed as `.model`. The checkpoint retains latest distance and MLPE variance parameters,
-optimizer and random state, declared configuration, history and selected
-model together. Validation selection preserves the earlier selected model while
-continuation follows the latest optimizer trajectory. Individual ensemble members
-use these same functions; `continue_members` in
-[examples/ensemble.py](../examples/ensemble.py) owns filenames and loops over folds
-and declared seeds without a toolkit-managed run directory.
-
-Full evaluations run at step zero, every `eval_every` steps, and the final step.
-History contains only evaluated steps. `selected_model` and `selected_step`
-identify the retained evaluated model; `model` also returns this model.
-Between evaluations, `latest_model` has the latest distance parameters and the
-calibration from the preceding evaluation. Checkpoints at those steps retain the
-optimizer and random state for continuation; use `selected_model` for prediction.
+Reproducing an uninterrupted run requires the same library versions, devices,
+and execution settings. Save individual ensemble members with the same functions;
+[the ensemble example](../examples/ensemble.py) demonstrates checkpoint filenames
+and continuation across folds and seeds.

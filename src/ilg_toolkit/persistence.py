@@ -1,4 +1,4 @@
-"""Native Equinox model leaves with the metadata needed for a load template."""
+"""Landscape genetics models saved as Equinox files with prediction metadata."""
 
 import json
 import os
@@ -21,7 +21,7 @@ from .models import AbstractDistanceModel, ConductanceModel
 
 
 class ArtifactError(ValueError):
-    """Unsupported, incomplete or structurally incompatible native artifact."""
+    """An incompatible saved model, checkpoint, or loading template."""
 
 
 def _write_native(path, tree, *, kind, metadata):
@@ -55,7 +55,7 @@ def _write_native(path, tree, *, kind, metadata):
 
 
 def _read_header(stream, *, kind):
-    """Read the format boundary before native loading can convert any JAX leaves."""
+    """Read the file format and precision requirements before loading model values."""
     try:
         header = json.loads(stream.readline())
     except (ValueError, UnicodeError) as error:
@@ -72,7 +72,7 @@ def _read_header(stream, *, kind):
 
 
 def _model_metadata(model):
-    """Nonnumerical contracts and tree structure; learned values remain native leaves."""
+    """Target, feature, calibration, and observation-use metadata for a saved model."""
     if isinstance(model.calibration, DirectCalibrationModule):
         calibration = {"kind": "direct"}
     elif isinstance(model.calibration, MLPECalibrationModule):
@@ -180,13 +180,11 @@ def save_model(path, model: LandscapeGeneticsModel) -> None:
 
 
 def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGeneticsModel:
-    """Load native leaves into the caller's exact full distance model configuration.
+    """Load a landscape genetics model using a caller-constructed distance model.
 
-    The caller supplies the distance model class, static settings and compatible leaves.
-    Saved leaves replace its numerical values. Static settings cannot be inferred
-    from numerical shapes and remain the caller's responsibility. Saved conductance
-    solver settings override the template's policy; derived contexts are rebuilt
-    for each later operation.
+    The template supplies the model class, static settings, and compatible
+    numerical shapes and dtypes. Saved parameters and conductance solver settings
+    replace the template's values. Solver preparation is rebuilt for each region.
     """
     try:
         with Path(path).open("rb") as stream:
