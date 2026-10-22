@@ -5,7 +5,7 @@ Inverse landscape genetics: learning relationships between landscapes and pairwi
 ## Language
 
 **Region batch**:
-The prepared landscape features, sampling-unit ids, and grid positions for one region, independent of genetic observations.
+The prepared landscape features, sampling-unit identifiers, and grid positions for one region, independent of genetic observations.
 An optional species column labels each sampling unit; when omitted, all sampling units belong to one species.
 _Avoid_: Prepared region, when naming this input boundary.
 
