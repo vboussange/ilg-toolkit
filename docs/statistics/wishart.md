@@ -166,7 +166,7 @@ Install the toolkit, then run from the repository root:
 
 ```bash
 JAX_ENABLE_X64=true python -m experiments.wishart
-JAX_ENABLE_X64=true pytest tests/test_experimental_wishart.py
+JAX_ENABLE_X64=true pytest experiments/wishart/test_diagnostic.py
 ```
 
 It uses a two-feature ResNet9 encoder, an actual small resistance graph, simulated

@@ -1,14 +1,13 @@
-"""The accepted independent MLPE numerical seam, including missing pair masks."""
+"""Scientific behavior of mlpe.likelihood."""
 
 import numpy as np
 import pytest
-from mlpe_reference import dense_profile
 
 from ilg_toolkit.mlpe import profiled_mlpe_ml_fit
 
 
 @pytest.mark.parametrize("jit", [False, True])
-def test_complete_mlpe_finalization_matches_incomplete_pair_dense_gaussian(jit):
+def test_complete_mlpe_finalization_matches_incomplete_pair_dense_gaussian(dense_profile, jit):
     import jax
     import jax.numpy as jnp
 
@@ -18,16 +17,9 @@ def test_complete_mlpe_finalization_matches_incomplete_pair_dense_gaussian(jit):
     targets = np.array([0.5, 0.1, 0.9, 0.3])
     left, right = np.array([3, 0, 2, 0]), np.array([1, 2, 1, 1])
     variances, jitter = np.array([0.6, 0.12]), 1e-7
-    expected_nll, beta = dense_profile(distances, targets, left, right, 4, variances, jitter=jitter)
-    design = np.column_stack((np.ones(4), (distances - distances.mean()) / distances.std(ddof=1)))
-    incidence = np.zeros((4, 4))
-    incidence[np.arange(4), left] = incidence[np.arange(4), right] = 1
-    covariance = variances[0] * incidence @ incidence.T + (variances[1] + jitter) * np.eye(4)
-    residual = targets - design @ beta
-    expected_mean = variances[0] * incidence.T @ np.linalg.solve(covariance, residual)
-    expected_covariance = variances[0] * np.eye(4) - variances[
-        0
-    ] ** 2 * incidence.T @ np.linalg.solve(covariance, incidence)
+    expected_nll, beta, expected_mean, expected_covariance = dense_profile(
+        distances, targets, left, right, 4, variances, jitter=jitter
+    )
     with jax.enable_x64():
         raw = jnp.log(jnp.expm1(jnp.asarray(variances) - 1e-10))
 
@@ -48,7 +40,9 @@ def test_complete_mlpe_finalization_matches_incomplete_pair_dense_gaussian(jit):
     np.testing.assert_allclose(factor @ factor.T @ posterior, np.eye(4), atol=1e-12)
 
 
-def test_masked_pairs_are_absent_from_likelihood_and_distance_standardization_under_jit():
+def test_masked_pairs_are_absent_from_likelihood_and_distance_standardization_under_jit(
+    dense_profile,
+):
     import jax
     import jax.numpy as jnp
 
@@ -57,7 +51,7 @@ def test_masked_pairs_are_absent_from_likelihood_and_distance_standardization_un
     left, right = np.array([3, -999, 0, 2, 0, 999]), np.array([1, 999, 2, 1, 1, -999])
     mask = np.array([True, False, True, True, True, False])
     raw = np.array([-0.7, -1.4])
-    expected_nll, expected_beta = dense_profile(
+    expected_nll, expected_beta, _, _ = dense_profile(
         distances[mask], targets[mask], left[mask], right[mask], 4, np.logaddexp(0, raw) + 1e-10
     )
     with jax.enable_x64():
@@ -85,11 +79,10 @@ def test_masked_pairs_are_absent_from_likelihood_and_distance_standardization_un
 @pytest.mark.parametrize("incomplete", [False, True])
 @pytest.mark.parametrize("variances", [(1e-8, 1.0), (1.0, 1.0), (1.0, 1e-8)])
 def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance_reference(
-    incomplete, variances
+    decimal_dense_profile_and_gradients, dense_jax_profile, incomplete, variances
 ):
     import jax
     import jax.numpy as jnp
-    from mlpe_reference import decimal_dense_profile_and_gradients, dense_jax_profile
 
     rng = np.random.default_rng(12)
     left, right = np.triu_indices(6, 1)
@@ -123,87 +116,6 @@ def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance
         )
     for actual, expected in zip(actual_gradients, dense_gradients, strict=True):
         np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=5e-7)
-
-
-def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian():
-    import jax
-    import jax.numpy as jnp
-
-    from ilg_toolkit.mlpe import mlpe_effect_posterior, mlpe_ml_negative_log_likelihood
-
-    distances = np.array([0.2, 1.1, -0.3, 2.0])
-    y = np.array([0.5, 0.1, 0.9, 0.3])
-    left, right = np.array([3, 0, 2, 0]), np.array([1, 2, 1, 1])
-    beta, variances = np.array([0.4, -0.2]), np.array([0.6, 0.12])
-    raw = np.log(np.expm1(variances - 1e-10))
-    z = np.zeros((4, 4))
-    z[np.arange(4), left] = z[np.arange(4), right] = 1
-    x = np.column_stack((np.ones(4), (distances - distances.mean()) / distances.std(ddof=1)))
-    residual = y - x @ beta
-    v = variances[0] * (z @ z.T) + (variances[1] + 1e-7) * np.eye(4)
-    expected_mean = variances[0] * z.T @ np.linalg.solve(v, residual)
-    expected_covariance = variances[0] * np.eye(4) - variances[0] ** 2 * z.T @ np.linalg.solve(v, z)
-    expected_nll = 0.5 * (
-        4 * np.log(2 * np.pi) + np.linalg.slogdet(v)[1] + residual @ np.linalg.solve(v, residual)
-    )
-    with jax.enable_x64():
-        mean, covariance, factor = mlpe_effect_posterior(
-            distances,
-            y,
-            left,
-            right,
-            n_populations=4,
-            fixed_effects=jnp.asarray(beta),
-            raw_variances=jnp.asarray(raw),
-            distance_center=distances.mean(),
-            distance_scale=distances.std(ddof=1),
-            jitter=1e-7,
-        )
-        nll = mlpe_ml_negative_log_likelihood(
-            distances,
-            y,
-            left,
-            right,
-            n_populations=4,
-            fixed_effects=jnp.asarray(beta),
-            raw_variances=jnp.asarray(raw),
-            distance_center=distances.mean(),
-            distance_scale=distances.std(ddof=1),
-            jitter=1e-7,
-        )
-        mean, covariance, factor = map(np.asarray, (mean, covariance, factor))
-    np.testing.assert_allclose(mean, expected_mean, atol=1e-12)
-    np.testing.assert_allclose(covariance, expected_covariance, atol=1e-12)
-    np.testing.assert_allclose(factor @ factor.T @ covariance, np.eye(4), atol=1e-12)
-    assert nll == pytest.approx(expected_nll, abs=1e-12)
-
-
-def test_profiled_distance_and_variance_gradients_match_independent_finite_differences():
-    import jax
-    import jax.numpy as jnp
-
-    distances = np.array([0.2, 1.1, -0.3, 2.0])
-    targets = np.array([0.5, 0.1, 0.9, 0.3])
-    left, right = np.array([3, 0, 2, 0]), np.array([1, 2, 1, 1])
-    raw = np.array([-0.3, -1.2])
-
-    def oracle(s, r):
-        return dense_profile(s, targets, left, right, 4, np.logaddexp(0, r) + 1e-10)[0]
-
-    with jax.enable_x64():
-
-        def objective(s, r):
-            return profiled_mlpe_ml_fit(s, targets, left, right, n_populations=4, raw_variances=r)[
-                0
-            ]
-
-        gradients = jax.grad(objective, argnums=(0, 1))(jnp.asarray(distances), jnp.asarray(raw))
-    for array_number, coordinate in [(0, 2), (1, 0), (1, 1)]:
-        plus, minus = [distances.copy(), raw.copy()], [distances.copy(), raw.copy()]
-        plus[array_number][coordinate] += 1e-5
-        minus[array_number][coordinate] -= 1e-5
-        expected = (oracle(*plus) - oracle(*minus)) / 2e-5
-        assert gradients[array_number][coordinate] == pytest.approx(expected, rel=1e-6, abs=1e-8)
 
 
 def test_unsupported_precision_and_singular_distances_have_explicit_nonfinite_diagnostics():

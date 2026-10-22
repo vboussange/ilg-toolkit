@@ -1,0 +1,32 @@
+"""Scientific behavior of config."""
+
+import numpy as np
+import pytest
+
+from ilg_toolkit import PairwiseObservations, TrainingConfig, fit
+
+
+def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_them(
+    observation_problem,
+):
+    region, target, encoder = observation_problem()
+    observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [0.5], target=target)
+    omitted = {}
+    with pytest.raises(TypeError):
+        TrainingConfig(**omitted)
+    config = TrainingConfig(objective="direct_log1p", epochs=0)
+    with pytest.raises(ValueError):
+        fit(region, observations, config=config)
+    with pytest.raises(ValueError):
+        fit(region, observations, distance_model=encoder)
+    initial = fit(region, observations, distance_model=encoder, config=config)
+
+    continued = fit(region, observations, state=initial)
+    assert continued.history == initial.history
+
+    assert continued.config == config
+    np.testing.assert_array_equal(
+        continued.model.predict(region).values, initial.model.predict(region).values
+    )
+    with pytest.raises(ValueError):
+        fit(region, observations, state=initial, distance_model=encoder)

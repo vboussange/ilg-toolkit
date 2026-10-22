@@ -29,7 +29,7 @@ dev = [
   "pyright[nodejs]>=1.1.406,<2",
   "pytest>=8.4,<10",
   "ruff>=0.15,<0.16",
-  # The installed-package test builds its wheel without network access.
+  # CI builds and checks the distributions.
   "setuptools>=81,<82",
 ]
 
@@ -42,7 +42,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra --import-mode=importlib"
 pythonpath = ["."]
 
 [tool.pyright]
