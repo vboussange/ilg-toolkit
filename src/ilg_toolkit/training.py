@@ -547,6 +547,8 @@ def fit(
 
     gradient_function = _compiled_gradient if config.jit else _regional_gradient
     apply_update = eqx.filter_jit(_apply_gradient) if config.jit else _apply_gradient
+    region_count = len(training_batches)
+    selected_count = min(region_count, config.region_batch_size or region_count)
 
     training_pairs = {batch.region.name: _labelled_pairs(batch) for batch in training_batches}
     validation_pairs = {batch.region.name: _labelled_pairs(batch) for batch in validation_batches}
@@ -591,16 +593,31 @@ def fit(
     for step in range(start_step, config.steps + 1):
         if step:
             random_key, update_key = jax.random.split(random_key)
-            keys = jax.random.split(update_key, len(training_batches))
+            keys = jax.random.split(update_key, region_count)
+            indices = (
+                range(region_count)
+                if selected_count == region_count
+                else sorted(
+                    np.asarray(
+                        jax.random.choice(
+                            jax.random.fold_in(update_key, region_count),
+                            region_count,
+                            (selected_count,),
+                            replace=False,
+                        )
+                    ).tolist()
+                )
+            )
             accumulated = None
-            for batch, key in zip(training_batches, keys, strict=True):
+            for index in indices:
+                batch = training_batches[index]
                 _, gradient = gradient_function(
                     parameters,
                     batch.payload,
                     region_name=batch.region.name,
                     config=config,
                     context=batch.context,
-                    key=key,
+                    key=keys[index],
                 )
                 accumulated = (
                     gradient
@@ -609,7 +626,9 @@ def fit(
                         lambda total, contribution: total + contribution, accumulated, gradient
                     )
                 )
-            averaged = jax.tree.map(lambda value: value / len(training_batches), accumulated)
+            # Uniform sampling gives each region probability selected_count / region_count;
+            # averaging selected regional means preserves equal region influence.
+            averaged = jax.tree.map(lambda value: value / selected_count, accumulated)
             parameters, optimizer_state = apply_update(
                 parameters,
                 optimizer_state,

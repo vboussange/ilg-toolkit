@@ -50,7 +50,14 @@ def test_resume_equals_uninterrupted(
     other = replace(region, name="valley")
     other_observations = replace(observations, values=observations.values * 1.2)
     regions, targets = (region, other), (observations, other_observations)
-    config = TrainingConfig(objective=objective, steps=2, eval_every=2, seed=21, learning_rate=1e-4)
+    config = TrainingConfig(
+        objective=objective,
+        steps=2,
+        eval_every=2,
+        seed=21,
+        learning_rate=1e-4,
+        region_batch_size=1 if family in ("embedding", "conductance") else None,
+    )
     options = _ValidationOptions()
     if selection == "validation":
         problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))

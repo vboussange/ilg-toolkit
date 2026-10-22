@@ -54,16 +54,18 @@ class ResistanceSolverConfig:
 class TrainingConfig:
     """Optimization budget and numerical settings for a landscape genetics model.
 
-    Adam updates run for ``steps`` with a fixed learning rate.
+    Each Adam update samples up to ``region_batch_size`` regions uniformly
+    without replacement; ``None`` uses every region.
+    Updates run for ``steps`` with a fixed learning rate.
     Evaluation at step zero, every ``eval_every`` updates, and the final step
-    determines model selection. Maximum-likelihood population effects (MLPE)
-    settings stay fixed during compiled calculations.
+    determines model selection.
     """
 
     objective: str
     steps: int = 100
     eval_every: int = 1
     learning_rate: float = 0.001
+    region_batch_size: int | None = None
     seed: int = 0
     jit: bool = True
     mlpe: MLPEConfig = field(default_factory=MLPEConfig)
@@ -89,6 +91,12 @@ class TrainingConfig:
             or self.eval_every < 1
         ):
             raise ValueError("eval_every must be a positive integer")
+        if self.region_batch_size is not None and (
+            isinstance(self.region_batch_size, bool)
+            or not isinstance(self.region_batch_size, int)
+            or self.region_batch_size < 1
+        ):
+            raise ValueError("region_batch_size must be a positive integer or None")
         if (
             isinstance(self.learning_rate, bool)
             or not isinstance(self.learning_rate, Real)

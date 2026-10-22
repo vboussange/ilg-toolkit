@@ -239,6 +239,11 @@ From a clone, run one with `JAX_ENABLE_X64=true uv run python examples/<name>.py
 [statistics guide](docs/statistics.md) derives them and also covers calibration
 modules, recalibration and the layout of predictions.
 
+`TrainingConfig(region_batch_size=...)` samples that many regions per optimizer
+step, up to the number available; `None` uses every region. Sampling is uniform
+without replacement and gives each region equal influence in expectation.
+Each selected region uses all its training pairs, and evaluation uses every region.
+
 - `direct_log1p`: mean squared error between `log1p` of the ecological distances and
   of the transformed targets; prediction applies the inverse target transform.
 - `mlpe`: maximum-likelihood population effects. It fits the distance model jointly

@@ -1,5 +1,6 @@
 """Scientific behavior of training."""
 
+from collections.abc import Sequence
 from typing import Any, cast
 
 import coordax as cx
@@ -106,9 +107,15 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
 
 
 @pytest.mark.parametrize("jit", [False, True])
-@pytest.mark.parametrize("region_count", [1, 2])
+@pytest.mark.parametrize(("region_count", "region_batch_size"), [(1, None), (2, None), (2, 1)])
 def test_mlpe_updates_match_dense_reference(
-    WeightedEmbedding, dense_profile, embedding_problem, jit, region_count
+    WeightedEmbedding,
+    dense_profile,
+    embedding_problem,
+    jit,
+    region_count,
+    region_batch_size,
+    monkeypatch,
 ):
     problems = [embedding_problem()]
     if region_count == 2:
@@ -126,9 +133,10 @@ def test_mlpe_updates_match_dense_reference(
     raw = np.log(np.expm1(np.array([0.05, 0.1]) - 1e-10))
     initial = np.concatenate((np.zeros(2), np.tile(raw, region_count)))
 
-    def objective(parameters):
+    def objective(parameters, indices: Sequence[int] | None = None):
         losses = []
-        for index, (region, observed) in enumerate(problems):
+        for index in range(region_count) if indices is None else indices:
+            region, observed = problems[index]
             (left, right), targets = observed.aligned_pairs(region)
             embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(parameters[:2])
             distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
@@ -139,6 +147,11 @@ def test_mlpe_updates_match_dense_reference(
             )
         return np.mean(losses)
 
+    selections = [(0,), (1,)] if region_batch_size == 1 else [range(region_count)] * 2
+    if region_batch_size == 1:
+        choices = iter(selections)
+        monkeypatch.setattr(jax.random, "choice", lambda *args, **kwargs: jnp.array(next(choices)))
+
     # Two Adam updates retain sensitivity to gradient magnitude, using only the
     # dense Gaussian objective and finite differences as the numerical reference.
     expected = initial.copy()
@@ -147,7 +160,11 @@ def test_mlpe_updates_match_dense_reference(
         delta = np.eye(len(initial)) * 1e-5
         gradient = np.array(
             [
-                (objective(expected + offset) - objective(expected - offset)) / 2e-5
+                (
+                    objective(expected + offset, selections[step - 1])
+                    - objective(expected - offset, selections[step - 1])
+                )
+                / 2e-5
                 for offset in delta
             ]
         )
@@ -167,6 +184,7 @@ def test_mlpe_updates_match_dense_reference(
             steps=2,
             jit=jit,
             learning_rate=0.02,
+            region_batch_size=region_batch_size,
             mlpe=MLPEConfig(initial_variances=(0.05, 0.1)),
         ),
     )
@@ -413,46 +431,66 @@ def test_continuation_rejects_changed_optimization_policy(WeightedEmbedding, emb
         with pytest.raises(ValueError):
             fit(region, observations, state=result, config=replace(config, learning_rate=0.1))
         with pytest.raises(ValueError):
+            fit(region, observations, state=result, config=replace(config, region_batch_size=1))
+        with pytest.raises(ValueError):
             fit(region, observations, state=result, distance_model=result.distance_model)
 
 
+@pytest.mark.parametrize("region_batch_size", [None, 1, 2, 3])
 def test_shared_embedding_update_matches_independent_equal_region_objective(
-    ScalarEmbedding, regions_and_observations
+    ScalarEmbedding, regions_and_observations, region_batch_size, monkeypatch
 ):
     with jax.enable_x64():
         regions, observations = regions_and_observations()
         initial = 1.0
 
-        def independent_objective(weight):
-            predictions = [np.array([1, 4, 1]) * weight**2, np.array([4]) * weight**2]
-            targets = [np.array([0.1, 0.1, 0.1]), np.array([15])]
+        def independent_objective(weight, indices: Sequence[int] = (0, 1)):
+            predictions = [np.array([4]) * weight**2, np.array([1, 4, 1]) * weight**2]
+            targets = [np.array([15]), np.array([0.1, 0.1, 0.1])]
             return np.mean(
-                [
-                    np.mean((np.log1p(p) - np.log1p(t)) ** 2)
-                    for p, t in zip(predictions, targets, strict=True)
-                ]
+                [np.mean((np.log1p(predictions[i]) - np.log1p(targets[i])) ** 2) for i in indices]
             )
 
         step = 1e-5
-        gradient = (
+        dense_gradient = (
             independent_objective(initial + step) - independent_objective(initial - step)
         ) / (2 * step)
-        expected = initial - 0.01 * gradient / (abs(gradient) + 1e-8)
-        result = fit(
-            regions,
-            observations,
-            distance_model=ScalarEmbedding(jnp.asarray(initial, dtype=jnp.float64)),
-            config=TrainingConfig(objective="direct_log1p", steps=1, learning_rate=0.01),
-        )
-        np.testing.assert_allclose(
-            cast(Any, result.model.distance_model).weight, expected, rtol=1e-8
-        )
-        np.testing.assert_allclose(
-            result.history[0].training_loss, independent_objective(initial), rtol=1e-8
-        )
-        assert result.region_names == ("short", "wide")
-        for region in regions:
-            assert np.isfinite(result.model.predict(region).values).all()
+        gradients = []
+        selections = [(0,), (1,)] if region_batch_size == 1 else [(0, 1)]
+        for selected in selections:
+            # Enumerate the possible draws at the randomness boundary.
+            monkeypatch.setattr(
+                jax.random, "choice", lambda *a, selected=selected, **kw: jnp.array(selected)
+            )
+            gradient = (
+                independent_objective(initial + step, selected)
+                - independent_objective(initial - step, selected)
+            ) / (2 * step)
+            expected = initial - 0.01 * gradient / (abs(gradient) + 1e-8)
+            result = fit(
+                regions,
+                observations,
+                distance_model=ScalarEmbedding(jnp.asarray(initial, dtype=jnp.float64)),
+                config=TrainingConfig(
+                    objective="direct_log1p",
+                    steps=1,
+                    learning_rate=0.01,
+                    region_batch_size=region_batch_size,
+                ),
+            )
+            # Adam's first moment records 0.1 times the first applied gradient.
+            gradients.append(cast(Any, result.optimizer_state)[0].mu[0].weight / 0.1)
+            np.testing.assert_allclose(gradients[-1], gradient, rtol=1e-8)
+            np.testing.assert_allclose(
+                cast(Any, result.model.distance_model).weight, expected, rtol=1e-8
+            )
+            np.testing.assert_allclose(
+                result.history[0].training_loss, independent_objective(initial), rtol=1e-8
+            )
+            assert result.region_names == ("short", "wide")
+            for region in regions:
+                assert np.isfinite(result.model.predict(region).values).all()
+        np.testing.assert_allclose(np.mean(gradients), dense_gradient, rtol=1e-8)
 
 
 def test_shared_conductance_update_matches_independent_combined_graph_objective(
@@ -536,7 +574,7 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory(
     from dataclasses import replace
 
     regions, observations = regions_and_observations()
-    config = TrainingConfig(objective="direct_log1p", steps=3, seed=7)
+    config = TrainingConfig(objective="direct_log1p", steps=3, seed=7, region_batch_size=1)
     model = StochasticEmbedding(jnp.asarray(1.0, dtype=jnp.float32))
     baseline = fit(regions, observations, distance_model=model, config=config)
     reversed_regions = {region.name: region for region in reversed(regions)}
