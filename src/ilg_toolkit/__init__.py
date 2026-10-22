@@ -34,16 +34,10 @@ from .evaluation import (
 )
 from .ibd import IBDModel
 from .mlpe import (
-    MLPEConditionalPrediction,
     MLPEConfig,
     MLPEError,
-    MLPEPrediction,
-    MLPEPredictionProvenance,
-    MLPESupportConditioner,
     RegionalMLPECalibration,
     calibrate_mlpe,
-    condition_on_support,
-    predict_known_effects,
 )
 from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
@@ -79,15 +73,9 @@ __all__ = [
     "load_model",
     "save_model",
     "MLPEConfig",
-    "MLPEConditionalPrediction",
     "MLPEError",
     "RegionalMLPECalibration",
-    "MLPEPrediction",
-    "MLPEPredictionProvenance",
-    "MLPESupportConditioner",
     "calibrate_mlpe",
-    "condition_on_support",
-    "predict_known_effects",
     "StepRecord",
     "TrainingConfig",
     "TrainingState",

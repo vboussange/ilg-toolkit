@@ -36,8 +36,8 @@ information to a member. Giving a pair a query role does not erase earlier acces
 | Operation | Information used | Holdout requirement | Result |
 | --- | --- | --- | --- |
 | `ensemble.predict(region, pairs=None)` | Every member's saved marginal calibration; MLPE effect means are zero | None | `EnsemblePrediction`: original-scale mean points, all member points and descriptive SD |
-| `model.predict_known_effects(region, pairs)` | Saved regional MLPE effect posterior | None for this deployment call | `MLPEConditionalPrediction`: points, model-scale means/variance and access provenance |
-| `model.predict_with_support(region, pairs, support_observations, support_partition=...)` | Saved posterior plus exactly declared support targets | None for this deployment call; support/query identities must be disjoint | Conditional points, model-scale variance and calibration/support provenance |
+| `model.predict(region, pairs=pairs, known_effects=True)` | Saved regional MLPE effect posterior | None for this deployment call | `Prediction`: original-scale values and model-scale values/variances in `extras` |
+| `model.predict(region, pairs=pairs, support=observations)` | Saved population effects conditioned on support observations | None for this deployment call; support/query identities must be disjoint | `Prediction`: original-scale values and model-scale values/variances in `extras` |
 | `predict_out_of_fold(ensemble, region, pairs, ...)` | Only eligible members; marginal by default, conditional only by explicit regime | Endpoint and actual-access rules below; own-query target always forbidden | Regional points, member outputs, coverage, access and visible failures |
 | `score_out_of_fold(prediction, observations)` | Measured query targets after prediction is fixed | Uses the supplied prediction's eligibility and coverage | Covered-pair MSE, RMSE and MAE |
 | `evaluate_ensemble(ensemble, region, observations, ...)` | Extracts identities/metadata, predicts without query measurements, then scores | Same OOF rules | `OOFEvaluation` convenience result |
@@ -70,7 +70,7 @@ validation selection, calibration or support excludes that member. Pair reversal
 does not change identity. `OOFPrediction.access[member_id][region_name]` records
 these actual pair sets and calibration roles. A regional MLPE fit can list a
 held-out population with a prior-only effect; membership in `population_ids`
-alone does not mean its targets were accessed. Calling `calibrate` can change
+alone does not mean its targets were accessed. Fitting calibration can change
 eligibility because the current regional fit's calibration access is retained.
 
 Fitting records training and selection access automatically. A manually
@@ -160,7 +160,7 @@ For `k` requested members and `m` unique regional queries, `OOFPrediction` expos
 | `exclusion_reasons` | Member mapping to `m` reasons; `None` means successful contribution |
 | `member_failures` | Failed-fit and pending-member diagnostics |
 | `prediction_failures` | Member/region prediction diagnostics; completed fitting status is unchanged |
-| `access`, `conditioning_provenance` | Member/region actual-target snapshots and successful conditional provenance |
+| `access` | Training, validation, calibration and support observation use by member and region |
 | `member_model_variances` | `None` in marginal mode; conditional JAX `(k, m)` model-scale variance, NaN when unavailable |
 
 Counts refer to successful contributions, so a nominally eligible member with a

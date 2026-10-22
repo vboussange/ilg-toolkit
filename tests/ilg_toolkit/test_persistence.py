@@ -138,20 +138,17 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
     assert restored.training_pairs == model.training_pairs
     assert restored.validation_pairs == model.validation_pairs
     query = (("population-4", "population-2"), ("population-5", "population-3"))
-    before = model.predict_known_effects(region, query)
-    after = restored.predict_known_effects(region, query)
-    np.testing.assert_array_equal(after.prediction.values, before.prediction.values)
-    np.testing.assert_array_equal(after.model_variance, before.model_variance)
-    assert after.provenance == before.provenance
+    before = model.predict(region, pairs=query, known_effects=True)
+    after = restored.predict(region, pairs=query, known_effects=True)
+    np.testing.assert_array_equal(after.values, before.values)
+    np.testing.assert_array_equal(after.extras["model_variance"], before.extras["model_variance"])
     support = PairwiseObservations.from_pairs(
         [("population-4", "population-0")], [1.5], target=model.target
     )
-    declared = ObservationPartition(region.name, support.observed_pairs, role="support")
-    before = model.predict_with_support(region, query, support, support_partition=declared)
-    after = restored.predict_with_support(region, query, support, support_partition=declared)
-    np.testing.assert_array_equal(after.prediction.values, before.prediction.values)
-    np.testing.assert_array_equal(after.model_variance, before.model_variance)
-    assert after.provenance == before.provenance
+    before = model.predict(region, pairs=query, support=support)
+    after = restored.predict(region, pairs=query, support=support)
+    np.testing.assert_array_equal(after.values, before.values)
+    np.testing.assert_array_equal(after.extras["model_variance"], before.extras["model_variance"])
     assert cast(MLPECalibrationModule, restored.calibration).regions[region.name].converged is False
 
     from ilg_toolkit import (

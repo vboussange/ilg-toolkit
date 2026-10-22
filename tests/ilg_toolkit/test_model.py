@@ -18,7 +18,7 @@ from ilg_toolkit import (
 )
 
 
-def test_model_conditions_real_ecological_distances_without_updating_encoder(
+def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     ScalarEmbedding, calibration_problem, joint_gaussian_reference
 ):
     import itertools
@@ -50,9 +50,7 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder(
     ).selected_model
     head = cast(MLPECalibrationModule, model.calibration).regions[region.name]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
-    known = model.predict_known_effects(region, pairs)
-    assert known.prediction.sampling_unit_ids == region.sampling_unit_ids
-    assert known.prediction.pairs == pairs
+    known = model.predict(region, pairs=pairs, known_effects=True)
     distances = model.distance_model.predict(region).as_matrix()
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
 
@@ -69,21 +67,14 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder(
         pairs,
         selected_distances(pairs),
     )
-    np.testing.assert_allclose(known.model_values, expected_mean, atol=1e-10)
-    np.testing.assert_allclose(known.model_variance, expected_variance, atol=1e-10)
+    np.testing.assert_allclose(known.extras["model_values"], expected_mean, atol=1e-10)
+    np.testing.assert_allclose(known.extras["model_variance"], expected_variance, atol=1e-10)
     support = PairwiseObservations.from_pairs(
         [("population-4", "population-0"), ("population-4", "population-1")],
         [2.0, 2.5],
         target=head.target,
     )
-    result = model.predict_with_support(
-        region,
-        pairs,
-        support,
-        support_partition=ObservationPartition(region.name, support.observed_pairs, role="support"),
-    )
-    assert result.prediction.sampling_unit_ids == region.sampling_unit_ids
-    assert result.prediction.pairs == pairs
+    result = model.predict(region, pairs=pairs, support=support)
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration_pairs + support.observed_pairs,
@@ -97,16 +88,32 @@ def test_model_conditions_real_ecological_distances_without_updating_encoder(
         pairs,
         selected_distances(pairs),
     )
-    np.testing.assert_allclose(result.model_values, expected_mean, atol=1e-10)
-    np.testing.assert_allclose(result.model_variance, expected_variance, atol=1e-10)
+    np.testing.assert_allclose(result.extras["model_values"], expected_mean, atol=1e-10)
+    np.testing.assert_allclose(result.extras["model_variance"], expected_variance, atol=1e-10)
+    np.testing.assert_allclose(result.as_matrix()[[4, 5], [2, 3]], expected_mean, atol=1e-10)
+    np.testing.assert_allclose(
+        result.as_matrix("effect_variance")[[4, 5], [2, 3]],
+        expected_variance - head.residual_variance - head.config.jitter,
+        atol=1e-10,
+    )
     assert eqx.tree_equal(model.distance_model, direct.distance_model)
-    assert result.provenance.support_pairs == tuple(
-        tuple(sorted(pair)) for pair in support.observed_pairs
+    reused = PairwiseObservations.from_pairs(
+        [tuple(reversed(calibration_pairs[0]))], [1.0], target=head.target
     )
     with pytest.raises(ValueError):
-        direct.predict_known_effects(region, pairs)
+        model.predict(region, pairs=pairs, support=reused)
     with pytest.raises(ValueError):
-        model.predict_known_effects(region, [("missing-location", "population-0")])
+        model.predict(region, pairs=[tuple(reversed(support.observed_pairs[0]))], support=support)
+    with pytest.raises(ValueError):
+        model.predict(region, support=support)
+    with pytest.raises(ValueError):
+        model.predict(region, pairs=pairs, known_effects=True, support=support)
+    with pytest.raises(ValueError):
+        direct.predict(region, pairs=pairs, support=support)
+    with pytest.raises(ValueError):
+        direct.predict(region, pairs=pairs, known_effects=True)
+    with pytest.raises(ValueError):
+        model.predict(region, pairs=[("missing-location", "population-0")], known_effects=True)
 
 
 def test_explicit_transform_returns_original_units_and_separate_ecological_distances(

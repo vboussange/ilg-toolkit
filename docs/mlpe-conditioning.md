@@ -1,86 +1,66 @@
-# MLPE prediction and declared support
+# Maximum-likelihood population effects (MLPE) prediction
 
-Ordinary calibrated prediction is marginal: population effects have mean zero.
-The complete `LandscapeGeneticsModel` owns an `MLPECalibrationModule`; its
-`.calibration.regions[region_name]` is the standalone `RegionalMLPECalibration`
-used below. Obtain it after `fit(..., config=TrainingConfig(objective="mlpe", ...))`
-including a frozen distance model fitted with `TrainingConfig(objective="mlpe", steps=0)`.
-It uses the saved regional intercept, signed slope and training distance moments.
-`head.predict_known_effects(distances, pairs)` is a separate operation that uses the
-saved posterior effects for known populations. Unseen populations receive
-independent zero-mean effects with the fitted population variance. Distances align
-with the supplied labelled pairs; no query genetic observations are accepted.
+A landscape genetics model with an `MLPECalibrationModule` uses the fitted
+calibration for the query region. `model.predict(region)` gives marginal genetic
+predictions, with population-effect means equal to zero.
+Genetic calibration for a frozen distance model is fitted with `fit`, passing the
+model as `distance_model` and `TrainingConfig(objective="mlpe", steps=0)` as `config`.
 
-Support observations explicitly update those population effects while keeping
-the encoder, coefficients and variance parameters fixed:
+`model.predict(region, pairs=pairs, known_effects=True)` uses the saved population
+effects. Unseen sampling units receive zero-mean population effects with the
+fitted population variance. The query region supplies locations for every
+sampling unit and the same feature meanings and order used for training.
+
+Support observations update the saved population effects while holding the
+distance model, calibration coefficients and variance parameters fixed:
 
 ```python
-from ilg_toolkit import ObservationPartition, PairwiseObservations
+from ilg_toolkit import PairwiseObservations
 
-# head is an existing regional MLPE calibration. Distances come from its frozen model.
 support = PairwiseObservations.from_pairs(
     [("new-north", "known-west"), ("new-north", "known-east")],
     [0.8, 1.1],
-    target=head.target,
+    target=model.target,
 )
-declared = ObservationPartition(head.region_name, support.observed_pairs, role="support")
-# support_distances must follow support.observed_pairs, which can reorder input rows.
-conditioned = head.condition_on_support(support_distances, support, partition=declared)
-prediction = conditioned.predict(query_distances, [("new-north", "known-south")])
+prediction = model.predict(
+    region, pairs=[("new-north", "known-south")], support=support,
+)
 ```
 
-The standalone functions `predict_known_effects(head, distances, pairs)` and
-`condition_on_support(head, support_distances, support_observations, partition=...)`
-expose the same operations. Support observations must contain exactly the declared
-partition: extra genetic targets are refused. The region and target metadata must
-match the calibration. Missing observations remain absent.
+`known_effects=True` and `support=` are mutually exclusive and require an MLPE
+calibration for the region. Support targets must match the calibration's target.
+Support pairs must be disjoint from calibration and query pairs, including
+reversed pairs. Omitted `pairs` requests every distinct pair, so support
+conditioning requires a disjoint query selection. Sampling-unit identifiers
+define observation identities; callers resolve aliases before preparing inputs.
 
-The frozen model provides `model.predict_known_effects(region, pairs)`
-and `model.predict_with_support(region, pairs, support_observations,
-support_partition=declared)`. Both return labelled pair vectors with the same
-variance and provenance metadata. The prepared region supplies locations for all
-support and query endpoints; its feature contract must match training. Ordinary
-`model.predict(region)` continues to use marginal prediction. An unseen region
-needs its own explicit calibration before any target-scale MLPE operation.
+Both conditional modes return a `Prediction` on the original scale with three
+per-pair arrays in `extras`:
 
-Unordered endpoint labels are observation identities. Reversing endpoints or
-reordering input rows cannot bypass the guards. Reusing a calibration pair as
-support would count the same genetic target twice and is refused. A query cannot
-reuse a support pair, and duplicate queries, including reversed duplicates, are
-refused. New distinct labels denote distinct populations; callers must resolve
-aliases for the same physical population before preparing the inputs.
+| Name | Meaning |
+| --- | --- |
+| `model_values` | Conditional genetic predictions on the model scale |
+| `effect_variance` | Variance from the conditioned population effects |
+| `model_variance` | Effect variance plus residual variance and configured jitter |
 
-The support update is exact Gaussian conditioning on the saved effect posterior.
-It factors a population-sized whitened precision system, without forming a
-support-pair covariance matrix. The effective residual variance is the fitted
-residual variance plus explicitly configured jitter throughout calibration,
-support updating and prediction. No numerical jitter is increased automatically.
+Residual variance is available as
+`model.calibration.regions[region.name].residual_variance`, and jitter as
+`model.calibration.regions[region.name].config.jitter`. The variance calculations
+treat the distance model, coefficients and variance parameters as fixed.
+Conditional calculations use float64 within the call; resistance calculations
+require float64 to be enabled before prediction.
 
-`MLPEConditionalPrediction.model_variance` describes a new independent genetic
-observation: it includes population-effect posterior uncertainty, residual
-variance and configured jitter. `effect_variance`, `residual_variance` and
-`jitter` expose these components. The encoder, fixed coefficients and variance
-parameters are treated as fixed; their uncertainty is explicitly excluded.
-The variance scale is `model`, meaning the target scale after its declared
-transform (squared transformed units, or squared original units for identity).
+Values are inverse-transformed model means, and variance stays on the model
+scale. `prediction.pairs` retains requested order and orientation, and
+`prediction.as_matrix()` uses the region's sampling-unit order, with NaN on the
+diagonal and for unrequested pairs. `prediction.as_matrix("effect_variance")`
+rearranges the selected extra in the same way.
 
-Each standalone or conditional result composes one pair-oriented `prediction`.
-Point predictions in `prediction.values` are `model.target.inverse(model_values)` on original
-measurement units. For nonlinear transforms they are inverse-transformed Gaussian
-means, rather than expectations on the original scale. The reported variance
-remains on the model scale. The API does not construct an original-scale Gaussian
-confidence interval, and predictions are neither clipped nor repaired.
+Note: With a nonlinear target transform, values are not expectations on the
+original scale.
 
-`prediction.pairs` retains requested order and orientation. Use
-`prediction.as_matrix()` to represent only those points symmetrically, with
-NaN on the diagonal and for unrequested pairs. Model operations retain the
-query-region sampling-unit order; standalone operations use distinct query
-sampling units in first-appearance order.
+Calibration pairs and roles remain on the model's MLPE calibration. Support use
+is recorded by [out-of-fold evaluation](evaluation.md) when assessing whether a
+sampling unit's observations have been used.
 
-Prediction provenance records the region, prediction mode, canonical calibration
-pairs and their roles, supplied support pairs and their support roles, and the
-independent-prior unseen-effect policy. These identities complement the model's
-encoder-training and validation provenance when deciding evaluation eligibility.
-Known-effect prediction may predict a calibration pair for deployment; provenance
-must still exclude that target from a claim of held-out evaluation. Statistical
-predictive variance and ensemble disagreement describe different uncertainty.
+Note: Conditional prediction alone applies no held-out sampling-unit restriction.
