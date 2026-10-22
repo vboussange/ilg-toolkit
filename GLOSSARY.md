@@ -23,15 +23,34 @@ sampling-unit locations without genetic observations. Effective resistance and
 squared embedding distance are supported forms of ecological distance.
 _Avoid_: Genetic predictor, when the relationship has no genetic calibration.
 
+**Pooled backbone**:
+Landscape feature learning with one set of parameters estimated jointly across
+regions and species.
+_Avoid_: Shared encoder, when describing this pooling policy.
+
+**Distance model pooled across regions**:
+A species' landscape-to-distance relationship whose parameters are estimated
+jointly from its observations across regions.
+_Avoid_: Shared distance model, without specifying the pooling axis.
+
 **Calibration module**:
 The authoritative target contract and relationship mapping ecological distances to
 genetic predictions. Direct calibration applies the declared inverse target
-transform. MLPE calibration selects a fitted relationship for the query region.
+transform. MLPE calibration selects a fitted relationship for the query region
+and species.
 
-**Regional MLPE calibration**:
-One region's fitted relationship between ecological distances and genetic targets,
-including population dependence, uncertainty and observation-use provenance.
-_Avoid_: Complete model, when referring only to one regional relationship.
+**MLPE calibration**:
+One region-and-species group's fitted relationship between ecological distances
+and genetic targets, including population dependence, uncertainty and
+observation-use provenance.
+_Avoid_: Regional MLPE calibration; complete model, when referring only to this
+fitted relationship.
+
+**Unpooled genetic calibration**:
+Separate calibration coefficients and variance parameters for each region-and-species
+group, without parameter sharing or hierarchical shrinkage across those groups.
+Population dependence within each MLPE calibration is retained.
+_Avoid_: Regional calibration, when describing the across-group pooling policy.
 
 **Resistance calculation**:
 Effective resistance between sampling-unit nodes in a conductance graph, computed
