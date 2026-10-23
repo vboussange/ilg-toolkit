@@ -32,7 +32,7 @@ region = RegionBatch(
     sampling_unit_ids=("south", "north", "east"),
     grid_positions=[[0, 0], [0, 7], [7, 7]],
 )
-# Pairwise genetic observations, with their meaning, units and transform declared.
+# Pairwise genetic observations with their meaning, units, and transform.
 observations = PairwiseObservations.from_matrix(
     region.sampling_unit_ids,
     [[0, 0.375, 0.5], [0.375, 0, 0.375], [0.5, 0.375, 0]],
@@ -58,7 +58,7 @@ print(
     "Ecological distances (effective resistance):\n",
     model.distance_model.predict(region).as_matrix(),
 )
-# predict returns one calibrated value per distinct pair, in the target's units;
+# predict returns one genetic prediction per distinct pair, in the target's units;
 # as_matrix lays them out symmetrically in sampling-unit order.
 prediction = model.predict(region)
 print("Genetic predictions:", prediction.pairs, prediction.values)

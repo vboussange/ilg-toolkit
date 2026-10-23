@@ -1,9 +1,7 @@
-"""Run a complete synthetic deployment/OOF workflow without private data.
+"""A fold ensemble with out-of-fold (OOF) evaluation and support conditioning.
 
-From the repository root: ``JAX_PLATFORMS=cpu python examples/ensemble.py``.
-The explicit x64 scope supports joint MLPE fitting; predictions are fixed before
-query targets are supplied to scoring. Printed identities/counts expose exactly
-which pairs have coverage and what each uncertainty diagnostic means.
+Maximum-likelihood population effects (MLPE) fitting uses float64.
+Run from the repository root with ``JAX_PLATFORMS=cpu python examples/ensemble.py``.
 """
 
 from pathlib import Path
@@ -33,7 +31,7 @@ from ilg_toolkit.models import UNet
 
 
 def model_factory(key):
-    # Each member receives jax.random.PRNGKey(its declared initialization seed).
+    # Each member receives jax.random.PRNGKey(its initialization seed).
     return UNet(2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=key)
 
 
@@ -45,7 +43,7 @@ def continue_members(directory, region, observations, folds, config):
     for fold in folds:
         for seed in (13, 29):
             checkpoint = directory / f"{fold.fold_id}-seed-{seed}.eqx"
-            # Supply the exact distance-model architecture; loading restores its leaves.
+            # Loading restores parameters into a matching distance model.
             state = (
                 load_checkpoint(checkpoint, distance_model=model_factory(jax.random.PRNGKey(seed)))
                 if checkpoint.exists()
@@ -104,14 +102,14 @@ with jax.enable_x64():
     if ensemble.failures:
         raise RuntimeError(ensemble.failures)
     deployment = ensemble.predict(region)
-    print("Independent members:", deployment.member_ids)
-    print("Deployment averages every member AFTER inverse transformation; units: index")
+    print("Ensemble members:", deployment.member_ids)
+    print("Deployment averages original-scale genetic predictions; units: index")
     print("Deployment pairs:", deployment.prediction.pairs)
     print(deployment.prediction.values)
-    print("Descriptive member SD (separate from MLPE predictive variance):")
+    print("Descriptive member standard deviation:")
     print(deployment.member_spread)
 
-    # Request identities only. No query measurements enter this prediction call.
+    # Predict query pairs before supplying their measurements for scoring.
     oof = predict_out_of_fold(ensemble, region, observations.observed_pairs)
     print("OOF region/pair, contributors, mean (NaN means uncovered):")
     for identity, count, value in zip(oof.keys, oof.eligible_counts, oof.values, strict=True):
@@ -122,13 +120,15 @@ with jax.enable_x64():
     # The prediction is fixed; only now supply measured query targets for errors.
     evaluation = score_out_of_fold(oof, observations)
     print("OOF covered unique pairs:", evaluation.n_pairs, "of", evaluation.n_query_pairs)
-    print("OOF coverage, RMSE (index):", evaluation.coverage, evaluation.rmse)
+    print(
+        "OOF coverage, root mean squared error (RMSE, index):", evaluation.coverage, evaluation.rmse
+    )
     print("Each covered pair is scored once after averaging its eligible member points.")
     print("Training pairs stay present with zero coverage and do not contribute errors.")
     assert oof.coverage_status == "partial"
     assert evaluation.n_pairs == 1 and evaluation.n_query_pairs == 15
 
-    # Changing scoring targets changes errors, never this already fixed prediction.
+    # Score the saved predictions against changed query measurements.
     shifted = PairwiseObservations.from_pairs(
         observations.observed_pairs,
         observations.observed_values + 1,
@@ -151,7 +151,7 @@ with jax.enable_x64():
     print("Zero-coverage points/metrics:", excluded.values, excluded_score.rmse)
     assert excluded.coverage_status == "none" and excluded_score.rmse is None
 
-    # Supply one new genetic measurement explicitly; the query's own target stays separate.
+    # Supply one genetic measurement for conditioning a disjoint query pair.
     held_out = member.fold.held_out_units[region.name]
     training_endpoint = next(label for label in labels if label not in held_out)
     left_endpoint, right_endpoint = sorted((held_out[0], training_endpoint))
@@ -195,8 +195,8 @@ with jax.enable_x64():
     print("Per-member predictive variance stays on the log1p model scale:")
     print(conditional.member_model_variances)
 
-    # Checkpoints belong to this script. Increasing the total budget continues
-    # each latest optimizer/RNG state while preserving its selected best model.
+    # Increasing the total budget continues each member from its latest optimizer
+    # and random state while retaining its selected model.
     folds = tuple({member.fold.fold_id: member.fold for member in ensemble.members}.values())
     with TemporaryDirectory() as directory:
         partial = continue_members(
