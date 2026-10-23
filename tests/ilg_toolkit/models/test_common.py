@@ -13,13 +13,15 @@ from ilg_toolkit.models import ResNet9Conductance, UNet
 
 @pytest.mark.parametrize("family", ["conductance", "embedding"])
 def test_patch_microbatch_size_preserves_predictions_and_gradients(family, dense_resistance):
-    features = np.random.default_rng(8).normal(size=(8, 12, 2)).astype(np.float32)
+    patch_size = 4 if family == "conductance" else 2
+    shape = (2 * patch_size, 3 * patch_size, 2)
+    features = np.random.default_rng(8).normal(size=shape).astype(np.float32)
     regions = {
         dtype: RegionBatch(
             "valley",
             cx.field(features.astype(dtype), "row", "column", "feature"),
             ("a", "b", "c"),
-            np.array([[0, 0], [0, 11], [7, 11]]),
+            np.array([[0, 0], [0, shape[1] - 1], [shape[0] - 1, shape[1] - 1]]),
         )
         for dtype in ("float32", "float64")
     }
@@ -28,9 +30,14 @@ def test_patch_microbatch_size_preserves_predictions_and_gradients(family, dense
         reference = ResNet9Conductance(2, patch_size=4, key=key)
         microbatched = ResNet9Conductance(2, patch_size=4, key=key, patch_microbatch_size=4)
     else:
-        reference = UNet(2, patch_size=4, key=key, base_channels=2, embedding_dim=2)
+        reference = UNet(2, patch_size=patch_size, key=key, base_channels=2, embedding_dim=2)
         microbatched = UNet(
-            2, patch_size=4, key=key, base_channels=2, embedding_dim=2, patch_microbatch_size=4
+            2,
+            patch_size=patch_size,
+            key=key,
+            base_channels=2,
+            embedding_dim=2,
+            patch_microbatch_size=4,
         )
     models = reference, microbatched
 

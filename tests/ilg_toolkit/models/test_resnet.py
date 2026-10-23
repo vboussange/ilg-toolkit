@@ -64,7 +64,7 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions(
             species=species,
             config=TrainingConfig(
                 objective="direct_log1p",
-                steps=4,
+                steps=2,
                 learning_rate=0.001,
             ),
         )

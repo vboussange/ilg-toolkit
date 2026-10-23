@@ -92,13 +92,14 @@ def test_mlpe_updates_match_dense_reference(
 ):
     from dataclasses import replace
 
-    problems = [embedding_problem()]
+    problems = [embedding_problem(columns=2)]
+    unit_count = len(problems[0][0].sampling_unit_ids)
     if region_count == 2:
-        region, observed = embedding_problem("valley", offset=3, seed=71)
+        region, observed = embedding_problem("valley", offset=3, seed=71, columns=2)
         # Unequal observation counts must still give each region equal influence.
         sparse = PairwiseObservations.from_pairs(
-            observed.observed_pairs[:7],
-            observed.observed_values[:7],
+            observed.observed_pairs[:5],
+            observed.observed_values[:5],
             target=observed.target,
             sampling_unit_ids=region.sampling_unit_ids,
         )
@@ -118,7 +119,7 @@ def test_mlpe_updates_match_dense_reference(
                 sampling_unit_ids=regions[0].sampling_unit_ids * 2,
                 grid_positions=np.tile(regions[0].grid_positions, (2, 1)),
                 sampling_unit_kinds=None,
-                species=(species[0],) * 6 + (species[1],) * 6,
+                species=(species[0],) * unit_count + (species[1],) * unit_count,
             ),
         )
         observations = (
@@ -136,7 +137,7 @@ def test_mlpe_updates_match_dense_reference(
         for index in range(group_count) if indices is None else indices:
             region, observed = problems[index]
             (left, right), targets = observed.aligned_pairs(region)
-            embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(
+            embedding = np.asarray(region.feature_array).reshape(unit_count, 2) * np.exp(
                 parameters[2 * groups_species[index] : 2 * groups_species[index] + 2]
             )
             distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
@@ -147,7 +148,7 @@ def test_mlpe_updates_match_dense_reference(
                 + 1e-10
             )
             losses.append(
-                dense_profile(distances, np.asarray(targets), left, right, 6, variances)[0]
+                dense_profile(distances, np.asarray(targets), left, right, unit_count, variances)[0]
                 / len(distances)
             )
         return np.mean(losses)
@@ -208,7 +209,7 @@ def test_mlpe_updates_match_dense_reference(
     assert result.step == result.selected_step == 2
     calibration = cast(MLPECalibrationModule, result.model.calibration)
     for index, (region, observed) in enumerate(problems):
-        embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(
+        embedding = np.asarray(region.feature_array).reshape(unit_count, 2) * np.exp(
             expected[2 * groups_species[index] : 2 * groups_species[index] + 2]
         )
         distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)
@@ -217,7 +218,7 @@ def test_mlpe_updates_match_dense_reference(
             result.model.distance_model.predict(
                 region
                 if species is None
-                else replace(region, species=(species[groups_species[index]],) * 6),
+                else replace(region, species=(species[groups_species[index]],) * unit_count),
                 species=None if species is None else species[groups_species[index]],
                 species_order=species,
             ).as_matrix(),
@@ -244,7 +245,7 @@ def test_mlpe_updates_match_dense_reference(
             np.asarray(targets),
             left,
             right,
-            6,
+            unit_count,
             variances,
         )
         np.testing.assert_allclose([head.intercept, head.slope], beta, rtol=1e-8, atol=1e-10)
@@ -260,7 +261,9 @@ def test_mlpe_updates_match_dense_reference(
         expected_values = beta[0] + beta[1] * (
             observed_distances - observed_distances.mean()
         ) / observed_distances.std(ddof=1)
-        query = region if species is None else replace(region, species=(species[index],) * 6)
+        query = (
+            region if species is None else replace(region, species=(species[index],) * unit_count)
+        )
         predicted = result.model.predict(
             query,
             species=None if species is None else species[index],

@@ -1,5 +1,6 @@
 """Scientific behavior of persistence."""
 
+from dataclasses import replace
 from typing import cast
 
 import coordax as cx
@@ -71,29 +72,20 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, objective, num
 
 
 def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
-    persistence_problem, tmp_path
+    training_problem, checkpoint_model, tmp_path
 ):
-    region, observations = persistence_problem()
-
-    def encoder(seed):
-        return UNet(
-            2,
-            patch_size=1,
-            base_channels=2,
-            embedding_dim=3,
-            dropout=0.23,
-            key=jax.random.key(seed),
-        )
+    region, observations, encoder = training_problem("unet")
+    observations = replace(observations, target=replace(observations.target, transform="log1p"))
 
     model = fit(
         region,
         observations,
-        distance_model=encoder(3),
+        distance_model=encoder,
         config=TrainingConfig(steps=0, objective="direct_log1p"),
     ).model
     path = tmp_path / "direct.eqx"
     save_model(path, model)
-    restored = load_model(path, distance_model=encoder(7))
+    restored = load_model(path, distance_model=checkpoint_model(7))
     np.testing.assert_array_equal(
         restored.distance_model.predict(region).as_matrix(),
         model.distance_model.predict(region).as_matrix(),
@@ -103,7 +95,7 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
     assert restored.feature_names == model.feature_names
     assert restored.training_pairs == model.training_pairs
     assert restored.training_objective == "direct_log1p"
-    assert cast(UNet, restored.distance_model).encoder1.dropout.p == 0.23
+    assert cast(UNet, restored.distance_model).encoder1.dropout.p == 0.2
 
 
 def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(

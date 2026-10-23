@@ -3,7 +3,6 @@
 import itertools
 from collections.abc import Iterator
 from dataclasses import replace
-from functools import cache
 from types import SimpleNamespace
 from typing import final
 
@@ -147,8 +146,8 @@ _R_BLUPS = np.array(
 
 def _checkpoint_problem(name="alpine", seed=14):
     rng = np.random.default_rng(seed)
-    features = rng.normal(size=(4, 4, 2)).astype(np.float32)
-    positions = np.array([[0, 0], [0, 3], [1, 1], [2, 2], [3, 0], [3, 3]])
+    features = rng.normal(size=(3, 3, 2)).astype(np.float32)
+    positions = np.array([[0, 0], [0, 2], [1, 0], [1, 1], [2, 0], [2, 2]])
     ids = tuple(f"population-{i}" for i in range(len(positions)))
     region = RegionBatch(
         name,
@@ -167,14 +166,14 @@ def _checkpoint_problem(name="alpine", seed=14):
     return region, observations
 
 
-def _checkpoint_model():
+def _checkpoint_model(seed=8):
     return UNet(
         2,
         patch_size=1,
         base_channels=2,
         embedding_dim=2,
         dropout=0.2,
-        key=jax.random.PRNGKey(8),
+        key=jax.random.PRNGKey(seed),
     )
 
 
@@ -352,7 +351,6 @@ def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec
     return region, Ensemble(tuple(members)), target
 
 
-@cache
 def _fitted_member_problem():
     region, observations = _embedding_problem()
     fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)[0]
@@ -457,22 +455,23 @@ class _WeightedEmbedding(EmbeddingModel):
         return latent * jnp.exp(weights)
 
 
-def _embedding_problem(name="alpine", offset=0.0, seed=14):
+def _embedding_problem(name="alpine", offset=0.0, seed=14, *, columns=3):
     rng = np.random.default_rng(seed)
-    features = rng.normal(size=(2, 3, 2)).astype(np.float32)
-    ids = tuple(f"unit-{i}" for i in range(6))
+    features = rng.normal(size=(2, columns, 2)).astype(np.float32)
+    unit_count = 2 * columns
+    ids = tuple(f"unit-{i}" for i in range(unit_count))
     region = RegionBatch(
         name,
         cx.field(features, "row", "column", "feature"),
         ids,
-        np.array(list(np.ndindex(2, 3))),
+        np.array(list(np.ndindex(2, columns))),
         feature_names=("elevation", "canopy"),
     )
-    embedding = features.reshape(6, 2) * np.array([0.3, 1.5])
+    embedding = features.reshape(unit_count, 2) * np.array([0.3, 1.5])
     matrix = ((embedding[:, None] - embedding[None, :]) ** 2).sum(axis=-1)
-    left, right = np.triu_indices(6, 1)
+    left, right = np.triu_indices(unit_count, 1)
     distances = matrix[left, right]
-    effects = rng.normal(scale=0.04, size=6)
+    effects = rng.normal(scale=0.04, size=unit_count)
     values = (
         1.4
         + offset
@@ -669,12 +668,12 @@ def _calibration_problem(
 
 
 def _synthetic_problem(*, num_species=1):
-    features = np.arange(32, dtype=np.float32).reshape(4, 4, 2) / 32
+    features = np.arange(18, dtype=np.float32).reshape(3, 3, 2) / 18
     region = RegionBatch(
         name="arbitrary-catchment",
         features=cx.field(features, "row", "column", "feature"),
         sampling_unit_ids=("north", "east", "south", "west"),
-        grid_positions=np.array([[0, 0], [0, 3], [3, 0], [3, 3]]),
+        grid_positions=np.array([[0, 0], [0, 2], [2, 0], [2, 2]]),
         feature_names=("gradient", "texture"),
     )
     # Synthetic dissimilarity values in target units.
@@ -895,7 +894,8 @@ def known_ensemble_fixture():
 
 @pytest.fixture(name="fitted_member_problem", scope="session")
 def fitted_member_problem_fixture():
-    return _fitted_member_problem
+    with jax.enable_x64():
+        return _fitted_member_problem()
 
 
 @pytest.fixture(name="reference_observations", scope="session")
@@ -1010,7 +1010,7 @@ def training_problem():
     """Build the same identifiable observations for each distance-model family."""
 
     def build(family, *, name="alpine", num_species=1):
-        side = {"embedding": 2, "conductance": 2, "unet": 4, "resnet": 8}[family]
+        side = {"embedding": 2, "conductance": 2, "unet": 3, "resnet": 8}[family]
         features = (
             np.random.default_rng(14).uniform(0.8, 1.6, size=(side, side, 2)).astype(np.float32)
         )
