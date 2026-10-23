@@ -67,7 +67,7 @@ class IBDModel:
         _validate_metadata(self.distance_units, self.target)
 
     def predict(self, distances: ArrayLike, *, distance_units: str) -> jax.Array:
-        """Predict a vector or square matrix, retaining a structural zero diagonal."""
+        """Genetic predictions as a vector or square matrix, with a structural zero diagonal."""
         if distance_units != self.distance_units:
             raise ValueError("Prediction distance_units must match the fitted model")
         if not jax.config.read("jax_enable_x64"):
@@ -97,7 +97,7 @@ class IBDModel:
         target: TargetSpec,
         max_iterations: int = 2000,
     ) -> IBDModel:
-        """Minimize the equal-weight mean of regional mean log1p squared errors."""
+        """An isolation-by-distance model fitted with equal regional influence."""
         _validate_metadata(distance_units, target)
         if not jax.config.read("jax_enable_x64"):
             raise ValueError("IBD fitting requires JAX float64; enable x64 explicitly")

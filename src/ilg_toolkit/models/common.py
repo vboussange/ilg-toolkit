@@ -54,7 +54,7 @@ def with_dropout_mode[Model](model: Model, *, inference: bool, key: jax.Array | 
 
 
 def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
-    """Partition row, column, feature data into non-overlapping feature-first patches."""
+    """Non-overlapping feature-first patches from row, column, feature data."""
     raster = jnp.asarray(features)
     if raster.ndim != 3:
         raise ValueError(f"Expected features with shape (row, column, feature), got {raster.shape}")
@@ -77,7 +77,7 @@ def pixel_to_patch_nodes(
     raster_shape: tuple[int, int],
     patch_size: int,
 ) -> jax.Array:
-    """Map row-major raster pixel indices to row-major patch nodes."""
+    """Row-major patch nodes corresponding to row-major raster pixel indices."""
     height, width = raster_shape
     if height % patch_size or width % patch_size:
         raise ValueError("Raster dimensions must be divisible by patch_size")

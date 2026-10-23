@@ -457,7 +457,7 @@ class Ensemble:
         }
 
     def ecological_distances(self, region: RegionBatch) -> dict[str, jax.Array]:
-        """Return each member's ecological distances separately; their scales can differ."""
+        """Ecological distances for each ensemble member on its own distance scale."""
         return {
             member_id: model.distance_model.predict(region).as_matrix()
             for member_id, model in self._completed().items()
@@ -518,7 +518,7 @@ def fit_ensemble_member(
     state: TrainingState | None = None,
     on_step: Callable[[MemberIdentity, TrainingState], None] | None = None,
 ) -> EnsembleMember:
-    """Fit or continue one ensemble member using its population fold.
+    """An ensemble member fitted or continued using its population fold.
 
     Fresh fitting requires ``config`` and a ``model_factory`` receiving the
     initialization seed as a JAX random key. ``species`` gives the factory model's
@@ -597,7 +597,7 @@ def _prepare_ensemble(
     query_regime,
     initialization_seeds,
 ):
-    """Validate the requested folds and ensemble member identities."""
+    """Validation of the requested folds and ensemble member identities."""
     if folds is None:
         if n_folds is None or holdout_size is None:
             raise ValueError("Supply folds or both n_folds and holdout_size")

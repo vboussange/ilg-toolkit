@@ -1,4 +1,6 @@
-"""Joint fitting with equal species influence and equal region influence within species."""
+"""Joint fitting with equal species influence and equal region influence within species.
+
+Maximum-likelihood population effects (MLPE) calibration is fitted with the distance model."""
 
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -191,7 +193,7 @@ def _prepared(
 
 
 def _align_collection(values: object, names: Sequence[str], description: str) -> tuple[object, ...]:
-    """Align one labeled collection with its region batches."""
+    """A labeled collection aligned with its region batches."""
     if isinstance(values, Mapping):
         if set(values) != set(names):
             raise ValueError(f"{description} mapping keys must match region names exactly")
@@ -210,7 +212,7 @@ def _normalize_inputs(
     observations: ObservationCollection,
     partitions: PartitionCollection,
 ) -> tuple[_RegionalInput, ...]:
-    """Align collections and sort region identities for reproducible random sampling."""
+    """Aligned collections with region identities sorted for reproducible random sampling."""
     if isinstance(regions, RegionBatch):
         ordered = [regions]
     elif isinstance(regions, Mapping):
@@ -469,7 +471,7 @@ def _prepare_batches(
     distance_model: AbstractDistanceModel,
     config: TrainingConfig,
 ) -> tuple[tuple[_RegionalBatch, ...], tuple[_RegionalBatch, ...]]:
-    """Prepare regional genetic targets and reusable resistance solvers."""
+    """Regional genetic targets with reusable resistance solvers."""
     contexts: dict[tuple[int, int], ResistanceSolverContext | None] = {}
 
     def make_batch(inputs: _GroupInput, role: str) -> _RegionalBatch:
@@ -548,7 +550,7 @@ def _evaluate_regions(
 ) -> tuple[
     float, dict[str, float], dict[GroupKey, RegionalMLPECalibration], dict[str, float] | None
 ]:
-    """Evaluate regional objectives using calibration fitted on training observations."""
+    """Regional objectives evaluated with calibration fitted on training observations."""
     evaluate = _compiled_objective if config.jit else _group_objective
     values, fitted = {}, {}
     configured = with_dropout_mode(parameters[0], inference=True, key=None)
@@ -639,7 +641,7 @@ def fit(
     state: TrainingState | None = None,
     on_step: Callable[[TrainingState], None] | None = None,
 ) -> TrainingState:
-    """Fit a landscape genetics model with equal species and within-species region influence.
+    """Joint model fitting with equal species and within-species region influence.
 
     ``steps=0`` fits genetic calibration on training observations while keeping
     the distance model fixed. Evaluation at step zero, every ``eval_every``

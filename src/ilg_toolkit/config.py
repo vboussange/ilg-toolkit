@@ -8,7 +8,7 @@ from .mlpe import MLPEConfig
 
 
 def validate_patch_microbatch_size(value: int | None) -> None:
-    """Validate the optional number of raster patches processed together."""
+    """Validation of the optional number of raster patches processed together."""
     if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
         raise ValueError("patch_microbatch_size must be a positive integer or None")
 

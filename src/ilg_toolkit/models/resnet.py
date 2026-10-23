@@ -32,7 +32,7 @@ class ResidualBlock(eqx.Module):
         self.norm2 = eqx.nn.GroupNorm(min(8, channels), channels, dtype=jnp.float32)
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
-        """Encode one channel-first feature map."""
+        """Residual convolutional features for one channel-first feature map."""
         residual = inputs
         outputs = jax.nn.relu(self.norm1(self.conv1(inputs)))
         outputs = self.norm2(self.conv2(outputs))

@@ -244,7 +244,7 @@ def _evaluation_metrics(values, targets, covered):
 
 
 def _canonical_pairs(pairs, universe=None):
-    """Deduplicate evaluation identities; ordinary prediction rejects duplicates."""
+    """Unique region batches for evaluation."""
     try:
         pairs = tuple(tuple(pair) for pair in pairs)
         if any(
@@ -396,7 +396,7 @@ def _access(model, identity, support, regime):
 
 
 def _exclusion(pair, held_out, access, regime):
-    """Check that each required sampling unit is held out and unseen by the ensemble member."""
+    """Exclusion reason from the ensemble member's holdout and observation-use records."""
     if not access.encoder_access_declared:
         return "unknown_encoder_access"
     consumed = (
@@ -452,7 +452,7 @@ def predict_out_of_fold(
     selection, and ``pairs`` can map region names or ``(region, species)`` keys
     to query pairs or query partitions. Eligibility combines each member's
     holdout with training, validation, calibration, and support observation use,
-    under ``regime``; support declarations use the same group keys as queries.
+    under ``regime``; support declarations use the same region–species group keys as queries.
     The result reports successful-member coverage and failures, and every-member
     failure requires ``target`` metadata for reporting.
     """
@@ -572,7 +572,7 @@ def predict_out_of_fold(
 
 
 def score_out_of_fold(prediction: OOFPrediction, observations) -> OOFEvaluation:
-    """Score fixed out-of-fold predictions on the original target scale.
+    """Scores for fixed out-of-fold predictions on the original target scale.
 
     Supply one observations object or a species-labeled sequence for one region,
     or a mapping from region names to those inputs. Each covered region–species
@@ -666,7 +666,7 @@ def evaluate_ensemble(
     regime: EvaluationRegime | None = None,
     support=None,
 ) -> OOFEvaluation:
-    """Predict eligible query pairs, then score their genetic observations.
+    """Out-of-fold predictions and scores for eligible query pairs.
 
     Observations and optional query partitions align with regions and species
     as in ``fit``. The ``regime`` and ``support`` arguments follow

@@ -14,7 +14,7 @@ from .common import encode_patches
 
 
 def _match_shape(values: jax.Array, reference: jax.Array) -> jax.Array:
-    """Center-crop or zero-pad a channel, height, width array to a reference spatial shape."""
+    """A channel, height, width array cropped or zero-padded to a reference spatial shape."""
     target_height, target_width = reference.shape[1:]
     height, width = values.shape[1:]
     if height > target_height:
@@ -59,7 +59,7 @@ class ResidualConvBlock(eqx.Module):
         self.dropout = eqx.nn.Dropout(dropout, inference=True)
 
     def __call__(self, values: jax.Array) -> jax.Array:
-        """Apply the block to one channel-first feature map."""
+        """Residual convolutional features for one channel-first feature map."""
         residual = values if self.projection is None else self.projection(values)
         values = jax.nn.gelu(self.norm1(self.conv1(values)))
         values = self.norm2(self.conv2(values))

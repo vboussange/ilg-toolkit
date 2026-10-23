@@ -37,7 +37,7 @@ class TargetSpec:
             raise ValueError("Target transform must be identity, log1p, or sqrt")
 
     def forward(self, values) -> jax.Array:
-        """Transform finite original-scale observations to the model scale."""
+        """Model-scale observations transformed from finite original-scale measurements."""
         values = jnp.asarray(values)
         if not bool(jnp.isfinite(values).all()):
             raise ValueError("Observed target values must be finite")
@@ -288,7 +288,7 @@ class PairwiseObservations:
 
     @property
     def observed_pairs(self) -> tuple[tuple[str, str], ...]:
-        """Return only measured unordered pairs, in deterministic matrix order."""
+        """Measured unordered sampling-unit pairs in deterministic matrix order."""
         left, right = jnp.triu_indices(len(self.sampling_unit_ids), 1)
         present = jnp.isfinite(self.values[left, right])
         return tuple(
@@ -298,12 +298,12 @@ class PairwiseObservations:
 
     @property
     def observed_values(self) -> jax.Array:
-        """Return original-scale measurements aligned with ``observed_pairs``."""
+        """Original-scale measurements aligned with ``observed_pairs``."""
         upper = self.values[jnp.triu_indices(len(self.sampling_unit_ids), 1)]
         return upper[jnp.isfinite(upper)]
 
     def aligned_values(self, region: RegionBatch) -> jax.Array:
-        """Align known observation labels to a region, retaining NaNs for absent pairs."""
+        """Observations aligned with a region, retaining NaNs for absent pairs."""
         lookup = {
             label: index
             for index, label in enumerate(region.sampling_unit_ids)
@@ -324,7 +324,7 @@ class PairwiseObservations:
         return matrix.at[jnp.ix_(order, order)].set(self.values)
 
     def aligned_pairs(self, region: RegionBatch, partition: ObservationPartition | None = None):
-        """Return observed index pairs and measurements in the prepared unit order."""
+        """Observed index pairs and measurements in the region batch's sampling-unit order."""
         values = self.aligned_values(region)
         left, right = jnp.triu_indices(len(region.sampling_unit_ids), 1)
         present = jnp.isfinite(values[left, right])

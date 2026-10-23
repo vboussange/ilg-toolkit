@@ -40,7 +40,7 @@ def _mean_conductance(left, right):
 def build_resistance_context(
     graph_shape: tuple[int, int], config: ResistanceSolverConfig | None = None
 ) -> ResistanceSolverContext:
-    """Prepare a conjugate-gradient solver with optional algebraic multigrid preconditioning.
+    """A reusable conjugate-gradient solver with optional algebraic multigrid preconditioning.
 
     Preparation uses a uniform conductance graph of the supplied shape.
     Resistance calculation uses the learned conductances and their gradients.

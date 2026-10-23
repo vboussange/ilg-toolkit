@@ -13,7 +13,7 @@ MAX_ROUNDOFF_BOUND = 0.01
 
 
 def endpoint_sums(values, left, right, weights, n_populations):
-    """Sum pairwise values for each sampling unit."""
+    """Sums of pairwise values for each sampling unit."""
     values = jnp.asarray(values)
     weighted = jnp.where(weights[:, None], values, 0)
     result = jnp.zeros((n_populations, values.shape[1]), dtype=values.dtype)
@@ -51,7 +51,7 @@ class PopulationSystem(NamedTuple):
 
 
 def population_system(left, right, *, n_populations, unit, residual, weights, dtype):
-    """Factor the population covariance system for observed unordered pairs.
+    """Population covariance factor for observed unordered pairs.
 
     ``residual`` includes the configured jitter.
     The observation mask selects the sampling-unit indices used in the calculation.

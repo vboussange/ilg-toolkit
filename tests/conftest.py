@@ -44,7 +44,7 @@ from ilg_toolkit.models import (
 
 @pytest.fixture(scope="module", autouse=True)
 def release_neural_compilations(request) -> Iterator[None]:
-    """Release large neural-model programs after their canonical checks."""
+    """Compilation-cache cleanup after canonical neural-model checks."""
     yield
     if request.path.name in {"test_common.py", "test_checkpoint.py", "test_persistence.py"}:
         jax.clear_caches()

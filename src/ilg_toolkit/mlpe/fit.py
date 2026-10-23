@@ -128,7 +128,7 @@ class RegionalMLPECalibration(eqx.Module):
         optimizer_message: str,
         converged: bool = True,
     ) -> "RegionalMLPECalibration":
-        """Attach target, observation provenance and optimizer diagnostics to a fit."""
+        """MLPE calibration with target, observation provenance, and optimizer diagnostics."""
         mean, covariance, factor = fit.posterior
         return cls(
             region_name=region_name,
@@ -236,7 +236,7 @@ def calibrate_mlpe(
     partition: ObservationPartition | None = None,
     config: MLPEConfig | None = None,
 ) -> RegionalMLPECalibration:
-    """Fit MLPE calibration from ecological distances aligned to ``observations.observed_pairs``.
+    """MLPE calibration from ecological distances aligned to ``observations.observed_pairs``.
 
     ``partition`` selects observations and records their data role.
     Coefficients, variance parameters, and population effects are fitted with
