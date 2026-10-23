@@ -29,13 +29,15 @@ from ilg_toolkit.training import (
 
 
 @pytest.mark.parametrize(
-    ("family", "objective", "selection"),
+    ("family", "objective", "selection", "num_species"),
     [
-        (family, objective, "final")
+        (family, objective, "final", 1)
         for family in ("embedding", "conductance", "unet", "resnet")
         for objective in ("direct_log1p", "mlpe")
     ]
-    + [("unet", objective, "validation") for objective in ("direct_log1p", "mlpe")],
+    + [("unet", objective, "validation", 1) for objective in ("direct_log1p", "mlpe")]
+    + [("embedding", objective, "final", 2) for objective in ("direct_log1p", "mlpe")]
+    + [("embedding", "mlpe", "validation", 2)],
 )
 def test_resume_equals_uninterrupted(
     tmp_path,
@@ -45,10 +47,16 @@ def test_resume_equals_uninterrupted(
     family,
     objective,
     selection,
+    num_species,
 ):
-    region, observations, encoder = training_problem(family)
+    region, observations, encoder = training_problem(family, num_species=num_species)
+    species = ("species-1", "species-0") if num_species > 1 else None
     other = replace(region, name="valley")
-    other_observations = replace(observations, values=observations.values * 1.2)
+    other_observations = (
+        replace(observations, values=observations.values * 1.2)
+        if isinstance(observations, PairwiseObservations)
+        else tuple(replace(observed, values=observed.values * 1.2) for observed in observations)
+    )
     regions, targets = (region, other), (observations, other_observations)
     config = TrainingConfig(
         objective=objective,
@@ -57,9 +65,29 @@ def test_resume_equals_uninterrupted(
         seed=21,
         learning_rate=1e-4,
         region_batch_size=1 if family in ("embedding", "conductance") else None,
+        species_batch_size=1 if num_species > 1 else None,
+        species_microbatch_size=1 if num_species > 1 else None,
     )
     options = _ValidationOptions()
-    if selection == "validation":
+    if selection == "validation" and num_species > 1:
+        group_targets = cast(tuple[tuple[PairwiseObservations, ...], ...], targets)
+        options = _ValidationOptions(
+            partition={
+                r.name: tuple(
+                    ObservationPartition(r.name, o.observed_pairs[:-1], role="training")
+                    for o in groups
+                )
+                for r, groups in zip(regions, group_targets, strict=True)
+            },
+            validation=(regions, tuple(groups[0] for groups in group_targets)),
+            validation_partition={
+                r.name: ObservationPartition(
+                    r.name, groups[0].observed_pairs[-1:], role="validation"
+                )
+                for r, groups in zip(regions, group_targets, strict=True)
+            },
+        )
+    elif selection == "validation":
         problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
         regions = tuple(problem[0] for problem in problems)
         targets = tuple(problem[1] for problem in problems)
@@ -95,6 +123,7 @@ def test_resume_equals_uninterrupted(
         targets,
         distance_model=encoder,
         config=config,
+        species=species,
         on_step=states.append,
         **options,
     )
@@ -110,10 +139,14 @@ def test_resume_equals_uninterrupted(
     resumed = fit(regions[::-1], targets[::-1], state=restored, **options)
     assert eqx.tree_equal(resumed, uninterrupted)
     for prepared in regions:
-        np.testing.assert_array_equal(
-            resumed.model.predict(prepared).values,
-            uninterrupted.model.predict(prepared).values,
-        )
+        for name in species or (None,):
+            np.testing.assert_array_equal(
+                resumed.model.predict(prepared, species=name).values,
+                uninterrupted.model.predict(prepared, species=name).values,
+            )
+    if num_species > 1 and selection == "validation":
+        assert resumed.history[-1].validation_by_species is not None
+        assert set(resumed.history[-1].validation_by_species) == {"species-0"}
 
 
 class _ValidationOptions(TypedDict, total=False):

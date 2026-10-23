@@ -62,12 +62,15 @@ class ResNet9Conductance(ConductanceModel):
         self,
         in_channels: int,
         *,
+        num_species: int = 1,
         patch_size: int = 4,
         min_conductance: float = 1e-6,
         patch_microbatch_size: int | None = None,
         solver_config: ResistanceSolverConfig | None = None,
         key: jax.Array,
     ):
+        if isinstance(num_species, bool) or not isinstance(num_species, int) or num_species < 1:
+            raise ValueError("num_species must be a positive integer")
         if (
             isinstance(in_channels, bool)
             or not isinstance(in_channels, Integral)
@@ -91,7 +94,8 @@ class ResNet9Conductance(ConductanceModel):
         self.residual2 = ResidualBlock(128, key=keys[3])
         self.conv3 = eqx.nn.Conv2d(128, 256, 3, padding=1, dtype=jnp.float32, key=keys[4])
         self.norm3 = eqx.nn.GroupNorm(8, 256, dtype=jnp.float32)
-        self.output = eqx.nn.Linear(256, 1, dtype=jnp.float32, key=keys[5])
+        self.output = eqx.nn.Linear(256, num_species, dtype=jnp.float32, key=keys[5])
+        self.num_species = num_species
         self.patch_size = patch_size
         self.min_conductance = min_conductance
         self.patch_microbatch_size = patch_microbatch_size
@@ -120,5 +124,6 @@ class ResNet9Conductance(ConductanceModel):
 
     def conductance(self, latent: jax.Array, species_index: int) -> jax.Array:
         """Positive conductance surface from pooled landscape features."""
-        logits = eqx.filter_vmap(eqx.filter_vmap(self.output))(latent).squeeze(-1)
+        assert self.output.bias is not None
+        logits = latent @ self.output.weight[species_index] + self.output.bias[species_index]
         return jax.nn.softplus(logits) + self.min_conductance

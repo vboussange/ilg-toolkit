@@ -2,6 +2,7 @@
 
 import itertools
 from collections.abc import Iterator
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import final
 
@@ -210,15 +211,17 @@ class _PointConductance(ConductanceModel):
         static=True, kw_only=True, default=ResistanceSolverConfig()
     )
 
-    def __init__(self, log_scale: jax.Array, *, solver_config=None):
+    def __init__(self, log_scale: jax.Array, *, solver_config=None, num_species=1):
         self.log_scale = log_scale
+        self.num_species = num_species
         self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
 
     def backbone(self, features):
         return features
 
     def conductance(self, latent, species_index):
-        return jnp.exp(self.log_scale) * latent[..., 0]
+        scale = self.log_scale if self.log_scale.ndim == 0 else self.log_scale[species_index]
+        return jnp.exp(scale) * latent[..., 0]
 
 
 @final
@@ -425,14 +428,18 @@ class _WeightedEmbedding(EmbeddingModel):
     num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
 
-    def __init__(self, log_weights: jax.Array):
+    def __init__(self, log_weights: jax.Array, *, num_species=1):
         self.log_weights = log_weights
+        self.num_species = num_species
 
     def backbone(self, features):
         return features
 
     def embedding(self, latent, species_index):
-        return latent * jnp.exp(self.log_weights)
+        weights = (
+            self.log_weights if self.log_weights.ndim == 1 else self.log_weights[species_index]
+        )
+        return latent * jnp.exp(weights)
 
 
 def _embedding_problem(name="alpine", offset=0.0, seed=14):
@@ -517,14 +524,37 @@ class _ScalarEmbedding(EmbeddingModel):
     num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
 
-    def __init__(self, weight: jax.Array):
+    def __init__(self, weight: jax.Array, *, num_species=1):
         self.weight = weight
+        self.num_species = num_species
 
     def backbone(self, features):
         return features
 
     def embedding(self, latent, species_index):
-        return latent[..., :1] * self.weight
+        weight = self.weight if self.weight.ndim == 0 else self.weight[species_index]
+        return latent[..., :1] * weight
+
+
+@pytest.fixture
+def SharedParameterEmbedding():
+    @final
+    class Model(EmbeddingModel):
+        weights: jax.Array
+        num_species: int = eqx.field(static=True)
+        patch_size: int = eqx.field(static=True, default=1)
+
+        def __init__(self, weights):
+            self.weights = weights
+            self.num_species = len(weights)
+
+        def backbone(self, features):
+            return features * self.weights.sum()
+
+        def embedding(self, latent, species_index):
+            return latent * self.weights[species_index]
+
+    return Model
 
 
 def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObservations]]:
@@ -627,7 +657,7 @@ def _calibration_problem(
     return region, observations, training, validation
 
 
-def _synthetic_problem():
+def _synthetic_problem(*, num_species=1):
     features = np.arange(32, dtype=np.float32).reshape(4, 4, 2) / 32
     region = RegionBatch(
         name="arbitrary-catchment",
@@ -644,8 +674,26 @@ def _synthetic_problem():
         region.sampling_unit_ids, targets, target=TargetSpec("synthetic divergence", units="index")
     )
     model = UNet(
-        2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(3)
+        2,
+        num_species=num_species,
+        patch_size=1,
+        base_channels=2,
+        embedding_dim=2,
+        dropout=0,
+        key=jax.random.key(3),
     )
+    if num_species > 1:
+        region = replace(
+            region,
+            sampling_unit_ids=region.sampling_unit_ids * 2,
+            grid_positions=np.tile(region.grid_positions, (2, 1)),
+            sampling_unit_kinds=None,
+            species=("frog",) * 4 + ("newt",) * 4,
+        )
+        observations = tuple(
+            replace(observations, species=name, values=observations.values * (i + 1))
+            for i, name in enumerate(("frog", "newt"))
+        )
     return region, observations, model
 
 
@@ -950,7 +998,7 @@ def mlpe_reference():
 def training_problem():
     """Build the same identifiable observations for each distance-model family."""
 
-    def build(family, *, name="alpine"):
+    def build(family, *, name="alpine", num_species=1):
         side = {"embedding": 2, "conductance": 2, "unet": 4, "resnet": 8}[family]
         features = np.random.default_rng(14).uniform(0.8, 1.6, size=(side, side, 2))
         region = RegionBatch(
@@ -968,6 +1016,7 @@ def training_problem():
         if family == "unet":
             model = UNet(
                 2,
+                num_species=num_species,
                 patch_size=1,
                 base_channels=2,
                 embedding_dim=2,
@@ -977,16 +1026,32 @@ def training_problem():
         elif family == "resnet":
             model = ResNet9Conductance(
                 2,
+                num_species=num_species,
                 patch_size=4,
                 patch_microbatch_size=3,
                 key=jax.random.key(6),
             )
         elif family == "embedding":
-            model = _WeightedEmbedding(jnp.zeros(2))
+            weights = jnp.zeros(2) if num_species == 1 else jnp.array([[0.0, 0.0], [0.2, -0.3]])
+            model = _WeightedEmbedding(weights, num_species=num_species)
         elif family == "conductance":
-            model = _PointConductance(jnp.array(0.0))
+            scales = jnp.array(0.0) if num_species == 1 else jnp.arange(num_species) * 0.2
+            model = _PointConductance(scales, num_species=num_species)
         else:
             raise ValueError(f"Unknown test model family: {family}")
+        if num_species > 1:
+            names = tuple(f"species-{index}" for index in range(num_species))
+            region = replace(
+                region,
+                sampling_unit_ids=region.sampling_unit_ids * num_species,
+                grid_positions=np.tile(region.grid_positions, (num_species, 1)),
+                sampling_unit_kinds=None,
+                species=tuple(name for name in names for _ in range(4)),
+            )
+            observations = tuple(
+                replace(observations, species=name, values=observations.values * (index + 1))
+                for index, name in enumerate(names)
+            )
         return region, observations, model
 
     return build

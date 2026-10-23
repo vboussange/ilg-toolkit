@@ -1,5 +1,6 @@
 """Scientific behavior of models.base."""
 
+from dataclasses import replace
 from typing import cast
 
 import coordax as cx
@@ -19,7 +20,52 @@ from ilg_toolkit import (
     load_model,
     save_model,
 )
-from ilg_toolkit.models import ConductanceModel
+from ilg_toolkit.models import ConductanceModel, LogLinearConductance
+
+
+def test_species_queries_follow_supplied_order_with_reused_sampling_unit_ids():
+    region = RegionBatch(
+        "river",
+        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        ("a", "b", "a", "b"),
+        np.array([[0, 0], [0, 2], [0, 0], [0, 1]]),
+        species=("hare", "hare", "stoat", "stoat"),
+    )
+    model = LogLinearConductance(1, num_species=2, patch_size=1)
+    model = eqx.tree_at(lambda value: value.intercepts, model, jnp.log(jnp.array([1.99, 0.99])))
+    order = ("stoat", "hare")
+    results = model.predict(region, species=("hare", "stoat"), species_order=order)
+    np.testing.assert_allclose(results["hare"].values, [2.0], rtol=1e-6)
+    np.testing.assert_allclose(results["stoat"].values, [0.5], rtol=1e-6)
+    for name, result in results.items():
+        assert result.species == name
+        assert result.sampling_unit_ids == ("a", "b")
+        np.testing.assert_array_equal(
+            model.predict(region, species=name, species_order=order).values, result.values
+        )
+    surfaces = model.conductance_surface(region, species=("hare", "stoat"), species_order=order)
+    np.testing.assert_allclose(surfaces["hare"], np.ones((1, 3)), rtol=1e-6)
+    np.testing.assert_allclose(surfaces["stoat"], np.full((1, 3), 2), rtol=1e-6)
+    unlabeled = replace(region, sampling_unit_ids=("a", "b", "c", "d"), species=None)
+    np.testing.assert_allclose(
+        model.conductance_surface(unlabeled, species="hare", species_order=order),
+        surfaces["hare"],
+    )
+    partial = replace(unlabeled, species=("stoat",) * 4)
+    np.testing.assert_allclose(
+        model.conductance_surface(partial, species="hare", species_order=order),
+        surfaces["hare"],
+    )
+    for options in (
+        {},
+        {"species": "hare"},
+        {"species_order": order},
+        {"species": "missing", "species_order": order},
+        {"species": ("hare", "hare"), "species_order": order},
+        {"species": "hare", "species_order": ("hare", "hare")},
+    ):
+        with pytest.raises(ValueError):
+            model.predict(region, **options)
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
