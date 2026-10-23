@@ -1,5 +1,6 @@
 """Scientific behavior of models.base."""
 
+from dataclasses import replace
 from typing import cast
 
 import coordax as cx
@@ -45,6 +46,16 @@ def test_species_queries_follow_supplied_order_with_reused_sampling_unit_ids():
     surfaces = model.conductance_surface(region, species=("hare", "stoat"), species_order=order)
     np.testing.assert_allclose(surfaces["hare"], np.ones((1, 3)), rtol=1e-6)
     np.testing.assert_allclose(surfaces["stoat"], np.full((1, 3), 2), rtol=1e-6)
+    unlabeled = replace(region, sampling_unit_ids=("a", "b", "c", "d"), species=None)
+    np.testing.assert_allclose(
+        model.conductance_surface(unlabeled, species="hare", species_order=order),
+        surfaces["hare"],
+    )
+    partial = replace(unlabeled, species=("stoat",) * 4)
+    np.testing.assert_allclose(
+        model.conductance_surface(partial, species="hare", species_order=order),
+        surfaces["hare"],
+    )
     for options in (
         {},
         {"species": "hare"},

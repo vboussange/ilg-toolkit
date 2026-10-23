@@ -231,7 +231,7 @@ print("Restored predictions:\n", restored.predict(region).as_matrix())
 - [ibd.py](examples/ibd.py): an isolation-by-distance baseline from geographic
   separation alone.
 - [multispecies.py](examples/multispecies.py): experimental multispecies fitting
-  with species labels on sampling units and observations. Pass the parameter order
+  with species labels on sampling units and observations. Pass the species order
   as `fit(..., species=(...))`; fitted queries use that saved order. Standalone
   distance queries take `species="name"` or a sequence of names alongside
   `species_order=model.species`. A sequence returns a mapping and reuses the
@@ -247,8 +247,12 @@ modules, recalibration and the layout of predictions.
 
 `TrainingConfig(region_batch_size=...)` samples that many regions per optimizer
 step, up to the number available; `None` uses every region. Sampling is uniform
-without replacement and gives each region equal influence in expectation.
-Each selected region uses all its training pairs, and evaluation uses every region.
+without replacement. For experimental multispecies fits, `species_batch_size`
+samples species within each selected region, with weights that give species equal
+influence and regions equal influence within each species. Each selected
+region–species group uses all its training pairs. `species_microbatch_size` limits
+how many species are processed together while retaining the same optimizer update.
+Evaluation uses every region–species group.
 
 - `direct_log1p`: mean squared error between `log1p` of the ecological distances and
   of the transformed targets; prediction applies the inverse target transform.

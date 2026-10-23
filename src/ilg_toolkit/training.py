@@ -635,6 +635,10 @@ def fit(
     state after initialization and every update; ``state`` continues the saved
     trajectory with the same inputs and an equal or increased step budget.
     """
+    if species is not None and (
+        isinstance(species, (str, bytes)) or not isinstance(species, Sequence)
+    ):
+        raise ValueError("Species order must be a sequence of names")
     if state is not None and not isinstance(state, TrainingState):
         raise ValueError("state must be a TrainingState returned by fit")
     if state is not None and distance_model is not None:

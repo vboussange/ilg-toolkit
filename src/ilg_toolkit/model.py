@@ -12,8 +12,8 @@ from .mlpe import RegionalMLPECalibration
 from .models import AbstractDistanceModel
 from .models.base import (
     _query_pairs,
-    distances_from_latent,
     prepare_distance_context,
+    query_distances_from_latent,
     region_for_species,
     select_species,
     validate_species_order,
@@ -146,24 +146,21 @@ class LandscapeGeneticsModel(eqx.Module):
                 or isinstance(self.calibration, MLPECalibrationModule)
             ):
                 head = self._regional_head(prepared, index)
-            labels, indices = _query_pairs(prepared, pairs)
             observations = support_by_species.get(name)
+            query_pairs = pairs
             if observations is not None:
-                _, indices = _query_pairs(prepared, labels + observations.observed_pairs)
-            distances = distances_from_latent(
+                labels, _ = _query_pairs(prepared, pairs)
+                query_pairs = labels + observations.observed_pairs
+            labels, distances = query_distances_from_latent(
                 distance_model,
                 latent,
-                prepared.pixel_nodes,
-                indices,
-                raster_shape=(region.feature_array.shape[0], region.feature_array.shape[1]),
+                prepared,
+                query_pairs,
                 species_index=index,
                 context=context,
             )
-            distances = eqx.error_if(
-                distances,
-                jnp.any(~jnp.isfinite(distances) | (distances < 0)),
-                "Distance model produced nonfinite or negative ecological distances",
-            )
+            if observations is not None:
+                labels = labels[: len(labels) - len(observations.observed_pairs)]
             extras = {}
             if known_effects or observations is not None:
                 assert head is not None

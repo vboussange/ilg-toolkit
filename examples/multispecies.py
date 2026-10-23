@@ -1,4 +1,4 @@
-"""Experimental multispecies fitting with a shared landscape and repeated sampling-unit ids."""
+"""Experimental multispecies fitting with a shared landscape and sampling-unit identifiers."""
 
 from typing import cast
 

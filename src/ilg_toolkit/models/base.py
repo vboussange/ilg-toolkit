@@ -90,20 +90,13 @@ class AbstractDistanceModel(eqx.Module):
         results = {}
         for name, index in selected:
             prepared = region_for_species(region, name)
-            labels, indices = _query_pairs(prepared, pairs)
-            values = distances_from_latent(
+            labels, values = query_distances_from_latent(
                 model,
                 latent,
-                prepared.pixel_nodes,
-                indices,
-                raster_shape=(region.feature_array.shape[0], region.feature_array.shape[1]),
+                prepared,
+                pairs,
                 species_index=index,
                 context=context,
-            )
-            values = eqx.error_if(
-                values,
-                jnp.any(~jnp.isfinite(values) | (values < 0)),
-                "Distance model produced nonfinite or negative ecological distances",
             )
             results[name] = Prediction(
                 values, labels, region.name, prepared.sampling_unit_ids, name
@@ -176,13 +169,10 @@ class ConductanceModel(AbstractDistanceModel):
         """
         order = validate_species_order(species_order, self.num_species)
         selected = select_species(order, species)
-        if self.num_species > 1 and region.species is None:
-            raise ValueError("Multispecies queries require sampling-unit species labels")
         model = with_dropout_mode(self, inference=True, key=None)
         latent = model.backbone(region.feature_array)
         results = {}
         for name, index in selected:
-            region_for_species(region, name)
             surface = model.conductance(latent, index)
             results[name] = eqx.error_if(
                 surface,
@@ -300,6 +290,34 @@ def prepare_distance_context(
     return build_resistance_context(
         (shape[0] // model.patch_size, shape[1] // model.patch_size), model.solver_config
     )
+
+
+def query_distances_from_latent(
+    model: AbstractDistanceModel,
+    latent: jax.Array,
+    region: RegionBatch,
+    pairs: Sequence[tuple[str, str]] | None,
+    *,
+    species_index: int,
+    context: ResistanceSolverContext | None,
+) -> tuple[tuple[tuple[str, str], ...], jax.Array]:
+    """Query pair labels and valid ecological distances for one species."""
+    labels, indices = _query_pairs(region, pairs)
+    values = distances_from_latent(
+        model,
+        latent,
+        region.pixel_nodes,
+        indices,
+        raster_shape=(region.feature_array.shape[0], region.feature_array.shape[1]),
+        species_index=species_index,
+        context=context,
+    )
+    values = eqx.error_if(
+        values,
+        jnp.any(~jnp.isfinite(values) | (values < 0)),
+        "Distance model produced nonfinite or negative ecological distances",
+    )
+    return labels, values
 
 
 def distance_values(
