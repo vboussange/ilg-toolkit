@@ -25,6 +25,157 @@ from ilg_toolkit import (
 )
 
 
+def test_out_of_fold_eligibility_keeps_repeated_ids_separate_between_species(known_ensemble):
+    from dataclasses import replace
+
+    region, ensemble, target = known_ensemble(num_species=2)
+    prediction = predict_out_of_fold(
+        ensemble, region, [("a", "b"), ("c", "d")], species=("frog", "newt")
+    )
+    np.testing.assert_array_equal(prediction.eligible_counts, [0, 2, 1, 1])
+    np.testing.assert_allclose(prediction.values, [np.nan, 2.5, 9, 16])
+    assert prediction.coverage == 0.75
+    assert prediction.predictions["alpine", "newt"].species == "newt"
+    deployment = ensemble.predict(region, species="newt", pairs=[("a", "b"), ("c", "d")])
+    np.testing.assert_allclose(deployment.prediction.values, [12.5, 12.5])
+    observations = tuple(
+        PairwiseObservations.from_pairs(
+            [("a", "b"), ("c", "d")], values, target=target, species=name
+        )
+        for name, values in (("frog", [1, 3]), ("newt", [10, 18]))
+    )
+    scored = score_out_of_fold(prediction, observations)
+    assert scored.n_pairs == 3 and scored.n_query_pairs == 4
+    assert scored.mse == 1.75
+    assert scored.by_species is not None
+    assert scored.by_species["frog"].mse == 0.25
+    assert scored.by_species["frog"].coverage == 0.5
+    assert scored.by_species["newt"].mse == 2.5
+    assert scored.by_species["newt"].coverage == 1
+    combined = evaluate_ensemble(ensemble, region, observations)
+    np.testing.assert_array_equal(combined.predictions.values, prediction.values)
+    assert combined.by_species == scored.by_species
+    contaminated = Ensemble(
+        tuple(
+            replace(
+                member,
+                model=replace(
+                    member.model,
+                    validation_pairs={
+                        ("alpine", 1): (("a", "b"), ("c", "d")),
+                    },
+                ),
+            )
+            for member in ensemble.members
+        )
+    )
+    isolated = evaluate_ensemble(contaminated, region, observations)
+    np.testing.assert_array_equal(isolated.predictions.eligible_counts, [0, 2, 0, 0])
+    assert isolated.by_species is not None
+    assert isolated.by_species["frog"].coverage == 0.5
+    assert isolated.by_species["newt"].mse is None
+    regional = evaluate_ensemble(
+        ensemble,
+        [region, replace(region, name="valley")],
+        [observations[0], observations[1]],
+    )
+    assert set(regional.predictions.predictions) == {("alpine", "frog"), ("valley", "newt")}
+    assert regional.coverage == 0.25
+
+
+@pytest.mark.parametrize("mode", ["known_effects", "support"])
+@pytest.mark.parametrize("num_species", [1, 2])
+def test_multispecies_conditional_oof_uses_each_species_calibration(
+    mode, num_species, embedding_problem, WeightedEmbedding, completed_model
+):
+    from dataclasses import replace
+
+    from ilg_toolkit import EvaluationRegime, EvaluationSupport, fit_ensemble
+
+    region, observations = embedding_problem()
+    order = ("newt", "frog")[:num_species]
+    region = replace(
+        region,
+        sampling_unit_ids=region.sampling_unit_ids * num_species,
+        grid_positions=np.tile(region.grid_positions, (num_species, 1)),
+        sampling_unit_kinds=None,
+        species=tuple(name for name in order for _ in range(6)),
+    )
+    observed = tuple(
+        replace(observations, species=name, values=observations.values * scale)
+        for name, scale in zip(order, (1, 3)[:num_species], strict=True)
+    )
+    ensemble = fit_ensemble(
+        region,
+        observed,
+        species=order,
+        n_folds=1,
+        holdout_size=2,
+        fold_seed=47,
+        config=TrainingConfig(objective="mlpe", steps=0),
+        model_factory=lambda key: WeightedEmbedding(
+            jnp.zeros(2 if num_species == 1 else (2, 2)), num_species=num_species
+        ),
+    )
+    member = ensemble.members[0]
+    model = completed_model(member)
+    support = None
+    if mode == "support":
+        support = {}
+        for observations in observed:
+            name = observations.species
+            held = member.fold.held_out_units[region.name, name]
+            old = next(label for label in observations.sampling_unit_ids if label not in held)
+            pair = (held[0], old)
+            measured = PairwiseObservations.from_pairs(
+                [pair], [0.8], target=observations.target, species=name
+            )
+            support[region.name, name] = EvaluationSupport(
+                measured, ObservationPartition(region.name, (pair,), "support")
+            )
+    regime = EvaluationRegime(
+        prediction_mode=mode,
+        support_endpoint_policy="allow_declared_support" if support else "unseen",
+    )
+    result = predict_out_of_fold(
+        ensemble, region, member.fold.query, species=order, regime=regime, support=support
+    )
+    assert result.coverage == 1
+    assert result.member_model_variances is not None
+    for identity, prediction in result.predictions.items():
+        expected = model.predict(
+            region,
+            species=identity[1],
+            pairs=prediction.pairs,
+            known_effects=mode == "known_effects",
+            support=None if support is None else support[identity].observations,
+        )
+        np.testing.assert_allclose(prediction.values, expected.values)
+        column = list(result.predictions).index(identity)
+        np.testing.assert_allclose(
+            result.member_model_variances[0, column], expected.extras["model_variance"][0]
+        )
+    if support:
+        strict = predict_out_of_fold(
+            ensemble,
+            region,
+            member.fold.query,
+            species=order,
+            support=support,
+            regime=EvaluationRegime(prediction_mode="support"),
+        )
+        assert strict.coverage == 0
+    evaluation = evaluate_ensemble(
+        ensemble,
+        region,
+        observed,
+        partitions=[member.fold.query[region.name, name] for name in order],
+        regime=regime,
+        support=support,
+    )
+    assert (evaluation.by_species is None) == (num_species == 1)
+
+
 def test_label_free_eligible_predictions_average_first_and_score_each_pair_once(known_ensemble):
     region, ensemble, target = known_ensemble()
     prediction = predict_out_of_fold(ensemble, region, [("d", "c"), ("a", "b"), ("c", "d")])
@@ -56,6 +207,7 @@ def test_label_free_eligible_predictions_average_first_and_score_each_pair_once(
     assert evaluation.mse == 0.25
     assert evaluation.mae == evaluation.rmse == 0.5
     assert evaluation.predictions is prediction
+    assert evaluation.by_species is None
     wrapped = evaluate_ensemble(ensemble, region, observations)
     np.testing.assert_array_equal(wrapped.predictions.values, prediction.values)
     assert wrapped.mse == 0.25

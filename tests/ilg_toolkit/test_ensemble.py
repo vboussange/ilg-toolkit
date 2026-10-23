@@ -21,6 +21,70 @@ from ilg_toolkit import (
 )
 
 
+@pytest.mark.parametrize("num_species", [1, 2])
+def test_folds_hold_out_sampling_units_within_each_species(training_problem, num_species):
+    region, observations, _ = training_problem("embedding", num_species=num_species)
+    folds = generate_population_folds(region, observations, n_folds=2, holdout_size=2, seed=47)
+    expected = (
+        {region.name}
+        if num_species == 1
+        else {(region.name, "species-0"), (region.name, "species-1")}
+    )
+    for fold in folds:
+        assert set(fold.held_out_units) == expected
+        for identity, held_out in fold.held_out_units.items():
+            assert len(held_out) == 2
+            assert fold.query[identity].pairs == (tuple(sorted(held_out)),)
+            assert all(not set(pair) & set(held_out) for pair in fold.training[identity].pairs)
+    if num_species == 2:
+        assert folds == generate_population_folds(
+            region, observations[::-1], n_folds=2, holdout_size=2, seed=47
+        )
+
+
+def test_multispecies_deployment_averages_every_member_and_requires_shared_order(
+    training_problem, completed_model
+):
+    from dataclasses import replace
+
+    from ilg_toolkit import Ensemble
+
+    region, observations, distance_model = training_problem("embedding", num_species=2)
+    order = ("species-1", "species-0")
+    ensemble = fit_ensemble(
+        region,
+        observations,
+        species=order,
+        n_folds=2,
+        holdout_size=2,
+        config=TrainingConfig(objective="direct_log1p", steps=0),
+        model_factory=lambda key: distance_model,
+    )
+    assert all(member.status == "completed" for member in ensemble.members)
+    with pytest.raises(ValueError):
+        ensemble.predict(region)
+    predictions = ensemble.predict(region, species=order)
+    for name in order:
+        reference = np.stack(
+            [
+                completed_model(member).predict(region, species=name).values
+                for member in ensemble.members
+            ]
+        )
+        np.testing.assert_allclose(predictions[name].prediction.values, reference.mean(axis=0))
+        np.testing.assert_array_equal(predictions[name].member_values, reference)
+        np.testing.assert_array_equal(
+            ensemble.predict(region, species=name).prediction.values,
+            predictions[name].prediction.values,
+        )
+    changed = replace(
+        ensemble.members[0],
+        model=replace(completed_model(ensemble.members[0]), species=order[::-1]),
+    )
+    with pytest.raises(ValueError):
+        Ensemble((changed, ensemble.members[1]))
+
+
 def test_declared_seeds_initialize_readable_members_directly(
     completed_fit, embedding_problem, model_factory
 ):

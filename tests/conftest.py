@@ -30,6 +30,7 @@ from ilg_toolkit import (
     fit_ensemble,
     generate_population_folds,
 )
+from ilg_toolkit.ensemble import FoldKey
 from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
 from ilg_toolkit.models import (
     AbstractDistanceModel,
@@ -308,7 +309,7 @@ def _completed_model(member: EnsembleMember) -> LandscapeGeneticsModel:
     return member.model
 
 
-def _known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
+def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec]:
     region = RegionBatch(
         "alpine",
         cx.field(np.arange(4).reshape(1, 4, 1), "row", "column", "feature"),
@@ -316,6 +317,14 @@ def _known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
         np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
     )
     target = TargetSpec("divergence", units="index")
+    if num_species == 2:
+        region = replace(
+            region,
+            sampling_unit_ids=region.sampling_unit_ids * 2,
+            grid_positions=np.tile(region.grid_positions, (2, 1)),
+            sampling_unit_kinds=None,
+            species=("frog",) * 4 + ("newt",) * 4,
+        )
     members = []
     for index, weight in enumerate((1.0, 2.0)):
         fold = PopulationFold(
@@ -331,6 +340,28 @@ def _known_ensemble() -> tuple[RegionBatch, Ensemble, TargetSpec]:
             training_pairs={"alpine": (("a", "b"),)},
             training_objective="direct_log1p",
         )
+        if num_species == 2:
+            held: dict[FoldKey, tuple[str, ...]] = {
+                ("alpine", "frog"): ("c", "d"),
+                ("alpine", "newt"): ("a", "b") if index == 0 else ("c", "d"),
+            }
+            training = {
+                identity: ObservationPartition(
+                    "alpine", (("c", "d"),) if units == ("a", "b") else (("a", "b"),), "training"
+                )
+                for identity, units in held.items()
+            }
+            fold = PopulationFold(fold.fold_id, held, training)
+            model = LandscapeGeneticsModel(
+                _ScalarEmbedding(jnp.asarray([weight, weight + 2]), num_species=2),
+                DirectCalibrationModule(target),
+                1,
+                species=("frog", "newt"),
+                training_pairs={
+                    ("alpine", i): training["alpine", name].pairs
+                    for i, name in enumerate(("frog", "newt"))
+                },
+            )
         members.append(
             EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
         )
