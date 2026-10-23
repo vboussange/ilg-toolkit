@@ -244,7 +244,7 @@ def _evaluation_metrics(values, targets, covered):
 
 
 def _canonical_pairs(pairs, universe=None):
-    """Unique region batches for evaluation."""
+    """Unique unordered query pairs for evaluation."""
     try:
         pairs = tuple(tuple(pair) for pair in pairs)
         if any(
