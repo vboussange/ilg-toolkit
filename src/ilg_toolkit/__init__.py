@@ -24,6 +24,7 @@ from .ensemble import (
 )
 from .evaluation import (
     EvaluationAccess,
+    EvaluationMetrics,
     EvaluationRegime,
     EvaluationSupport,
     OOFEvaluation,
@@ -50,6 +51,7 @@ __all__ = [
     "MLPECalibrationModule",
     "IBDModel",
     "EvaluationAccess",
+    "EvaluationMetrics",
     "EvaluationRegime",
     "EvaluationSupport",
     "OOFEvaluation",
