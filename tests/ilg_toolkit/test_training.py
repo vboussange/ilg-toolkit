@@ -1079,3 +1079,33 @@ def test_zero_step_recalibration_fits_only_supplied_region_and_preserves_distanc
     if order is not None:
         with pytest.raises(ValueError):
             model.predict(transferred_region, species=order[0])
+
+
+def test_fit_validates_species_order_and_derives_a_single_name(
+    observation_problem, ScalarEmbedding
+):
+    from dataclasses import replace
+
+    region, target, _ = observation_problem()
+    region = replace(region, species=("a",) * 3)
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20")], [0.5], target=target, species="a"
+    )
+    config = TrainingConfig(objective="direct_log1p", steps=0)
+    for order in ("ab", {"a", "b"}, ("a",), ("a", "a"), ("", "a")):
+        with pytest.raises(ValueError):
+            fit(
+                region,
+                observations,
+                distance_model=ScalarEmbedding(jnp.array(1.0), num_species=2),
+                species=order,  # type: ignore[arg-type]
+                config=config,
+            )
+    result = fit(
+        region, observations, distance_model=ScalarEmbedding(jnp.array(1.0)), config=config
+    )
+    assert result.model.species == ("a",)
+    assert result.history[0].training_by_species is None
+    np.testing.assert_array_equal(
+        result.model.predict(region).values, result.model.predict(region, species="a").values
+    )
