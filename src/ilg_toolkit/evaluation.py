@@ -348,6 +348,25 @@ def _query_inputs(region, pairs, order, species):
     return groups, queries
 
 
+def _observation_species(observations: PairwiseObservations, order: tuple[str, ...] | None):
+    if observations.species is None and order is not None and len(order) == 1:
+        return order[0]
+    return observations.species
+
+
+def _ensemble_species(ensemble: Ensemble) -> tuple[str, ...] | None:
+    for member in ensemble.members:
+        if member.model is not None:
+            return member.model.species
+    names = {
+        key[1]
+        for member in ensemble.members
+        for key in member.fold.held_out_units
+        if isinstance(key, tuple)
+    }
+    return tuple(sorted(names)) or None
+
+
 def _support_inputs(support, regions, queries, target, regime, order):
     if regime.prediction_mode != "support":
         if support is not None:
@@ -364,10 +383,7 @@ def _support_inputs(support, regions, queries, target, regime, order):
         name, species = _group_names(identity)
         if not isinstance(declared, EvaluationSupport) or declared.partition.region_name != name:
             raise ValueError("Support requires matching EvaluationSupport region declarations")
-        observed_species = declared.observations.species
-        if observed_species is None and order is not None and len(order) == 1:
-            observed_species = order[0]
-        if observed_species != species:
+        if _observation_species(declared.observations, order) != species:
             raise ValueError("Support observations must match the query species")
         if declared.observations.target != target:
             raise ValueError("Support target scale must match the ensemble target")
@@ -473,7 +489,7 @@ def predict_out_of_fold(
     if not isinstance(regime, EvaluationRegime):
         raise ValueError("regime must be an EvaluationRegime")
     completed = [member for member in ensemble.members if member.status == "completed"]
-    order = None
+    order = _ensemble_species(ensemble)
     if completed:
         completed_model = completed[0].model
         assert completed_model is not None  # Ensemble validates completed members.
@@ -481,15 +497,6 @@ def predict_out_of_fold(
         if target is not None and target != inferred:
             raise ValueError("Declared evaluation target scale must match ensemble members")
         target = inferred
-        order = completed_model.species
-    else:
-        names = {
-            key[1]
-            for member in ensemble.members
-            for key in member.fold.held_out_units
-            if isinstance(key, tuple)
-        }
-        order = tuple(sorted(names)) or None
     if not isinstance(target, TargetSpec):
         raise ValueError("All members unavailable: declare target metadata for coverage reporting")
     regions, queries = _query_inputs(region, pairs, order, species)
@@ -520,11 +527,13 @@ def predict_out_of_fold(
             try:
                 access = _access(model, name, supports.get(name), regime)
                 access_records[member_id][name] = access
+                holdout_key = name
+                if model.distance_model.num_species == 1 and name not in member.fold.held_out_units:
+                    holdout_key = prepared.name
+                held_out = member.fold.held_out_units.get(holdout_key, ())
                 eligible = []
                 for column in columns:
-                    reason = _exclusion(
-                        keys[column][1], member.fold.held_out_units.get(name, ()), access, regime
-                    )
+                    reason = _exclusion(keys[column][1], held_out, access, regime)
                     member_reasons[column] = reason
                     if reason is None:
                         eligible.append(column)
@@ -618,9 +627,7 @@ def score_out_of_fold(prediction: OOFPrediction, observations) -> OOFEvaluation:
                 or observed.target != prediction.target
             ):
                 raise ValueError("Scoring observations require the same target scale")
-            species = observed.species
-            if species is None and prediction.species is not None and len(prediction.species) == 1:
-                species = prediction.species[0]
+            species = _observation_species(observed, prediction.species)
             identity = name if species is None else (name, species)
             if identity in identities:
                 raise ValueError(
@@ -695,9 +702,7 @@ def evaluate_ensemble(
     """
     inputs = _normalize_inputs(region, observations, partitions)
     regions, queries, observed_by_region = {}, {}, {}
-    order = next(
-        (member.model.species for member in ensemble.members if member.model is not None), None
-    )
+    order = _ensemble_species(ensemble)
     species = set()
     target = None
     for prepared, observed, partition in inputs:
@@ -707,9 +712,7 @@ def evaluate_ensemble(
             target = observed.target
         elif observed.target != target:
             raise ValueError("Regional scoring targets must have identical scale contracts")
-        name = observed.species
-        if name is None and order is not None and len(order) == 1:
-            name = order[0]
+        name = _observation_species(observed, order)
         selected = region_for_species(prepared, name)
         if not set(observed.sampling_unit_ids).issubset(selected.sampling_unit_ids):
             raise ValueError("Scoring observation labels require prepared query locations")
