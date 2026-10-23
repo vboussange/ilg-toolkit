@@ -69,13 +69,14 @@ def test_nonfinite_training_is_reported_at_evaluation(
 
 
 @pytest.mark.parametrize(
-    ("jit", "num_species", "region_count", "region_batch_size"),
+    ("jit", "num_species", "region_count", "region_batch_size", "species_batch_size"),
     [
-        (False, 1, 1, None),
-        (True, 1, 1, None),
-        (True, 1, 2, None),
-        (True, 1, 2, 1),
-        (True, 2, 1, None),
+        (False, 1, 1, None, None),
+        (True, 1, 1, None, None),
+        (True, 1, 2, None, None),
+        (True, 1, 2, 1, None),
+        (True, 2, 1, None, None),
+        (True, 2, 1, None, 1),
     ],
 )
 def test_mlpe_updates_match_dense_reference(
@@ -86,6 +87,7 @@ def test_mlpe_updates_match_dense_reference(
     region_count,
     num_species,
     region_batch_size,
+    species_batch_size,
     monkeypatch,
 ):
     from dataclasses import replace
@@ -150,8 +152,13 @@ def test_mlpe_updates_match_dense_reference(
             )
         return np.mean(losses)
 
-    selections = [(0,), (1,)] if region_batch_size == 1 else [range(group_count)] * 2
-    if region_batch_size == 1:
+    if species_batch_size == 1:
+        selections = [(1,), (0,)]
+    elif region_batch_size == 1:
+        selections = [(0,), (1,)]
+    else:
+        selections = [range(group_count)] * 2
+    if region_batch_size == 1 or species_batch_size == 1:
         choices = iter(selections)
         monkeypatch.setattr(jax.random, "choice", lambda *args, **kwargs: jnp.array(next(choices)))
 
@@ -191,6 +198,7 @@ def test_mlpe_updates_match_dense_reference(
             jit=jit,
             learning_rate=0.02,
             region_batch_size=region_batch_size,
+            species_batch_size=species_batch_size,
             mlpe=MLPEConfig(initial_variances=(0.05, 0.1)),
         ),
     )

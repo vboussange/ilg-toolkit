@@ -302,10 +302,9 @@ def _index_inputs(
 
 
 def _group_objective(
-    parameters: tuple[AbstractDistanceModel, jax.Array, dict[GroupKey, jax.Array] | None],
+    parameters: tuple[AbstractDistanceModel, jax.Array, jax.Array | None],
     payload: _TrainingPayload,
     *,
-    identity: GroupKey,
     species_index: int,
     objective: str,
     mlpe: MLPEConfig,
@@ -340,7 +339,7 @@ def _group_objective(
             payload.targets,
             *payload.pairs,
             n_populations=len(payload.nodes),
-            raw_variances=raw_variances[identity],
+            raw_variances=raw_variances,
             fixed_effects=beta,
             distance_center=center,
             distance_scale=scale,
@@ -352,7 +351,7 @@ def _group_objective(
             payload.targets,
             *payload.pairs,
             n_populations=len(payload.nodes),
-            raw_variances=raw_variances[identity],
+            raw_variances=raw_variances,
             **options,
         )
         nll = result.nll
@@ -362,7 +361,7 @@ def _group_objective(
             payload.targets,
             *payload.pairs,
             n_populations=len(payload.nodes),
-            raw_variances=raw_variances[identity],
+            raw_variances=raw_variances,
             **options,
         )
     return nll / len(distances), result
@@ -373,7 +372,6 @@ _compiled_objective = eqx.filter_jit(_group_objective)
 
 class _Contribution(NamedTuple):
     payload: _TrainingPayload
-    identity: GroupKey
     species_index: int
     weight: float
 
@@ -384,15 +382,14 @@ def _microbatch_objective(parameters, contributions, objective, mlpe, context, k
     return sum(
         item.weight
         * _group_objective(
-            (configured, latent, raw),
+            (configured, latent, None if raw is None else raw[index]),
             item.payload,
-            identity=item.identity,
             species_index=item.species_index,
             objective=objective,
             mlpe=mlpe,
             context=context,
         )[0]
-        for item in contributions
+        for index, item in enumerate(contributions)
     )
 
 
@@ -407,7 +404,7 @@ def _backbone(model, features, key):
 _compiled_backbone = eqx.filter_jit(_backbone)
 
 
-def _regional_gradient(parameters, contributions, config, context, key):
+def _regional_gradient(parameters, contributions, identities, config, context, key):
     model, raw = parameters
     features = contributions[0].payload.features
     backbone = _compiled_backbone if config.jit else _backbone
@@ -416,14 +413,20 @@ def _regional_gradient(parameters, contributions, config, context, key):
     size = config.species_microbatch_size or len(contributions)
     accumulated = None
     for start in range(0, len(contributions), size):
+        selected = identities[start : start + size]
         gradient = differentiate(
-            (model, latent, raw),
+            (model, latent, None if raw is None else tuple(raw[identity] for identity in selected)),
             contributions[start : start + size],
             config.objective,
             config.mlpe,
             context,
             key,
         )
+        if raw is not None:
+            model_gradient, latent_gradient, selected_variance_gradients = gradient
+            variance_gradient = jax.tree.map(jnp.zeros_like, raw)
+            variance_gradient.update(zip(selected, selected_variance_gradients, strict=True))
+            gradient = model_gradient, latent_gradient, variance_gradient
         accumulated = (
             gradient
             if accumulated is None
@@ -570,9 +573,8 @@ def _evaluate_regions(
                 jnp.asarray((calibration.intercept, calibration.slope)),
             )
         value, result = evaluate(
-            (configured, latent, parameters[1]),
+            (configured, latent, None if parameters[1] is None else parameters[1][batch.identity]),
             batch.payload,
-            identity=batch.identity,
             species_index=batch.species_index,
             objective=config.objective,
             mlpe=config.mlpe,
@@ -840,14 +842,18 @@ def fit(
                 contributions = tuple(
                     _Contribution(
                         groups[i].payload,
-                        groups[i].identity,
                         groups[i].species_index,
                         groups[i].weight * correction,
                     )
                     for i in chosen
                 )
                 gradient = _regional_gradient(
-                    parameters, contributions, config, groups[0].context, keys[index]
+                    parameters,
+                    contributions,
+                    tuple(groups[i].identity for i in chosen),
+                    config,
+                    groups[0].context,
+                    keys[index],
                 )
                 accumulated = (
                     gradient
