@@ -9,8 +9,8 @@ and maximum-likelihood population effects (MLPE) have separate numerical costs.
 `model.predict(region, pairs=[("west", "east")])` returns values for those query
 pairs, preserving their order and orientation. Omitting `pairs` requests every
 distinct pair among the region's sampling units. A `Prediction` stores one value
-per pair; `as_matrix()` allocates a sampling-unit matrix, with `NaN` on the diagonal
-and for unrequested pairs. Keep the pair-aligned representation for large queries.
+per pair; `as_matrix()` allocates a sampling-unit matrix, with not-a-number (`NaN`)
+values on the diagonal and for unrequested pairs. Keep the pair-aligned representation for large queries.
 
 Embedding models compute squared embedding distances for the requested pairs
 after constructing the region's embeddings. Conductance models compute the

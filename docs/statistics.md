@@ -130,7 +130,7 @@ using the index in `model.species`.
 Conditional calculations use float64 within the call. Resistance calculations
 and joint MLPE fitting require float64 enabled before constructing inputs.
 `prediction.as_matrix("effect_variance")` arranges a named extra in sampling-unit
-order, with `NaN` on the diagonal and for unrequested pairs.
+order, with not-a-number (`NaN`) values on the diagonal and for unrequested pairs.
 
 All genetic predictions apply $T^{-1}$ to the fitted mean and return the original
 scale. Conditional variances remain on the model scale and treat distance-model

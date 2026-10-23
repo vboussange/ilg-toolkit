@@ -32,7 +32,8 @@ requires ecological interpretation alongside predictive evaluation.
   meanings and order across regions. Prepare aligned, normalized rasters before
   constructing a batch.
 - **Pairwise genetic observations:** measurements between sampling units, supplied
-  as labeled pairs or a matrix with missing measurements represented by `NaN`.
+  as labeled pairs or a matrix with missing measurements represented by not-a-number
+  (`NaN`) values.
   `TargetSpec` defines their meaning, units, kind, and transform.
 - **Distance model:** derives ecological distances from the landscape.
   `distance_model.predict(region)` returns a `Prediction` aligned with query pairs.

@@ -90,7 +90,7 @@ Its `keys` order aligns the combined arrays:
 | `member_model_variances` | Per-member conditional variances on the model scale, or `None` in marginal mode |
 
 Failed predictions contribute zero to coverage counts. Uncovered pairs have
-`NaN` values. If all members are unavailable, `predict_out_of_fold` requires
+not-a-number (`NaN`) values. If all members are unavailable, `predict_out_of_fold` requires
 `target=TargetSpec(...)`; `evaluate_ensemble` obtains the target from observations.
 Deployment propagates a member failure, while OOF prediction can retain partial
 coverage from successful members.
