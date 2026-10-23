@@ -1,4 +1,4 @@
-"""Regional full-Gaussian-ML genetic calibration."""
+"""Maximum-likelihood population effects (MLPE) genetic calibration."""
 
 from .fit import MLPEConfig, MLPEError, RegionalMLPECalibration, calibrate_mlpe
 from .likelihood import (

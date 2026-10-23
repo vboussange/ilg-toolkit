@@ -1,4 +1,4 @@
-"""Target-scale relationships and frozen regional genetic calibration."""
+"""Genetic calibration from ecological distances to original-scale predictions."""
 
 from abc import abstractmethod
 from typing import final
@@ -13,7 +13,7 @@ type GroupKey = str | tuple[str, int]
 
 
 class AbstractCalibrationModule(eqx.Module):
-    """Own the target contract and map selected ecological distances to genetic values."""
+    """Abstract genetic calibration mapping ecological distances to genetic predictions."""
 
     target: eqx.AbstractVar[TargetSpec]
 
@@ -21,12 +21,12 @@ class AbstractCalibrationModule(eqx.Module):
     def predict(
         self, distances, pairs, *, region_name: str, species_index: int | None = None
     ) -> jax.Array:
-        """Return original-scale values for selected distances and labelled pairs."""
+        """Genetic predictions for ecological distances aligned with labeled query pairs."""
 
 
 @final
 class DirectCalibrationModule(AbstractCalibrationModule):
-    """Apply the declared inverse target transform without fitting another stage."""
+    """Direct genetic calibration applying the inverse target transform."""
 
     target: TargetSpec
 

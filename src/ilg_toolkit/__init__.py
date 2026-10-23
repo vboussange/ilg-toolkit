@@ -1,4 +1,4 @@
-"""Independent inverse landscape genetics toolkit."""
+"""Inverse landscape genetics toolkit."""
 
 from .calibration import (
     AbstractCalibrationModule,

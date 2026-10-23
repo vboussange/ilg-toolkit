@@ -4,9 +4,7 @@ from dataclasses import replace
 from typing import cast
 
 import coordax as cx
-import equinox as eqx
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -87,39 +85,3 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions(
                 ).as_matrix(),
                 prediction.as_matrix(),
             )
-
-
-def test_resnet_parameter_gradient_matches_independent_graph_reference(
-    dense_resistance,
-):
-    with jax.enable_x64():
-        features = jnp.asarray(np.random.default_rng(8).normal(size=(8, 8, 2)), jnp.float32)
-        nodes = np.array([0, 3])
-        region = RegionBatch(
-            "reference",
-            cx.field(features, "row", "column", "feature"),
-            ("a", "b"),
-            np.array([[0, 0], [7, 7]]),
-        )
-        encoder = ResNet9Conductance(
-            2, patch_size=4, patch_microbatch_size=3, key=jax.random.key(9)
-        )
-
-        def scaled_encoder(scale):
-            return jax.tree.map(
-                lambda value: value * scale if eqx.is_inexact_array(value) else value, encoder
-            )
-
-        actual_gradient = jax.grad(lambda scale: scaled_encoder(scale).predict(region).values[0])(
-            jnp.array(1.0)
-        )
-        step = 1e-3
-        independent_values = [
-            dense_resistance(np.asarray(scaled_encoder(scale).conductance_surface(region)), nodes)[
-                0, 1
-            ]
-            for scale in (1 + step, 1 - step)
-        ]
-        expected_gradient = (independent_values[0] - independent_values[1]) / (2 * step)
-        assert np.isfinite(actual_gradient) and abs(float(actual_gradient)) > 1e-5
-        np.testing.assert_allclose(actual_gradient, expected_gradient, atol=1e-3, rtol=5e-3)

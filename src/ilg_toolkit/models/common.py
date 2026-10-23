@@ -77,7 +77,7 @@ def pixel_to_patch_nodes(
     raster_shape: tuple[int, int],
     patch_size: int,
 ) -> jax.Array:
-    """Map row-major native-resolution pixels to row-major patch nodes."""
+    """Map row-major raster pixel indices to row-major patch nodes."""
     height, width = raster_shape
     if height % patch_size or width % patch_size:
         raise ValueError("Raster dimensions must be divisible by patch_size")

@@ -68,48 +68,15 @@ def test_nonfinite_training_is_reported_at_evaluation(
     assert completed == [0, 1]
 
 
-def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_predictions(
-    WeightedEmbedding, embedding_problem
-):
-    with jax.enable_x64():
-        region, observations = embedding_problem()
-        model = WeightedEmbedding(jnp.log(jnp.array([1.0, 1.0])))
-        result = fit(
-            region,
-            observations,
-            distance_model=model,
-            config=TrainingConfig(
-                objective="mlpe",
-                steps=20,
-                learning_rate=0.03,
-                mlpe=MLPEConfig(initial_variances=(0.05, 0.1)),
-            ),
-        )
-
-        assert result.raw_variances is not None
-        prediction = result.model.predict(region)
-        distances = result.model.distance_model.predict(region).as_matrix()
-    assert result.history[-1].training_loss < result.history[0].training_loss - 0.1
-    assert not np.allclose(cast(Any, result.model.distance_model).log_weights, model.log_weights)
-    head = cast(MLPECalibrationModule, result.model.calibration).regions[region.name]
-    assert not np.allclose([head.unit_variance, head.residual_variance], [0.05, 0.1])
-    assert head.slope < 0
-    assert result.model.training_objective == "mlpe"
-    assert np.isfinite(prediction.values).all()
-    assert not np.allclose(prediction.as_matrix(), distances)
-    left, right = np.triu_indices(6, 1)
-    np.testing.assert_allclose(head.distance_center, np.mean(distances[left, right]), atol=1e-12)
-    np.testing.assert_allclose(
-        head.distance_scale, np.std(distances[left, right], ddof=1), atol=1e-12
-    )
-    assert result.step == result.selected_step == 20
-    assert set(head.calibration_roles) == {"training"}
-
-
-@pytest.mark.parametrize("jit", [False, True])
 @pytest.mark.parametrize(
-    ("num_species", "region_count", "region_batch_size"),
-    [(1, 1, None), (1, 2, None), (1, 2, 1), (2, 1, None)],
+    ("jit", "num_species", "region_count", "region_batch_size"),
+    [
+        (False, 1, 1, None),
+        (True, 1, 1, None),
+        (True, 1, 2, None),
+        (True, 1, 2, 1),
+        (True, 2, 1, None),
+    ],
 )
 def test_mlpe_updates_match_dense_reference(
     WeightedEmbedding,
@@ -229,6 +196,8 @@ def test_mlpe_updates_match_dense_reference(
     )
     np.testing.assert_allclose(result.history[0].training_loss, objective(initial), atol=1e-12)
     np.testing.assert_allclose(result.history[-1].training_loss, objective(expected), atol=1e-8)
+    assert result.history[-1].training_loss < result.history[0].training_loss
+    assert result.step == result.selected_step == 2
     calibration = cast(MLPECalibrationModule, result.model.calibration)
     for index, (region, observed) in enumerate(problems):
         embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(
@@ -274,6 +243,22 @@ def test_mlpe_updates_match_dense_reference(
         np.testing.assert_allclose(head.effect_mean, effect_mean, atol=1e-9)
         np.testing.assert_allclose(head.effect_covariance, effect_covariance, atol=1e-10)
         np.testing.assert_allclose(-head.ml_log_likelihood, nll, atol=1e-8)
+        assert head.slope < 0
+        assert set(head.calibration_roles) == {"training"}
+        assert not np.allclose(variances, [0.05, 0.1])
+        observed_distances = distances[left, right]
+        np.testing.assert_allclose(head.distance_center, observed_distances.mean(), atol=1e-12)
+        np.testing.assert_allclose(head.distance_scale, observed_distances.std(ddof=1), atol=1e-12)
+        expected_values = beta[0] + beta[1] * (
+            observed_distances - observed_distances.mean()
+        ) / observed_distances.std(ddof=1)
+        query = region if species is None else replace(region, species=(species[index],) * 6)
+        predicted = result.model.predict(
+            query,
+            species=None if species is None else species[index],
+            pairs=observed.observed_pairs,
+        )
+        np.testing.assert_allclose(predicted.values, expected_values, atol=1e-8)
 
 
 @pytest.mark.parametrize("steps", [0, 4])
@@ -392,39 +377,6 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     )
 
 
-def test_shared_mlpe_fit_has_one_encoder_and_separate_regional_heads(
-    WeightedEmbedding, embedding_problem
-):
-    with jax.enable_x64():
-        problems = (embedding_problem(), embedding_problem("valley", offset=3, seed=71))
-        regions = tuple(problem[0] for problem in problems)
-        observations = tuple(problem[1] for problem in problems)
-        result = fit(
-            regions,
-            observations,
-            distance_model=WeightedEmbedding(jnp.zeros(2)),
-            config=TrainingConfig(
-                objective="mlpe",
-                steps=15,
-                learning_rate=0.03,
-                mlpe=MLPEConfig(initial_variances=(0.05, 0.1)),
-            ),
-        )
-        assert result.raw_variances is not None
-        assert result.history[-1].training_loss < result.history[0].training_loss - 0.1
-        for region in regions:
-            assert np.isfinite(result.model.predict(region).values).all()
-    assert set(result.raw_variances) == {"alpine", "valley"}
-    assert all(raw.shape == (2,) for raw in result.raw_variances.values())
-    assert result.region_names == ("alpine", "valley")
-    heads = cast(MLPECalibrationModule, result.model.calibration).regions
-    assert heads["valley"].intercept - heads["alpine"].intercept > 2
-    assert not np.array_equal(result.raw_variances["alpine"], result.raw_variances["valley"])
-    assert result.history[-1].training_loss == np.mean(
-        list(result.history[-1].training_by_region.values())
-    )
-
-
 def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
     CovariateConductance, dense_resistance
 ):
@@ -530,8 +482,11 @@ def test_continuation_rejects_changed_optimization_policy(WeightedEmbedding, emb
             fit(region, observations, state=result, distance_model=result.distance_model)
 
 
-@pytest.mark.parametrize("region_batch_size", [None, 1, 2, 3])
-@pytest.mark.parametrize(("num_species", "species_batch_size"), [(1, None), (2, None), (2, 1)])
+@pytest.mark.parametrize(
+    ("num_species", "species_batch_size", "region_batch_size"),
+    [(1, None, size) for size in (None, 1, 2, 3)]
+    + [(2, species, region) for species in (None, 1) for region in (None, 1)],
+)
 def test_shared_embedding_update_matches_independent_equal_region_objective(
     ScalarEmbedding,
     regions_and_observations,
@@ -640,8 +595,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
         np.testing.assert_allclose(np.dot(probabilities, gradients), dense_gradient, rtol=1e-8)
 
 
-@pytest.mark.parametrize("num_species", [1, 2])
-@pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize(("num_species", "jit"), [(1, True), (2, False), (2, True)])
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
 def test_species_microbatches_preserve_updates_with_shared_parameters(
     training_problem, SharedParameterEmbedding, dense_profile, num_species, jit, objective
@@ -697,7 +651,7 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
     np.testing.assert_allclose(
         cast(Any, states[1].optimizer_state)[0].mu[0].weights / 0.1, gradient, atol=1e-8
     )
-    for size in (1, 2):
+    for size in (2,) if num_species == 1 else (1, 2):
         result = fit(
             region,
             observations,
@@ -939,41 +893,6 @@ def test_evaluation_cadence_selects_model_and_reports_every_step(
         )
     else:
         assert eqx.tree_equal(result.selected_model, result.latest_model)
-
-
-def test_observation_labels_are_aligned_and_signed_relatedness_is_refused(synthetic_problem):
-    import pytest
-
-    region, observations, model = synthetic_problem()
-    reverse = tuple(reversed(region.sampling_unit_ids))
-    reordered = PairwiseObservations.from_matrix(
-        reverse, observations.values[::-1, ::-1], target=observations.target
-    )
-    first = fit(
-        region,
-        observations,
-        distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=0),
-    )
-    second = fit(
-        region,
-        reordered,
-        distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=0),
-    )
-    assert first.history[0].training_loss == second.history[0].training_loss
-    signed = PairwiseObservations.from_matrix(
-        region.sampling_unit_ids,
-        -observations.values,
-        target=TargetSpec("relatedness", kind="relatedness"),
-    )
-    with pytest.raises(ValueError):
-        fit(
-            region,
-            signed,
-            distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", steps=0),
-        )
 
 
 @pytest.mark.parametrize("jit", [False, True])

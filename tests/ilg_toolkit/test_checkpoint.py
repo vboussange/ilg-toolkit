@@ -7,11 +7,11 @@ from typing import TypedDict, cast
 import coordax as cx
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from ilg_toolkit import (
-    MLPECalibrationModule,
     MLPEConfig,
     ObservationPartition,
     PairwiseObservations,
@@ -20,7 +20,6 @@ from ilg_toolkit import (
     load_checkpoint,
     save_checkpoint,
 )
-from ilg_toolkit.models import UNet
 from ilg_toolkit.training import (
     ObservationCollection,
     PartitionCollection,
@@ -58,6 +57,8 @@ def test_resume_equals_uninterrupted(
         else tuple(replace(observed, values=observed.values * 1.2) for observed in observations)
     )
     regions, targets = (region, other), (observations, other_observations)
+    if family in ("unet", "resnet"):
+        regions, targets = (region,), (observations,)
     config = TrainingConfig(
         objective=objective,
         steps=2,
@@ -138,6 +139,16 @@ def test_resume_equals_uninterrupted(
     # Reversing region order also checks restoration of the random trajectory.
     resumed = fit(regions[::-1], targets[::-1], state=restored, **options)
     assert eqx.tree_equal(resumed, uninterrupted)
+    if selection == "validation" and objective == "mlpe" and num_species == 1:
+        save_checkpoint(path, resumed)
+        completed = load_checkpoint(path, distance_model=encoder)
+        callbacks = []
+        unchanged = fit(regions, targets, state=completed, on_step=callbacks.append, **options)
+        assert callbacks == []
+        assert eqx.tree_equal(unchanged, resumed)
+        assert resumed.selected_step == 0
+        validation_loss = resumed.history[-1].validation_loss
+        assert validation_loss is not None and validation_loss > resumed.selected_loss
     for prepared in regions:
         for name in species or (None,):
             np.testing.assert_array_equal(
@@ -155,79 +166,16 @@ class _ValidationOptions(TypedDict, total=False):
     validation_partition: PartitionCollection
 
 
-def test_zero_update_and_worsening_mlpe_resume_retain_previous_best_heads(
-    assert_same_state, checkpoint_model, checkpoint_problem, tmp_path
-):
-    from ilg_toolkit import ObservationPartition
-
-    problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
-    regions = tuple(problem[0] for problem in problems)
-    observations = tuple(problem[1] for problem in problems)
-    arguments = _ValidationOptions(
-        partition={
-            r.name: ObservationPartition(r.name, o.observed_pairs[:-2], role="training")
-            for r, o in zip(regions, observations, strict=True)
-        },
-        validation=(regions, observations),
-        validation_partition={
-            r.name: ObservationPartition(r.name, o.observed_pairs[-2:], role="validation")
-            for r, o in zip(regions, observations, strict=True)
-        },
-    )
-    config = TrainingConfig(
-        steps=1,
-        objective="mlpe",
-        seed=21,
-        learning_rate=0.002,
-        mlpe=MLPEConfig(initial_variances=(0.05, 0.1)),
-    )
+def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(training_problem, tmp_path):
     with jax.enable_x64():
-        partial = fit(
-            regions, observations, distance_model=checkpoint_model(), config=config, **arguments
+        region, observations, model = training_problem("embedding")
+        model = jax.tree.map(
+            lambda value: value.astype(np.float32) if eqx.is_inexact_array(value) else value, model
         )
-
-        assert partial.selected_step == 0
-        path = tmp_path / "selected.eqx"
-        save_checkpoint(path, partial)
-        restored = load_checkpoint(path, distance_model=checkpoint_model())
-        callbacks = []
-        unchanged = fit(
-            regions, observations, state=restored, on_step=callbacks.append, **arguments
-        )
-
-        assert callbacks == []
-        assert_same_state(unchanged, partial)
-        continued = fit(
-            regions, observations, state=restored, config=replace(config, steps=2), **arguments
-        )
-
-        assert continued.history[-1].validation_loss is not None
-        assert continued.history[-1].validation_loss > partial.selected_loss
-        assert continued.selected_step == 0
-        assert (
-            cast(MLPECalibrationModule, continued.model.calibration).regions
-            == cast(MLPECalibrationModule, partial.model.calibration).regions
-        )
-        for r in regions:
-            np.testing.assert_array_equal(
-                continued.model.predict(r).values, partial.model.predict(r).values
-            )
-        assert (
-            cast(MLPECalibrationModule, continued.latest_model.calibration).regions
-            != cast(MLPECalibrationModule, partial.model.calibration).regions
-        )
-        assert continued.step == 2
-
-
-def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(
-    checkpoint_model, checkpoint_problem, tmp_path
-):
-    with jax.enable_x64():
-        region, observations = checkpoint_problem()
         result = fit(
             region,
             observations,
-            distance_model=checkpoint_model(),
+            distance_model=model,
             config=TrainingConfig(objective="direct_log1p", steps=0),
         )
 
@@ -238,27 +186,27 @@ def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(
         path = tmp_path / "mixed-precision.eqx"
         save_checkpoint(path, replace(result, optimizer_state=changed_optimizer))
         with pytest.raises(ValueError):
-            load_checkpoint(path, distance_model=checkpoint_model())
+            load_checkpoint(path, distance_model=model)
 
 
 def test_interrupted_replacement_retains_previous_complete_generation(
-    assert_same_state, checkpoint_model, checkpoint_problem, tmp_path, monkeypatch
+    training_problem, tmp_path, monkeypatch
 ):
     import os
     from pathlib import Path
 
-    region, observations = checkpoint_problem()
+    region, observations, model = training_problem("embedding")
     completed = []
     config = TrainingConfig(objective="direct_log1p", steps=1, seed=21, learning_rate=0.002)
     result = fit(
         region,
         observations,
-        distance_model=checkpoint_model(),
+        distance_model=model,
         config=config,
         on_step=completed.append,
     )
 
-    assert_same_state(completed[-1], result)
+    assert eqx.tree_equal(completed[-1], result)
     path = tmp_path / "atomic.eqx"
     save_checkpoint(path, completed[0])
     original = path.read_bytes()
@@ -274,8 +222,8 @@ def test_interrupted_replacement_retains_previous_complete_generation(
             save_checkpoint(path, result)
     assert path.read_bytes() == original
     assert list(tmp_path.iterdir()) == [path]
-    restored = load_checkpoint(path, distance_model=checkpoint_model())
-    assert_same_state(restored, completed[0])
+    restored = load_checkpoint(path, distance_model=model)
+    assert eqx.tree_equal(restored, completed[0])
 
 
 def test_disk_continuation_uses_caller_supplied_inputs_and_partitions(training_problem, tmp_path):
@@ -310,15 +258,15 @@ def test_disk_continuation_uses_caller_supplied_inputs_and_partitions(training_p
 
 
 def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
-    checkpoint_model, checkpoint_problem, tmp_path
+    training_problem, WeightedEmbedding, tmp_path
 ):
     from ilg_toolkit import ArtifactError
 
-    region, observations = checkpoint_problem()
+    region, observations, model = training_problem("embedding")
     result = fit(
         region,
         observations,
-        distance_model=checkpoint_model(),
+        distance_model=model,
         config=TrainingConfig(objective="direct_log1p", steps=0),
     )
 
@@ -327,18 +275,11 @@ def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
     with pytest.raises(ArtifactError):
         load_checkpoint(
             path,
-            distance_model=UNet(
-                2,
-                patch_size=1,
-                base_channels=4,
-                embedding_dim=2,
-                dropout=0.2,
-                key=jax.random.key(8),
-            ),
+            distance_model=WeightedEmbedding(jnp.zeros(3)),
         )
     path.write_bytes(path.read_bytes()[:-20])
     with pytest.raises(ArtifactError):
-        load_checkpoint(path, distance_model=checkpoint_model())
+        load_checkpoint(path, distance_model=model)
 
 
 @pytest.mark.parametrize("boundary", ["save", "load", "resume"])

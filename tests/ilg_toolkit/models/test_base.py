@@ -155,9 +155,12 @@ def test_custom_conductance_hooks_fit_and_predict_requested_pairs(ConstantConduc
     )
 
 
-@pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
+@pytest.mark.parametrize(
+    ("objective", "numpy_preprocessing"),
+    [("direct_log1p", False), ("mlpe", False), ("direct_log1p", True)],
+)
 def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels(
-    CustomDistance, tmp_path, objective
+    CustomDistance, tmp_path, objective, numpy_preprocessing
 ):
     region = RegionBatch(
         "custom",
@@ -173,13 +176,18 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
     state = fit(
         region,
         observations,
-        distance_model=CustomDistance(jnp.array(1.0)),
-        config=TrainingConfig(objective=objective, steps=3, learning_rate=0.1),
+        distance_model=CustomDistance(jnp.array(1.0), numpy_preprocessing=numpy_preprocessing),
+        config=TrainingConfig(
+            objective=objective, steps=3, learning_rate=0.1, jit=not numpy_preprocessing
+        ),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     path = tmp_path / "custom.ilg"
     save_model(path, state.model)
-    restored = load_model(path, distance_model=CustomDistance(jnp.array(0.0)))
+    restored = load_model(
+        path,
+        distance_model=CustomDistance(jnp.array(0.0), numpy_preprocessing=numpy_preprocessing),
+    )
     np.testing.assert_array_equal(
         restored.distance_model.predict(region).as_matrix(),
         state.model.distance_model.predict(region).as_matrix(),

@@ -35,8 +35,8 @@ $$t_{ij}=\alpha+\beta x_{ij}+b_i+b_j+\epsilon_{ij},\qquad
  b_i\overset{\mathrm{iid}}\sim N(0,u),\quad
  \epsilon_{ij}\overset{\mathrm{iid}}\sim N(0,d),\quad d=e+j.$$
 
-Population effects $b_i$ and residuals $\epsilon_{ij}$ are independently and
-identically distributed within their respective groups. Here $u$ is population
+Population effects $b_i$ are independent and identically distributed, as are
+residuals $\epsilon_{ij}$. Here $u$ is population
 variance, $e$ is residual variance, and $j$ is configured jitter. Intercept $\alpha$ and slope $\beta$ are
 signed. `MLPEConfig` defines positive variance floors and jitter. The observation
 model supports population dissimilarities with either distance-model family.

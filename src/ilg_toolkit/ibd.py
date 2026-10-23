@@ -1,4 +1,4 @@
-"""Isolation-by-distance reference fitted independently of landscape encoders."""
+"""Isolation by distance (IBD) reference relating geographic distances and genetic dissimilarity."""
 
 from __future__ import annotations
 
@@ -42,13 +42,12 @@ def _validate_metadata(distance_units: str, target: TargetSpec) -> None:
 @final
 @dataclass(frozen=True)
 class IBDModel:
-    """Original-scale affine reference ``slope * distance + intercept``.
+    """An isolation-by-distance model predicting original-scale genetic dissimilarity.
 
-    Geographic distances must be Euclidean separations in the declared units.
-    Supply any conversion from raster positions before calling this boundary.
-    Fitting compares predictions and targets using log1p; it does not transform
-    the returned predictions or learn a conductance surface. Enable JAX float64
-    before creating inputs for fitting or prediction.
+    Geographic distances must be Euclidean separations in ``distance_units``;
+    convert raster positions to those units before fitting or prediction.
+    Fitting compares genetic predictions and observations using log1p.
+    Enable JAX float64 before creating inputs for fitting or prediction.
     """
 
     slope: float

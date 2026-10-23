@@ -19,7 +19,7 @@ def _query(distances, pairs):
     except (TypeError, ValueError) as error:
         raise MLPEError("Query pairs must contain sampling-unit labels") from error
     if not pairs or distances.shape != (len(pairs),) or not bool(jnp.isfinite(distances).all()):
-        raise MLPEError("Query distances must be finite and aligned with labelled pairs")
+        raise MLPEError("Query distances must be finite and aligned with labeled pairs")
     if any(
         len(pair) != 2
         or any(not isinstance(label, str) or not label for label in pair)

@@ -23,10 +23,10 @@ type DistancePairs = tuple[jax.Array, tuple[jax.Array, jax.Array]]
 
 
 class AbstractDistanceModel(eqx.Module):
-    """A pooled backbone composed with a relationship deriving ecological distances.
+    """Abstract distance model combining a pooled backbone with an ecological-distance relationship.
 
-    Custom models implement ``backbone`` and ``ecological_distances`` and declare
-    static ``num_species`` and ``patch_size`` fields, both defaulting to one.
+    Custom models implement ``backbone`` and ``ecological_distances`` and supply
+    static ``num_species`` and ``patch_size`` fields.
     """
 
     num_species: eqx.AbstractVar[int]

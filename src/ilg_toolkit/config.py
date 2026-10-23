@@ -1,4 +1,4 @@
-"""Explicit optimization options without study configuration."""
+"""Training and resistance calculation settings."""
 
 import math
 from dataclasses import dataclass, field
@@ -15,11 +15,12 @@ def validate_patch_microbatch_size(value: int | None) -> None:
 
 @dataclass(frozen=True)
 class ResistanceSolverConfig:
-    """Explicit float64 resistance-solver settings.
+    """Float64 settings for resistance calculation.
 
-    Ordinary CG requires no AMG dependencies. ``use_amg=True`` requires the
-    toolkit's optional ``amg`` extra and constructs its hierarchy on the host.
-    Exhausting ``max_steps`` is an error; no fallback changes the calculation.
+    Conjugate gradient is the default solver; ``use_amg=True`` enables algebraic
+    multigrid preconditioning through the optional ``amg`` extra.
+    The preconditioner is prepared before resistance calculation.
+    Exhausting ``max_steps`` raises an error.
     """
 
     rtol: float = 1e-6

@@ -25,50 +25,49 @@ from ilg_toolkit import (
 from ilg_toolkit.models import ConductanceModel, UNet
 
 
-@pytest.mark.parametrize("kind", ["model", "checkpoint"])
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
 @pytest.mark.parametrize("num_species", [1, 2])
-def test_saved_precision_is_preserved(tmp_path, training_problem, kind, objective, num_species):
+def test_saved_precision_is_preserved(tmp_path, training_problem, objective, num_species):
     from ilg_toolkit import ArtifactError
 
-    path = tmp_path / "precision.eqx"
     with jax.enable_x64():
-        region, observations, encoder = training_problem("embedding", num_species=num_species)
-        species = (
-            tuple(f"species-{index}" for index in reversed(range(num_species)))
-            if num_species > 1
-            else None
+        region, observations, distance_model = training_problem(
+            "embedding", num_species=num_species
         )
+        species = ("species-1", "species-0") if num_species > 1 else None
         state = fit(
             region,
             observations,
-            distance_model=encoder,
+            distance_model=distance_model,
             config=TrainingConfig(objective=objective, steps=0),
             species=species,
         )
-        if kind == "model":
-            save_model(path, state.model)
-            model = load_model(path, distance_model=encoder)
-            assert eqx.tree_equal(model, state.model)
-        else:
-            save_checkpoint(path, state)
-            restored = load_checkpoint(path, distance_model=encoder)
-            assert eqx.tree_equal(restored, state)
-            model = restored.model
-        assert model.species == species
-        for name in species or (None,):
-            expected = state.model.predict(region, species=name).values
-            np.testing.assert_array_equal(model.predict(region, species=name).values, expected)
-            assert expected.dtype == jnp.float64
-    with jax.enable_x64(False):
-        narrow = jax.tree.map(
-            lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,
-            encoder,
-        )
-        with pytest.raises(ArtifactError):
-            load = load_model if kind == "model" else load_checkpoint
-            load(path, distance_model=narrow)
-        assert not jax.config.read("jax_enable_x64")
+        for kind in ("model", "checkpoint"):
+            path = tmp_path / f"{kind}.eqx"
+            if kind == "model":
+                save_model(path, state.model)
+                model = load_model(path, distance_model=distance_model)
+                assert eqx.tree_equal(model, state.model)
+            else:
+                save_checkpoint(path, state)
+                restored = load_checkpoint(path, distance_model=distance_model)
+                assert eqx.tree_equal(restored, state)
+                model = restored.model
+            for name in species or (None,):
+                predictions = state.model.predict(region, species=name).values
+                np.testing.assert_array_equal(
+                    model.predict(region, species=name).values, predictions
+                )
+                assert predictions.dtype == jnp.float64
+            with jax.enable_x64(False):
+                narrow = jax.tree.map(
+                    lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,
+                    distance_model,
+                )
+                with pytest.raises(ArtifactError):
+                    load = load_model if kind == "model" else load_checkpoint
+                    load(path, distance_model=narrow)
+                assert not jax.config.read("jax_enable_x64")
 
 
 def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
@@ -267,19 +266,6 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
     with pytest.raises(ArtifactError):
         load_model(path, distance_model=wrong_dtype)
 
-
-def test_model_reload_rejects_truncated_leaves(tmp_path):
-    from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
-
-    encoder = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0))
-    model = LandscapeGeneticsModel(
-        encoder,
-        DirectCalibrationModule(TargetSpec("divergence")),
-        2,
-        training_objective="direct_log1p",
-    )
-    path = tmp_path / "model.eqx"
-    save_model(path, model)
     truncated = tmp_path / "truncated.eqx"
     truncated.write_bytes(path.read_bytes()[:-10])
     with pytest.raises(ArtifactError):

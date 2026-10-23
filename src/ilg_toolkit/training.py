@@ -15,6 +15,7 @@ from .calibration import DirectCalibrationModule, GroupKey, MLPECalibrationModul
 from .config import TrainingConfig
 from .data import ObservationPartition, PairwiseObservations, RegionBatch
 from .mlpe import (
+    MLPEConfig,
     RegionalMLPECalibration,
     finalize_mlpe_fit,
     mlpe_ml_negative_log_likelihood,
@@ -76,7 +77,7 @@ class TrainingState(eqx.Module):
 
     @property
     def model(self) -> LandscapeGeneticsModel:
-        """The model selected by the declared validation or final-step policy."""
+        """The selected model retained from evaluated training steps."""
         return self.selected_model
 
     @property
@@ -169,7 +170,7 @@ def _prepared(
         )
     if objective == "mlpe":
         if observations.target.kind != "dissimilarity":
-            raise ValueError("Population MLPE requires declared dissimilarities")
+            raise ValueError("Population MLPE requires dissimilarities")
         kinds = region.sampling_unit_kinds
         assert kinds is not None
         if any(kind != "population" for kind in kinds):
@@ -179,7 +180,7 @@ def _prepared(
         if role == "training":
             degree = jnp.bincount(jnp.concatenate(pairs), length=len(region.sampling_unit_ids))
             if degree.max() <= 1:
-                raise ValueError("MLPE variances are unidentifiable: pairs share no endpoints")
+                raise ValueError("MLPE variances are unidentifiable: pairs share no sampling units")
     targets = observations.target.forward(values)
     return _TrainingPayload(
         features=region.feature_array,
@@ -190,7 +191,7 @@ def _prepared(
 
 
 def _align_collection(values: object, names: Sequence[str], description: str) -> tuple[object, ...]:
-    """Align one labelled collection without assigning it a statistical role."""
+    """Align one labeled collection with its region batches."""
     if isinstance(values, Mapping):
         if set(values) != set(names):
             raise ValueError(f"{description} mapping keys must match region names exactly")
@@ -209,7 +210,7 @@ def _normalize_inputs(
     observations: ObservationCollection,
     partitions: PartitionCollection,
 ) -> tuple[_RegionalInput, ...]:
-    """Align explicit collections, then sort stable region identities for RNG order."""
+    """Align collections and sort region identities for reproducible random sampling."""
     if isinstance(regions, RegionBatch):
         ordered = [regions]
     elif isinstance(regions, Mapping):
@@ -218,11 +219,11 @@ def _normalize_inputs(
             not isinstance(value, RegionBatch) or key != value.name
             for key, value in regions.items()
         ):
-            raise ValueError("Region mapping keys must match each prepared region's name")
+            raise ValueError("Region mapping keys must match each region batch's name")
     elif isinstance(regions, Sequence) and not isinstance(regions, (str, bytes)):
         ordered = list(regions)
     else:
-        raise ValueError("Provide a prepared region or a nonempty region sequence/mapping")
+        raise ValueError("Provide a region batch or a nonempty region sequence/mapping")
     if not ordered or any(not isinstance(region, RegionBatch) for region in ordered):
         raise ValueError("Regions must be a nonempty collection of RegionBatch inputs")
     names = [region.name for region in ordered]
@@ -304,7 +305,8 @@ def _group_objective(
     *,
     identity: GroupKey,
     species_index: int,
-    config: TrainingConfig,
+    objective: str,
+    mlpe: MLPEConfig,
     context: ResistanceSolverContext | None = None,
     moments: tuple[jax.Array, jax.Array, jax.Array] | None = None,
     finalize: bool = False,
@@ -319,14 +321,14 @@ def _group_objective(
         species_index=species_index,
         context=context,
     )
-    if config.objective == "direct_log1p":
+    if objective == "direct_log1p":
         return jnp.mean(jnp.square(jnp.log1p(distances) - jnp.log1p(payload.targets))), None
     assert raw_variances is not None
     distances = distances.astype(jnp.float64)
     options = dict(
-        variance_floor=config.mlpe.variance_floor,
-        jitter=config.mlpe.jitter,
-        min_distance_scale=config.mlpe.min_distance_scale,
+        variance_floor=mlpe.variance_floor,
+        jitter=mlpe.jitter,
+        min_distance_scale=mlpe.min_distance_scale,
     )
     result = None
     if moments is not None:
@@ -374,7 +376,7 @@ class _Contribution(NamedTuple):
     weight: float
 
 
-def _microbatch_objective(parameters, contributions, config, context, key):
+def _microbatch_objective(parameters, contributions, objective, mlpe, context, key):
     model, latent, raw = parameters
     configured = with_dropout_mode(model, inference=False, key=key)
     return sum(
@@ -384,7 +386,8 @@ def _microbatch_objective(parameters, contributions, config, context, key):
             item.payload,
             identity=item.identity,
             species_index=item.species_index,
-            config=config,
+            objective=objective,
+            mlpe=mlpe,
             context=context,
         )[0]
         for item in contributions
@@ -412,7 +415,12 @@ def _regional_gradient(parameters, contributions, config, context, key):
     accumulated = None
     for start in range(0, len(contributions), size):
         gradient = differentiate(
-            (model, latent, raw), contributions[start : start + size], config, context, key
+            (model, latent, raw),
+            contributions[start : start + size],
+            config.objective,
+            config.mlpe,
+            context,
+            key,
         )
         accumulated = (
             gradient
@@ -461,7 +469,7 @@ def _prepare_batches(
     distance_model: AbstractDistanceModel,
     config: TrainingConfig,
 ) -> tuple[tuple[_RegionalBatch, ...], tuple[_RegionalBatch, ...]]:
-    """Prepare independent regional targets and reuse graph-shape solver contexts."""
+    """Prepare regional genetic targets and reusable resistance solvers."""
     contexts: dict[tuple[int, int], ResistanceSolverContext | None] = {}
 
     def make_batch(inputs: _GroupInput, role: str) -> _RegionalBatch:
@@ -516,14 +524,18 @@ def _apply_gradient(
     optimizer_state: optax.OptState,
     gradient: Parameters,
     *,
-    optimizer: optax.GradientTransformation,
+    learning_rate: jax.Array,
 ) -> tuple[Parameters, optax.OptState]:
+    optimizer = optax.adam(learning_rate)
     # Optax accepts registered Equinox pytrees; its array-container alias omits Modules.
     updates, optimizer_state = optimizer.update(
         cast(optax.Updates, gradient), optimizer_state, cast(optax.Params, parameters)
     )
     parameters = eqx.apply_updates(parameters, updates)
     return parameters, optimizer_state
+
+
+_compiled_update = eqx.filter_jit(_apply_gradient)
 
 
 def _evaluate_regions(
@@ -560,7 +572,8 @@ def _evaluate_regions(
             batch.payload,
             identity=batch.identity,
             species_index=batch.species_index,
-            config=config,
+            objective=config.objective,
+            mlpe=config.mlpe,
             context=batch.context,
             moments=moments,
             finalize=calibrations is None,
@@ -647,9 +660,9 @@ def fit(
         )
     if state is None:
         if distance_model is None:
-            raise ValueError("Fresh fitting requires an explicit distance_model")
+            raise ValueError("Fresh fitting requires a distance_model")
         if config is None:
-            raise ValueError("Fresh fitting requires an explicit TrainingConfig with objective")
+            raise ValueError("Fresh fitting requires a TrainingConfig with objective")
     else:
         _validate_state(state)
         distance_model = state.distance_model
@@ -686,9 +699,7 @@ def fit(
     first_region, first_observations, _ = training_inputs[0]
     regional_names = {inputs[0].name for inputs in (*training_inputs, *validation_inputs)}
     if len(regional_names) > 1 and first_region.feature_names is None:
-        raise ValueError(
-            "Shared multi-region fitting requires explicit feature_names meanings and order"
-        )
+        raise ValueError("Shared multi-region fitting requires feature_names meanings and order")
     for prepared_region, regional_observations, _ in (*training_inputs, *validation_inputs):
         if regional_observations.target != first_observations.target:
             raise ValueError("Regional training and validation target scales must match")
@@ -737,7 +748,7 @@ def fit(
         else optimizer.init(eqx.filter(parameters, eqx.is_inexact_array))
     )
 
-    apply_update = eqx.filter_jit(_apply_gradient) if config.jit else _apply_gradient
+    apply_update = _compiled_update if config.jit else _apply_gradient
     regional_batches = tuple(
         tuple(b for b in training_batches if b.region.name == name)
         for name in dict.fromkeys(b.region.name for b in training_batches)
@@ -848,7 +859,7 @@ def fit(
                 parameters,
                 optimizer_state,
                 accumulated,
-                optimizer=optimizer,
+                learning_rate=jnp.asarray(config.learning_rate),
             )
         if step == 0 or step % config.eval_every == 0 or step == config.steps:
             training_loss, regional_training, calibrations, species_training = _evaluate_regions(

@@ -68,8 +68,9 @@ def test_masked_pairs_are_absent_from_likelihood_and_distance_standardization_un
             )
 
         actual = objective(jnp.asarray(distances))
-        compiled = jax.jit(objective)(jnp.asarray(distances))
-        gradient = jax.grad(lambda s: objective(s)[0])(jnp.asarray(distances))
+        compiled, gradient = jax.jit(jax.value_and_grad(objective, has_aux=True))(
+            jnp.asarray(distances)
+        )
     np.testing.assert_allclose([actual[0], *actual[1]], [expected_nll, *expected_beta], atol=1e-10)
     np.testing.assert_allclose([compiled[0], *compiled[1]], [actual[0], *actual[1]], atol=1e-10)
     assert np.isfinite(gradient).all()
@@ -77,9 +78,8 @@ def test_masked_pairs_are_absent_from_likelihood_and_distance_standardization_un
 
 
 @pytest.mark.parametrize("incomplete", [False, True])
-@pytest.mark.parametrize("variances", [(1e-8, 1.0), (1.0, 1.0), (1.0, 1e-8)])
 def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance_reference(
-    dense_jax_profile, decimal_dense_profile_and_gradients, incomplete, variances
+    dense_jax_profile, decimal_dense_profile_and_gradients, incomplete
 ):
     import jax
     import jax.numpy as jnp
@@ -92,9 +92,8 @@ def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance
     left, right = right[order], left[order]  # Reversed, shuffled endpoints.
     distances = rng.normal(size=len(left))
     targets = 0.5 - 0.4 * distances + rng.normal(scale=0.3, size=len(left))
-    raw = np.log(np.expm1(np.asarray(variances) - 1e-10))
     with jax.enable_x64():
-        s, y, raw = jnp.asarray(distances), jnp.asarray(targets), jnp.asarray(raw)
+        s, y = jnp.asarray(distances), jnp.asarray(targets)
 
         def accelerated(s, raw):
             return profiled_mlpe_ml_fit(s, y, left, right, n_populations=6, raw_variances=raw)
@@ -102,20 +101,22 @@ def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance
         def dense(s, raw):
             return dense_jax_profile(s, y, left, right, 6, raw)
 
-        actual_nll, actual_beta = accelerated(s, raw)
-        dense_nll, dense_beta = dense(s, raw)
-        actual_gradients = jax.grad(lambda s, r: accelerated(s, r)[0], argnums=(0, 1))(s, raw)
-        dense_gradients = jax.grad(lambda s, r: dense(s, r)[0], argnums=(0, 1))(s, raw)
-    np.testing.assert_allclose(actual_nll, dense_nll, rtol=2e-7, atol=1e-8)
-    np.testing.assert_allclose(actual_beta, dense_beta, rtol=2e-7, atol=1e-8)
-    # At u/e=1e8 the dense float64 unit-variance gradient subtracts terms of
-    # order 1/e^2. Use the independent 60-digit dense oracle for that cancellation.
-    if variances[1] < 1e-7:
-        _, _, dense_gradients = decimal_dense_profile_and_gradients(
-            distances, targets, left, right, np.asarray(raw)
-        )
-    for actual, expected in zip(actual_gradients, dense_gradients, strict=True):
-        np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=5e-7)
+        evaluate = jax.jit(jax.value_and_grad(accelerated, argnums=(0, 1), has_aux=True))
+        reference = jax.jit(jax.value_and_grad(dense, argnums=(0, 1), has_aux=True))
+        for variances in ((1e-8, 1.0), (1.0, 1.0), (1.0, 1e-8)):
+            raw = jnp.asarray(np.log(np.expm1(np.asarray(variances) - 1e-10)))
+            (actual_nll, actual_beta), actual_gradients = evaluate(s, raw)
+            (dense_nll, dense_beta), dense_gradients = reference(s, raw)
+            np.testing.assert_allclose(actual_nll, dense_nll, rtol=2e-7, atol=1e-8)
+            np.testing.assert_allclose(actual_beta, dense_beta, rtol=2e-7, atol=1e-8)
+            # At u/e=1e8 the dense float64 unit-variance gradient subtracts terms of
+            # order 1/e^2. The 60-digit dense oracle resolves that cancellation.
+            if variances[1] < 1e-7:
+                _, _, dense_gradients = decimal_dense_profile_and_gradients(
+                    distances, targets, left, right, np.asarray(raw)
+                )
+            for actual, expected in zip(actual_gradients, dense_gradients, strict=True):
+                np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=5e-7)
 
 
 def test_unsupported_precision_and_singular_distances_have_explicit_nonfinite_diagnostics():

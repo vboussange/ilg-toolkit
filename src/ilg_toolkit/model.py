@@ -1,4 +1,4 @@
-"""Label-free ecological distances and explicit target-scale predictions."""
+"""Landscape genetics models combining ecological distances and genetic calibration."""
 
 from collections.abc import Sequence
 from typing import cast, final, overload
