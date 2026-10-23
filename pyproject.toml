@@ -13,7 +13,7 @@ dependencies = [
   "coordax>=0.2.8,<0.3",
   "equinox>=0.13.2,<0.14",
   "jax>=0.10.0,<0.11",
-  "jaxscape==0.0.10",
+  "jaxscape==0.0.11",
   "lineax>=0.1.0,<0.2",
   "numpy>=2.2.6,<3",
   "scipy>=1.15,<2",
@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-amg = ["jaxscape[amjax]==0.0.10"]
+amg = ["jaxscape[amjax]==0.0.11"]
 geo = ["geopandas>=1.1.1,<2", "rasterio>=1.4,<2"]
 gpu = ["jax[cuda]>=0.10.0,<0.11; platform_system == 'Linux' and platform_machine == 'x86_64'"]
 dev = [
