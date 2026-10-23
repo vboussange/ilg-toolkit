@@ -3,9 +3,12 @@
 from typing import cast
 
 import coordax as cx
+import equinox as eqx
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import pytest
+from jaxscape import GridGraph, ResistanceDistance
 
 from ilg_toolkit import (
     PairwiseObservations,
@@ -17,6 +20,50 @@ from ilg_toolkit import (
     save_model,
 )
 from ilg_toolkit.models import ConductanceModel
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_requested_resistances_and_gradients_match_jaxscape(CovariateConductance, dtype):
+    region = RegionBatch(
+        "river",
+        cx.field(
+            jnp.array([[[0.3], [0.8], [0.2]], [[0.5], [0.1], [0.7]]], dtype=dtype),
+            "row",
+            "column",
+            "feature",
+        ),
+        ("a", "b", "c", "d", "e"),
+        np.array([[1, 2], [0, 0], [0, 2], [0, 2], [1, 0]]),
+    )
+    model = CovariateConductance(jnp.array([[0.2, -0.1, 0.4], [0.3, 0.1, -0.2]], dtype=dtype))
+    pairs = (("e", "a"), ("c", "b"), ("c", "d"))
+    weights = jnp.array([0.4, -1.3, 2.1], dtype=dtype)
+
+    def objective(distance_model, *, upstream):
+        if upstream:
+            surface = distance_model.conductance_surface(region)
+            graph = GridGraph(surface.astype(jnp.float64), fun=lambda a, b: (a + b) / 2)
+            config = distance_model.solver_config
+            solver = lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps)
+            matrix = ResistanceDistance(solver=solver).nodes_to_nodes_distance(
+                graph, jnp.array([5, 0, 2, 2, 3])
+            )
+            values = matrix[jnp.array([4, 2, 2]), jnp.array([0, 1, 3])].astype(dtype)
+        else:
+            values = distance_model.predict(region, pairs=pairs).values
+        return weights @ values, values
+
+    evaluate = eqx.filter_jit(eqx.filter_value_and_grad(objective, has_aux=True))
+    (_, expected), expected_gradient = evaluate(model, upstream=True)
+    (_, actual), actual_gradient = evaluate(model, upstream=False)
+    tolerance = 1e-6 if dtype == jnp.float32 else 1e-10
+    np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(
+        actual_gradient.weight, expected_gradient.weight, rtol=tolerance, atol=tolerance
+    )
+    assert np.linalg.norm(expected_gradient.weight) > 0
+    assert actual.dtype == dtype
+    assert actual[2] == 0
 
 
 def test_conductance_surface_uses_prediction_mode_for_custom_dropout(
