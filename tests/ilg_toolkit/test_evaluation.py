@@ -20,9 +20,51 @@ from ilg_toolkit import (
     TrainingConfig,
     evaluate_ensemble,
     fit,
+    fit_ensemble,
     predict_out_of_fold,
     score_out_of_fold,
 )
+
+
+@pytest.mark.parametrize("named_units", [False, True])
+@pytest.mark.parametrize("failed", [False, True])
+def test_naming_a_single_species_preserves_unnamed_fold_holdouts(
+    training_problem, named_units, failed
+):
+    from dataclasses import replace
+
+    from ilg_toolkit import Ensemble, MemberFailure, evaluate_ensemble, predict_out_of_fold
+
+    region, observations, distance_model = training_problem("embedding")
+    if named_units:
+        region = replace(region, species=("frog",) * len(region.sampling_unit_ids))
+    ensemble = fit_ensemble(
+        region,
+        observations,
+        species=("frog",),
+        n_folds=1,
+        holdout_size=2,
+        config=TrainingConfig(objective="direct_log1p", steps=0),
+        model_factory=lambda key: distance_model,
+    )
+    if failed:
+        ensemble = Ensemble(
+            tuple(
+                replace(
+                    member,
+                    status="failed",
+                    model=None,
+                    training_state=None,
+                    failure=MemberFailure("fit", "ValueError", "unavailable"),
+                )
+                for member in ensemble.members
+            )
+        )
+    query = next(iter(ensemble.members[0].fold.query.values()))
+    predicted = predict_out_of_fold(ensemble, region, query, target=observations.target)
+    evaluated = evaluate_ensemble(ensemble, region, observations, partitions=query)
+    assert predicted.coverage == evaluated.coverage == (0 if failed else 1)
+    assert evaluated.by_species is None
 
 
 def test_out_of_fold_eligibility_keeps_repeated_ids_separate_between_species(known_ensemble):
