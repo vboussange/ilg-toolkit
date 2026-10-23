@@ -4,123 +4,54 @@
 
 [![Checks](https://github.com/vboussange/ilg-toolkit/actions/workflows/checks.yml/badge.svg)](https://github.com/vboussange/ilg-toolkit/actions/workflows/checks.yml)
 
+ILG Toolkit learns how landscape features relate to pairwise genetic observations
+among populations or individuals. Start with one species: supply a raster, located
+sampling units, and genetic observations to `fit`, then request genetic predictions
+with `predict`. Multispecies support is experimental.
+
 <p align="center">
-  <img src="docs/assets/ilg-overview.webp" width="420" alt="From bottom to top: a raw Earth-observation raster, a patch encoder, a conductance grid graph, the effective resistance R_ij between two sampled locations, and the genetic dissimilarity D_ij between them.">
+  <img src="docs/assets/ilg-overview.webp" width="420" alt="Landscape features pass through a patch encoder to a conductance grid graph; effective resistance between sampling units is calibrated to genetic dissimilarity.">
 </p>
 
-**Overview, from bottom to top.** A patch encoder maps each patch of a raw
-Earth-observation raster to a positive conductance, and these conductances form a
-conductance grid graph. The effective resistance $R_{ij}$ between the vertices of two
-sampling units $i$ and $j$ is their ecological distance. Genetic calibration relates
-it to the genetic dissimilarity $D_{ij}$ observed between them, which reflects gene
-flow.
-
-## Introduction
-
-Landscape genetics studies how landscapes shape gene flow: the exchange of genes
-between populations through dispersal and mating. Roads, rivers, settlements and
-unsuitable habitat hinder movement, and populations that exchange few migrants
-drift apart genetically. The genetic dissimilarity between two sampled populations
-or individuals therefore records how hard it has been, over generations, to move
-between them through the landscape.
-
-Inverse landscape genetics (ILG) infers this effect of the landscape from genetic
-data. ILG Toolkit casts it as **metric learning**: it learns a distance between
-landscape locations, parameterised through a conductance grid graph whose
-conductances a neural network predicts from landscape features. Supervision is
-sparse and pairwise: genetic observations exist only between a limited set of
-sampled locations. Gradients of the genetic loss flow through the effective
-resistance computation back to the network, and the fitted model predicts genetic
-dissimilarity at unsampled locations from landscape features alone. A good genetic
-fit does not, however, identify a unique movement surface: different conductance
-surfaces can induce nearly the same distances between the sampled locations.
+**Conductance model illustration.** A patch encoder maps landscape features to a
+conductance surface. Effective resistance through its grid graph is the ecological
+distance between sampling units. Genetic calibration relates that distance to the
+observed genetic dissimilarity.
 
 ## Concepts
 
-**Landscape features.** A raster $X \in \mathbb{R}^{H \times W \times C}$ with one
-channel per environmental covariate, such as elevation or land cover. Features are a
-[Coordax](https://coordax.readthedocs.io/) field with the named dimensions `row`,
-`column` and `feature`. Labelling the `feature` axis records covariate names and
-order, which every query region must then match. Preparing rasters (reprojection,
-alignment, normalisation) is the caller's responsibility.
+Landscape genetics studies how landscapes shape gene flow through dispersal and
+mating. Inverse landscape genetics learns these relationships from genetic
+observations and landscape features. Different conductance surfaces can produce
+similar ecological distances between sampled locations, so a fitted surface
+requires ecological interpretation alongside predictive evaluation.
 
-**Conductance grid graph.** `patch_size` $p$ partitions the raster into
-non-overlapping $p \times p$ patches. A **patch encoder**, such as
-`ResNet9Conductance`, maps each patch to a conductance strictly greater than
-`min_conductance`. The conductance grid graph has one vertex per patch, forming an
-$(H/p) \times (W/p)$ lattice, and edges between 4-neighbouring vertices, weighted
-from the conductances at their two ends. High conductance means easy movement. Each
-sampling unit sits at the vertex of the patch containing its cell.
+- **Region batch:** a raster and sampling-unit identifiers with integer
+  `(row, column)` locations. Features use a [Coordax](https://coordax.readthedocs.io/)
+  field with `row`, `column`, and `feature` dimensions; named features retain their
+  meanings and order across regions. Prepare aligned, normalized rasters before
+  constructing a batch.
+- **Pairwise genetic observations:** measurements between sampling units, supplied
+  as labeled pairs or a matrix with missing measurements represented by not-a-number
+  (`NaN`) values.
+  `TargetSpec` defines their meaning, units, kind, and transform.
+- **Distance model:** derives ecological distances from the landscape.
+  `distance_model.predict(region)` returns a `Prediction` aligned with query pairs.
+- **Landscape genetics model:** combines a distance model and genetic calibration.
+  `model.predict(region)` returns genetic predictions on the target's original scale.
+  `prediction.as_matrix()` arranges values symmetrically, with `NaN` for the
+  diagonal and unrequested pairs.
 
-**Effective resistance.** Read the graph as an electrical network in which edge
-$(u, v)$ is a conductor of conductance $w_{uv}$. Inject a unit current at vertex $i$
-and withdraw it at vertex $j$. The vertex potentials $\phi$ then satisfy Kirchhoff's
-current law,
-
-$$\sum_{u \sim v} w_{uv}\,(\phi_v - \phi_u) = \mathbf{1}[v = i] - \mathbf{1}[v = j] \quad \text{for every vertex } v,$$
-
-and the effective resistance $R_{ij} = \phi_i - \phi_j$ is the resulting potential
-drop. Unlike a least-cost path, $R_{ij}$ aggregates all paths: a parallel corridor
-lowers it, as a parallel resistor does. It is a metric on the vertices, and it is
-proportional to the commute time of a random walk on the graph between $i$ and $j$.
-Computing it is a sparse linear solve; [JAXScape](https://github.com/vboussange/jaxscape)
-enables differentiating through that solve, so that gradients reach the encoder.
-
-**Ecological distance.** A distance model's pairwise separation between two
-sampling units, derived from the landscape before any genetic calibration. It is
-not a genetic prediction and is not in genetic units. For a conductance model it is
-$R_{ij}$; `model.distance_model.predict(region)` returns these values for query pairs.
-
-**Distance model.** Any model that maps landscape features and sampling-unit
-locations to ecological distances without access to genetic data. The conductance
-model above is the main instance. An alternative, `UNet`, embeds
-each location and uses the squared Euclidean distance between embeddings (see the
-[shared-regions example](examples/shared_regions.py)). Custom models subclass
-`AbstractDistanceModel`.
-
-The model hierarchy is:
+The distance-model hierarchy has three abstract classes and three concrete models:
 
 ```text
-AbstractDistanceModel: backbone(features), ecological_distances(latent, pairs, species_index)
-├── ConductanceModel: conductance(latent, species_index)
-│   ├── LogLinearConductance: log-linear conductance from patch-averaged covariates
-│   └── ResNet9Conductance: patch-based conductance surfaces
-└── EmbeddingModel: embedding(latent, species_index)
-    └── UNet: landscape embeddings
+AbstractDistanceModel — ecological distances from landscape features
+├── ConductanceModel — effective resistance through a conductance surface
+│   ├── LogLinearConductance — log-linear conductance from patch-averaged covariates
+│   └── ResNet9Conductance — a residual network producing patch conductances
+└── EmbeddingModel — squared embedding distance
+    └── UNet — a U-Net producing landscape embeddings
 ```
-
-Concrete models default to a static `num_species` of one. `patch_microbatch_size` sets
-the number of raster patches processed together without changing predictions.
-
-`LogLinearConductance` learns one coefficient per feature and one intercept per
-species index, pooled across regions. Its conductance is `min_conductance + exp(predictor)`,
-capped at `max_conductance`; defaults are 0.01 and 1000. Coefficients follow the
-raster feature order and start at zero, as do intercepts. The model uses
-`patch_size=32` by default and accepts the same `fit` and `predict` workflow.
-
-**Sampling units and pairwise genetic observations.** A sampling unit is an
-identified population or individual located at a raster cell. A pairwise genetic
-observation is a measurement between two sampling units, such as a genetic
-dissimilarity between populations. Its meaning, kind (dissimilarity, similarity or
-relatedness), units and transform are declared in a `TargetSpec` rather than
-inferred from the data. Observations may be missing for some pairs.
-
-**Genetic calibration.** A map from ecological distances to predictions
-$\hat D_{ij}$ of the declared genetic target. Direct calibration applies the
-inverse of the declared target transform. MLPE calibration fits a linear mixed model
-with population effects for each region, so one distance model can serve several
-regions. A **landscape genetics model** (`LandscapeGeneticsModel`) is a distance
-model composed with a calibration: `model.distance_model.predict(region)` returns
-ecological distances, and `model.predict(region)` returns genetic predictions in
-the target's original units.
-
-**Fitting.** `fit` trains the distance model end to end. It computes ecological
-distances for the observed pairs, compares them with the genetic observations
-through a training objective, and updates the distance model's parameters with
-Adam for a fixed number of steps. Optional validation pairs select the evaluated
-step with the lowest loss. Full evaluation runs at step zero, every `eval_every`
-steps, and the final step. Set `steps=0` to fit genetic calibration with a frozen
-distance model.
 
 ## Install
 
@@ -128,21 +59,19 @@ distance model.
 uv add "ilg-toolkit @ git+https://github.com/vboussange/ilg-toolkit@v0.0.3"
 ```
 
-ILG Toolkit requires Python 3.12 or newer; `pip install` accepts the same
-requirement string. Optional extras are installed as `ilg-toolkit[amg] @ git+...`:
+Python 3.12 or newer is required. `pip install` accepts the same requirement string.
+Optional extras use `ilg-toolkit[amg] @ git+...`:
 
-- `geo`: GeoPandas and Rasterio, for preparing rasters and locations from
-  geospatial files;
-- `amg`: algebraic multigrid preconditioning, which speeds up resistance solves on
-  large graphs;
+- `geo`: GeoPandas and Rasterio for preparing geospatial inputs;
+- `amg`: algebraic multigrid preconditioning for resistance calculations;
 - `gpu`: CUDA-enabled JAX on Linux x86-64.
 
-The quickstart needs only the base install and runs on CPU.
+The quickstart uses the base install and runs on a central processing unit (CPU).
 
 ## Quickstart
 
-Fit a conductance model to three synthetic populations, inspect what it learned,
-then save and reload it. This is [examples/quickstart.py](examples/quickstart.py).
+Fit a conductance model to three synthetic populations, inspect its predictions,
+and save and reload it. This is [examples/quickstart.py](examples/quickstart.py).
 
 ```python
 """Fit a conductance model to synthetic genetic dissimilarities, then save and reload it."""
@@ -179,7 +108,7 @@ region = RegionBatch(
     sampling_unit_ids=("south", "north", "east"),
     grid_positions=[[0, 0], [0, 7], [7, 7]],
 )
-# Pairwise genetic observations, with their meaning, units and transform declared.
+# Pairwise genetic observations with their meaning, units, and transform.
 observations = PairwiseObservations.from_matrix(
     region.sampling_unit_ids,
     [[0, 0.375, 0.5], [0.375, 0, 0.375], [0.5, 0.375, 0]],
@@ -197,9 +126,15 @@ result = fit(
 )
 model = result.model  # The selected landscape genetics model.
 
-print("Conductance surface:\n", cast(ConductanceModel, model.distance_model).conductance_surface(region))
-print("Ecological distances (effective resistance):\n", model.distance_model.predict(region).as_matrix())
-# predict returns one calibrated value per distinct pair, in the target's units;
+print(
+    "Conductance surface:\n",
+    cast(ConductanceModel, model.distance_model).conductance_surface(region),
+)
+print(
+    "Ecological distances (effective resistance):\n",
+    model.distance_model.predict(region).as_matrix(),
+)
+# predict returns one genetic prediction per distinct pair, in the target's units;
 # as_matrix lays them out symmetrically in sampling-unit order.
 prediction = model.predict(region)
 print("Genetic predictions:", prediction.pairs, prediction.values)
@@ -214,67 +149,69 @@ restored = load_model("model.eqx", distance_model=template)
 print("Restored predictions:\n", restored.predict(region).as_matrix())
 ```
 
+## Training
+
+`fit` returns a training state whose `.model` is the selected landscape genetics
+model. Validation selects the evaluated step with the lowest loss; without
+validation, the final evaluated model is retained.
+
+| `TrainingConfig` field | Meaning | Default |
+| --- | --- | --- |
+| `objective` | `"direct_log1p"` regression or maximum-likelihood population effects (`"mlpe"`) | Required |
+| `steps` | Total optimizer updates; zero fits calibration with a frozen distance model | `100` |
+| `eval_every` | Full evaluation interval; step zero and the final step are also evaluated | `1` |
+| `learning_rate` | Adam learning rate | `0.001` |
+| `region_batch_size` | Regions sampled per update | `None` (all) |
+| `seed` | Training random seed | `0` |
+| `jit` | Enable just-in-time compilation | `True` |
+| `mlpe` | `MLPEConfig` variance, jitter, and numerical settings | `MLPEConfig()` |
+
+Experimental multispecies training also accepts `species_batch_size` (species
+sampled per selected region) and `species_microbatch_size` (species processed
+together). Both default to `None`. The [performance guide](docs/performance.md)
+explains sampling and memory controls, and the [statistics guide](docs/statistics.md)
+defines the objectives and prediction modes.
+
 ## Examples
 
-- [quickstart.py](examples/quickstart.py): the quickstart above.
-- [conductance.py](examples/conductance.py): a conductance model with an explicit
-  resistance-solver tolerance; on large rasters, `patch_microbatch_size` bounds encoder
-  memory.
-- [shared_regions.py](examples/shared_regions.py): one U-Net embedding distance
-  model shared across regions of different extents.
-- [mlpe_calibration.py](examples/mlpe_calibration.py): MLPE calibration fitted to
-  the ecological distances of a frozen distance model.
-- [region_transfer.py](examples/region_transfer.py): transfer a fitted distance
-  model to a new region by calibrating it there.
-- [ensemble.py](examples/ensemble.py): population-fold ensembles, out-of-fold
-  evaluation, support conditioning and checkpoint continuation.
-- [ibd.py](examples/ibd.py): an isolation-by-distance baseline from geographic
-  separation alone.
-- [multispecies.py](examples/multispecies.py): experimental multispecies fitting
-  with species labels on sampling units and observations. Pass the species order
-  as `fit(..., species=(...))`; fitted queries use that saved order. Standalone
-  distance queries take `species="name"` or a sequence of names alongside
-  `species_order=model.species`. A sequence returns a mapping and reuses the
-  pooled backbone for the region.
+All examples use one species except `multispecies.py`.
 
-From a clone, run one with `JAX_ENABLE_X64=true uv run python examples/<name>.py`.
+- [quickstart.py](examples/quickstart.py): fit, predict, save, and load.
+- [resnet9conductance.py](examples/resnet9conductance.py): a ResNet9 conductance
+  model with configured resistance-solver tolerance.
+- [shared_regions.py](examples/shared_regions.py): a U-Net distance model fitted
+  to regions of different extents.
+- [mlpe_calibration.py](examples/mlpe_calibration.py): maximum-likelihood population
+  effects (MLPE) calibration for a frozen distance model.
+- [region_transfer.py](examples/region_transfer.py): fit genetic calibration in a
+  new region with zero optimizer steps.
+- [ensemble.py](examples/ensemble.py): fold ensembles, out-of-fold evaluation,
+  support conditioning, and checkpoint continuation.
+- [ibd.py](examples/ibd.py): an isolation-by-distance (IBD) reference from geographic
+  separation.
+- [multispecies.py](examples/multispecies.py): experimental multispecies inputs,
+  fitting, predictions, and conductance surfaces.
+
+From a clone, run an example with
+`JAX_PLATFORMS=cpu JAX_ENABLE_X64=true uv run python examples/<name>.py`.
 
 ## Documentation
 
-**Training objectives** are selected with `TrainingConfig(objective=...)`. The
-[statistics guide](docs/statistics.md) derives them and also covers calibration
-modules, recalibration and the layout of predictions.
-
-`TrainingConfig(region_batch_size=...)` samples that many regions per optimizer
-step, up to the number available; `None` uses every region. Sampling is uniform
-without replacement. For experimental multispecies fits, `species_batch_size`
-samples species within each selected region, with weights that give species equal
-influence and regions equal influence within each species. Each selected
-region–species group uses all its training pairs. `species_microbatch_size` limits
-how many species are processed together while retaining the same optimizer update.
-Evaluation uses every region–species group.
-
-- `direct_log1p`: mean squared error between `log1p` of the ecological distances and
-  of the transformed targets; prediction applies the inverse target transform.
-- `mlpe`: maximum-likelihood population effects. It fits the distance model jointly
-  with a regional linear mixed model in which pairs sharing a population are
-  correlated. It supports population dissimilarities.
-- Wishart: experimental, not yet trainable: a fixed-parameter scoring reference in
-  the source checkout; fitting tracked in
-  [#17](https://github.com/vboussange/ilg-toolkit/issues/17). See the
-  [Wishart guide](docs/statistics/wishart.md).
-
-**Guides**:
-
-- [Evaluation and out-of-fold ensembles](docs/evaluation.md): deployment versus
-  out-of-fold prediction, holdout rules, coverage and metrics.
-- [MLPE conditioning](docs/mlpe-conditioning.md) and
-  [regional transfer](examples/region_transfer.py): known population effects,
-  declared support observations and calibration in new regions.
-- [Saving and continuation](docs/persistence.md): model artifacts, training
-  checkpoints and numerical precision.
-- [MLPE performance](docs/performance/mlpe.md): exact population-sized arithmetic
-  and its numerical limits.
+- [README](README.md): overview, installation, quickstart, and training controls.
+- [Glossary](GLOSSARY.md): domain vocabulary.
+- [Models](docs/models.md): model settings, custom distance models, and experimental
+  multispecies queries.
+- [Statistics](docs/statistics.md): objectives, genetic calibration, and MLPE conditioning.
+- [Evaluation](docs/evaluation.md): fold ensembles, holdouts, coverage, and scoring.
+- [Persistence](docs/persistence.md): model templates, precision, and continuation.
+- [Performance](docs/performance.md): requested pairs, memory controls, resistance,
+  and MLPE calculations.
+- [Wishart reference](docs/statistics/wishart.md): experimental fixed-parameter
+  likelihood scoring.
+- [Agent instructions](AGENTS.md): repository and authoring conventions.
+- [Domain documentation guidance](docs/agents/domain.md): glossary and architectural decisions.
+- [Issue tracker guidance](docs/agents/issue-tracker.md): specs, tickets, and dependencies.
+- [Triage labels](docs/agents/triage-labels.md): issue readiness roles.
 
 ## Development
 
@@ -292,10 +229,12 @@ uv run --no-sync python -m experiments.wishart
 uv run --no-sync python -m build
 ```
 
-To release, update `project.version` in `pyproject.toml` and merge into `main`. The
-Release workflow tests the built wheel and source archive, then tags `v<version>`
-and publishes a GitHub release; nothing is published to PyPI. Retry a failed
-release from Actions → Release → Run workflow on `main`.
+To release, update `project.version` in `pyproject.toml` and merge into `main`.
+The Release workflow tests the built wheel and source archive, tags `v<version>`,
+and publishes a GitHub release. Retry a failed release from
+Actions → Release → Run workflow on `main`.
+
+Note: Releases are distributed through GitHub; they are not published to PyPI.
 
 ## License
 

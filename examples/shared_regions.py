@@ -1,4 +1,4 @@
-"""Share one cleaned U-Net encoder across synthetic regions of different extents."""
+"""A U-Net distance model fitted to synthetic regions of different extents."""
 
 from typing import cast
 
