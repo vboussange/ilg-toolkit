@@ -1,4 +1,4 @@
-"""Fit maximum-likelihood population effects (MLPE) calibration for a new region."""
+"""Maximum-likelihood population effects (MLPE) calibration for a new region."""
 
 from dataclasses import replace
 
