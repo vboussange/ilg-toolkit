@@ -2,8 +2,10 @@
 
 from abc import abstractmethod
 from collections.abc import Sequence
+from dataclasses import replace
 from itertools import combinations
-from typing import cast
+from numbers import Integral
+from typing import cast, overload
 
 import equinox as eqx
 import jax
@@ -44,29 +46,71 @@ class AbstractDistanceModel(eqx.Module):
         those nodes, one for each sampling unit in a pair.
         """
 
+    @overload
     def predict(
         self,
         region: RegionBatch,
         *,
         species: str | None = None,
+        species_order: Sequence[str] | None = None,
         pairs: Sequence[tuple[str, str]] | None = None,
-    ) -> Prediction:
-        """Ecological distances for query pairs in a single-species region batch.
+    ) -> Prediction: ...
+
+    @overload
+    def predict(
+        self,
+        region: RegionBatch,
+        *,
+        species: Sequence[str],
+        species_order: Sequence[str] | None = None,
+        pairs: Sequence[tuple[str, str]] | None = None,
+    ) -> dict[str, Prediction]: ...
+
+    def predict(
+        self,
+        region: RegionBatch,
+        *,
+        species: str | Sequence[str] | None = None,
+        species_order: Sequence[str] | None = None,
+        pairs: Sequence[tuple[str, str]] | None = None,
+    ) -> Prediction | dict[str, Prediction]:
+        """Ecological distances for query pairs of the selected species.
 
         Omitted pairs request every distinct pair in sampling-unit order.
+        ``species_order`` associates names with parameter rows for named species.
+        A species sequence returns a mapping and shares the pooled backbone.
         """
-        _single_species(self, species)
-        labels, indices = _query_pairs(region, pairs)
-        context = prepare_distance_context(self, region.feature_array)
-        values = distance_values(
-            self, region.feature_array, region.pixel_nodes, indices, context=context
-        )
-        values = eqx.error_if(
-            values,
-            jnp.any(~jnp.isfinite(values) | (values < 0)),
-            "Distance model produced nonfinite or negative ecological distances",
-        )
-        return Prediction(values, labels, region.name, region.sampling_unit_ids)
+        order = validate_species_order(species_order, self.num_species)
+        selected = select_species(order, species)
+        if self.num_species > 1 and region.species is None:
+            raise ValueError("Multispecies queries require sampling-unit species labels")
+        model = with_dropout_mode(self, inference=True, key=None)
+        context = prepare_distance_context(model, region.feature_array)
+        latent = model.backbone(region.feature_array)
+        results = {}
+        for name, index in selected:
+            prepared = region_for_species(region, name)
+            labels, indices = _query_pairs(prepared, pairs)
+            values = distances_from_latent(
+                model,
+                latent,
+                prepared.pixel_nodes,
+                indices,
+                raster_shape=(region.feature_array.shape[0], region.feature_array.shape[1]),
+                species_index=index,
+                context=context,
+            )
+            values = eqx.error_if(
+                values,
+                jnp.any(~jnp.isfinite(values) | (values < 0)),
+                "Distance model produced nonfinite or negative ecological distances",
+            )
+            results[name] = Prediction(
+                values, labels, region.name, prepared.sampling_unit_ids, name
+            )
+        if isinstance(species, str) or species is None:
+            return results[selected[0][0]]
+        return cast(dict[str, Prediction], results)
 
 
 class ConductanceModel(AbstractDistanceModel):
@@ -100,16 +144,54 @@ class ConductanceModel(AbstractDistanceModel):
         )
         return effective_resistance(surface, nodes, context=context)[indices]
 
-    def conductance_surface(self, region: RegionBatch, *, species: str | None = None) -> jax.Array:
-        """Positive conductance surface for a single-species region batch."""
-        _single_species(self, species)
+    @overload
+    def conductance_surface(
+        self,
+        region: RegionBatch,
+        *,
+        species: str | None = None,
+        species_order: Sequence[str] | None = None,
+    ) -> jax.Array: ...
+
+    @overload
+    def conductance_surface(
+        self,
+        region: RegionBatch,
+        *,
+        species: Sequence[str],
+        species_order: Sequence[str] | None = None,
+    ) -> dict[str, jax.Array]: ...
+
+    def conductance_surface(
+        self,
+        region: RegionBatch,
+        *,
+        species: str | Sequence[str] | None = None,
+        species_order: Sequence[str] | None = None,
+    ) -> jax.Array | dict[str, jax.Array]:
+        """Positive conductance surfaces for the selected species.
+
+        ``species_order`` associates names with parameter rows for named species.
+        A species sequence returns a mapping and shares the pooled backbone.
+        """
+        order = validate_species_order(species_order, self.num_species)
+        selected = select_species(order, species)
+        if self.num_species > 1 and region.species is None:
+            raise ValueError("Multispecies queries require sampling-unit species labels")
         model = with_dropout_mode(self, inference=True, key=None)
-        surface = model.conductance(model.backbone(region.feature_array), 0)
-        return eqx.error_if(
-            surface,
-            jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
-            "Distance model produced nonfinite or nonpositive conductance",
-        )
+        latent = model.backbone(region.feature_array)
+        results = {}
+        for name, index in selected:
+            region_for_species(region, name)
+            surface = model.conductance(latent, index)
+            results[name] = eqx.error_if(
+                surface,
+                jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
+                "Distance model produced nonfinite or nonpositive conductance",
+            )
+        if isinstance(species, str) or species is None:
+            return results[selected[0][0]]
+        return cast(dict[str, jax.Array], results)
 
 
 class EmbeddingModel(AbstractDistanceModel):
@@ -129,9 +211,63 @@ class EmbeddingModel(AbstractDistanceModel):
         return jnp.sum(jnp.square(embeddings[left] - embeddings[right]), axis=-1)
 
 
-def _single_species(model: AbstractDistanceModel, species: str | None) -> None:
-    if model.num_species != 1 or species is not None:
-        raise ValueError("This workflow requires one unnamed species")
+def validate_species_order(order: Sequence[str] | None, num_species: int) -> tuple[str, ...] | None:
+    """Species names associated with the distance model's parameter rows."""
+    if isinstance(num_species, bool) or not isinstance(num_species, Integral) or num_species < 1:
+        raise ValueError("num_species must be a positive integer")
+    if order is None:
+        if num_species != 1:
+            raise ValueError("Multispecies models require a species order")
+        return None
+    if isinstance(order, (str, bytes)) or not isinstance(order, Sequence):
+        raise ValueError("Species order must be a sequence of names")
+    names = tuple(order)
+    if (
+        len(names) != num_species
+        or any(not isinstance(name, str) or not name for name in names)
+        or len(set(names)) != len(names)
+    ):
+        raise ValueError("Species order must contain one unique name per modeled species")
+    return names
+
+
+def select_species(
+    order: tuple[str, ...] | None, selection: str | Sequence[str] | None
+) -> tuple[tuple[str | None, int], ...]:
+    """Selected species names and their parameter row indices."""
+    if selection is None:
+        if order is not None and len(order) != 1:
+            raise ValueError("Multispecies queries require a species selection")
+        return ((None if order is None else order[0], 0),)
+    names = (selection,) if isinstance(selection, str) else selection
+    if (
+        isinstance(names, (str, bytes))
+        or not isinstance(names, Sequence)
+        or not names
+        or order is None
+        or any(not isinstance(name, str) or name not in order for name in names)
+        or len(set(names)) != len(names)
+    ):
+        raise ValueError("Species selection must contain unique names from the model's order")
+    return tuple((name, order.index(name)) for name in names)
+
+
+def region_for_species(region: RegionBatch, name: str | None) -> RegionBatch:
+    """Region batch containing one species' sampling units."""
+    if region.species is None:
+        return region
+    indices = tuple(index for index, species in enumerate(region.species) if species == name)
+    if len(indices) < 2:
+        raise ValueError("A species query requires at least two sampling units in the region")
+    kinds = region.sampling_unit_kinds
+    assert kinds is not None
+    return replace(
+        region,
+        sampling_unit_ids=tuple(region.sampling_unit_ids[index] for index in indices),
+        grid_positions=jnp.asarray(region.grid_positions)[jnp.asarray(indices)],
+        sampling_unit_kinds=tuple(kinds[index] for index in indices),
+        species=None,
+    )
 
 
 def _query_pairs(
@@ -175,16 +311,39 @@ def distance_values(
     context: ResistanceSolverContext | None = None,
     inference: bool = True,
     key: jax.Array | None = None,
+    species_index: int = 0,
 ) -> jax.Array:
     """Ecological distances for located sampling-unit pairs."""
     model = with_dropout_mode(model, inference=inference, key=key)
     latent = model.backbone(features)
+    return distances_from_latent(
+        model,
+        latent,
+        pixel_nodes,
+        indices,
+        raster_shape=(features.shape[0], features.shape[1]),
+        species_index=species_index,
+        context=context,
+    )
+
+
+def distances_from_latent(
+    model: AbstractDistanceModel,
+    latent: jax.Array,
+    pixel_nodes: jax.Array,
+    indices: tuple[jax.Array, jax.Array],
+    *,
+    raster_shape: tuple[int, int],
+    species_index: int = 0,
+    context: ResistanceSolverContext | None = None,
+) -> jax.Array:
+    """Ecological distances from pooled landscape features for one species."""
     nodes = pixel_to_patch_nodes(
         pixel_nodes,
-        raster_shape=(features.shape[0], features.shape[1]),
+        raster_shape=raster_shape,
         patch_size=model.patch_size,
     )
     pairs = (nodes, indices)
     if isinstance(model, ConductanceModel):
-        return model.ecological_distances(latent, pairs, 0, context=context)
-    return model.ecological_distances(latent, pairs, 0)
+        return model.ecological_distances(latent, pairs, species_index, context=context)
+    return model.ecological_distances(latent, pairs, species_index)

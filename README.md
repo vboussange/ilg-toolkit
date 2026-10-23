@@ -230,6 +230,12 @@ print("Restored predictions:\n", restored.predict(region).as_matrix())
   evaluation, support conditioning and checkpoint continuation.
 - [ibd.py](examples/ibd.py): an isolation-by-distance baseline from geographic
   separation alone.
+- [multispecies.py](examples/multispecies.py): experimental multispecies fitting
+  with species labels on sampling units and observations. Pass the parameter order
+  as `fit(..., species=(...))`; fitted queries use that saved order. Standalone
+  distance queries take `species="name"` or a sequence of names alongside
+  `species_order=model.species`. A sequence returns a mapping and reuses the
+  pooled backbone for the region.
 
 From a clone, run one with `JAX_ENABLE_X64=true uv run python examples/<name>.py`.
 

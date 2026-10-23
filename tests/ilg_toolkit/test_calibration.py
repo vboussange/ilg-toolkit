@@ -30,6 +30,8 @@ def test_regional_mlpe_installation_requires_matching_region_and_target_contract
             model.target, {"wrong-region": cast(RegionalMLPECalibration, regional)}
         )
     with pytest.raises(ValueError):
+        MLPECalibrationModule(model.target, {("wrong-region", 0): regional})
+    with pytest.raises(ValueError):
         MLPECalibrationModule(
             TargetSpec("another target"), {region.name: cast(RegionalMLPECalibration, regional)}
         )

@@ -7,9 +7,12 @@ from ilg_toolkit import PairwiseObservations, TrainingConfig, fit
 
 
 @pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "2"])
-def test_region_batch_size_rejects_invalid_counts(value):
+@pytest.mark.parametrize(
+    "name", ["region_batch_size", "species_batch_size", "species_microbatch_size"]
+)
+def test_region_batch_size_rejects_invalid_counts(value, name):
     with pytest.raises(ValueError):
-        TrainingConfig(objective="direct_log1p", region_batch_size=value)
+        TrainingConfig(objective="direct_log1p", **{name: value})
 
 
 def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_them(

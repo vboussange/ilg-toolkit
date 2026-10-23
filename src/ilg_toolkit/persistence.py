@@ -6,13 +6,14 @@ import tempfile
 from copy import copy
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .calibration import DirectCalibrationModule, MLPECalibrationModule
+from .calibration import DirectCalibrationModule, GroupKey, MLPECalibrationModule
 from .config import ResistanceSolverConfig
 from .data import TargetSpec
 from .mlpe import MLPEConfig, RegionalMLPECalibration
@@ -78,16 +79,18 @@ def _model_metadata(model):
     elif isinstance(model.calibration, MLPECalibrationModule):
         calibration = {
             "kind": "mlpe",
-            "regions": {
-                name: {
-                    "population_ids": value.population_ids,
-                    "calibration_pairs": value.calibration_pairs,
-                    "calibration_roles": value.calibration_roles,
-                    "config": asdict(value.config),
-                    "optimizer_message": value.optimizer_message,
+            "regions": _encode_groups(
+                {
+                    name: {
+                        "population_ids": value.population_ids,
+                        "calibration_pairs": value.calibration_pairs,
+                        "calibration_roles": value.calibration_roles,
+                        "config": asdict(value.config),
+                        "optimizer_message": value.optimizer_message,
+                    }
+                    for name, value in model.calibration.regions.items()
                 }
-                for name, value in model.calibration.regions.items()
-            },
+            ),
         }
     else:
         raise ArtifactError("Native persistence requires a direct or MLPE calibration module")
@@ -101,10 +104,26 @@ def _model_metadata(model):
             else None
         ),
         "training_objective": model.training_objective,
-        "training_pairs": model.training_pairs,
-        "validation_pairs": model.validation_pairs,
+        "species": model.species,
+        "training_pairs": _encode_groups(model.training_pairs),
+        "validation_pairs": _encode_groups(model.validation_pairs),
         "calibration": calibration,
     }
+
+
+def _encode_groups(values):
+    if all(isinstance(key, str) for key in values):
+        return values
+    return [
+        {"region": region, "species_index": index, "value": value}
+        for (region, index), value in values.items()
+    ]
+
+
+def _decode_groups(values) -> dict[GroupKey, Any]:
+    if isinstance(values, dict):
+        return values
+    return {(item["region"], item["species_index"]): item["value"] for item in values}
 
 
 def _head_template(name, metadata, target):
@@ -112,7 +131,7 @@ def _head_template(name, metadata, target):
     population_ids = tuple(metadata["population_ids"])
     count = len(population_ids)
     return RegionalMLPECalibration(
-        region_name=name,
+        region_name=name if isinstance(name, str) else name[0],
         target=target,
         population_ids=population_ids,
         distance_center=0.0,
@@ -154,7 +173,7 @@ def _model_template(metadata, distance_model):
             target,
             {
                 name: _head_template(name, regional, target)
-                for name, regional in saved_calibration["regions"].items()
+                for name, regional in _decode_groups(saved_calibration["regions"]).items()
             },
         )
     else:
@@ -167,8 +186,9 @@ def _model_template(metadata, distance_model):
             None if metadata["feature_names"] is None else tuple(metadata["feature_names"])
         ),
         training_objective=metadata["training_objective"],
-        training_pairs=metadata["training_pairs"],
-        validation_pairs=metadata["validation_pairs"],
+        species=None if metadata["species"] is None else tuple(metadata["species"]),
+        training_pairs=_decode_groups(metadata["training_pairs"]),
+        validation_pairs=_decode_groups(metadata["validation_pairs"]),
     )
 
 

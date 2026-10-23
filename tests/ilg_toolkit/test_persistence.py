@@ -27,17 +27,24 @@ from ilg_toolkit.models import ConductanceModel, UNet
 
 @pytest.mark.parametrize("kind", ["model", "checkpoint"])
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
-def test_saved_precision_is_preserved(tmp_path, training_problem, kind, objective):
+@pytest.mark.parametrize("num_species", [1, 2])
+def test_saved_precision_is_preserved(tmp_path, training_problem, kind, objective, num_species):
     from ilg_toolkit import ArtifactError
 
     path = tmp_path / "precision.eqx"
     with jax.enable_x64():
-        region, observations, encoder = training_problem("embedding")
+        region, observations, encoder = training_problem("embedding", num_species=num_species)
+        species = (
+            tuple(f"species-{index}" for index in reversed(range(num_species)))
+            if num_species > 1
+            else None
+        )
         state = fit(
             region,
             observations,
             distance_model=encoder,
             config=TrainingConfig(objective=objective, steps=0),
+            species=species,
         )
         if kind == "model":
             save_model(path, state.model)
@@ -48,9 +55,11 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, kind, objectiv
             restored = load_checkpoint(path, distance_model=encoder)
             assert eqx.tree_equal(restored, state)
             model = restored.model
-        expected = state.model.predict(region).values
-        np.testing.assert_array_equal(model.predict(region).values, expected)
-        assert expected.dtype == jnp.float64
+        assert model.species == species
+        for name in species or (None,):
+            expected = state.model.predict(region, species=name).values
+            np.testing.assert_array_equal(model.predict(region, species=name).values, expected)
+            assert expected.dtype == jnp.float64
     with jax.enable_x64(False):
         narrow = jax.tree.map(
             lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,

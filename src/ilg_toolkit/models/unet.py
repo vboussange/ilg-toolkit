@@ -99,6 +99,7 @@ class UNet(EmbeddingModel):
         self,
         in_channels: int,
         *,
+        num_species: int = 1,
         patch_size: int = 32,
         base_channels: int = 32,
         embedding_dim: int = 16,
@@ -106,6 +107,8 @@ class UNet(EmbeddingModel):
         patch_microbatch_size: int | None = None,
         key: jax.Array,
     ):
+        if isinstance(num_species, bool) or not isinstance(num_species, int) or num_species < 1:
+            raise ValueError("num_species must be a positive integer")
         if patch_size <= 0 or base_channels <= 0 or embedding_dim <= 0:
             raise ValueError("patch_size, base_channels, and embedding_dim must be positive")
         if not 0 <= dropout < 1:
@@ -169,8 +172,9 @@ class UNet(EmbeddingModel):
             base_channels, base_channels, dropout=dropout, key=keys[11]
         )
         self.embedding_head = eqx.nn.Conv2d(
-            base_channels, embedding_dim, 1, dtype=jnp.float32, key=keys[12]
+            base_channels, num_species * embedding_dim, 1, dtype=jnp.float32, key=keys[12]
         )
+        self.num_species = num_species
         self.patch_microbatch_size = patch_microbatch_size
         self.patch_size = patch_size
         self.base_channels = base_channels
@@ -203,4 +207,12 @@ class UNet(EmbeddingModel):
 
     def embedding(self, latent: jax.Array, species_index: int) -> jax.Array:
         """Embedding grid from pooled landscape features."""
-        return jnp.moveaxis(self.embedding_head(jnp.moveaxis(latent, -1, 0)), 0, -1)
+        start = species_index * self.embedding_dim
+        weights = jax.lax.dynamic_slice_in_dim(
+            self.embedding_head.weight, start, self.embedding_dim, axis=0
+        )
+        assert self.embedding_head.bias is not None
+        bias = jax.lax.dynamic_slice_in_dim(
+            self.embedding_head.bias, start, self.embedding_dim, axis=0
+        )
+        return latent @ weights[:, :, 0, 0].T + bias[:, 0, 0]

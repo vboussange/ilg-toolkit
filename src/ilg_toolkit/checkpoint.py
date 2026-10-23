@@ -64,13 +64,28 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
             history_length = metadata["history_length"]
             if not 1 <= history_length <= config.steps + 1:
                 raise ArtifactError("Checkpoint history length must be within the step budget")
+
+            def metrics(groups):
+                regions = {key if isinstance(key, str) else key[0]: 0.0 for key in groups}
+                species = latest.species
+                by_species = (
+                    None
+                    if species is None or len(species) == 1
+                    else {species[key[1]]: 0.0 for key in groups}
+                )
+                return regions, by_species
+
+            training_regions, training_species = metrics(latest.training_pairs)
+            validation_regions, validation_species = metrics(latest.validation_pairs)
             history = tuple(
                 StepRecord(
                     step=0,
                     training_loss=0.0,
                     validation_loss=0.0 if latest.validation_pairs else None,
-                    training_by_region=dict.fromkeys(latest.training_pairs, 0.0),
-                    validation_by_region=dict.fromkeys(latest.validation_pairs, 0.0),
+                    training_by_region=training_regions,
+                    validation_by_region=validation_regions,
+                    training_by_species=training_species,
+                    validation_by_species=validation_species,
                 )
                 for _ in range(history_length)
             )

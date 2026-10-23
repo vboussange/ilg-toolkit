@@ -107,16 +107,22 @@ def test_public_mlpe_embedding_fit_updates_encoder_and_variances_and_returns_pre
 
 
 @pytest.mark.parametrize("jit", [False, True])
-@pytest.mark.parametrize(("region_count", "region_batch_size"), [(1, None), (2, None), (2, 1)])
+@pytest.mark.parametrize(
+    ("num_species", "region_count", "region_batch_size"),
+    [(1, 1, None), (1, 2, None), (1, 2, 1), (2, 1, None)],
+)
 def test_mlpe_updates_match_dense_reference(
     WeightedEmbedding,
     dense_profile,
     embedding_problem,
     jit,
     region_count,
+    num_species,
     region_batch_size,
     monkeypatch,
 ):
+    from dataclasses import replace
+
     problems = [embedding_problem()]
     if region_count == 2:
         region, observed = embedding_problem("valley", offset=3, seed=71)
@@ -128,26 +134,56 @@ def test_mlpe_updates_match_dense_reference(
             sampling_unit_ids=region.sampling_unit_ids,
         )
         problems.append((region, sparse))
+    species = None if num_species == 1 else ("newt", "frog")
+    if num_species > 1:
+        region, observed = problems[0]
+        problems.append((region, replace(observed, values=observed.values * 1.3)))
+    group_count = len(problems)
+    groups_species = [0] * region_count if num_species == 1 else [0, 1]
     regions = tuple(problem[0] for problem in problems)
     observations = tuple(problem[1] for problem in problems)
+    if species is not None:
+        regions = (
+            replace(
+                regions[0],
+                sampling_unit_ids=regions[0].sampling_unit_ids * 2,
+                grid_positions=np.tile(regions[0].grid_positions, (2, 1)),
+                sampling_unit_kinds=None,
+                species=(species[0],) * 6 + (species[1],) * 6,
+            ),
+        )
+        observations = (
+            tuple(
+                replace(observed, species=name)
+                for name, observed in zip(species, observations, strict=True)
+            ),
+        )
+    parameter_count = 2 * num_species
     raw = np.log(np.expm1(np.array([0.05, 0.1]) - 1e-10))
-    initial = np.concatenate((np.zeros(2), np.tile(raw, region_count)))
+    initial = np.concatenate((np.zeros(parameter_count), np.tile(raw, group_count)))
 
     def objective(parameters, indices: Sequence[int] | None = None):
         losses = []
-        for index in range(region_count) if indices is None else indices:
+        for index in range(group_count) if indices is None else indices:
             region, observed = problems[index]
             (left, right), targets = observed.aligned_pairs(region)
-            embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(parameters[:2])
+            embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(
+                parameters[2 * groups_species[index] : 2 * groups_species[index] + 2]
+            )
             distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)[left, right]
-            variances = np.logaddexp(0, parameters[2 + 2 * index : 4 + 2 * index]) + 1e-10
+            variances = (
+                np.logaddexp(
+                    0, parameters[parameter_count + 2 * index : parameter_count + 2 * index + 2]
+                )
+                + 1e-10
+            )
             losses.append(
                 dense_profile(distances, np.asarray(targets), left, right, 6, variances)[0]
                 / len(distances)
             )
         return np.mean(losses)
 
-    selections = [(0,), (1,)] if region_batch_size == 1 else [range(region_count)] * 2
+    selections = [(0,), (1,)] if region_batch_size == 1 else [range(group_count)] * 2
     if region_batch_size == 1:
         choices = iter(selections)
         monkeypatch.setattr(jax.random, "choice", lambda *args, **kwargs: jnp.array(next(choices)))
@@ -178,7 +214,10 @@ def test_mlpe_updates_match_dense_reference(
     result = fit(
         regions,
         observations,
-        distance_model=WeightedEmbedding(jnp.zeros(2)),
+        distance_model=WeightedEmbedding(
+            jnp.zeros(2) if num_species == 1 else jnp.zeros((2, 2)), num_species=num_species
+        ),
+        species=species,
         config=TrainingConfig(
             objective="mlpe",
             steps=2,
@@ -192,17 +231,30 @@ def test_mlpe_updates_match_dense_reference(
     np.testing.assert_allclose(result.history[-1].training_loss, objective(expected), atol=1e-8)
     calibration = cast(MLPECalibrationModule, result.model.calibration)
     for index, (region, observed) in enumerate(problems):
-        embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(expected[:2])
+        embedding = np.asarray(region.feature_array).reshape(6, 2) * np.exp(
+            expected[2 * groups_species[index] : 2 * groups_species[index] + 2]
+        )
         distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)
         np.fill_diagonal(distances, np.nan)
         np.testing.assert_allclose(
-            result.model.distance_model.predict(region).as_matrix(),
+            result.model.distance_model.predict(
+                region
+                if species is None
+                else replace(region, species=(species[groups_species[index]],) * 6),
+                species=None if species is None else species[groups_species[index]],
+                species_order=species,
+            ).as_matrix(),
             distances,
             rtol=1e-8,
             atol=1e-9,
         )
-        variances = np.logaddexp(0, expected[2 + 2 * index : 4 + 2 * index]) + 1e-10
-        head = calibration.regions[region.name]
+        variances = (
+            np.logaddexp(0, expected[parameter_count + 2 * index : parameter_count + 2 * index + 2])
+            + 1e-10
+        )
+        head = calibration.for_region(
+            region.name, None if species is None else groups_species[index]
+        )
         np.testing.assert_allclose(
             [head.unit_variance, head.residual_variance],
             variances,
@@ -225,24 +277,51 @@ def test_mlpe_updates_match_dense_reference(
 
 
 @pytest.mark.parametrize("steps", [0, 4])
+@pytest.mark.parametrize("species_count", [1, 2])
 def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_supported(
     WeightedEmbedding,
     embedding_problem,
     steps,
+    species_count,
 ):
+    from dataclasses import replace
+
     from ilg_toolkit import ObservationPartition
 
     with jax.enable_x64():
         region, observations = embedding_problem()
+        single_region = region
+        order = None if species_count == 1 else ("stoat", "hare")
+        observed_groups = (observations,)
+        weights = jnp.zeros(2)
+        if order is not None:
+            kinds = region.sampling_unit_kinds
+            assert kinds is not None
+            region = replace(
+                region,
+                sampling_unit_ids=region.sampling_unit_ids * species_count,
+                grid_positions=jnp.tile(jnp.asarray(region.grid_positions), (species_count, 1)),
+                sampling_unit_kinds=kinds * species_count,
+                species=tuple(name for name in order for _ in region.sampling_unit_ids),
+            )
+            observed_groups = tuple(
+                replace(observations, species=name, values=observations.values * (index + 1))
+                for index, name in enumerate(order)
+            )
+            weights = jnp.log(jnp.array([[1.0, 1.0], [2.0, 0.5]]))
         query_pair = observations.observed_pairs[-1:]
         train_pairs = observations.observed_pairs[:-1]
         train_partition = ObservationPartition(region.name, train_pairs, role="training")
         query_partition = ObservationPartition(region.name, query_pair, role="validation")
-        altered = PairwiseObservations.from_pairs(
-            observations.observed_pairs,
-            observations.observed_values + 20,
-            target=observations.target,
-            sampling_unit_ids=region.sampling_unit_ids,
+        altered = tuple(
+            PairwiseObservations.from_pairs(
+                group.observed_pairs,
+                group.observed_values + 20,
+                target=group.target,
+                sampling_unit_ids=group.sampling_unit_ids,
+                species=group.species,
+            )
+            for group in observed_groups
         )
         config = TrainingConfig(
             objective="mlpe",
@@ -254,16 +333,19 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         runs = [
             fit(
                 region,
-                observations,
-                distance_model=WeightedEmbedding(jnp.zeros(2)),
+                observed_groups[0] if species_count == 1 else observed_groups,
+                distance_model=WeightedEmbedding(weights, num_species=species_count),
+                species=order,
                 config=config,
                 partition=train_partition,
-                validation=(region, validation_observations),
+                validation=(
+                    region,
+                    validation_observations[0] if species_count == 1 else validation_observations,
+                ),
                 validation_partition=query_partition,
             )
-            for validation_observations in (observations, altered)
+            for validation_observations in (observed_groups, altered)
         ]
-        distances = np.asarray(runs[0].latest_model.distance_model.predict(region).as_matrix())
     first, second = runs
 
     assert first.raw_variances is not None
@@ -273,29 +355,41 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         cast(Any, first.distance_model).log_weights, cast(Any, second.distance_model).log_weights
     )
     assert eqx.tree_equal(first.raw_variances, second.raw_variances)
-    assert (
-        cast(MLPECalibrationModule, first.latest_model.calibration).regions
-        == cast(MLPECalibrationModule, second.latest_model.calibration).regions
-    )
+    assert eqx.tree_equal(first.latest_model.calibration, second.latest_model.calibration)
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
     assert first.rng_key.dtype == np.uint32
-    head = cast(MLPECalibrationModule, first.latest_model.calibration).regions[region.name]
-    assert set(head.calibration_pairs) == set(train_partition.pairs)
-    assert first.latest_model.validation_pairs[region.name] == query_partition.pairs
-    (left, right), values = observations.aligned_pairs(region, train_partition)
-    np.testing.assert_allclose(head.distance_center, distances[left, right].mean(), atol=1e-12)
-    np.testing.assert_allclose(head.distance_scale, distances[left, right].std(ddof=1), atol=1e-12)
-    (left, right), values = observations.aligned_pairs(region, query_partition)
-    expected_mean = (
-        head.intercept
-        + head.slope * (distances[left, right] - head.distance_center) / head.distance_scale
-    )
-    variance = 2 * head.unit_variance + head.residual_variance
-    expected_nll = 0.5 * (
-        np.log(2 * np.pi * variance) + (values[0] - expected_mean[0]) ** 2 / variance
-    )
+    expected_losses = []
+    for index, observed in enumerate(observed_groups):
+        name = None if order is None else order[index]
+        distances = np.asarray(
+            first.latest_model.distance_model.predict(
+                region, species=name, species_order=order
+            ).as_matrix()
+        )
+        head = cast(MLPECalibrationModule, first.latest_model.calibration).for_region(
+            region.name, None if species_count == 1 else index
+        )
+        key = region.name if species_count == 1 else (region.name, index)
+        assert set(head.calibration_pairs) == set(train_partition.pairs)
+        assert first.latest_model.validation_pairs[key] == query_partition.pairs
+        (left, right), _ = observed.aligned_pairs(single_region, train_partition)
+        np.testing.assert_allclose(head.distance_center, distances[left, right].mean(), atol=1e-12)
+        np.testing.assert_allclose(
+            head.distance_scale, distances[left, right].std(ddof=1), atol=1e-12
+        )
+        (left, right), values = observed.aligned_pairs(single_region, query_partition)
+        expected_mean = (
+            head.intercept
+            + head.slope * (distances[left, right] - head.distance_center) / head.distance_scale
+        )
+        variance = 2 * head.unit_variance + head.residual_variance
+        expected_losses.append(
+            0.5 * (np.log(2 * np.pi * variance) + (values[0] - expected_mean[0]) ** 2 / variance)
+        )
     assert first.history[-1].validation_loss is not None
-    np.testing.assert_allclose(first.history[-1].validation_loss, expected_nll, rtol=1e-12)
+    np.testing.assert_allclose(
+        first.history[-1].validation_loss, np.mean(expected_losses), rtol=1e-12
+    )
 
 
 def test_shared_mlpe_fit_has_one_encoder_and_separate_regional_heads(
@@ -437,49 +531,100 @@ def test_continuation_rejects_changed_optimization_policy(WeightedEmbedding, emb
 
 
 @pytest.mark.parametrize("region_batch_size", [None, 1, 2, 3])
+@pytest.mark.parametrize(("num_species", "species_batch_size"), [(1, None), (2, None), (2, 1)])
 def test_shared_embedding_update_matches_independent_equal_region_objective(
-    ScalarEmbedding, regions_and_observations, region_batch_size, monkeypatch
+    ScalarEmbedding,
+    regions_and_observations,
+    region_batch_size,
+    num_species,
+    species_batch_size,
+    monkeypatch,
 ):
+    from dataclasses import replace
+
     with jax.enable_x64():
         regions, observations = regions_and_observations()
+        species = None if num_species == 1 else ("frog", "newt")
+        if species is not None:
+            # Frog occurs in both regions; newt only in the short region.
+            regions = [
+                replace(regions[0], species=("frog",) * 3),
+                replace(
+                    regions[1],
+                    sampling_unit_ids=regions[1].sampling_unit_ids * 2,
+                    grid_positions=np.tile(regions[1].grid_positions, (2, 1)),
+                    sampling_unit_kinds=None,
+                    species=("frog", "frog", "newt", "newt"),
+                ),
+            ]
+            observations = [
+                replace(observations[0], species="frog"),
+                (
+                    replace(observations[1], species="frog"),
+                    replace(observations[1], species="newt", values=observations[1].values / 5),
+                ),
+            ]
         initial = 1.0
 
-        def independent_objective(weight, indices: Sequence[int] = (0, 1)):
+        def independent_objective(weight, indices: Sequence[int] = (0, 1), short_species=None):
             predictions = [np.array([4]) * weight**2, np.array([1, 4, 1]) * weight**2]
             targets = [np.array([15]), np.array([0.1, 0.1, 0.1])]
-            return np.mean(
-                [np.mean((np.log1p(predictions[i]) - np.log1p(targets[i])) ** 2) for i in indices]
-            )
+            losses = [
+                np.mean((np.log1p(p) - np.log1p(t)) ** 2)
+                for p, t in zip(predictions, targets, strict=True)
+            ]
+            if num_species == 2:
+                newt = (np.log1p(4 * weight**2) - np.log1p(3)) ** 2
+                short = losses[0] / 2 + newt
+                if short_species is not None:
+                    short = losses[0] if short_species == 0 else 2 * newt
+                losses = [short, losses[1] / 2]
+            return np.mean([losses[i] for i in indices])
 
         step = 1e-5
         dense_gradient = (
             independent_objective(initial + step) - independent_objective(initial - step)
         ) / (2 * step)
         gradients = []
-        selections = [(0,), (1,)] if region_batch_size == 1 else [(0, 1)]
-        for selected in selections:
-            # Enumerate the possible draws at the randomness boundary.
+        region_selections = [(0,), (1,)] if region_batch_size == 1 else [(0, 1)]
+        selections = [
+            (indices, short, 1 / len(region_selections) / len(short_choices))
+            for indices in region_selections
+            for short_choices in ([0, 1] if species_batch_size == 1 and 0 in indices else [None],)
+            for short in short_choices
+        ]
+        probabilities = []
+        for selected, short_species, probability in selections:
+            draws = iter(
+                ([selected] if region_batch_size == 1 else [])
+                + ([(short_species,)] if short_species is not None else [])
+            )
             monkeypatch.setattr(
-                jax.random, "choice", lambda *a, selected=selected, **kw: jnp.array(selected)
+                jax.random, "choice", lambda *a, draws=draws, **kw: jnp.array(next(draws))
             )
             gradient = (
-                independent_objective(initial + step, selected)
-                - independent_objective(initial - step, selected)
+                independent_objective(initial + step, selected, short_species)
+                - independent_objective(initial - step, selected, short_species)
             ) / (2 * step)
             expected = initial - 0.01 * gradient / (abs(gradient) + 1e-8)
             result = fit(
                 regions,
                 observations,
-                distance_model=ScalarEmbedding(jnp.asarray(initial, dtype=jnp.float64)),
+                distance_model=ScalarEmbedding(
+                    jnp.asarray(initial, dtype=jnp.float64), num_species=num_species
+                ),
+                species=species,
                 config=TrainingConfig(
                     objective="direct_log1p",
                     steps=1,
                     learning_rate=0.01,
                     region_batch_size=region_batch_size,
+                    species_batch_size=species_batch_size,
                 ),
             )
             # Adam's first moment records 0.1 times the first applied gradient.
             gradients.append(cast(Any, result.optimizer_state)[0].mu[0].weight / 0.1)
+            probabilities.append(probability)
             np.testing.assert_allclose(gradients[-1], gradient, rtol=1e-8)
             np.testing.assert_allclose(
                 cast(Any, result.model.distance_model).weight, expected, rtol=1e-8
@@ -489,8 +634,83 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
             )
             assert result.region_names == ("short", "wide")
             for region in regions:
-                assert np.isfinite(result.model.predict(region).values).all()
-        np.testing.assert_allclose(np.mean(gradients), dense_gradient, rtol=1e-8)
+                assert np.isfinite(
+                    result.model.predict(region, species=None if species is None else "frog").values
+                ).all()
+        np.testing.assert_allclose(np.dot(probabilities, gradients), dense_gradient, rtol=1e-8)
+
+
+@pytest.mark.parametrize("num_species", [1, 2])
+@pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
+def test_species_microbatches_preserve_updates_with_shared_parameters(
+    training_problem, SharedParameterEmbedding, dense_profile, num_species, jit, objective
+):
+    from dataclasses import replace
+
+    region, observations, _ = training_problem("embedding", num_species=num_species)
+    species = None if num_species == 1 else ("species-0", "species-1")
+    initial = np.array([0.6, 0.9])[:num_species]
+    model = SharedParameterEmbedding(jnp.asarray(initial))
+    config = TrainingConfig(
+        objective=objective, steps=2, jit=jit, mlpe=MLPEConfig(initial_variances=(0.05, 0.1))
+    )
+    states = []
+    reference = fit(
+        region,
+        observations,
+        distance_model=model,
+        species=species,
+        config=config,
+        on_step=states.append,
+    )
+    observed = (observations,) if num_species == 1 else observations
+    features = np.asarray(region.feature_array).reshape(4, 2)
+    left, right = np.triu_indices(4, 1)
+
+    def reference_objective(weights):
+        values = []
+        for index, target in enumerate(observed):
+            embeddings = features * weights.sum() * weights[index]
+            distances = np.sum((embeddings[left] - embeddings[right]) ** 2, axis=1)
+            order = [
+                target.sampling_unit_ids.index(label) for label in region.sampling_unit_ids[:4]
+            ]
+            targets = np.asarray(target.values)[np.ix_(order, order)][left, right]
+            values.append(
+                np.mean((np.log1p(distances) - np.log1p(targets)) ** 2)
+                if objective == "direct_log1p"
+                else dense_profile(distances, targets, left, right, 4, (0.05, 0.1))[0] / 6
+            )
+        return np.mean(values)
+
+    differences = np.eye(num_species) * 1e-5
+    gradient = np.array(
+        [
+            (reference_objective(initial + delta) - reference_objective(initial - delta)) / 2e-5
+            for delta in differences
+        ]
+    )
+    np.testing.assert_allclose(
+        states[0].history[0].training_loss, reference_objective(initial), atol=1e-9
+    )
+    np.testing.assert_allclose(
+        cast(Any, states[1].optimizer_state)[0].mu[0].weights / 0.1, gradient, atol=1e-8
+    )
+    for size in (1, 2):
+        result = fit(
+            region,
+            observations,
+            distance_model=model,
+            species=species,
+            config=replace(config, species_microbatch_size=size),
+        )
+        for actual, expected in zip(
+            jax.tree.leaves((result.distance_model, result.optimizer_state)),
+            jax.tree.leaves((reference.distance_model, reference.optimizer_state)),
+            strict=True,
+        ):
+            np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-10)
 
 
 def test_shared_conductance_update_matches_independent_combined_graph_objective(
@@ -757,20 +977,57 @@ def test_observation_labels_are_aligned_and_signed_relatedness_is_refused(synthe
 
 
 @pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize("species_count", [1, 2])
 def test_zero_step_recalibration_fits_only_supplied_region_and_preserves_distances(
-    WeightedEmbedding, embedding_problem, dense_profile, jit
+    WeightedEmbedding, embedding_problem, dense_profile, jit, species_count
 ):
+    from dataclasses import replace
+
     from ilg_toolkit import ObservationPartition
 
     region, observations = embedding_problem()
-    frozen = WeightedEmbedding(jnp.zeros(2))
+    transferred_region, transferred_observations = embedding_problem("valley", offset=3)
+    single_transferred = transferred_region
+    order = None if species_count == 1 else ("stoat", "hare")
+    selected_species = None if order is None else order[1]
+    weights = jnp.zeros(2)
+    training_observations = observations
+    if order is not None:
+        prepared_regions = []
+        for prepared in (region, transferred_region):
+            kinds = prepared.sampling_unit_kinds
+            assert kinds is not None
+            prepared_regions.append(
+                replace(
+                    prepared,
+                    sampling_unit_ids=prepared.sampling_unit_ids * species_count,
+                    grid_positions=jnp.tile(
+                        jnp.asarray(prepared.grid_positions), (species_count, 1)
+                    ),
+                    sampling_unit_kinds=kinds * species_count,
+                    species=tuple(name for name in order for _ in prepared.sampling_unit_ids),
+                )
+            )
+        region, transferred_region = prepared_regions
+        training_observations = tuple(replace(observations, species=name) for name in order)
+        transferred_observations = replace(transferred_observations, species=selected_species)
+        weights = jnp.log(jnp.array([[1.0, 1.0], [2.0, 0.5]]))
+    frozen = WeightedEmbedding(weights, num_species=species_count)
+    if species_count > 1:
+        with pytest.raises(ValueError):
+            fit(
+                region,
+                training_observations,
+                distance_model=frozen,
+                config=TrainingConfig(objective="mlpe", steps=0, jit=jit),
+            )
     initial = fit(
         region,
-        observations,
+        training_observations,
         distance_model=frozen,
+        species=order,
         config=TrainingConfig(objective="mlpe", steps=0, jit=jit),
     ).selected_model
-    transferred_region, transferred_observations = embedding_problem("valley", offset=3)
     partition = ObservationPartition(
         "valley", transferred_observations.observed_pairs[:-1], role="training"
     )
@@ -779,6 +1036,7 @@ def test_zero_step_recalibration_fits_only_supplied_region_and_preserves_distanc
         transferred_region,
         transferred_observations,
         distance_model=initial.distance_model,
+        species=order,
         partition=partition,
         config=TrainingConfig(
             objective="mlpe",
@@ -794,23 +1052,30 @@ def test_zero_step_recalibration_fits_only_supplied_region_and_preserves_distanc
     assert len(callbacks) == 1
     assert eqx.tree_equal(result.selected_model.distance_model, frozen)
     model = result.selected_model
-    distances = frozen.predict(transferred_region, pairs=partition.pairs).values
-    (left, right), targets = transferred_observations.aligned_pairs(transferred_region, partition)
+    distances = frozen.predict(
+        transferred_region, species=selected_species, species_order=order, pairs=partition.pairs
+    ).values
+    (left, right), targets = transferred_observations.aligned_pairs(single_transferred, partition)
     nll, beta, effects, covariance = dense_profile(
         distances,
         targets,
         left,
         right,
-        len(transferred_region.sampling_unit_ids),
+        len(single_transferred.sampling_unit_ids),
         (0.05, 0.1),
         jitter=1e-7,
     )
-    calibration = cast(MLPECalibrationModule, model.calibration).for_region("valley")
+    calibration = cast(MLPECalibrationModule, model.calibration).for_region(
+        "valley", None if species_count == 1 else 1
+    )
     np.testing.assert_allclose(result.history[0].training_loss, nll / len(targets), atol=1e-9)
     np.testing.assert_allclose([calibration.intercept, calibration.slope], beta, atol=1e-9)
     np.testing.assert_allclose(calibration.effect_mean, effects, atol=1e-9)
     np.testing.assert_allclose(calibration.effect_covariance, covariance, atol=1e-9)
     assert set(calibration.calibration_pairs) == set(partition.pairs)
-    assert np.isfinite(model.predict(transferred_region).values).all()
+    assert np.isfinite(model.predict(transferred_region, species=selected_species).values).all()
     with pytest.raises(ValueError):
-        model.predict(region)
+        model.predict(region, species=selected_species)
+    if order is not None:
+        with pytest.raises(ValueError):
+            model.predict(transferred_region, species=order[0])

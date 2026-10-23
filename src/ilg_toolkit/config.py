@@ -54,9 +54,10 @@ class ResistanceSolverConfig:
 class TrainingConfig:
     """Optimization budget and numerical settings for a landscape genetics model.
 
-    Each Adam update samples up to ``region_batch_size`` regions uniformly
-    without replacement; ``None`` uses every region.
-    Updates run for ``steps`` with a fixed learning rate.
+    Each Adam update samples up to ``region_batch_size`` regions and then
+    ``species_batch_size`` species within each region; ``None`` uses all available.
+    ``species_microbatch_size`` controls how many species are processed together
+    before their gradients are combined into one update.
     Evaluation at step zero, every ``eval_every`` updates, and the final step
     determines model selection.
     """
@@ -66,6 +67,8 @@ class TrainingConfig:
     eval_every: int = 1
     learning_rate: float = 0.001
     region_batch_size: int | None = None
+    species_batch_size: int | None = None
+    species_microbatch_size: int | None = None
     seed: int = 0
     jit: bool = True
     mlpe: MLPEConfig = field(default_factory=MLPEConfig)
@@ -91,12 +94,12 @@ class TrainingConfig:
             or self.eval_every < 1
         ):
             raise ValueError("eval_every must be a positive integer")
-        if self.region_batch_size is not None and (
-            isinstance(self.region_batch_size, bool)
-            or not isinstance(self.region_batch_size, int)
-            or self.region_batch_size < 1
-        ):
-            raise ValueError("region_batch_size must be a positive integer or None")
+        for name in ("region_batch_size", "species_batch_size", "species_microbatch_size"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"{name} must be a positive integer or None")
         if (
             isinstance(self.learning_rate, bool)
             or not isinstance(self.learning_rate, Real)
