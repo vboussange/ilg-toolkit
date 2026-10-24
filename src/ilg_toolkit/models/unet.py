@@ -209,7 +209,7 @@ class UNet(EmbeddingModel):
         values = self.decoder1(jax.nn.gelu(values))
         return jnp.moveaxis(values, 0, -1)
 
-    def embedding(self, latent: jax.Array, species_index: int) -> jax.Array:
+    def embedding(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Embedding grid from pooled landscape features."""
         start = species_index * self.embedding_dim
         weights = jax.lax.dynamic_slice_in_dim(

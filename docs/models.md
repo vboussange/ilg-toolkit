@@ -18,6 +18,21 @@ predictor $\eta$, conductance is
 $\min(\texttt{max_conductance},\texttt{min_conductance}+\exp(\eta))$.
 The default limits are 0.01 and 1000, and the default patch size is 32.
 
+Prepare covariates before constructing a region batch: choose their scaling and
+categorical reference levels, and use a full-rank coding with the intercept.
+For example, represent a category with $k$ levels using $k-1$ indicator columns.
+Coefficients are fitted separately for each species and pooled across that
+species' regions. Cross-species feature learning comes from the neural models'
+pooled backbone.
+
+The intercept scales the exponential term before the floor and cap are applied;
+those limits can change relative conductances as the intercept varies. With
+standardized maximum-likelihood population effects (MLPE) calibration, interpret
+conductance patterns on a relative scale.
+
+Note: standardized MLPE does not identify an absolute connectivity scale, and
+redundant categorical indicators alongside an intercept produce collinearity.
+
 `ResNet9Conductance` uses a residual network on each patch, with default patch size
 4. `UNet` uses patch embeddings and a U-Net across the region, with default patch
 size 32. Both accept a JAX random `key` for initialization. `UNet.embedding_dim`
@@ -37,8 +52,9 @@ concrete model.
 
 Declare static `num_species` and `patch_size` fields. Conductance models also
 provide a static `solver_config` containing `ResistanceSolverConfig`. The
-`features` array has row, column, and feature dimensions. For a new distance
-family, `pairs` is `(nodes, (left, right))`: `nodes` locates sampling units on the
+`features` array has row, column, and feature dimensions. A species index may be
+a scalar integer array during fitting; use array indexing to select its parameters.
+For a new distance family, `pairs` is `(nodes, (left, right))`: `nodes` locates sampling units on the
 flattened patch grid, and `left` and `right` index those sampling units.
 
 This single-species embedding model learns a linear feature transformation:
@@ -64,7 +80,7 @@ class LinearEmbedding(EmbeddingModel):
     def backbone(self, features: jax.Array) -> jax.Array:
         return features @ self.weights
 
-    def embedding(self, latent: jax.Array, species_index: int) -> jax.Array:
+    def embedding(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         return latent
 
 

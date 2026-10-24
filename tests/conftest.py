@@ -1,7 +1,7 @@
 """Shared scientific data and numerical reference fixtures."""
 
 import itertools
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import final
@@ -249,22 +249,6 @@ def _completed_fit(member: EnsembleMember) -> tuple[LandscapeGeneticsModel, Trai
     assert member.model is not None
     assert member.training_state is not None
     return member.model, member.training_state
-
-
-@final
-class _ConstantConductance(ConductanceModel):
-    level: jax.Array
-    num_species: int = eqx.field(static=True, default=1)
-    patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, kw_only=True, default=ResistanceSolverConfig()
-    )
-
-    def backbone(self, features):
-        return features
-
-    def conductance(self, latent, species_index):
-        return jnp.ones(latent.shape[:2]) * self.level
 
 
 @final
@@ -556,14 +540,19 @@ class _SharedParameterEmbedding(EmbeddingModel):
     num_species: int = eqx.field(static=True)
     patch_size: int = eqx.field(static=True, default=1)
 
-    def __init__(self, weights):
+    on_embedding: Callable[[], None] | None = eqx.field(static=True, default=None)
+
+    def __init__(self, weights, *, on_embedding=None):
         self.weights = weights
         self.num_species = len(weights)
+        self.on_embedding = on_embedding
 
     def backbone(self, features):
         return features * self.weights.sum()
 
     def embedding(self, latent, species_index):
+        if self.on_embedding is not None:
+            self.on_embedding()
         return latent * self.weights[species_index]
 
 
@@ -870,11 +859,6 @@ def model_factory_fixture():
 @pytest.fixture(name="completed_fit", scope="session")
 def completed_fit_fixture():
     return _completed_fit
-
-
-@pytest.fixture(name="ConstantConductance", scope="session")
-def constant_conductance_fixture():
-    return _ConstantConductance
 
 
 @pytest.fixture(name="FeatureEmbedding", scope="session")

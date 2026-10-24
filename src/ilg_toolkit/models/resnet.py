@@ -126,7 +126,7 @@ class ResNet9Conductance(ConductanceModel):
             )
         return encode_patches(self, features, self._encode_patch)
 
-    def conductance(self, latent: jax.Array, species_index: int) -> jax.Array:
+    def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Positive conductance surface from pooled landscape features."""
         assert self.output.bias is not None
         logits = latent @ self.output.weight[species_index] + self.output.bias[species_index]

@@ -1,55 +1,92 @@
-"""Experimental multispecies fitting with a shared landscape and sampling-unit identifiers."""
+"""Experimental neural fitting across regions with irregular species coverage."""
 
+from itertools import combinations
 from typing import cast
 
 import coordax as cx
 import jax
 import numpy as np
 
-from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
-from ilg_toolkit.models import LogLinearConductance
+from ilg_toolkit import (
+    MLPECalibrationModule,
+    PairwiseObservations,
+    RegionBatch,
+    TargetSpec,
+    TrainingConfig,
+    fit,
+)
+from ilg_toolkit.mlpe import MLPEConfig
+from ilg_toolkit.models import UNet
 
 
 def main():
     with jax.enable_x64():
         species = ("newt", "frog")
-        region = RegionBatch(
-            "valley",
-            cx.field(
-                np.array([[[0.0], [0.3], [1.0]], [[0.2], [0.7], [0.5]]]), "row", "column", "feature"
-            ),
-            ("west", "north", "east") * 2,
-            np.tile([[0, 0], [0, 2], [1, 2]], (2, 1)),
-            feature_names=("canopy",),
-            species=("newt",) * 3 + ("frog",) * 3,
-        )
+        coverage = (species, ("newt",))
+        regions, observations = [], []
         target = TargetSpec("synthetic genetic dissimilarity", units="index")
-        observations = tuple(
-            PairwiseObservations.from_pairs(
-                [("west", "north"), ("west", "east"), ("north", "east")],
-                values,
-                target=target,
-                species=name,
+        for index, (name, present) in enumerate(zip(("valley", "upland"), coverage, strict=True)):
+            ids = tuple(f"{name}-{corner}" for corner in ("sw", "se", "nw", "ne"))
+            features = np.random.default_rng(14 + index).uniform(0.8, 1.6, (3, 3, 2))
+            regions.append(
+                RegionBatch(
+                    name,
+                    cx.field(features.astype(np.float32), "row", "column", "feature"),
+                    ids * len(present),
+                    np.tile([[0, 0], [0, 2], [2, 0], [2, 2]], (len(present), 1)),
+                    feature_names=("canopy", "moisture"),
+                    species=tuple(label for label in present for _ in ids),
+                )
             )
-            for name, values in zip(species, ([1.2, 1.6, 0.8], [0.6, 0.9, 0.4]), strict=True)
-        )
+            observations.append(
+                tuple(
+                    PairwiseObservations.from_pairs(
+                        tuple(combinations(ids, 2)),
+                        np.array([0.4, 0.7, 1.4, 0.6, 0.9, 0.8]) * (1 + 0.2 * species.index(label)),
+                        target=target,
+                        species=label,
+                    )
+                    for label in present
+                )
+            )
         state = fit(
-            region,
+            regions,
             observations,
-            distance_model=LogLinearConductance(1, num_species=2, patch_size=1),
+            distance_model=UNet(
+                2,
+                num_species=2,
+                patch_size=1,
+                patch_microbatch_size=4,
+                base_channels=2,
+                embedding_dim=2,
+                dropout=0,
+                key=jax.random.key(8),
+            ),
             species=species,
-            config=TrainingConfig(objective="direct_log1p", steps=3, species_microbatch_size=1),
+            config=TrainingConfig(
+                objective="mlpe",
+                steps=3,
+                eval_every=3,
+                region_batch_size=1,
+                species_batch_size=1,
+                species_microbatch_size=1,
+                mlpe=MLPEConfig(initial_variances=(0.05, 0.1)),
+            ),
         )
-        predictions = state.model.predict(region, species=species)
-        surfaces = cast(LogLinearConductance, state.model.distance_model).conductance_surface(
-            region,
-            species=species,
-            species_order=state.model.species,
-        )
-        for name in species:
-            assert np.isfinite(predictions[name].values).all()
-            assert np.all(surfaces[name] > 0)
-            print(f"{name}: {np.asarray(predictions[name].values)}")
+        print("Experimental multispecies training:", state.history[-1].training_by_species)
+        calibration = cast(MLPECalibrationModule, state.model.calibration)
+        for region, present in zip(regions, coverage, strict=True):
+            predictions = state.model.predict(region, species=present)
+            distances = state.model.distance_model.predict(
+                region, species=present, species_order=state.model.species
+            )
+            for name in present:
+                fitted = calibration.for_region(region.name, species.index(name))
+                assert np.isfinite(predictions[name].values).all()
+                assert np.isfinite(distances[name].values).all()
+                print(f"{region.name}, {name}: ecological distances {distances[name].values}")
+                print(f"  genetic predictions {predictions[name].values}")
+                print(f"  calibration intercept={fitted.intercept:.3f}, slope={fitted.slope:.3f}")
 
 
 if __name__ == "__main__":

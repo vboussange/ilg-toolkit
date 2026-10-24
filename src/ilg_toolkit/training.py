@@ -305,7 +305,7 @@ def _group_objective(
     parameters: tuple[AbstractDistanceModel, jax.Array, jax.Array | None],
     payload: _TrainingPayload,
     *,
-    species_index: int,
+    species_index: int | jax.Array,
     objective: str,
     mlpe: MLPEConfig,
     context: ResistanceSolverContext | None = None,
@@ -372,18 +372,19 @@ _compiled_objective = eqx.filter_jit(_group_objective)
 
 class _Contribution(NamedTuple):
     payload: _TrainingPayload
-    identity: GroupKey
-    species_index: int
-    weight: float
+    variance_index: jax.Array
+    species_index: jax.Array
+    weight: jax.Array
 
 
 def _microbatch_objective(parameters, contributions, objective, mlpe, context, key):
     model, latent, raw = parameters
+    variances = None if raw is None else jnp.stack([raw[identity] for identity in sorted(raw)])
     configured = with_dropout_mode(model, inference=False, key=key)
     return sum(
         item.weight
         * _group_objective(
-            (configured, latent, None if raw is None else raw[item.identity]),
+            (configured, latent, None if variances is None else variances[item.variance_index]),
             item.payload,
             species_index=item.species_index,
             objective=objective,
@@ -570,7 +571,7 @@ def _evaluate_regions(
         value, result = evaluate(
             (configured, latent, None if parameters[1] is None else parameters[1][batch.identity]),
             batch.payload,
-            species_index=batch.species_index,
+            species_index=jnp.asarray(batch.species_index),
             objective=config.objective,
             mlpe=config.mlpe,
             context=batch.context,
@@ -739,6 +740,9 @@ def fit(
         if config.objective == "mlpe"
         else None
     )
+    variance_indices = {
+        identity: index for index, identity in enumerate(sorted(raw_variances or {}))
+    }
     parameters = (distance_model, raw_variances)
     optimizer = optax.adam(config.learning_rate)
     optimizer_state = (
@@ -837,9 +841,11 @@ def fit(
                 contributions = tuple(
                     _Contribution(
                         groups[i].payload,
-                        groups[i].identity,
-                        groups[i].species_index,
-                        groups[i].weight * correction,
+                        jnp.asarray(
+                            0 if raw_variances is None else variance_indices[groups[i].identity]
+                        ),
+                        jnp.asarray(groups[i].species_index),
+                        jnp.asarray(groups[i].weight * correction),
                     )
                     for i in chosen
                 )

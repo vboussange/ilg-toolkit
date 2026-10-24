@@ -124,14 +124,14 @@ def test_conductance_surface_uses_prediction_mode_for_custom_dropout(
     )
 
 
-def test_custom_conductance_hooks_fit_and_predict_requested_pairs(ConstantConductance):
+def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductance):
     region = RegionBatch(
         "river",
         cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
-    distance_model = ConstantConductance(jnp.array(2.0))
+    distance_model = PointConductance(jnp.log(jnp.array(2.0)))
     prediction = distance_model.predict(region, pairs=[("c", "a"), ("b", "a")])
     np.testing.assert_allclose(prediction.values, [1.0, 0.5], atol=1e-6)
     observations = PairwiseObservations.from_pairs(

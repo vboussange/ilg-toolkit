@@ -3,7 +3,7 @@
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from numbers import Integral
-from typing import overload
+from typing import cast, overload
 
 import jax
 import jax.numpy as jnp
@@ -456,29 +456,81 @@ class Ensemble:
             for name in species
         }
 
-    def ecological_distances(self, region: RegionBatch) -> dict[str, jax.Array]:
-        """Ecological distances for each ensemble member on its own distance scale."""
+    @overload
+    def ecological_distances(
+        self, region: RegionBatch, *, species: str | None = None
+    ) -> dict[str, jax.Array]: ...
+
+    @overload
+    def ecological_distances(
+        self, region: RegionBatch, *, species: Sequence[str]
+    ) -> dict[str, dict[str, jax.Array]]: ...
+
+    def ecological_distances(
+        self, region: RegionBatch, *, species: str | Sequence[str] | None = None
+    ) -> dict[str, jax.Array] | dict[str, dict[str, jax.Array]]:
+        """Ecological-distance matrices for each ensemble member on its own distance scale.
+
+        A species sequence returns a species-to-member mapping and shares each
+        member's pooled backbone.
+        """
+        models = self._completed()
+        if isinstance(species, str) or species is None:
+            return {
+                key: model.distance_model.predict(
+                    region, species=species, species_order=model.species
+                ).as_matrix()
+                for key, model in models.items()
+            }
+        predictions = {
+            key: model.distance_model.predict(region, species=species, species_order=model.species)
+            for key, model in models.items()
+        }
         return {
-            member_id: model.distance_model.predict(region).as_matrix()
-            for member_id, model in self._completed().items()
+            name: {key: values[name].as_matrix() for key, values in predictions.items()}
+            for name in species
         }
 
+    @overload
+    def conductance_surfaces(
+        self, region: RegionBatch, *, species: str | None = None
+    ) -> EnsembleSurface: ...
+
+    @overload
+    def conductance_surfaces(
+        self, region: RegionBatch, *, species: Sequence[str]
+    ) -> dict[str, EnsembleSurface]: ...
+
     @jax.enable_x64()
-    def conductance_surfaces(self, region: RegionBatch) -> EnsembleSurface:
-        """Mean and descriptive spread of ensemble members' conductance surfaces."""
+    def conductance_surfaces(
+        self, region: RegionBatch, *, species: str | Sequence[str] | None = None
+    ) -> EnsembleSurface | dict[str, EnsembleSurface]:
+        """Mean and descriptive spread of ensemble members' conductance surfaces.
+
+        A species sequence returns a mapping and shares each member's pooled backbone.
+        """
         surfaces = {}
         for member_id, model in self._completed().items():
             model._validate_region(region)
             if not isinstance(model.distance_model, ConductanceModel):
                 raise TypeError("This distance model does not produce a conductance surface")
-            surfaces[member_id] = model.distance_model.conductance_surface(region)
+            surfaces[member_id] = model.distance_model.conductance_surface(
+                region, species=species, species_order=model.species
+            )
         ids = self.expected_member_ids
         assert ids is not None
-        stacked = jnp.stack(
-            [jnp.asarray(surfaces[member_id], dtype=jnp.float64) for member_id in ids]
-        )
-        mean, spread = _summarize_members(stacked)
-        return EnsembleSurface(mean, ids, stacked, spread, region.name)
+
+        def summarize(values: Mapping[str, jax.Array]) -> EnsembleSurface:
+            stacked = jnp.stack([jnp.asarray(values[key], dtype=jnp.float64) for key in ids])
+            mean, spread = _summarize_members(stacked)
+            return EnsembleSurface(mean, ids, stacked, spread, region.name)
+
+        if isinstance(species, str) or species is None:
+            return summarize(cast(dict[str, jax.Array], surfaces))
+        return {
+            name: summarize({key: values[name] for key, values in surfaces.items()})
+            for name in species
+        }
 
 
 class _ProgressFailure(Exception):
