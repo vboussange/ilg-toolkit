@@ -190,7 +190,7 @@ All examples use one species except `multispecies.py`.
 - [ibd.py](examples/ibd.py): an isolation-by-distance (IBD) reference from geographic
   separation.
 - [multispecies.py](examples/multispecies.py): experimental multispecies inputs,
-  fitting, predictions, and conductance surfaces.
+  neural fitting, predictions, and MLPE calibration.
 
 From a clone, run an example with
 `JAX_PLATFORMS=cpu JAX_ENABLE_X64=true uv run python examples/<name>.py`.
