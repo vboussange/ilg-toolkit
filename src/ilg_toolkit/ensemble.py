@@ -1,8 +1,9 @@
-"""Independent population-holdout fitting and calibrated ensemble predictions."""
+"""Fold ensemble fitting and original-scale genetic predictions."""
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from numbers import Integral
+from typing import overload
 
 import jax
 import jax.numpy as jnp
@@ -11,26 +12,57 @@ import numpy as np
 from .config import TrainingConfig
 from .data import ObservationPartition, RegionBatch
 from .model import LandscapeGeneticsModel
-from .models import AbstractDistanceModel
+from .models import AbstractDistanceModel, ConductanceModel
+from .models.base import region_for_species
 from .prediction import Prediction
 from .training import TrainingState, _normalize_inputs, fit
+
+type FoldKey = str | tuple[str, str]
+
+
+def _group_identity(region: RegionBatch, observations) -> FoldKey:
+    name = observations.species
+    if name is None and region.species is not None:
+        names = set(region.species)
+        if len(names) != 1:
+            raise ValueError("Multispecies observations require species labels")
+        name = next(iter(names))
+    return region.name if name is None else (region.name, name)
+
+
+def _group_names(identity: FoldKey) -> tuple[str, str | None]:
+    return (identity, None) if isinstance(identity, str) else identity
+
+
+def _group_sort_key(identity: FoldKey) -> tuple[str, str]:
+    region, species = _group_names(identity)
+    return region, species or ""
+
+
+def _fold_groups(region, observations):
+    groups = {}
+    for item in _normalize_inputs(region, observations, None):
+        identity = _group_identity(item.region, item.observations)
+        if identity in groups:
+            raise ValueError("Provide one observations object per region–species group")
+        groups[identity] = item
+    return dict(sorted(groups.items(), key=lambda item: _group_sort_key(item[0])))
 
 
 @dataclass(frozen=True)
 class PopulationFold:
-    """Declared endpoint holdout and observed target roles for each region.
+    """Sampling-unit holdouts and observation roles for each region–species group.
 
-    Training pairs cannot touch held-out units. Validation is optional and its
-    target access is retained by the model, even when it overlaps the query
-    partition. A nominal query assignment does not itself establish eligibility
-    for out-of-fold evaluation after validation, recalibration or conditioning.
+    Keys are region names for unnamed species and ``(region, species)`` for named
+    species. Training pairs use sampling units outside the holdout, and optional
+    validation pairs record target access for model selection.
     """
 
     fold_id: str
-    held_out_units: Mapping[str, tuple[str, ...]]
-    training: Mapping[str, ObservationPartition]
-    query: Mapping[str, ObservationPartition] = field(default_factory=dict)
-    validation: Mapping[str, ObservationPartition] = field(default_factory=dict)
+    held_out_units: Mapping[FoldKey, tuple[str, ...]]
+    training: Mapping[FoldKey, ObservationPartition]
+    query: Mapping[FoldKey, ObservationPartition] = field(default_factory=dict)
+    validation: Mapping[FoldKey, ObservationPartition] = field(default_factory=dict)
     query_regime: str = "both_unseen"
 
     def __post_init__(self):
@@ -40,21 +72,26 @@ class PopulationFold:
             raise ValueError("query_regime must be both_unseen or at_least_one_unseen")
         held_out = {name: tuple(labels) for name, labels in self.held_out_units.items()}
         if not held_out or any(
-            not isinstance(name, str)
-            or not name
+            not (
+                isinstance(name, str)
+                and bool(name)
+                or isinstance(name, tuple)
+                and len(name) == 2
+                and all(isinstance(part, str) and part for part in name)
+            )
             or not labels
             or len(set(labels)) != len(labels)
             or any(not isinstance(label, str) or not label for label in labels)
             for name, labels in held_out.items()
         ):
-            raise ValueError("Each fold region requires distinct labelled held-out units")
+            raise ValueError("Each fold region requires distinct labeled held-out units")
         held_out = {name: tuple(sorted(labels)) for name, labels in held_out.items()}
         object.__setattr__(self, "held_out_units", held_out)
         for role in ("training", "query", "validation"):
             partitions = dict(getattr(self, role))
             if any(
                 not isinstance(partition, ObservationPartition)
-                or name != partition.region_name
+                or _group_names(name)[0] != partition.region_name
                 or partition.role != role
                 for name, partition in partitions.items()
             ):
@@ -62,17 +99,17 @@ class PopulationFold:
                     f"Fold {role} partitions must have matching region names and roles"
                 )
             if not set(partitions).issubset(held_out):
-                raise ValueError("Fold partition regions must have declared endpoint holdouts")
+                raise ValueError("Fold partition regions must have sampling-unit holdouts")
             object.__setattr__(self, role, partitions)
         if set(self.training) != set(held_out):
             raise ValueError("Fold training and held-out region names must match exactly")
         for name, partition in self.training.items():
             if any(set(pair) & set(held_out[name]) for pair in partition.pairs):
-                raise ValueError("Fold training pairs cannot include held-out endpoints")
+                raise ValueError("Fold training pairs cannot include held-out sampling units")
         for name, partition in self.query.items():
             count = 2 if self.query_regime == "both_unseen" else 1
             if any(len(set(pair) & set(held_out[name])) < count for pair in partition.pairs):
-                raise ValueError("Fold query pairs violate the declared endpoint holdout regime")
+                raise ValueError("Fold query pairs violate the sampling-unit holdout regime")
         for name, partition in self.validation.items():
             if set(partition.pairs) & set(self.training[name].pairs):
                 raise ValueError("Fold training and validation pairs must be disjoint")
@@ -89,38 +126,37 @@ def generate_population_folds(
     observations,
     *,
     n_folds: int,
-    holdout_size: int | Mapping[str, int],
+    holdout_size: int | Mapping[FoldKey, int],
     seed: int = 0,
     query_regime: str = "both_unseen",
 ) -> tuple[PopulationFold, ...]:
-    """Generate repeated seeded population holdouts, with no validation target access.
+    """Seeded population holdouts drawn separately for each region–species group.
 
-    Draws use one seeded random generator and may overlap between folds.
-    Training uses observed pairs with neither endpoint held out. Queries
-    use both held-out endpoints by default, or at least one when declared.
-    Unobserved pairs stay absent. A draw with no observed training/query pairs
-    fails explicitly; supplied folds can express a different study design.
+    Training uses observed pairs outside the holdout, and queries use both held-out
+    sampling units by default or at least one when requested. ``holdout_size`` is
+    one size or a mapping with the same keys as ``PopulationFold.held_out_units``.
+    Every draw requires observed training and query pairs.
     """
     n_folds = _integer(n_folds, "n_folds", minimum=1)
     seed = _integer(seed, "seed")
     if query_regime not in {"both_unseen", "at_least_one_unseen"}:
         raise ValueError("query_regime must be both_unseen or at_least_one_unseen")
-    inputs = _normalize_inputs(region, observations, None)
-    names = {prepared.name for prepared, _, _ in inputs}
-    if isinstance(holdout_size, Mapping) and set(holdout_size) != names:
-        raise ValueError("holdout_size mapping must match region names exactly")
+    inputs = _fold_groups(region, observations)
+    if isinstance(holdout_size, Mapping) and set(holdout_size) != set(inputs):
+        raise ValueError("holdout_size mapping must match region–species groups")
     folds = []
     rng = np.random.default_rng(seed)
     for index in range(n_folds):
         held_out, training, query = {}, {}, {}
         fold_id = f"fold-{index:04d}"
-        for prepared, observed, _ in inputs:
+        for identity, (region, observed, _) in inputs.items():
+            prepared = region_for_species(region, _group_names(identity)[1])
             assert prepared.sampling_unit_kinds is not None
             if any(kind != "population" for kind in prepared.sampling_unit_kinds):
                 raise ValueError("Population holdout generation requires population sampling units")
             observed.aligned_pairs(prepared)
             size = _integer(
-                holdout_size[prepared.name] if isinstance(holdout_size, Mapping) else holdout_size,
+                holdout_size[identity] if isinstance(holdout_size, Mapping) else holdout_size,
                 "holdout_size",
                 minimum=1,
             )
@@ -128,7 +164,7 @@ def generate_population_folds(
                 raise ValueError("holdout_size must leave at least two training sampling units")
             labels = sorted(prepared.sampling_unit_ids)
             selected = set(rng.choice(labels, size=size, replace=False).tolist())
-            held_out[prepared.name] = tuple(sorted(selected))
+            held_out[identity] = tuple(sorted(selected))
             pairs = tuple(sorted((min(a, b), max(a, b)) for a, b in observed.observed_pairs))
             train_pairs = tuple(pair for pair in pairs if not selected.intersection(pair))
             threshold = 2 if query_regime == "both_unseen" else 1
@@ -138,17 +174,17 @@ def generate_population_folds(
             if not train_pairs or not query_pairs:
                 raise ValueError(
                     f"{fold_id}/{prepared.name}: holdout has no observed training or query pairs; "
-                    "supply explicit folds or adjust the holdout"
+                    "supply folds or adjust the holdout"
                 )
-            training[prepared.name] = ObservationPartition(prepared.name, train_pairs, "training")
-            query[prepared.name] = ObservationPartition(prepared.name, query_pairs, "query")
+            training[identity] = ObservationPartition(prepared.name, train_pairs, "training")
+            query[identity] = ObservationPartition(prepared.name, query_pairs, "query")
         folds.append(PopulationFold(fold_id, held_out, training, query, query_regime=query_regime))
     return tuple(folds)
 
 
 @dataclass(frozen=True)
 class MemberIdentity:
-    """Readable identity from a fold and its declared initialization seed."""
+    """An ensemble member identity combining its fold and initialization seed."""
 
     fold_id: str
     initialization_seed: int
@@ -167,19 +203,16 @@ class MemberIdentity:
 
 
 def ensemble_member_identity(fold_id: str, initialization_seed: int) -> MemberIdentity:
-    """Identify a member without changing its declared initialization seed."""
+    """An ensemble member identity for the supplied fold and initialization seed."""
     return MemberIdentity(fold_id, initialization_seed)
 
 
 @dataclass(frozen=True)
 class MemberFailure:
-    """A fitting, callback or prediction failure retained for caller inspection.
+    """A fitting, callback, or prediction failure retained for caller inspection.
 
-    Attributes:
-        stage: Operation that failed, such as ``"fit"``, ``"prediction"`` or
-            ``"member"`` for an unavailable OOF member.
-        error_type: Exception class name, or ``"Pending"`` for a pending member.
-        message: Human-readable diagnostic; no failed member is silently dropped.
+    ``stage`` identifies the failed operation, ``error_type`` names the exception,
+    and ``message`` describes the failure.
     """
 
     stage: str
@@ -189,7 +222,7 @@ class MemberFailure:
 
 @dataclass(frozen=True)
 class EnsembleMember:
-    """One requested member, with its own fit/provenance or an explicit failure."""
+    """One ensemble member with its fitted model, observation-use records, or failure."""
 
     identity: MemberIdentity
     fold: PopulationFold
@@ -202,7 +235,7 @@ class EnsembleMember:
         if not isinstance(self.identity, MemberIdentity) or not isinstance(
             self.fold, PopulationFold
         ):
-            raise ValueError("Member requires an explicit identity and population fold")
+            raise ValueError("Member requires an identity and population fold")
         if self.identity.fold_id != self.fold.fold_id:
             raise ValueError("Member identity and fold must match")
         if self.status not in {"completed", "failed", "pending"}:
@@ -212,32 +245,21 @@ class EnsembleMember:
         ):
             raise ValueError("A completed member requires a model and no failure")
         if self.status == "failed" and (self.failure is None or self.model is not None):
-            raise ValueError("A failed member requires an explicit failure and no model")
+            raise ValueError("A failed member requires a failure and no model")
         if self.status == "pending" and (self.model is not None or self.failure is not None):
             raise ValueError("A pending member has no model or failure yet")
 
 
 @dataclass(frozen=True)
 class EnsemblePrediction:
-    """Deployment means over every member, after each target inverse transform.
+    """Deployment genetic predictions averaged across every ensemble member on the original scale.
 
-    This result imposes no holdout or actual-access eligibility rule. All members
-    must succeed. Numerical arrays use scoped float64 aggregation without
-    changing global JAX precision. No common model-scale mean, predictive
-    variance or covariance is inferred.
+    ``prediction`` contains the mean, and ``member_values`` has rows in
+    ``member_ids`` order and columns in query-pair order.
+    Every member must succeed; its target inverse transform precedes float64
+    averaging, and ``member_spread`` gives the population standard deviation.
 
-    Attributes:
-        prediction: Common ``Prediction`` with original-scale mean points
-            ``(m,)``, ordered/oriented pairs, region, target and full query-region
-            sampling-unit order. ``as_matrix()`` represents these points only.
-        member_ids: Complete requested member order, of length ``k``.
-        member_values: Finite original-scale member points ``(k, m)``, with rows
-            in ``member_ids`` order and columns in ``prediction.pairs`` order.
-            Each inverse transformation occurs before equal-weight averaging.
-        member_spread: Descriptive population SD (ddof=0) ``(m,)`` in original
-            target units. One member gives zero disagreement. This is neither
-            statistical predictive variance nor a confidence interval and
-            excludes within-member conditional variance.
+    Note: Member spread describes disagreement, not statistical predictive uncertainty.
     """
 
     prediction: Prediction
@@ -248,7 +270,7 @@ class EnsemblePrediction:
 
 @dataclass(frozen=True)
 class EnsembleSurface:
-    """Descriptive conductance summaries; no resistance is solved from this mean."""
+    """Mean and descriptive spread of ensemble members' conductance surfaces."""
 
     values: jax.Array
     member_ids: tuple[str, ...]
@@ -263,27 +285,11 @@ def aggregate_predictions(
     *,
     expected_member_ids: Sequence[str] | None = None,
 ) -> EnsemblePrediction:
-    """Average aligned original-scale points with complete member composition.
+    """Equal-weight means and descriptive spread of aligned member predictions.
 
-    Args:
-        predictions: Nonempty member-ID mapping to common ``Prediction``
-            records already inverse-transformed into original target units.
-            Regions, target contracts, ordered/oriented pairs, sampling-unit
-            matrix orders and finite vector shapes must agree exactly.
-        expected_member_ids: Optional unique complete member order. Defaults to
-            mapping insertion order. Missing or extra members are rejected,
-            rather than silently reducing the requested ensemble.
-
-    Returns:
-        ``EnsemblePrediction`` containing equal-weight original-scale means,
-        member values ``(k, m)`` and descriptive population SD ``(m,)``. Scoped
-        float64 aggregation leaves global JAX precision unchanged and performs
-        no additional prediction, calibration or model mutation.
-
-    Raises:
-        ValueError: Composition, labelled identities, targets, shapes or finite
-            member values are incompatible.
-        FloatingPointError: Aggregated mean or spread is nonfinite.
+    Region, species, query pairs, sampling-unit order and finite values must agree.
+    Callers supply values in common units; fitted ensembles validate target
+    compatibility on their models.
     """
     if not predictions:
         raise ValueError("An ensemble aggregate requires at least one member prediction")
@@ -291,16 +297,15 @@ def aggregate_predictions(
     if not ids or len(set(ids)) != len(ids) or set(ids) != set(predictions):
         raise ValueError("Missing, extra or duplicate ensemble members; composition cannot shrink")
     if any(not isinstance(value, Prediction) for value in predictions.values()):
-        raise ValueError("Aggregate inputs must be labelled original-scale Prediction values")
+        raise ValueError("Aggregate inputs must be labeled original-scale Prediction values")
     first = predictions[ids[0]]
     values = []
     for member_id in ids:
         prediction = predictions[member_id]
-        if prediction.target != first.target or prediction.scale != "original":
-            raise ValueError("Ensemble predictions require compatible original target scales")
         if (
             prediction.sampling_unit_ids != first.sampling_unit_ids
             or prediction.pairs != first.pairs
+            or prediction.species != first.species
             or prediction.region_name != first.region_name
         ):
             raise ValueError(
@@ -313,7 +318,7 @@ def aggregate_predictions(
     stacked = jnp.stack(values)
     mean, spread = _summarize_members(stacked)
     return EnsemblePrediction(
-        Prediction(mean, first.pairs, first.region_name, first.target, first.sampling_unit_ids),
+        Prediction(mean, first.pairs, first.region_name, first.sampling_unit_ids, first.species),
         ids,
         stacked,
         spread,
@@ -322,9 +327,9 @@ def aggregate_predictions(
 
 @jax.jit
 def _member_moments(values):
-    # Divide before summing and scale before squaring to avoid avoidable overflow.
-    # Binary exponents avoid the underflowed reciprocal of a very large scale
-    # in XLA's division lowering (which would silently erase member spread).
+    # Divide before summing and scale before squaring to prevent overflow.
+    # Binary exponent scaling preserves member spread when a very large scale
+    # would cause its reciprocal to underflow.
     mean = jnp.sum(values / len(values), axis=0)
     _, exponent = jnp.frexp(jnp.max(jnp.abs(values), axis=0))
     normalized = jnp.ldexp(values, -exponent)
@@ -341,22 +346,11 @@ def _summarize_members(values):
 
 @dataclass(frozen=True)
 class Ensemble:
-    """Retain complete requested outcomes for deployment and OOF evaluation.
+    """Fold ensemble retaining every requested member's outcome.
 
-    Attributes:
-        members: Nonempty tuple of uniquely identified ``EnsembleMember``
-            outcomes, including completed, failed and pending fits. Completed
-            models must share target and feature contracts.
-        expected_member_ids: Unique complete requested member order. Defaults to
-            ``members`` order; explicit identities must match those outcomes
-            exactly. Deployment requires every member completed; OOF can report
-            partial coverage with failures retained.
-        failures: Derived member-ID mapping to recorded failed-fit diagnostics.
-            Pending fits and OOF prediction failures are reported separately.
-
-    Raises:
-        ValueError: Composition or completed models' target/feature contracts
-            are incompatible.
+    Completed members share their species order, target, and feature contract.
+    Deployment requires every member to succeed; out-of-fold evaluation reports
+    partial coverage with unavailable members and failures retained.
     """
 
     members: tuple[EnsembleMember, ...]
@@ -387,15 +381,18 @@ class Ensemble:
                 p.target != first.target
                 or p.feature_count != first.feature_count
                 or p.feature_names != first.feature_names
+                or p.species != first.species
                 for p in completed
             ):
-                raise ValueError("Ensemble members require compatible target and feature contracts")
+                raise ValueError(
+                    "Ensemble members require matching target, features and species order"
+                )
         object.__setattr__(self, "members", members)
         object.__setattr__(self, "expected_member_ids", expected)
 
     @property
     def failures(self):
-        """Return failed-fit diagnostics keyed by member ID; omit pending fits."""
+        """Failed-fit diagnostics keyed by ensemble member identifier."""
         return {
             member.identity.member_id: member.failure
             for member in self.members
@@ -417,61 +414,64 @@ class Ensemble:
             models[member.identity.member_id] = member.model
         return models
 
-    def predict(self, region: RegionBatch, pairs=None) -> EnsemblePrediction:
-        """Predict marginal genetic points with every requested member.
+    @overload
+    def predict(
+        self, region: RegionBatch, pairs=None, *, species: str | None = None
+    ) -> EnsemblePrediction: ...
 
-        Deployment has no endpoint holdout or actual-target-access requirement.
-        MLPE members use their region's marginal calibration, with population
-        effect means zero; direct members apply their target inverse transform.
-        Use ``predict_out_of_fold`` for eligibility-filtered evaluation.
+    @overload
+    def predict(
+        self, region: RegionBatch, pairs=None, *, species: Sequence[str]
+    ) -> dict[str, EnsemblePrediction]: ...
 
-        Args:
-            region: One ``RegionBatch`` with located query units and features
-                matching each member's feature contract. MLPE members require
-                calibration for this region. No genetic query targets are used.
-            pairs: Optional nonempty iterable of distinct unordered labelled
-                pairs. Caller order/orientation is retained; self-pairs,
-                duplicates (including reversals) and unlocated labels fail.
-                ``None`` requests all distinct pairs in region sampling-unit
-                order. Selected distances are inverted only for requested pairs.
+    def predict(
+        self, region: RegionBatch, pairs=None, *, species: str | Sequence[str] | None = None
+    ) -> EnsemblePrediction | dict[str, EnsemblePrediction]:
+        """Deployment genetic predictions averaged over every ensemble member.
 
-        Returns:
-            ``EnsemblePrediction`` composing original-scale mean points and
-            full region matrix order, member values ``(k, m)`` and descriptive
-            original-unit SD ``(m,)``. Each member's inverse transform precedes
-            averaging. Aggregation uses scoped float64 without changing global
-            precision; resistance calculations require explicitly enabled x64.
-            No member is fitted or mutated and no query targets are read.
-
-        Raises:
-            RuntimeError: Any requested member is failed or pending.
-            ValueError: Features, regional calibration, pair selection or member
-                outputs are incompatible. Deployment propagates prediction
-                failures rather than returning partial composition.
-            FloatingPointError: A member prediction, target inverse or aggregate
-                produces invalid numerical values.
+        Species selection follows ``LandscapeGeneticsModel.predict``; a sequence
+        returns a mapping and shares each member's pooled backbone. Each member's
+        target inverse transform precedes averaging, with descriptive spread in
+        original target units. Every requested member must succeed.
         """
         models = self._completed()
         pairs = None if pairs is None else tuple(pairs)
+        if isinstance(species, str) or species is None:
+            return aggregate_predictions(
+                {
+                    key: model.predict(region, pairs=pairs, species=species)
+                    for key, model in models.items()
+                },
+                expected_member_ids=self.expected_member_ids,
+            )
         predictions = {
-            member_id: model.predict(region, pairs) for member_id, model in models.items()
+            key: model.predict(region, pairs=pairs, species=species)
+            for key, model in models.items()
         }
-        return aggregate_predictions(predictions, expected_member_ids=self.expected_member_ids)
+        return {
+            name: aggregate_predictions(
+                {key: values[name] for key, values in predictions.items()},
+                expected_member_ids=self.expected_member_ids,
+            )
+            for name in species
+        }
 
     def ecological_distances(self, region: RegionBatch) -> dict[str, jax.Array]:
-        """Return each member's ecological distances separately; their scales can differ."""
+        """Ecological distances for each ensemble member on its own distance scale."""
         return {
-            member_id: model.ecological_distances(region)
+            member_id: model.distance_model.predict(region).as_matrix()
             for member_id, model in self._completed().items()
         }
 
     @jax.enable_x64()
     def conductance_surfaces(self, region: RegionBatch) -> EnsembleSurface:
-        """Return an explicitly descriptive surface mean, separate from genetic means."""
-        surfaces = {
-            member_id: model.conductance_surface(region)
-            for member_id, model in self._completed().items()
-        }
+        """Mean and descriptive spread of ensemble members' conductance surfaces."""
+        surfaces = {}
+        for member_id, model in self._completed().items():
+            model._validate_region(region)
+            if not isinstance(model.distance_model, ConductanceModel):
+                raise TypeError("This distance model does not produce a conductance surface")
+            surfaces[member_id] = model.distance_model.conductance_surface(region)
         ids = self.expected_member_ids
         assert ids is not None
         stacked = jnp.stack(
@@ -489,19 +489,20 @@ class _ProgressFailure(Exception):
 def _fold_inputs(region, observations, fold):
     if not isinstance(fold, PopulationFold):
         raise ValueError("fold must be a PopulationFold")
-    inputs = _normalize_inputs(region, observations, fold.training)
-    if set(fold.held_out_units) != {prepared.name for prepared, _, _ in inputs}:
-        raise ValueError("Fold region identities must match all supplied regions")
-    for prepared, observed, partition in inputs:
+    inputs = _fold_groups(region, observations)
+    if set(fold.held_out_units) != set(inputs):
+        raise ValueError("Fold identities must match all supplied region–species groups")
+    for identity, (region, observed, _) in inputs.items():
+        prepared = region_for_species(region, _group_names(identity)[1])
         assert prepared.sampling_unit_kinds is not None
         if any(kind != "population" for kind in prepared.sampling_unit_kinds):
             raise ValueError("Population folds require population sampling units")
-        if not set(fold.held_out_units[prepared.name]).issubset(prepared.sampling_unit_ids):
-            raise ValueError("Fold held-out endpoints must belong to the prepared region")
-        observed.aligned_pairs(prepared, partition)
+        if not set(fold.held_out_units[identity]).issubset(prepared.sampling_unit_ids):
+            raise ValueError("Fold held-out sampling units must belong to the region batch")
+        observed.aligned_pairs(prepared, fold.training[identity])
         for partitions in (fold.validation, fold.query):
-            if prepared.name in partitions:
-                observed.aligned_pairs(prepared, partitions[prepared.name])
+            if identity in partitions:
+                observed.aligned_pairs(prepared, partitions[identity])
     return inputs
 
 
@@ -511,41 +512,46 @@ def fit_ensemble_member(
     *,
     fold: PopulationFold,
     initialization_seed: int,
+    species: Sequence[str] | None = None,
     config: TrainingConfig | None = None,
     model_factory: Callable[[jax.Array], AbstractDistanceModel] | None = None,
     state: TrainingState | None = None,
-    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
+    on_step: Callable[[MemberIdentity, TrainingState], None] | None = None,
 ) -> EnsembleMember:
-    """Fit or continue one independent member, the persistence orchestration seam.
+    """An ensemble member fitted or continued using its population fold.
 
-    Fresh fitting requires ``config`` and ``model_factory``. The factory receives
-    ``jax.random.PRNGKey(initialization_seed)`` directly and
-    must construct a fresh encoder. Continuation uses the state encoder instead.
-    Callback errors propagate so interrupted persistence cannot be mistaken for
-    an ordinary failed member. Training/initialization errors return a failure.
+    Fresh fitting requires ``config`` and a ``model_factory`` receiving the
+    initialization seed as a JAX random key. ``species`` gives the factory model's
+    parameter order, as in ``fit``. Callback errors propagate, while initialization
+    and training errors return a failed member.
     """
     inputs = _fold_inputs(region, observations, fold)
     identity = ensemble_member_identity(fold.fold_id, initialization_seed)
     if state is None and (config is None or model_factory is None):
         raise ValueError("Fresh ensemble members require config and model_factory")
     if state is not None and state.config.seed != identity.initialization_seed:
-        raise ValueError("Continuation state must match the declared initialization_seed")
+        raise ValueError("Continuation state must match the initialization_seed")
     config = state.config if config is None and state is not None else config
     assert config is not None
     config = replace(config, seed=identity.initialization_seed)
-    regions = {prepared.name: prepared for prepared, _, _ in inputs}
-    observed = {prepared.name: values for prepared, values, _ in inputs}
-    validation = None
-    if fold.validation:
-        validation = (
-            {name: regions[name] for name in fold.validation},
-            {name: observed[name] for name in fold.validation},
-        )
+
+    def selected_inputs(partitions):
+        regions, observed, selected = {}, {}, {}
+        for identity, partition in partitions.items():
+            prepared, values, _ = inputs[identity]
+            regions[prepared.name] = prepared
+            observed.setdefault(prepared.name, []).append(values)
+            selected.setdefault(prepared.name, []).append(partition)
+        return regions, observed, selected
+
+    regions, observed, training_partition = selected_inputs(fold.training)
+    validation_regions, validation_observed, validation_partition = selected_inputs(fold.validation)
+    validation = (validation_regions, validation_observed) if fold.validation else None
 
     def progress(current: TrainingState):
-        assert on_epoch is not None
+        assert on_step is not None
         try:
-            on_epoch(identity, current)
+            on_step(identity, current)
         except Exception as error:
             raise _ProgressFailure(error) from error
 
@@ -563,11 +569,12 @@ def fit_ensemble_member(
             observed,
             distance_model=model,
             config=config,
-            partition=fold.training,
+            species=species,
+            partition=training_partition,
             validation=validation,
-            validation_partition=fold.validation if fold.validation else None,
+            validation_partition=validation_partition if fold.validation else None,
             state=state,
-            on_epoch=progress if on_epoch is not None else None,
+            on_step=progress if on_step is not None else None,
         )
     except _ProgressFailure as failure:
         raise failure.error from failure
@@ -590,10 +597,10 @@ def _prepare_ensemble(
     query_regime,
     initialization_seeds,
 ):
-    """Validate composition without initializing or fitting any member."""
+    """Validation of the requested folds and ensemble member identities."""
     if folds is None:
         if n_folds is None or holdout_size is None:
-            raise ValueError("Supply explicit folds or both n_folds and holdout_size")
+            raise ValueError("Supply folds or both n_folds and holdout_size")
         folds = generate_population_folds(
             region,
             observations,
@@ -603,7 +610,7 @@ def _prepare_ensemble(
             query_regime=query_regime,
         )
     elif n_folds is not None or holdout_size is not None:
-        raise ValueError("Use explicit folds or generated-fold options, not both")
+        raise ValueError("Use folds or generated-fold options, not both")
     folds = tuple(folds)
     if not folds or any(not isinstance(fold, PopulationFold) for fold in folds):
         raise ValueError("An ensemble requires nonempty PopulationFold inputs")
@@ -626,23 +633,22 @@ def fit_ensemble(
     *,
     folds: Sequence[PopulationFold] | None = None,
     n_folds: int | None = None,
-    holdout_size: int | Mapping[str, int] | None = None,
+    holdout_size: int | Mapping[FoldKey, int] | None = None,
     fold_seed: int = 0,
     query_regime: str = "both_unseen",
     initialization_seeds: Sequence[int] | None = None,
+    species: Sequence[str] | None = None,
     config: TrainingConfig,
     model_factory: Callable[[jax.Array], AbstractDistanceModel] | None = None,
     member_states: Mapping[str, TrainingState] | None = None,
-    on_epoch: Callable[[MemberIdentity, TrainingState], None] | None = None,
+    on_step: Callable[[MemberIdentity, TrainingState], None] | None = None,
     on_member: Callable[[EnsembleMember], None] | None = None,
 ) -> Ensemble:
-    """Sequential independent fits from explicit or reproducibly generated folds.
+    """Fold ensemble fitted from supplied or seeded population holdouts.
 
-    Default generated holdouts are query-only. Explicit validation uses its
-    targets for encoder selection and is recorded. All requested outcomes are
-    returned, including failures; prediction refuses to drop failed members.
-    Per-member continuation and epoch/member callbacks support external durable
-    orchestration without making persistence mandatory.
+    ``species`` gives each factory model's parameter order, as in ``fit``.
+    Every requested member outcome is retained, including initialization or
+    training failures. Member states and callbacks support continuation.
     """
     folds, seeds, identities = _prepare_ensemble(
         region,
@@ -671,10 +677,11 @@ def fit_ensemble(
                 observations,
                 fold=fold,
                 initialization_seed=seed,
+                species=species,
                 config=config,
                 model_factory=model_factory,
                 state=states.get(identity.member_id),
-                on_epoch=on_epoch,
+                on_step=on_step,
             )
             members.append(member)
             if on_member is not None:

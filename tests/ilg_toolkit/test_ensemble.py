@@ -21,6 +21,70 @@ from ilg_toolkit import (
 )
 
 
+@pytest.mark.parametrize("num_species", [1, 2])
+def test_folds_hold_out_sampling_units_within_each_species(training_problem, num_species):
+    region, observations, _ = training_problem("embedding", num_species=num_species)
+    folds = generate_population_folds(region, observations, n_folds=2, holdout_size=2, seed=47)
+    expected = (
+        {region.name}
+        if num_species == 1
+        else {(region.name, "species-0"), (region.name, "species-1")}
+    )
+    for fold in folds:
+        assert set(fold.held_out_units) == expected
+        for identity, held_out in fold.held_out_units.items():
+            assert len(held_out) == 2
+            assert fold.query[identity].pairs == (tuple(sorted(held_out)),)
+            assert all(not set(pair) & set(held_out) for pair in fold.training[identity].pairs)
+    if num_species == 2:
+        assert folds == generate_population_folds(
+            region, observations[::-1], n_folds=2, holdout_size=2, seed=47
+        )
+
+
+def test_multispecies_deployment_averages_every_member_and_requires_shared_order(
+    training_problem, completed_model
+):
+    from dataclasses import replace
+
+    from ilg_toolkit import Ensemble
+
+    region, observations, distance_model = training_problem("embedding", num_species=2)
+    order = ("species-1", "species-0")
+    ensemble = fit_ensemble(
+        region,
+        observations,
+        species=order,
+        n_folds=2,
+        holdout_size=2,
+        config=TrainingConfig(objective="direct_log1p", steps=0),
+        model_factory=lambda key: distance_model,
+    )
+    assert all(member.status == "completed" for member in ensemble.members)
+    with pytest.raises(ValueError):
+        ensemble.predict(region)
+    predictions = ensemble.predict(region, species=order)
+    for name in order:
+        reference = np.stack(
+            [
+                completed_model(member).predict(region, species=name).values
+                for member in ensemble.members
+            ]
+        )
+        np.testing.assert_allclose(predictions[name].prediction.values, reference.mean(axis=0))
+        np.testing.assert_array_equal(predictions[name].member_values, reference)
+        np.testing.assert_array_equal(
+            ensemble.predict(region, species=name).prediction.values,
+            predictions[name].prediction.values,
+        )
+    changed = replace(
+        ensemble.members[0],
+        model=replace(completed_model(ensemble.members[0]), species=order[::-1]),
+    )
+    with pytest.raises(ValueError):
+        Ensemble((changed, ensemble.members[1]))
+
+
 def test_declared_seeds_initialize_readable_members_directly(
     completed_fit, embedding_problem, model_factory
 ):
@@ -31,7 +95,7 @@ def test_declared_seeds_initialize_readable_members_directly(
         observations,
         folds=folds,
         initialization_seeds=(13, 29),
-        config=TrainingConfig(objective="mlpe", epochs=0),
+        config=TrainingConfig(objective="mlpe", steps=0),
         model_factory=model_factory,
     )
     assert result.expected_member_ids == (
@@ -53,7 +117,7 @@ def test_fresh_ensemble_requires_factory_and_explicit_training_configuration(
 ):
     region, observations = embedding_problem()
     fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2)[0]
-    config = TrainingConfig(objective="mlpe", epochs=0)
+    config = TrainingConfig(objective="mlpe", steps=0)
     with pytest.raises(TypeError):
         fit_ensemble(  # pyright: ignore[reportCallIssue]
             region, observations, folds=[fold], model_factory=model_factory
@@ -75,7 +139,7 @@ def test_factory_cannot_silently_select_a_builtin_model(embedding_problem):
         observations,
         n_folds=1,
         holdout_size=2,
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
         model_factory=lambda key: None,  # pyright: ignore[reportArgumentType]
     )
     member = result.members[0]
@@ -95,7 +159,7 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
             observations,
             folds=folds,
             initialization_seeds=(13, 29),
-            config=TrainingConfig(objective="mlpe", epochs=3, learning_rate=0.03),
+            config=TrainingConfig(objective="mlpe", steps=3, learning_rate=0.03),
             model_factory=model_factory,
         )
         prediction = result.predict(region)
@@ -114,7 +178,6 @@ def test_public_fold_ensemble_fits_independent_members_and_averages_calibrated_p
     np.testing.assert_allclose(prediction.prediction.values, member_values.mean(axis=0), atol=1e-12)
     np.testing.assert_allclose(prediction.member_spread, member_values.std(axis=0), atol=1e-12)
     np.testing.assert_array_equal(prediction.member_values, member_values)
-    assert prediction.prediction.target.units == "index"
     for member in result.members:
         model, fitted = completed_fit(member)
         assert fitted.history[-1].training_loss < fitted.history[0].training_loss
@@ -161,7 +224,7 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
             target=observations.target,
             sampling_unit_ids=region.sampling_unit_ids,
         )
-        config = TrainingConfig(objective="mlpe", epochs=2)
+        config = TrainingConfig(objective="mlpe", steps=2)
         baseline = fit_ensemble(
             region, observations, folds=[fold], config=config, model_factory=model_factory
         )
@@ -181,14 +244,13 @@ def test_generated_folds_are_identity_stable_and_query_values_cannot_change_memb
 
 
 def test_original_scale_known_outputs_are_averaged_after_inverse_transformation():
-    from ilg_toolkit import Prediction, TargetSpec, aggregate_predictions
+    from ilg_toolkit import Prediction, aggregate_predictions
 
-    target = TargetSpec("divergence", units="index", transform="log1p")
     transformed = [np.log(2), np.log(10)]
     with jax.enable_x64():
         predictions = {
             str(i): Prediction(
-                jnp.asarray([np.expm1(value)]), (("b", "a"),), "alpine", target, ("a", "b", "extra")
+                jnp.asarray([np.expm1(value)]), (("b", "a"),), "alpine", ("a", "b", "extra")
             )
             for i, value in enumerate(transformed)
         }
@@ -201,28 +263,24 @@ def test_original_scale_known_outputs_are_averaged_after_inverse_transformation(
     np.testing.assert_allclose(result.member_spread, [4], atol=1e-14)
     np.testing.assert_allclose(result.member_values, [[1], [9]], atol=1e-14)
     np.testing.assert_allclose(
-        result.prediction.as_matrix(), [[0, 5, np.nan], [5, 0, np.nan], [np.nan, np.nan, 0]]
+        result.prediction.as_matrix(),
+        [[np.nan, 5, np.nan], [5, np.nan, np.nan], [np.nan, np.nan, np.nan]],
     )
     assert result.prediction.pairs == (("b", "a"),)
     assert result.prediction.region_name == "alpine"
     assert not np.allclose(result.prediction.values, np.expm1(np.mean(transformed)))
-    assert result.prediction.scale == "original"
-    assert result.prediction.target == target
 
 
 def test_original_scale_aggregation_preserves_large_finite_means_and_spreads():
-    from ilg_toolkit import Prediction, TargetSpec, aggregate_predictions
+    from ilg_toolkit import Prediction, aggregate_predictions
 
     with jax.enable_x64():
-        target = TargetSpec("signed synthetic measurement")
         for levels, expected_mean, expected_spread in [
             ((1e308, 1e308), 1e308, 0),
             ((-1e308, 1e308), 0, 1e308),
         ]:
             predictions = {
-                str(i): Prediction(
-                    jnp.asarray([level]), (("a", "b"),), "alpine", target, ("a", "b")
-                )
+                str(i): Prediction(jnp.asarray([level]), (("a", "b"),), "alpine", ("a", "b"))
                 for i, level in enumerate(levels)
             }
             result = aggregate_predictions(predictions)
@@ -254,7 +312,7 @@ def test_failed_members_and_missing_composition_cannot_be_silently_dropped(
         holdout_size=2,
         fold_seed=47,
         initialization_seeds=(1, 2, 3),
-        config=TrainingConfig(objective="direct_log1p", epochs=0),
+        config=TrainingConfig(objective="direct_log1p", steps=0),
         model_factory=partly_broken_factory,
         on_member=outcomes.append,
     )
@@ -295,7 +353,7 @@ def test_explicit_validation_retains_selection_target_access_on_every_member(
             region,
             observations,
             folds=[fold],
-            config=TrainingConfig(objective="mlpe", epochs=2),
+            config=TrainingConfig(objective="mlpe", steps=2),
             model_factory=model_factory,
         )
     member = result.members[0]
@@ -319,16 +377,12 @@ def test_incompatible_scales_and_invalid_fold_membership_fail_clearly(
         ObservationPartition,
         PopulationFold,
         Prediction,
-        TargetSpec,
         aggregate_predictions,
     )
 
-    target = TargetSpec("divergence", units="index")
-    first = Prediction(jnp.zeros(1), (("a", "b"),), "alpine", target, ("a", "b"))
-    with pytest.raises(ValueError):
-        replace(first, scale="model")
+    first = Prediction(jnp.zeros(1), (("a", "b"),), "alpine", ("a", "b"))
     for second in [
-        replace(first, target=replace(target, units="percent")),
+        replace(first, species="frog"),
         replace(first, sampling_unit_ids=("b", "a")),
         replace(first, pairs=(("b", "a"),)),
         replace(first, region_name="other"),
@@ -376,7 +430,7 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
             n_folds=1,
             holdout_size=2,
             fold_seed=47,
-            config=TrainingConfig(objective="mlpe", epochs=2),
+            config=TrainingConfig(objective="mlpe", steps=2),
             model_factory=model_factory,
         )
     member = result.members[0]
@@ -472,7 +526,7 @@ def test_member_callback_failure_interrupts_before_starting_another_member(
             holdout_size=2,
             fold_seed=47,
             initialization_seeds=(1, 2),
-            config=TrainingConfig(objective="direct_log1p", epochs=0),
+            config=TrainingConfig(objective="direct_log1p", steps=0),
             model_factory=tracked_factory,
             on_member=interrupted_save,
         )
@@ -487,14 +541,14 @@ def test_epoch_hook_resumes_pending_members_without_reinitializing_completed_upd
     with jax.enable_x64():
         region, observations = embedding_problem()
         folds = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)
-        config = TrainingConfig(objective="mlpe", epochs=3)
+        config = TrainingConfig(objective="mlpe", steps=3)
         checkpoints = {}
         completed_members = []
 
         def stop_after_one_update(identity, state):
             checkpoints[identity.member_id] = state
-            if state.epoch == 1:
-                raise RuntimeError("stop epoch for checkpoint")
+            if state.step == 1:
+                raise RuntimeError("stop step for checkpoint")
 
         with pytest.raises(RuntimeError):
             fit_ensemble(
@@ -504,12 +558,12 @@ def test_epoch_hook_resumes_pending_members_without_reinitializing_completed_upd
                 initialization_seeds=(13, 29),
                 config=config,
                 model_factory=model_factory,
-                on_epoch=stop_after_one_update,
+                on_step=stop_after_one_update,
                 on_member=completed_members.append,
             )
         assert completed_members == []
         assert len(checkpoints) == 1
-        epochs = []
+        steps = []
         resumed = fit_ensemble(
             region,
             observations,
@@ -518,10 +572,10 @@ def test_epoch_hook_resumes_pending_members_without_reinitializing_completed_upd
             config=config,
             model_factory=model_factory,
             member_states=checkpoints,
-            on_epoch=lambda identity, state: epochs.append(
-                (identity.initialization_seed, state.epoch)
+            on_step=lambda identity, state: steps.append(
+                (identity.initialization_seed, state.step)
             ),
         )
         assert np.isfinite(resumed.predict(region).prediction.values).all()
-    assert epochs == [(13, 2), (13, 3), (29, 0), (29, 1), (29, 2), (29, 3)]
-    assert [completed_fit(member)[1].epoch for member in resumed.members] == [3, 3]
+    assert steps == [(13, 2), (13, 3), (29, 0), (29, 1), (29, 2), (29, 3)]
+    assert [completed_fit(member)[1].step for member in resumed.members] == [3, 3]

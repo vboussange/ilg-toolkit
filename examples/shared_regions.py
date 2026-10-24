@@ -1,4 +1,4 @@
-"""Share one cleaned U-Net encoder across synthetic regions of different extents."""
+"""A U-Net distance model fitted to synthetic regions of different extents."""
 
 from typing import cast
 
@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
-from ilg_toolkit.models import UNetEmbeddingDistance
+from ilg_toolkit.models import UNet
 
 
 def synthetic_region(name, width, locations):
@@ -37,16 +37,14 @@ for region in regions:
     observations.append(
         PairwiseObservations.from_matrix(region.sampling_unit_ids, dissimilarities, target=target)
     )
-model = UNetEmbeddingDistance(
-    2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4)
-)
+model = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4))
 result = fit(
     regions,
     observations,
     distance_model=model,
-    config=TrainingConfig(objective="direct_log1p", epochs=10, learning_rate=0.001, seed=4),
+    config=TrainingConfig(objective="direct_log1p", steps=10, learning_rate=0.001, seed=4),
 )
-print("Selected shared encoder at epoch", result.selected_epoch)
+print("Selected model at step", result.selected_step)
 print("Per-region training objectives:", result.history[-1].training_by_region)
 for region in regions:
     print(region.name, result.model.predict(region).as_matrix(), result.model.target.units)

@@ -1,4 +1,4 @@
-"""Exact endpoint-system arithmetic without pair-sized covariance allocation."""
+"""Population-sized covariance calculations for pairwise genetic observations."""
 
 from typing import NamedTuple
 
@@ -6,14 +6,14 @@ import jax.numpy as jnp
 from jax import Array
 from jax.scipy.linalg import cho_solve
 
-# A conservative precision bound protects incomplete/bipartite endpoint systems.
-# It bounds eps*cond(I + u/d Z.T Z) using the maximum endpoint degree. No
-# variance or diagonal is altered when the arithmetic lies outside this domain.
+# The maximum number of observed pairs per sampling unit bounds
+# eps*cond(I + u/d Z.T Z), including incomplete and bipartite pair sets.
+# Calculations outside this precision bound return nonfinite results.
 MAX_ROUNDOFF_BOUND = 0.01
 
 
 def endpoint_sums(values, left, right, weights, n_populations):
-    """Scatter Z.T values without materializing the pair-to-unit incidence."""
+    """Sums of pairwise values for each sampling unit."""
     values = jnp.asarray(values)
     weighted = jnp.where(weights[:, None], values, 0)
     result = jnp.zeros((n_populations, values.shape[1]), dtype=values.dtype)
@@ -21,7 +21,7 @@ def endpoint_sums(values, left, right, weights, n_populations):
 
 
 class PopulationSystem(NamedTuple):
-    """Factor of I + (u/d) Z.T Z and its observed endpoint representation."""
+    """Factor of I + (u/d) Z.T Z and the observed sampling-unit indices."""
 
     left: Array
     right: Array
@@ -51,10 +51,10 @@ class PopulationSystem(NamedTuple):
 
 
 def population_system(left, right, *, n_populations, unit, residual, weights, dtype):
-    """Build and factor an n*n system for any observed unordered pair set.
+    """Population covariance factor for observed unordered pairs.
 
-    ``residual`` already includes the caller's explicitly declared jitter.
-    Masked indices are sanitized and never used to index a sampling unit.
+    ``residual`` includes the configured jitter.
+    The observation mask selects the sampling-unit indices used in the calculation.
     """
     unit, residual = jnp.asarray(unit, dtype=dtype), jnp.asarray(residual, dtype=dtype)
     left, right = jnp.asarray(left, dtype=jnp.int32), jnp.asarray(right, dtype=jnp.int32)

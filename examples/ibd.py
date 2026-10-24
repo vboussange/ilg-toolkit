@@ -1,4 +1,4 @@
-"""Fit a geographic reference without landscape encoders or paper data.
+"""An isolation-by-distance (IBD) reference fitted to geographic separation.
 
 Run with JAX_ENABLE_X64=true to retain double-precision fitted coefficients.
 """
@@ -7,17 +7,16 @@ import jax.numpy as jnp
 
 from ilg_toolkit import IBDModel, TargetSpec
 
-# Raster positions alone have no physical units. Declare row/column pixel sizes
-# explicitly before computing Euclidean separation in metres.
-pixel_size_metres = jnp.array([20.0, 10.0])
+# Row and column pixel sizes convert grid positions to distances in meters.
+pixel_size_meters = jnp.array([20.0, 10.0])
 positions = {
     "headwaters": jnp.array([[0, 0], [3, 0], [0, 4]]),
     "lowlands": jnp.array([[0, 0], [1, 2], [4, 0], [3, 4]]),
 }
 distance_matrices = {}
 for name, grid_positions in positions.items():
-    points_metres = grid_positions * pixel_size_metres
-    displacement = points_metres[:, None, :] - points_metres[None, :, :]
+    points_meters = grid_positions * pixel_size_meters
+    displacement = points_meters[:, None, :] - points_meters[None, :, :]
     distance_matrices[name] = jnp.linalg.norm(displacement, axis=-1)
 
 distances = {
@@ -32,6 +31,6 @@ model = IBDModel.fit(
 )
 prediction = model.predict(distance_matrices["lowlands"], distance_units="m")
 print(f"Fitted slope: {model.slope:.6f} index/m; intercept: {model.intercept:.6f} index")
-print("Each region has equal weight, despite its different number of observed pairs.")
+print("Each region has equal weight in the fit.")
 print("Original-scale genetic predictions (structural zero diagonal):")
 print(prediction)

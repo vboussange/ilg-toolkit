@@ -24,13 +24,10 @@ def test_calibration_matches_frozen_r_full_ml_and_predicts_without_query_targets
     np.testing.assert_allclose(head.effect_mean, mlpe_reference.blups, rtol=2e-4, atol=2e-5)
     assert head.distance_center == pytest.approx(-0.14328369260805038, abs=1e-14)
     assert head.distance_scale == pytest.approx(1.012896471531856, abs=1e-14)
-    query = head.predict_marginal([2.5, -2.0], [("new", "p01"), ("p02", "new")])
+    query = head.predict([2.5, -2.0], [("new", "p01"), ("p02", "new")])
     # Independent frozen predictions from the R coefficients and distance moments.
-    np.testing.assert_allclose(
-        query.prediction.values, [-0.49407802616878604, 2.4619456646531583], atol=1e-5
-    )
-    assert query.prediction.values[0] < 0  # Signed calibration is not clipped or repaired.
-    assert query.prediction.target.units == "index"
+    np.testing.assert_allclose(query.values, [-0.49407802616878604, 2.4619456646531583], atol=1e-5)
+    assert query.values[0] < 0  # Signed calibration is not clipped or repaired.
     assert head.region_name == "alpine"
     assert head.calibration_pairs == observations.observed_pairs
     assert set(head.calibration_roles) == {"calibration"}
@@ -116,9 +113,8 @@ def test_incomplete_partition_calibration_records_roles_and_original_target_scal
     )
     assert head.ml_log_likelihood == pytest.approx(-expected_nll, abs=1e-10)
     np.testing.assert_allclose([head.intercept, head.slope], beta, atol=1e-10)
-    query = head.predict_marginal([0.1], [("new-north", "new-south")])
-    assert query.prediction.values[0] == pytest.approx(np.expm1(query.model_values[0]))
-    assert query.prediction.target == target
+    query = head.predict([0.1], [("new-north", "new-south")])
+    assert query.values[0] == pytest.approx(np.expm1(query.extras["model_values"][0]))
     assert head.calibration_pairs == selected
     assert set(head.calibration_roles) == {"training"}
     # No extra measurements from absent pairs enter the fit or posterior.

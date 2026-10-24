@@ -1,4 +1,4 @@
-"""Prepared landscape inputs, separate from labelled genetic observations."""
+"""Region batches and labeled pairwise genetic observations."""
 
 from dataclasses import dataclass
 from typing import cast
@@ -12,13 +12,12 @@ from numpy.typing import ArrayLike
 
 @dataclass(frozen=True)
 class TargetSpec:
-    """Meaning and returned scale of genetic observations.
+    """Meaning, original units, and model-scale transform of pairwise genetic observations.
 
-    ``transform`` explicitly maps original measurements into the encoder's
-    regression scale. Supported invertible choices are identity, log1p, and
-    sqrt. Prediction inverts this transform and returns original ``units``.
-    The direct objective also uses log1p as a loss comparison; that separate
-    operation never implies an unrequested measurement transformation.
+    ``transform`` maps measurements from the original scale to the model scale
+    using identity, log1p, or square root, and genetic predictions apply its inverse.
+    The direct objective compares ecological distances and model-scale targets
+    using log1p.
     """
 
     name: str
@@ -38,7 +37,7 @@ class TargetSpec:
             raise ValueError("Target transform must be identity, log1p, or sqrt")
 
     def forward(self, values) -> jax.Array:
-        """Transform finite original observations, without automatic clipping."""
+        """Model-scale observations transformed from finite original-scale measurements."""
         values = jnp.asarray(values)
         if not bool(jnp.isfinite(values).all()):
             raise ValueError("Observed target values must be finite")
@@ -51,7 +50,7 @@ class TargetSpec:
         return values
 
     def inverse(self, values) -> jax.Array:
-        """Return predictions on original measurement units."""
+        """Genetic predictions in the original measurement units."""
         values = jnp.asarray(values)
         if self.transform == "sqrt" and (values < 0).any():
             raise ValueError("sqrt inverse requires nonnegative transformed predictions")
@@ -66,10 +65,10 @@ class TargetSpec:
 
 @dataclass(frozen=True)
 class RegionBatch:
-    """Named row, column and feature dimensions with labelled sampling-unit locations.
+    """Prepared landscape features and sampling-unit locations for one region.
 
-    Features are already prepared. This boundary performs no raster alignment,
-    coordinate conversion, or implicit normalization.
+    Optional species labels distinguish sampling units whose identifiers repeat
+    across species. Features use named row, column, and feature dimensions.
     """
 
     name: str
@@ -78,13 +77,14 @@ class RegionBatch:
     grid_positions: ArrayLike
     feature_names: tuple[str, ...] | None = None
     sampling_unit_kinds: tuple[str, ...] | None = None
+    species: tuple[str, ...] | None = None
 
     def __post_init__(self):
         names = None if self.feature_names is None else tuple(self.feature_names)
         if not isinstance(self.features, cx.Field):
             raise TypeError("features must be a coordax.Field with named row, column, feature axes")
         if self.features.ndim != 3 or set(self.features.dims) != {"row", "column", "feature"}:
-            raise ValueError("Labelled features require named axes row, column, feature")
+            raise ValueError("Labeled features require named axes row, column, feature")
         field = self.features.order_as("row", "column", "feature")
         axes = dict(field.axes)
         coordinate = field.axes.get("feature")
@@ -97,6 +97,13 @@ class RegionBatch:
             names = labels
         features = jnp.asarray(field.data)
         ids = tuple(self.sampling_unit_ids)
+        species = None if self.species is None else tuple(self.species)
+        if species is not None and (
+            len(species) != len(ids)
+            or any(not isinstance(name, str) or not name for name in species)
+        ):
+            raise ValueError("species must label each sampling unit with a nonempty name")
+        identities = ids if species is None else tuple(zip(species, ids, strict=True))
         positions = jnp.asarray(self.grid_positions)
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("Region name must be a nonempty string")
@@ -105,9 +112,9 @@ class RegionBatch:
         if (
             len(ids) < 2
             or any(not isinstance(x, str) or not x for x in ids)
-            or len(set(ids)) != len(ids)
+            or len(set(identities)) != len(ids)
         ):
-            raise ValueError("sampling_unit_ids must contain at least two unique nonempty labels")
+            raise ValueError("Sampling-unit ids must be nonempty and unique within each species")
         if positions.shape != (len(ids), 2) or not jnp.issubdtype(positions.dtype, jnp.integer):
             raise ValueError(
                 "grid_positions must be an integer (sampling units, 2) row/column array"
@@ -139,27 +146,27 @@ class RegionBatch:
             self, "features", cx.Field(features, dims=("row", "column", "feature"), axes=axes)
         )
         object.__setattr__(self, "sampling_unit_ids", ids)
+        object.__setattr__(self, "species", species)
         object.__setattr__(self, "grid_positions", positions.astype(jnp.int32))
 
     @property
     def feature_array(self) -> jax.Array:
-        """Canonical row, column, feature JAX array for encoder kernels."""
+        """Landscape features as a JAX array with row, column, and feature dimensions."""
         return cast(jax.Array, self.features.data)
 
     @property
     def pixel_nodes(self) -> jax.Array:
-        """Return labelled locations as row-major native-resolution pixel indices."""
+        """Sampling-unit locations as row-major raster pixel indices."""
         positions = cast(jax.Array, self.grid_positions)
         return positions[:, 0] * self.features.shape[1] + positions[:, 1]
 
 
 @dataclass(frozen=True)
 class ObservationPartition:
-    """Explicit observed unordered pairs assigned a role within one named region.
+    """Observed unordered sampling-unit pairs assigned a data role in one region.
 
-    Partitions select observations; they do not create measurements. Endpoint
-    holdout fold generation is a separate convenience rather than an assumption
-    built into this pair-level input contract.
+    The partition selects observations for training, validation, calibration,
+    support conditioning, or query evaluation.
     """
 
     region_name: str
@@ -168,7 +175,7 @@ class ObservationPartition:
 
     def __post_init__(self):
         if not isinstance(self.region_name, str) or not self.region_name:
-            raise ValueError("Partition region_name must be declared")
+            raise ValueError("Partition region_name must be nonempty")
         if self.role not in {"training", "validation", "calibration", "support", "query"}:
             raise ValueError(
                 "Partition role must be training, validation, calibration, support, or query"
@@ -180,7 +187,7 @@ class ObservationPartition:
             or pair[0] == pair[1]
             for pair in pairs
         ):
-            raise ValueError("Partition pairs must be nonempty distinct labelled endpoints")
+            raise ValueError("Partition pairs require two distinct, nonempty sampling-unit labels")
         pairs = tuple(tuple(sorted(pair)) for pair in pairs)
         if len(set(pairs)) != len(pairs):
             raise ValueError("Partition pairs must be unique, including reversed duplicates")
@@ -189,20 +196,22 @@ class ObservationPartition:
 
 @dataclass(frozen=True)
 class PairwiseObservations:
-    """Labelled unordered observations; NaN entries represent absent pairs.
+    """Labeled pairwise genetic observations with not-a-number (NaN) entries for absent pairs.
 
     Use ``from_pairs`` for incomplete observations or ``from_matrix`` for a
-    labelled symmetric matrix. Floating input precision is retained; ordinary
-    array-like conversion follows the configured JAX precision. Enable float64
-    before creating or converting precise measurements: later promotion cannot
-    recover rounded values. No missing pair is replaced by a zero target.
+    labeled symmetric matrix.
+    Floating input precision is retained; array-like conversion uses the current
+    JAX precision, so enable float64 before creating precise measurements.
     """
 
     sampling_unit_ids: tuple[str, ...]
     values: jax.Array
     target: TargetSpec
+    species: str | None = None
 
     def __post_init__(self):
+        if self.species is not None and (not isinstance(self.species, str) or not self.species):
+            raise ValueError("Observation species must be a nonempty name or None")
         ids = tuple(self.sampling_unit_ids)
         values = jnp.asarray(self.values)
         if (
@@ -225,22 +234,25 @@ class PairwiseObservations:
         object.__setattr__(self, "values", values)
 
     @classmethod
-    def from_matrix(cls, sampling_unit_ids, values, *, target):
-        """Declare matrix identities and scale; symmetric off-diagonal NaNs are absent."""
-        return cls(tuple(sampling_unit_ids), values, target)
+    def from_matrix(cls, sampling_unit_ids, values, *, target, species=None):
+        """Pairwise genetic observations from a labeled matrix for one species.
+
+        Symmetric off-diagonal NaNs identify absent observations.
+        """
+        return cls(tuple(sampling_unit_ids), values, target, species)
 
     @classmethod
-    def from_pairs(cls, pairs, values, *, target, sampling_unit_ids=None):
-        """Build from explicit unordered endpoint labels and finite measurements.
+    def from_pairs(cls, pairs, values, *, target, sampling_unit_ids=None, species=None):
+        """Pairwise genetic observations from labeled pairs and finite measurements.
 
         Repeated pairs, including reversed duplicates, are rejected. Optional
-        ``sampling_unit_ids`` declares a larger endpoint universe containing
+        ``sampling_unit_ids`` declares a larger set of sampling units containing
         sampling units with no observed pairs.
         """
         pairs = tuple(tuple(pair) for pair in pairs)
         values = jnp.asarray(values)
         if not pairs or values.shape != (len(pairs),) or not jnp.isfinite(values).all():
-            raise ValueError("Explicit pairs require one finite observed value per nonempty pair")
+            raise ValueError("Observed pairs must be nonempty and have one finite value each")
         if any(
             len(pair) != 2 or any(not isinstance(x, str) or not x for x in pair) for pair in pairs
         ):
@@ -263,20 +275,20 @@ class PairwiseObservations:
         seen = set()
         for pair, value in zip(pairs, values, strict=True):
             if pair[0] == pair[1]:
-                raise ValueError("Observed pairs must have distinct endpoints")
+                raise ValueError("Observed pairs must have distinct sampling units")
             if any(endpoint not in lookup for endpoint in pair):
-                raise ValueError("Observed pair endpoint is absent from sampling_unit_ids")
+                raise ValueError("An observed sampling unit is absent from sampling_unit_ids")
             canonical = tuple(sorted(pair))
             if canonical in seen:
                 raise ValueError("Observed pairs must be unique, including reversed pairs")
             seen.add(canonical)
             left, right = (lookup[endpoint] for endpoint in pair)
             matrix = matrix.at[left, right].set(value).at[right, left].set(value)
-        return cls(ids, matrix, target)
+        return cls(ids, matrix, target, species)
 
     @property
     def observed_pairs(self) -> tuple[tuple[str, str], ...]:
-        """Return only measured unordered pairs, in deterministic matrix order."""
+        """Measured unordered sampling-unit pairs in deterministic matrix order."""
         left, right = jnp.triu_indices(len(self.sampling_unit_ids), 1)
         present = jnp.isfinite(self.values[left, right])
         return tuple(
@@ -286,16 +298,19 @@ class PairwiseObservations:
 
     @property
     def observed_values(self) -> jax.Array:
-        """Return original-scale measurements aligned with ``observed_pairs``."""
+        """Original-scale measurements aligned with ``observed_pairs``."""
         upper = self.values[jnp.triu_indices(len(self.sampling_unit_ids), 1)]
         return upper[jnp.isfinite(upper)]
 
     def aligned_values(self, region: RegionBatch) -> jax.Array:
-        """Align known observation labels to a region, retaining NaNs for absent pairs."""
-        if not set(self.sampling_unit_ids).issubset(region.sampling_unit_ids):
-            raise ValueError(
-                "Observation labels contain endpoints outside region sampling_unit_ids"
-            )
+        """Observations aligned with a region, retaining NaNs for absent pairs."""
+        lookup = {
+            label: index
+            for index, label in enumerate(region.sampling_unit_ids)
+            if region.species is None or region.species[index] == self.species
+        }
+        if not set(self.sampling_unit_ids).issubset(lookup):
+            raise ValueError("Observation labels must belong to their species in the region")
         dtype = (
             self.values.dtype
             if jnp.issubdtype(self.values.dtype, jnp.inexact)
@@ -305,21 +320,20 @@ class PairwiseObservations:
             (len(region.sampling_unit_ids), len(region.sampling_unit_ids)), jnp.nan, dtype=dtype
         )
         matrix = matrix.at[jnp.diag_indices(len(region.sampling_unit_ids))].set(0)
-        lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
         order = jnp.asarray([lookup[label] for label in self.sampling_unit_ids])
         return matrix.at[jnp.ix_(order, order)].set(self.values)
 
     def aligned_pairs(self, region: RegionBatch, partition: ObservationPartition | None = None):
-        """Return observed index pairs and measurements in the prepared unit order."""
+        """Observed index pairs and measurements in the region batch's sampling-unit order."""
         values = self.aligned_values(region)
         left, right = jnp.triu_indices(len(region.sampling_unit_ids), 1)
         present = jnp.isfinite(values[left, right])
         if partition is not None:
             if partition.region_name != region.name:
-                raise ValueError("Partition region_name does not match the prepared region")
+                raise ValueError("Partition region_name does not match the region batch")
             endpoints = {endpoint for pair in partition.pairs for endpoint in pair}
             if not endpoints.issubset(region.sampling_unit_ids):
-                raise ValueError("Partition contains endpoints outside the prepared region")
+                raise ValueError("Partition contains sampling units outside the region batch")
             observed = {tuple(sorted(pair)) for pair in self.observed_pairs}
             if not set(partition.pairs).issubset(observed):
                 raise ValueError("Partition selects an unobserved pair")

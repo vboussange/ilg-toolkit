@@ -1,60 +1,12 @@
-"""Explicit population-effect prediction without query genetic observations."""
+"""Maximum-likelihood population effects (MLPE) prediction on the original scale."""
 
-from dataclasses import dataclass
-from typing import final
-
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
 
-from ..data import ObservationPartition, PairwiseObservations
+from ..data import PairwiseObservations
 from ..prediction import Prediction
 from .fit import MLPEError, RegionalMLPECalibration
-
-
-@dataclass(frozen=True)
-class MLPEPredictionProvenance:
-    """Canonical target-access identities for prediction eligibility checks."""
-
-    mode: str
-    region_name: str
-    calibration_pairs: tuple[tuple[str, str], ...]
-    calibration_roles: tuple[str, ...]
-    support_pairs: tuple[tuple[str, str], ...] = ()
-    support_roles: tuple[str, ...] = ()
-    unseen_effect_policy: str = "independent_prior"
-
-
-@final
-class MLPEConditionalPrediction(eqx.Module):
-    """Inverse-transformed means and model-scale variance for new observations.
-
-    ``model_variance`` includes population-effect posterior uncertainty and
-    independent residual variance plus configured jitter. It treats the encoder,
-    fixed coefficients, and variance parameters as fixed. ``prediction.values`` is the
-    inverse transform of ``model_values``; a nonlinear transform does not make
-    these original-scale expectations or turn the variance into original units.
-    """
-
-    prediction: Prediction
-    model_values: jax.Array
-    model_variance: jax.Array
-    effect_variance: jax.Array
-    residual_variance: float
-    jitter: float
-    provenance: MLPEPredictionProvenance
-    variance_scale: str = "model"
-    variance_components: tuple[str, ...] = (
-        "population_effect_posterior",
-        "residual_variance",
-        "configured_jitter",
-    )
-    excluded_uncertainty: tuple[str, ...] = (
-        "encoder",
-        "fixed_effect_coefficients",
-        "variance_parameters",
-    )
 
 
 def _query(distances, pairs):
@@ -67,7 +19,7 @@ def _query(distances, pairs):
     except (TypeError, ValueError) as error:
         raise MLPEError("Query pairs must contain sampling-unit labels") from error
     if not pairs or distances.shape != (len(pairs),) or not bool(jnp.isfinite(distances).all()):
-        raise MLPEError("Query distances must be finite and aligned with labelled pairs")
+        raise MLPEError("Query distances must be finite and aligned with labeled pairs")
     if any(
         len(pair) != 2
         or any(not isinstance(label, str) or not label for label in pair)
@@ -108,96 +60,68 @@ def _effect_prediction(mean, covariance, left, right):
 
 
 @jax.enable_x64()
-def _predict(head, distances, pairs, population_ids, mean, covariance, provenance):
+def predict(
+    calibration: RegionalMLPECalibration,
+    distances,
+    pairs,
+    *,
+    known_effects: bool = False,
+    support: PairwiseObservations | None = None,
+    support_distances=None,
+) -> Prediction:
+    """Genetic predictions from a fitted MLPE calibration and ecological distances.
+
+    Conditional modes add ``model_variance`` and ``effect_variance`` to the
+    ``model_values`` extra, all on the model scale. Support distances align with
+    the support observations, whose pairs are disjoint from calibration and
+    query pairs. Residual variance and jitter remain on the calibration.
+    """
+    if known_effects and support is not None:
+        raise MLPEError("known_effects and support are mutually exclusive")
+    if (support is None) != (support_distances is None):
+        raise MLPEError("Support observations and their distances must be supplied together")
     distances, pairs, canonical = _query(distances, pairs)
-    if set(canonical) & set(provenance.support_pairs):
-        raise MLPEError("Support/query overlap: an unordered support pair cannot be a query")
-    population_ids, mean, covariance = _extend(head, population_ids, mean, covariance, pairs)
-    left, right = _endpoints(pairs, population_ids)
     model_values = (
-        head.intercept + head.slope * (distances - head.distance_center) / head.distance_scale
+        calibration.intercept
+        + calibration.slope * (distances - calibration.distance_center) / calibration.distance_scale
     )
-    effects, effect_variance, valid = _effect_prediction(mean, covariance, left, right)
-    if not bool(valid):
-        raise MLPEError("Population-effect prediction covariance is not positive definite")
-    model_values += effects
-    variance = effect_variance + head.residual_variance + head.config.jitter
-    if not bool(jnp.isfinite(model_values).all() & jnp.isfinite(variance).all()):
-        raise MLPEError("Conditional prediction produced nonfinite means or variances")
-    values = head.target.inverse(model_values)
-    return MLPEConditionalPrediction(
-        Prediction(
-            values,
-            pairs,
-            head.region_name,
-            head.target,
-            tuple(dict.fromkeys(label for pair in pairs for label in pair)),
-        ),
-        model_values,
-        variance,
-        effect_variance,
-        head.residual_variance,
-        head.config.jitter,
-        provenance,
-    )
-
-
-def predict_known_effects(
-    head: RegionalMLPECalibration, distances, pairs
-) -> MLPEConditionalPrediction:
-    """Use saved effects for known populations and independent priors for unseen ones.
-
-    This operation is explicit; ordinary ``head.predict_marginal`` retains zero
-    population-effect means. Query genetic observations are never accepted.
-    """
-    provenance = MLPEPredictionProvenance(
-        "known_effects",
-        head.region_name,
-        tuple((min(pair), max(pair)) for pair in head.calibration_pairs),
-        head.calibration_roles,
-    )
-    return _predict(
-        head,
-        distances,
-        pairs,
-        head.population_ids,
-        head.effect_mean,
-        head.effect_covariance,
-        provenance,
-    )
-
-
-@final
-class MLPESupportConditioner(eqx.Module):
-    """A regional posterior updated only from declared support observations.
-
-    The original calibration and encoder remain fixed. Query pairs are supplied
-    later, without targets, and must be disjoint from all support pairs.
-    """
-
-    head: RegionalMLPECalibration
-    population_ids: tuple[str, ...]
-    effect_mean: jax.Array
-    effect_covariance: jax.Array
-    provenance: MLPEPredictionProvenance
-
-    def predict(self, distances, pairs) -> MLPEConditionalPrediction:
-        """Predict disjoint queries, extending unseen effects with independent priors."""
-        return _predict(
-            self.head,
-            distances,
-            pairs,
-            self.population_ids,
-            self.effect_mean,
-            self.effect_covariance,
-            self.provenance,
+    extras = {}
+    if known_effects or support is not None:
+        population_ids = calibration.population_ids
+        mean, covariance = calibration.effect_mean, calibration.effect_covariance
+        if support is not None:
+            if set(canonical) & {tuple(sorted(pair)) for pair in support.observed_pairs}:
+                raise MLPEError(
+                    "Support/query overlap: an unordered support pair cannot be a query"
+                )
+            population_ids, mean, covariance = _condition_on_support(
+                calibration, support_distances, support
+            )
+        population_ids, mean, covariance = _extend(
+            calibration, population_ids, mean, covariance, pairs
         )
+        left, right = _endpoints(pairs, population_ids)
+        effects, effect_variance, valid = _effect_prediction(mean, covariance, left, right)
+        if not bool(valid):
+            raise MLPEError("Population-effect prediction covariance is not positive definite")
+        model_values += effects
+        variance = effect_variance + calibration.residual_variance + calibration.config.jitter
+        if not bool(jnp.isfinite(model_values).all() & jnp.isfinite(variance).all()):
+            raise MLPEError("Conditional prediction produced nonfinite means or variances")
+        extras.update(model_variance=variance, effect_variance=effect_variance)
+    extras["model_values"] = model_values
+    return Prediction(
+        calibration.target.inverse(model_values),
+        pairs,
+        calibration.region_name,
+        tuple(dict.fromkeys(label for pair in pairs for label in pair)),
+        extras=extras,
+    )
 
 
 @jax.jit
 def _condition_posterior(mean, covariance, residual, left, right, noise):
-    # Whitened precision has one row/column per sampling unit, including unseen
-    # support endpoints. Endpoint gathers replace the explicit incidence matrix.
+    # Population-effect precision includes every sampling unit observed in support.
     prior_factor = jnp.linalg.cholesky(covariance)
     whitened = prior_factor[left] + prior_factor[right]
     precision = jnp.eye(len(mean)) + (whitened.T @ whitened) / noise
@@ -208,32 +132,15 @@ def _condition_posterior(mean, covariance, residual, left, right, noise):
     return updated_mean, (updated_covariance + updated_covariance.T) / 2
 
 
-@jax.enable_x64()
-def condition_on_support(
+def _condition_on_support(
     head: RegionalMLPECalibration,
     support_distances,
     support_observations: PairwiseObservations,
-    *,
-    partition: ObservationPartition,
-) -> MLPESupportConditioner:
-    """Update effects from exactly the explicitly declared support pairs.
-
-    Distances align with ``support_observations.observed_pairs``. The observations
-    must contain exactly the declared support set, with the calibrated target
-    metadata. Previously consumed calibration pairs cannot be supplied again,
-    even in reversed order or under a different input row ordering. This is a
-    Gaussian posterior update with fixed encoder, coefficients and variances.
-    It factors a population-sized system, never a support-pair covariance.
-    """
-    if not isinstance(partition, ObservationPartition) or partition.role != "support":
-        raise MLPEError("Conditioning requires an explicit support-role partition")
-    if partition.region_name != head.region_name:
-        raise MLPEError("Support partition region_name does not match calibration")
+) -> tuple[tuple[str, ...], jax.Array, jax.Array]:
+    """Population effects conditioned on support observations with calibration fixed."""
     if support_observations.target != head.target:
         raise MLPEError("Support target metadata must match calibration")
     distances, pairs, canonical = _query(support_distances, support_observations.observed_pairs)
-    if set(canonical) != set(partition.pairs):
-        raise MLPEError("Support observations must contain exactly the declared support pairs")
     calibration_pairs = tuple((min(pair), max(pair)) for pair in head.calibration_pairs)
     if set(canonical) & set(calibration_pairs):
         raise MLPEError("Support reuses a calibration pair; targets cannot be conditioned on twice")
@@ -255,18 +162,4 @@ def condition_on_support(
     )
     if not bool(jnp.isfinite(updated_mean).all() & jnp.isfinite(updated_covariance).all()):
         raise MLPEError("Support update produced a nonfinite population-effect posterior")
-    provenance = MLPEPredictionProvenance(
-        "support",
-        head.region_name,
-        calibration_pairs,
-        head.calibration_roles,
-        canonical,
-        ("support",) * len(canonical),
-    )
-    return MLPESupportConditioner(
-        head,
-        labels,
-        updated_mean,
-        updated_covariance,
-        provenance,
-    )
+    return labels, updated_mean, updated_covariance

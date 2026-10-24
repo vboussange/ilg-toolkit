@@ -1,4 +1,4 @@
-"""Float64 standalone calibration, distinct from encoder optimization."""
+"""Standalone maximum-likelihood population effects (MLPE) calibration using float64."""
 
 import math
 from dataclasses import dataclass
@@ -18,7 +18,7 @@ from .likelihood import MLPEFit, finalize_mlpe_fit, profiled_mlpe_ml_fit
 
 
 class MLPEError(ValueError):
-    """Invalid or numerically unusable full-ML calibration."""
+    """An invalid or numerically unusable maximum-likelihood calibration."""
 
 
 def _raw_from_log_variances(log_variances):
@@ -43,17 +43,20 @@ def _optimizer_value_and_gradient(log_variances, distances, targets, left, right
 
 @dataclass(frozen=True)
 class MLPEConfig:
-    """Explicit constraints; standalone fitting uses scoped JAX float64.
+    """Numerical settings for MLPE calibration.
 
-    Jitter is an explicitly declared addition to residual observation variance,
-    consistently included in likelihood and population-effect posterior. It is
-    never increased automatically. Both fixed coefficients remain signed.
+    Jitter adds to residual observation variance in both the likelihood and
+    population-effect posterior.
+    ``initial_variances`` sets population and residual variances at training
+    step zero, using training targets by default.
+    ``max_iterations`` controls standalone calibration optimization.
     """
 
     variance_floor: float = 1e-10
     min_distance_scale: float = 1e-12
     jitter: float = 0.0
     max_iterations: int = 2000
+    initial_variances: tuple[float, float] | None = None
 
     def __post_init__(self):
         for name in ("variance_floor", "min_distance_scale", "jitter", "max_iterations"):
@@ -73,30 +76,22 @@ class MLPEConfig:
         if not isinstance(self.max_iterations, int) or self.max_iterations < 1:
             raise MLPEError("max_iterations must be a positive integer")
         object.__setattr__(self, "jitter", float(self.jitter))
-
-
-@final
-class MLPEPrediction(eqx.Module):
-    """Marginal pair means on declared original and fitted target scales.
-
-    Original-scale values inverse-transform the fitted Gaussian mean. For a
-    nonlinear transform this is not the expectation of the original random
-    target; no distributional mean correction is implied.
-
-    Attributes:
-        prediction: Original-scale points and pair identities. Matrix order is
-            distinct query endpoints in first-appearance order.
-        model_values: Fitted Gaussian mean vector, shape ``(m,)``, before the
-            inverse target transform. Marginal predictive variance is unreported.
-    """
-
-    prediction: Prediction
-    model_values: jax.Array
+        if self.initial_variances is not None:
+            values = tuple(self.initial_variances)
+            if len(values) != 2 or any(
+                isinstance(value, (bool, np.bool_))
+                or not isinstance(value, Real)
+                or not math.isfinite(value)
+                or value <= self.variance_floor
+                for value in values
+            ):
+                raise MLPEError("initial_variances must be two finite variances above the floor")
+            object.__setattr__(self, "initial_variances", tuple(float(value) for value in values))
 
 
 @final
 class RegionalMLPECalibration(eqx.Module):
-    """Complete regional calibration with auditable observation identities."""
+    """An MLPE calibration with coefficients, variance parameters, and observation-use records."""
 
     region_name: str
     target: TargetSpec
@@ -133,7 +128,7 @@ class RegionalMLPECalibration(eqx.Module):
         optimizer_message: str,
         converged: bool = True,
     ) -> "RegionalMLPECalibration":
-        """Attach target, observation provenance and optimizer diagnostics to a fit."""
+        """MLPE calibration with target, observation provenance, and optimizer diagnostics."""
         mean, covariance, factor = fit.posterior
         return cls(
             region_name=region_name,
@@ -170,12 +165,12 @@ class RegionalMLPECalibration(eqx.Module):
             self.ml_log_likelihood,
         )
         if not all(math.isfinite(value) for value in scalars):
-            raise MLPEError("MLPE head cannot retain nonfinite numerical kernel diagnostics")
+            raise MLPEError("MLPE calibration cannot retain nonfinite fit diagnostics")
         if self.distance_scale <= self.config.min_distance_scale or min(
             self.unit_variance, self.residual_variance
         ) < self.config.variance_floor * (1 - 8 * np.finfo(float).eps):
             raise MLPEError(
-                "MLPE head requires valid distance scale and positive bounded variances"
+                "MLPE calibration requires a valid distance scale and valid variance parameters"
             )
         n = len(self.population_ids)
         mean, covariance, factor = (
@@ -191,46 +186,44 @@ class RegionalMLPECalibration(eqx.Module):
             or not bool(jnp.isfinite(covariance).all())
             or not bool(jnp.isfinite(factor).all())
         ):
-            raise MLPEError("MLPE head population-effect posterior must be finite and aligned")
+            raise MLPEError(
+                "MLPE calibration population-effect posterior must be finite and aligned"
+            )
         if (
             not self.region_name
             or len(set(self.population_ids)) != n
             or len(self.calibration_pairs) != len(self.calibration_roles)
         ):
-            raise MLPEError("MLPE head region, sampling-unit identities and provenance must align")
+            raise MLPEError(
+                "MLPE calibration region, sampling-unit identities and provenance must align"
+            )
 
-    @jax.enable_x64()
-    def predict_marginal(self, distances, pairs) -> MLPEPrediction:
-        """Predict labelled query pairs without targets; new effects have mean zero."""
-        from .prediction import _query
+    def predict(
+        self,
+        distances,
+        pairs,
+        *,
+        known_effects: bool = False,
+        support: PairwiseObservations | None = None,
+        support_distances=None,
+    ) -> Prediction:
+        """Genetic predictions from ecological distances aligned with query pairs.
 
-        distances, pairs, _ = _query(distances, pairs)
-        model_values = (
-            self.intercept + self.slope * (distances - self.distance_center) / self.distance_scale
-        )
-        return MLPEPrediction(
-            Prediction(
-                self.target.inverse(model_values),
-                pairs,
-                self.region_name,
-                self.target,
-                tuple(dict.fromkeys(label for pair in pairs for label in pair)),
-            ),
-            model_values,
-        )
+        The ``model_values`` extra gives model-scale values; conditional modes
+        also give ``model_variance`` and ``effect_variance`` on that scale.
+        ``known_effects`` uses saved population effects, while ``support`` uses
+        disjoint observations and aligned ``support_distances`` to condition them.
+        Residual variance and jitter remain on this calibration.
+        """
+        from .prediction import predict
 
-    def predict_known_effects(self, distances, pairs):
-        """Explicit posterior-effect prediction, with independent priors for unseen units."""
-        from .prediction import predict_known_effects
-
-        return predict_known_effects(self, distances, pairs)
-
-    def condition_on_support(self, support_distances, support_observations, *, partition):
-        """Update effects using only an explicit support-role partition."""
-        from .prediction import condition_on_support
-
-        return condition_on_support(
-            self, support_distances, support_observations, partition=partition
+        return predict(
+            self,
+            distances,
+            pairs,
+            known_effects=known_effects,
+            support=support,
+            support_distances=support_distances,
         )
 
 
@@ -243,21 +236,20 @@ def calibrate_mlpe(
     partition: ObservationPartition | None = None,
     config: MLPEConfig | None = None,
 ) -> RegionalMLPECalibration:
-    """Fit full ML from distances aligned to ``observations.observed_pairs``.
+    """MLPE calibration from ecological distances aligned to ``observations.observed_pairs``.
 
-    ``partition`` explicitly selects a subset and records its declared data role.
-    Missing observations remain absent. This operation never updates an encoder.
+    ``partition`` selects observations and records their data role.
+    Coefficients, variance parameters, and population effects are fitted with
+    the distance model fixed.
     """
     config = MLPEConfig() if config is None else config
     distances = jnp.asarray(distances, dtype=jnp.float64)
     pairs = observations.observed_pairs
     targets = jnp.asarray(observations.observed_values, dtype=jnp.float64)
     if not isinstance(region_name, str) or not region_name:
-        raise MLPEError("region_name must be declared")
+        raise MLPEError("region_name must be nonempty")
     if observations.target.kind != "dissimilarity":
-        raise MLPEError(
-            "Population MLPE supports declared dissimilarities; relatedness needs a model"
-        )
+        raise MLPEError("Population MLPE supports dissimilarities; relatedness needs a model")
     if distances.shape != (len(pairs),) or not bool(jnp.isfinite(distances).all()):
         raise MLPEError("Calibration distances must be finite and aligned with observed_pairs")
     role = "calibration"
@@ -287,17 +279,15 @@ def calibrate_mlpe(
     left = jnp.asarray([lookup[a] for a, b in pairs], dtype=jnp.int32)
     right = jnp.asarray([lookup[b] for a, b in pairs], dtype=jnp.int32)
     if jnp.bincount(jnp.concatenate((left, right)), length=len(population_ids)).max() <= 1:
-        raise MLPEError("MLPE variances are unidentifiable: observed pairs share no endpoints")
+        raise MLPEError("MLPE variances are unidentifiable: observed pairs share no sampling units")
     ols_beta = jnp.linalg.lstsq(design, targets, rcond=None)[0]
     response_variance = max(
         float(jnp.var(targets - design @ ols_beta, ddof=1)), config.variance_floor * 100
     )
     bounds = [(math.log(config.variance_floor), math.log(max(response_variance * 1e6, 1e4)))] * 2
 
-    # Bounds enforce the standalone variance floor. Decode these bounded log
-    # variances through the common softplus interface with no additional floor;
-    # this preserves the exact lower bound without subtracting nearly equal
-    # values or changing the joint trainer's raw-parameter policy.
+    # Decode the fitted log variances through softplus while retaining the
+    # standalone variance floor and numerical precision near that floor.
     kernel_inputs = distances, targets, left, right
     kernel_options = dict(
         n_populations=len(population_ids),
@@ -344,8 +334,8 @@ def calibrate_mlpe(
     result = min(candidates, key=lambda candidate: candidate.fun)
     raw = _raw_from_log_variances(jnp.asarray(result.x))
     fit = finalize_mlpe_fit(*kernel_inputs, raw_variances=raw, **kernel_options)
-    # Retain the standalone optimizer's exact bounded-log variances. The
-    # inverse-softplus round trip can fall a few ulps below its declared floor.
+    # Retain the fitted variances: rounding during inverse softplus can place
+    # reconstructed values slightly below the configured variance floor.
     fit = fit._replace(variances=jnp.exp(jnp.asarray(result.x)))
     if not all(bool(jnp.isfinite(value).all()) for value in jax.tree.leaves(fit)):
         raise MLPEError("Fitted population-effect posterior is nonfinite")

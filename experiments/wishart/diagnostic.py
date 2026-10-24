@@ -15,7 +15,8 @@ import numpy as np
 from ilg_toolkit.config import ResistanceSolverConfig
 from ilg_toolkit.data import RegionBatch
 from ilg_toolkit.models import ConductanceModel
-from ilg_toolkit.resistance import build_resistance_context
+from ilg_toolkit.models.common import pixel_to_patch_nodes
+from ilg_toolkit.resistance import build_resistance_context, effective_resistance
 
 
 def _helmert(populations):
@@ -352,8 +353,16 @@ def diagnose_wishart(
     context = build_resistance_context(
         (height // encoder.patch_size, width // encoder.patch_size), solver_config
     )
+    if context.config != encoder.solver_config:
+        raise ValueError("Solver context policy does not match the conductance model settings")
     resistances = np.asarray(
-        encoder.predict_distances(region.feature_array, region.pixel_nodes, context=context)
+        effective_resistance(
+            encoder.conductance_surface(region),
+            pixel_to_patch_nodes(
+                region.pixel_nodes, raster_shape=(height, width), patch_size=encoder.patch_size
+            ),
+            context=context,
+        )
     )
     order = [region.sampling_unit_ids.index(label) for label in observations.sampling_unit_ids]
     resistances = np.array(resistances[np.ix_(order, order)], dtype=np.float64)

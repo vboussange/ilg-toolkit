@@ -1,5 +1,7 @@
 """Fit a conductance model to synthetic genetic dissimilarities, then save and reload it."""
 
+from typing import cast
+
 import coordax as cx
 import jax
 import jax.numpy as jnp
@@ -13,7 +15,7 @@ from ilg_toolkit import (
     load_model,
     save_model,
 )
-from ilg_toolkit.models import ResNet9Conductance
+from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
@@ -30,7 +32,7 @@ region = RegionBatch(
     sampling_unit_ids=("south", "north", "east"),
     grid_positions=[[0, 0], [0, 7], [7, 7]],
 )
-# Pairwise genetic observations, with their meaning, units and transform declared.
+# Pairwise genetic observations with their meaning, units, and transform.
 observations = PairwiseObservations.from_matrix(
     region.sampling_unit_ids,
     [[0, 0.375, 0.5], [0.375, 0, 0.375], [0.5, 0.375, 0]],
@@ -44,22 +46,28 @@ result = fit(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(objective="direct_log1p", epochs=4, learning_rate=0.001),
+    config=TrainingConfig(objective="direct_log1p", steps=4, learning_rate=0.001),
 )
 model = result.model  # The selected landscape genetics model.
 
-print("Conductance surface:\n", model.conductance_surface(region))
-print("Ecological distances (effective resistance):\n", model.ecological_distances(region))
-# predict returns one calibrated value per distinct pair, in the target's units;
+print(
+    "Conductance surface:\n",
+    cast(ConductanceModel, model.distance_model).conductance_surface(region),
+)
+print(
+    "Ecological distances (effective resistance):\n",
+    model.distance_model.predict(region).as_matrix(),
+)
+# predict returns one genetic prediction per distinct pair, in the target's units;
 # as_matrix lays them out symmetrically in sampling-unit order.
 prediction = model.predict(region)
 print("Genetic predictions:", prediction.pairs, prediction.values)
 print("Genetic prediction matrix:\n", prediction.as_matrix())
 
 # Loading needs a template distance model with the same configuration.
-save_model("model.ilg", model)
+save_model("model.eqx", model)
 template = ResNet9Conductance(
     in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(0)
 )
-restored = load_model("model.ilg", distance_model=template)
+restored = load_model("model.eqx", distance_model=template)
 print("Restored predictions:\n", restored.predict(region).as_matrix())

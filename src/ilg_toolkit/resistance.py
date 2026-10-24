@@ -1,4 +1,4 @@
-"""Differentiable resistance through JAXScape, with explicit solver failures."""
+"""Differentiable resistance calculation on conductance graphs using JAXScape."""
 
 from dataclasses import dataclass, field
 from numbers import Integral
@@ -40,10 +40,10 @@ def _mean_conductance(left, right):
 def build_resistance_context(
     graph_shape: tuple[int, int], config: ResistanceSolverConfig | None = None
 ) -> ResistanceSolverContext:
-    """Build CG or an optional AMG hierarchy outside JIT/gradient transforms.
+    """A reusable conjugate-gradient solver with optional algebraic multigrid preconditioning.
 
-    The all-ones hierarchy is reused as a preconditioner only. Every resistance
-    calculation retains the learned conductances as its differentiable operator.
+    Preparation uses a uniform conductance graph of the supplied shape.
+    Resistance calculation uses the learned conductances and their gradients.
     """
     _require_x64()
     if len(graph_shape) != 2 or any(
@@ -53,7 +53,7 @@ def build_resistance_context(
         raise ValueError("graph_shape must contain two positive integer dimensions")
     shape = (int(graph_shape[0]), int(graph_shape[1]))
     if shape[0] * shape[1] < 2:
-        raise ValueError("Effective resistance requires at least two graph vertices")
+        raise ValueError("Effective resistance requires at least two graph nodes")
     config = config or ResistanceSolverConfig()
     if not config.use_amg:
         return ResistanceSolverContext(
@@ -76,18 +76,17 @@ def effective_resistance(
     context: ResistanceSolverContext | None = None,
     config: ResistanceSolverConfig | None = None,
 ) -> jax.Array:
-    """Return terminal effective resistances for a positive four-neighbour grid.
+    """Effective resistance among sampling-unit nodes of a positive conductance grid.
 
-    Edge conductance is the arithmetic mean of its endpoints. Graph solves use
-    float64; resistances and their gradients retain the surface's floating dtype.
-    The last graph vertex is grounded and may be a terminal. Coincident terminal
-    nodes have zero resistance. Invalid inputs or failed solves raise, including
-    under JIT; numerical failure never triggers an implicit solver replacement.
+    Each edge in the four-neighbor grid averages its two nodes' conductances.
+    Calculations use float64 and return the surface's floating data type, with
+    zero resistance for coincident nodes.
+    Invalid inputs or failed solves raise errors.
     """
     _require_x64()
     surface = jnp.asarray(conductance)
     if surface.ndim != 2 or surface.size < 2:
-        raise ValueError("conductance must be a 2D surface with at least two graph vertices")
+        raise ValueError("conductance must be a 2D surface with at least two graph nodes")
     if not jnp.issubdtype(surface.dtype, jnp.floating):
         raise TypeError("conductance must have a real floating dtype")
     surface = eqx.error_if(

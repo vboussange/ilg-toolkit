@@ -1,4 +1,9 @@
-"""Fit a tiny conductance graph: JAX_ENABLE_X64=true python examples/conductance.py."""
+"""A ResNet9 conductance fit on a synthetic landscape.
+
+Run with JAX_ENABLE_X64=true to enable float64 resistance calculations.
+"""
+
+from typing import cast
 
 import coordax as cx
 import jax
@@ -12,7 +17,7 @@ from ilg_toolkit import (
     TrainingConfig,
     fit,
 )
-from ilg_toolkit.models import ResNet9Conductance
+from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 
 region = RegionBatch(
     name="synthetic-valley",
@@ -31,7 +36,7 @@ observations = PairwiseObservations.from_matrix(
     [[0, 0.375, 0.5], [0.375, 0, 0.375], [0.5, 0.375, 0]],
     target=TargetSpec("synthetic dissimilarity", units="index"),
 )
-encoder = ResNet9Conductance(
+distance_model = ResNet9Conductance(
     in_channels=2,
     patch_size=4,
     min_conductance=1e-6,
@@ -41,15 +46,21 @@ encoder = ResNet9Conductance(
 result = fit(
     region,
     observations,
-    distance_model=encoder,
+    distance_model=distance_model,
     config=TrainingConfig(
         objective="direct_log1p",
-        epochs=4,
+        steps=4,
         learning_rate=0.001,
     ),
 )
 print("Training loss:", result.history[0].training_loss, "->", result.history[-1].training_loss)
-# Neither operation requires genetic observations at the query locations.
-print("Conductance surface:\n", result.model.conductance_surface(region))
-print("Ecological distances (effective resistance):\n", result.model.ecological_distances(region))
+# These queries use landscape features and sampling-unit locations.
+print(
+    "Conductance surface:\n",
+    cast(ConductanceModel, result.model.distance_model).conductance_surface(region),
+)
+print(
+    "Ecological distances (effective resistance):\n",
+    result.model.distance_model.predict(region).as_matrix(),
+)
 print("Direct genetic predictions:\n", result.model.predict(region).as_matrix())

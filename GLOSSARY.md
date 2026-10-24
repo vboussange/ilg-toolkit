@@ -5,12 +5,12 @@ Inverse landscape genetics: learning relationships between landscapes and pairwi
 ## Language
 
 **Region batch**:
-The prepared landscape features, sampling-unit identifiers, and grid positions for one region, independent of genetic observations.
+The prepared landscape features, sampling-unit identifiers, and grid positions for one region, prepared before genetic observations are attached.
 An optional species column labels each sampling unit; when omitted, all sampling units belong to one species.
 _Avoid_: Prepared region, when naming this input boundary.
 
 **Training configuration**:
-The explicit optimization budget and numerical settings supplied as `TrainingConfig`.
+The optimization budget and numerical settings supplied as `TrainingConfig`.
 _Avoid_: FitConfig, when naming this public configuration.
 
 **Landscape genetics model**:
@@ -45,7 +45,7 @@ _Avoid_: Shared distance model, without specifying the pooling axis.
 
 **Calibration module**:
 The authoritative target contract and relationship mapping ecological distances to
-genetic predictions. Direct calibration applies the declared inverse target
+genetic predictions. Direct calibration applies the inverse target
 transform. Maximum-likelihood population effects (MLPE) calibration selects a
 fitted relationship for the query region and species.
 
@@ -57,9 +57,8 @@ _Avoid_: Regional MLPE calibration; complete model, when referring only to this
 fitted relationship.
 
 **Unpooled genetic calibration**:
-Separate calibration coefficients and variance parameters for each region–species
-group, without parameter sharing or hierarchical shrinkage across those groups.
-Population dependence within each MLPE calibration is retained.
+Calibration coefficients and variance parameters estimated separately for each
+region–species group, retaining population dependence within each MLPE calibration.
 _Avoid_: Regional calibration, when describing the across-group pooling policy.
 
 **Resistance calculation**:
@@ -89,7 +88,8 @@ A fitted landscape genetics model retained for prediction from the evaluated tra
 _Avoid_: Best model; snapshot, when referring to the selected model.
 
 **Out-of-fold prediction**:
-A genetic prediction for a query pair averaged over eligible ensemble members that held out both sampling units and have not used their genetic observations for training, model selection, calibration, or support conditioning.
+A genetic prediction for a query pair averaged over ensemble members eligible under the sampling-unit holdout and observation-use rules.
+The default rules require both sampling units to remain unseen by each eligible ensemble member.
 _Avoid_: Deployment prediction, which uses all ensemble members.
 
 **Unseen sampling unit**:
@@ -100,8 +100,8 @@ _Avoid_: Unseen location, when referring to genetic-observation use.
 The count and fraction of requested query pairs with a successful genetic prediction from at least one eligible ensemble member.
 
 **Sampling unit**:
-An identified population or individual associated with a location in a landscape and serving as an endpoint of genetic observations.
-_Avoid_: Population, when an endpoint represents an individual.
+An identified population or individual with a landscape location, linked to other sampling units by pairwise genetic observations.
+_Avoid_: Population, when the sampling unit represents an individual.
 
 **Pairwise genetic observation**:
 A measured genetic relationship between two sampling units, whose meaning and scale are defined by the chosen target. Genetic dissimilarity and individual relatedness are different kinds of pairwise genetic observation.
@@ -138,12 +138,12 @@ _Avoid_: Raw distance; landscape score; genetic prediction, before calibration t
 
 **Genetic prediction**:
 An estimated genetic relationship for an identified pair of sampling units in a
-region, expressed in the declared target's original units. Its matrix representation
-does not imply predictions for unrequested pairs or a joint uncertainty model.
+region, expressed in the target's original units.
+A prediction matrix arranges values for the requested pairs.
 _Avoid_: Calibrated distance.
 
 **Genetic calibration**:
-The relationship between ecological distances and genetic observations on the declared target scale. This relationship may differ between regions.
+The relationship between ecological distances and genetic observations on the target scale. This relationship may differ between regions.
 
 **Species order**:
 An ordered sequence of species names retained by a landscape genetics model to associate species with their parameters and predictions.

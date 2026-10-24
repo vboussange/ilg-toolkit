@@ -1,10 +1,9 @@
-"""Independent inverse landscape genetics toolkit."""
+"""Inverse landscape genetics toolkit."""
 
 from .calibration import (
     AbstractCalibrationModule,
     DirectCalibrationModule,
     MLPECalibrationModule,
-    calibrate,
 )
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
@@ -25,6 +24,7 @@ from .ensemble import (
 )
 from .evaluation import (
     EvaluationAccess,
+    EvaluationMetrics,
     EvaluationRegime,
     EvaluationSupport,
     OOFEvaluation,
@@ -35,21 +35,15 @@ from .evaluation import (
 )
 from .ibd import IBDModel
 from .mlpe import (
-    MLPEConditionalPrediction,
     MLPEConfig,
     MLPEError,
-    MLPEPrediction,
-    MLPEPredictionProvenance,
-    MLPESupportConditioner,
     RegionalMLPECalibration,
     calibrate_mlpe,
-    condition_on_support,
-    predict_known_effects,
 )
 from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
 from .prediction import Prediction
-from .training import EpochRecord, TrainingState, fit
+from .training import StepRecord, TrainingState, fit
 
 __all__ = [
     "AbstractCalibrationModule",
@@ -57,6 +51,7 @@ __all__ = [
     "MLPECalibrationModule",
     "IBDModel",
     "EvaluationAccess",
+    "EvaluationMetrics",
     "EvaluationRegime",
     "EvaluationSupport",
     "OOFEvaluation",
@@ -80,16 +75,10 @@ __all__ = [
     "load_model",
     "save_model",
     "MLPEConfig",
-    "MLPEConditionalPrediction",
     "MLPEError",
     "RegionalMLPECalibration",
-    "MLPEPrediction",
-    "MLPEPredictionProvenance",
-    "MLPESupportConditioner",
     "calibrate_mlpe",
-    "condition_on_support",
-    "predict_known_effects",
-    "EpochRecord",
+    "StepRecord",
     "TrainingConfig",
     "TrainingState",
     "PairwiseObservations",
@@ -100,7 +89,6 @@ __all__ = [
     "ResistanceSolverConfig",
     "TargetSpec",
     "fit",
-    "calibrate",
     "load_checkpoint",
     "save_checkpoint",
 ]

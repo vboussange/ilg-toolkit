@@ -1,4 +1,4 @@
-"""Atomic native Equinox continuation checkpoints with caller distance-model templates."""
+"""Training checkpoints saved as Equinox files for continuing a fit."""
 
 from dataclasses import asdict
 from pathlib import Path
@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import optax
 
 from .config import TrainingConfig
+from .mlpe import MLPEConfig
 from .models import AbstractDistanceModel
 from .persistence import (
     ArtifactError,
@@ -16,41 +17,42 @@ from .persistence import (
     _read_header,
     _write_native,
 )
-from .training import EpochRecord, TrainingState
+from .training import StepRecord, TrainingState, _validate_state
 
 
 def save_checkpoint(path, state: TrainingState) -> None:
-    """Atomically save the actual latest/best state, including custom distance models.
+    """An Equinox checkpoint containing the latest training state and selected model.
 
-    ``fit(..., on_epoch=lambda state: save_checkpoint(path, state))`` saves after
-    every complete epoch. A failed replacement leaves the prior file intact.
+    ``fit(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
+    initialization and every optimizer update. A failed replacement leaves the prior file intact.
     """
     if not isinstance(state, TrainingState):
         raise ArtifactError("save_checkpoint requires a TrainingState returned by fit")
+    _validate_state(state)
     metadata = {
         "config": asdict(state.config),
-        "input_contract": state.input_contract,
         "history_length": len(state.history),
         "latest_model": _model_metadata(state.latest_model),
-        "best_model": _model_metadata(state.best_model),
+        "selected_model": _model_metadata(state.selected_model),
     }
     _write_native(path, state, kind="training_checkpoint", metadata=metadata)
 
 
 def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingState:
-    """Restore native state using the exact full distance model configuration and precision.
+    """A checkpoint training state loaded using a caller-constructed distance model.
 
-    Continue with the original inputs and partitions. Only the total epoch budget
-    may increase; unchanged measurements and execution conditions remain caller
-    responsibilities. Numerical leaf compatibility is checked by Equinox.
+    The template supplies the model class, static settings, and numerical shapes
+    and dtypes. Reproducing uninterrupted training requires the original inputs
+    and execution conditions. Only the total step budget may increase.
     """
     try:
         with Path(path).open("rb") as stream:
             metadata = _read_header(stream, kind="training_checkpoint")
             options = dict(metadata["config"])
+            options["mlpe"] = MLPEConfig(**options["mlpe"])
             config = TrainingConfig(**options)
             latest = _model_template(metadata["latest_model"], distance_model)
-            best = _model_template(metadata["best_model"], distance_model)
+            selected = _model_template(metadata["selected_model"], distance_model)
             raw = (
                 {name: jnp.zeros(2, dtype=jnp.float64) for name in latest.training_pairs}
                 if config.objective == "mlpe"
@@ -60,15 +62,30 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
                 eqx.filter((latest.distance_model, raw), eqx.is_inexact_array)
             )
             history_length = metadata["history_length"]
-            if history_length < 1:
-                raise ArtifactError("Checkpoint history is incomplete")
+            if not 1 <= history_length <= config.steps + 1:
+                raise ArtifactError("Checkpoint history length must be within the step budget")
+
+            def metrics(groups):
+                regions = {key if isinstance(key, str) else key[0]: 0.0 for key in groups}
+                species = latest.species
+                by_species = (
+                    None
+                    if species is None or len(species) == 1
+                    else {species[key[1]]: 0.0 for key in groups}
+                )
+                return regions, by_species
+
+            training_regions, training_species = metrics(latest.training_pairs)
+            validation_regions, validation_species = metrics(latest.validation_pairs)
             history = tuple(
-                EpochRecord(
-                    epoch=0,
+                StepRecord(
+                    step=0,
                     training_loss=0.0,
                     validation_loss=0.0 if latest.validation_pairs else None,
-                    training_by_region=dict.fromkeys(latest.training_pairs, 0.0),
-                    validation_by_region=dict.fromkeys(latest.validation_pairs, 0.0),
+                    training_by_region=training_regions,
+                    validation_by_region=validation_regions,
+                    training_by_species=training_species,
+                    validation_by_species=validation_species,
                 )
                 for _ in range(history_length)
             )
@@ -77,13 +94,15 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
                 optimizer_state=optimizer_state,
                 rng_key=jnp.zeros(2, dtype=jnp.uint32),
                 config=config,
-                input_contract=metadata["input_contract"],
                 history=history,
                 latest_model=latest,
-                best_model=best,
-                selected_epoch=0,
+                selected_model=selected,
+                selected_step=0,
+                step=0,
             )
-            return eqx.tree_deserialise_leaves(stream, template)
+            state = eqx.tree_deserialise_leaves(stream, template)
+            _validate_state(state)
+            return state
     except (KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:
         if isinstance(error, ArtifactError):
             raise

@@ -1,13 +1,15 @@
-"""Landscape encoders extracted from the cleaned research architecture."""
+"""Distance models with pooled backbones and species-specific ecological distances."""
 
-from .base import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
+from .base import AbstractDistanceModel, ConductanceModel, EmbeddingModel
+from .loglinear import LogLinearConductance
 from .resnet import ResNet9Conductance
-from .unet import UNetEmbeddingDistance
+from .unet import UNet
 
 __all__ = [
     "AbstractDistanceModel",
     "ConductanceModel",
-    "EmbeddingDistanceModel",
+    "EmbeddingModel",
+    "LogLinearConductance",
     "ResNet9Conductance",
-    "UNetEmbeddingDistance",
+    "UNet",
 ]

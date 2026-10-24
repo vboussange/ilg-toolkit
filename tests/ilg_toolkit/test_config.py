@@ -6,6 +6,15 @@ import pytest
 from ilg_toolkit import PairwiseObservations, TrainingConfig, fit
 
 
+@pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "2"])
+@pytest.mark.parametrize(
+    "name", ["region_batch_size", "species_batch_size", "species_microbatch_size"]
+)
+def test_region_batch_size_rejects_invalid_counts(value, name):
+    with pytest.raises(ValueError):
+        TrainingConfig(objective="direct_log1p", **{name: value})
+
+
 def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_them(
     observation_problem,
 ):
@@ -14,7 +23,7 @@ def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_t
     omitted = {}
     with pytest.raises(TypeError):
         TrainingConfig(**omitted)
-    config = TrainingConfig(objective="direct_log1p", epochs=0)
+    config = TrainingConfig(objective="direct_log1p", steps=0)
     with pytest.raises(ValueError):
         fit(region, observations, config=config)
     with pytest.raises(ValueError):
