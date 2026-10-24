@@ -1,9 +1,11 @@
-"""Exact population-sized full-ML likelihood and signed profiled GLS.
+"""Maximum-likelihood population effects (MLPE) likelihood and calibration.
 
-Input array dtypes control precision. Use ``jax.enable_x64()`` and float64 arrays
-for reference comparisons; importing this module never changes global precision.
-Invalid/singular inputs or unsupported numerical conditioning return nonfinite
-results for the host boundary to report. No diagonal is increased automatically.
+Generalized least squares (GLS) fits the calibration coefficients.
+
+Input array data types control precision; use ``jax.enable_x64()`` and float64
+arrays for reference comparisons.
+Invalid inputs, singular systems, or unsupported numerical conditioning return
+nonfinite results.
 """
 
 import math
@@ -20,7 +22,7 @@ DEFAULT_MIN_DISTANCE_SCALE = 1e-12
 
 
 class MLPEFit(NamedTuple):
-    """Complete numerical fit at supplied variances, without optimization."""
+    """MLPE calibration coefficients, likelihood, and population effects at supplied variances."""
 
     nll: jax.Array
     coefficients: jax.Array
@@ -31,14 +33,14 @@ class MLPEFit(NamedTuple):
 
 
 def pair_incidence_matrix(left, right, *, n_populations, dtype=jnp.float32):
-    """Explicit incidence utility; ordinary fitting and prediction use scatters."""
+    """Pair-to-population incidence matrix with two ones per observed pair."""
     rows = jnp.arange(len(left))
     incidence = jnp.zeros((len(left), n_populations), dtype=dtype)
     return incidence.at[rows, left].add(1).at[rows, right].add(1)
 
 
 def sample_standardize_distances(distances, *, center=None, scale=None, pair_mask=None):
-    """Sample SD (ddof=1) of observed distances, or stored training moments."""
+    """Standardized ecological distances with their mean and sample standard deviation."""
     distances = jnp.asarray(distances)
     weights = jnp.ones(distances.shape, dtype=bool) if pair_mask is None else jnp.asarray(pair_mask)
     safe_distances = jnp.where(weights, distances, 0)
@@ -58,7 +60,7 @@ def sample_standardize_distances(distances, *, center=None, scale=None, pair_mas
 
 
 def decode_mlpe_variances(raw_variances, *, variance_floor=DEFAULT_VARIANCE_FLOOR):
-    """Decode raw softplus parameters as (unit variance, residual variance)."""
+    """Population and residual variance parameters obtained through softplus."""
     positive = jax.nn.softplus(jnp.asarray(raw_variances)) + variance_floor
     return positive[0], positive[1]
 
@@ -90,7 +92,9 @@ def _components(
         or right.shape != distances.shape
         or n_populations < 2
     ):
-        raise ValueError("MLPE requires aligned one-dimensional distances, targets and endpoints")
+        raise ValueError(
+            "MLPE requires aligned one-dimensional distances, targets and sampling units"
+        )
     weights = jnp.ones(distances.shape, dtype=bool) if pair_mask is None else jnp.asarray(pair_mask)
     if weights.shape != distances.shape or weights.dtype != jnp.bool_:
         raise ValueError("pair_mask must be a boolean vector aligned with distances")
@@ -173,12 +177,11 @@ def profiled_mlpe_ml_fit(
     jitter=0.0,
     pair_mask=None,
 ):
-    """Return unnormalized full ML NLL and signed GLS coefficients.
+    """Unnormalized negative log likelihood and signed GLS coefficients for MLPE calibration.
 
-    ``pair_mask`` is JIT-compatible: false rows, including NaN measurements and
-    placeholder endpoints, are absent from moments, determinants and quadratics.
-    Conditioning beyond eps*(1+2*max_degree*u/(e+j)) <= .01 is rejected with NaN;
-    use float64 or explicit scientifically appropriate variance constraints.
+    ``pair_mask`` selects observations for distance moments and likelihood calculations.
+    Numerical conditioning must satisfy eps*(1+2*max_degree*u/(e+j)) <= 0.01;
+    unsupported inputs return not-a-number (NaN) results.
     """
     targets, design, system, valid, _, _ = _components(
         distances,
@@ -213,13 +216,11 @@ def finalize_mlpe_fit(
     jitter=0.0,
     pair_mask=None,
 ) -> MLPEFit:
-    """Finalize signed GLS, full-ML likelihood and posterior at supplied variances.
+    """MLPE coefficients, likelihood, and population effects at supplied variances.
 
     The population system is factored once and reused for all fitted quantities.
-    No optimizer is run. Distance moments use only selected rows unless supplied;
-    floors, jitter, masking and numerical failures follow the likelihood kernel.
-    Gradient-only optimization should use ``profiled_mlpe_ml_fit`` instead,
-    which omits posterior covariance construction.
+    Distance moments use selected observations or the supplied training moments.
+    ``profiled_mlpe_ml_fit`` provides the likelihood and coefficients for gradient optimization.
     """
     targets, design, system, valid, center, scale = _components(
         distances,
@@ -251,7 +252,7 @@ def finalize_mlpe_fit(
 
 
 def profiled_mlpe_ml_negative_log_likelihood(*args, **kwargs):
-    """Full-ML NLL after profiling the signed intercept and slope."""
+    """MLPE negative log likelihood after fitting the signed intercept and slope."""
     return profiled_mlpe_ml_fit(*args, **kwargs)[0]
 
 
@@ -271,7 +272,7 @@ def mlpe_ml_negative_log_likelihood(
     jitter=0.0,
     pair_mask=None,
 ):
-    """Full ML with frozen fixed effects and distance moments, for validation."""
+    """Validation negative log likelihood using fitted coefficients and distance moments."""
     targets, design, system, valid, _, _ = _components(
         distances,
         targets,
@@ -308,10 +309,10 @@ def mlpe_effect_posterior(
     jitter=0.0,
     pair_mask=None,
 ):
-    """Return effect mean, covariance, and precision factor at current parameters.
+    """Population-effect mean, covariance, and precision factor at current parameters.
 
-    This refresh operation does not optimize variances or refit the encoder.
-    It uses the same population system and numerical policy as the likelihood.
+    The distance model and variance parameters remain fixed.
+    The calculation uses the likelihood's population system and numerical settings.
     """
     targets, design, system, valid, _, _ = _components(
         distances,

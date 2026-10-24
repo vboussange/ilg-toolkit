@@ -111,7 +111,7 @@ with jax.enable_x64():
 
     # Predict query pairs before supplying their measurements for scoring.
     oof = predict_out_of_fold(ensemble, region, observations.observed_pairs)
-    print("OOF region/pair, contributors, mean (NaN means uncovered):")
+    print("OOF region/pair, ensemble members, mean (not-a-number means uncovered):")
     for identity, count, value in zip(oof.keys, oof.eligible_counts, oof.values, strict=True):
         print(identity, int(count), float(value))
     print("OOF coverage status:", oof.coverage_status)
@@ -123,8 +123,8 @@ with jax.enable_x64():
     print(
         "OOF coverage, root mean squared error (RMSE, index):", evaluation.coverage, evaluation.rmse
     )
-    print("Each covered pair is scored once after averaging its eligible member points.")
-    print("Training pairs stay present with zero coverage and do not contribute errors.")
+    print("Covered pairs are scored once using eligible members' mean genetic prediction.")
+    print("Training pairs remain in the results with zero coverage.")
     assert oof.coverage_status == "partial"
     assert evaluation.n_pairs == 1 and evaluation.n_query_pairs == 15
 
@@ -137,7 +137,10 @@ with jax.enable_x64():
     )
     shifted_score = score_out_of_fold(oof, shifted)
     assert shifted_score.predictions is oof
-    print("Same fixed prediction, shifted scoring-target RMSE:", shifted_score.rmse)
+    print(
+        "Same fixed prediction, shifted scoring-target RMSE:",
+        shifted_score.rmse,
+    )
 
     member = ensemble.members[0]
     assert member.model is not None
@@ -148,7 +151,7 @@ with jax.enable_x64():
     excluded_score = score_out_of_fold(excluded, observations)
     print("This pair is excluded from OOF because its own target was accessed:")
     print(excluded.exclusion_reasons)
-    print("Zero-coverage points/metrics:", excluded.values, excluded_score.rmse)
+    print("Zero-coverage genetic predictions and metrics:", excluded.values, excluded_score.rmse)
     assert excluded.coverage_status == "none" and excluded_score.rmse is None
 
     # Supply one genetic measurement for conditioning a disjoint query pair.
@@ -174,7 +177,7 @@ with jax.enable_x64():
         support=support,
         regime=EvaluationRegime(prediction_mode="support"),
     )
-    print("Strict support counts its endpoints as seen; coverage:", strict.coverage)
+    print("Strict support counts its sampling units as seen; coverage:", strict.coverage)
     conditional = predict_out_of_fold(
         ensemble,
         region,
@@ -187,9 +190,11 @@ with jax.enable_x64():
     )
     # Query targets are read only at this separate scoring step.
     conditional_score = score_out_of_fold(conditional, observations)
-    print("Declared-support conditional OOF identities:", conditional.keys)
-    print("Declared-support conditional OOF mean:", conditional.values)
-    print("Eligibility was checked before disjoint support; endpoints are now conditioned.")
+    print("Support-conditioned OOF identities:", conditional.keys)
+    print("Support-conditioned OOF mean:", conditional.values)
+    print(
+        "Eligibility was checked before disjoint support; population effects are now conditioned."
+    )
     assert strict.coverage == 0 and conditional.coverage == 1
     print("Conditional OOF coverage, RMSE:", conditional.coverage, conditional_score.rmse)
     print("Per-member predictive variance stays on the log1p model scale:")

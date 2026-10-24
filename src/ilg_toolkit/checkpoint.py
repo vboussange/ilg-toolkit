@@ -21,7 +21,7 @@ from .training import StepRecord, TrainingState, _validate_state
 
 
 def save_checkpoint(path, state: TrainingState) -> None:
-    """Save the latest training state and selected model in an Equinox checkpoint.
+    """An Equinox checkpoint containing the latest training state and selected model.
 
     ``fit(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
     initialization and every optimizer update. A failed replacement leaves the prior file intact.
@@ -39,7 +39,7 @@ def save_checkpoint(path, state: TrainingState) -> None:
 
 
 def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingState:
-    """Load a training state using a caller-constructed distance model.
+    """A checkpoint training state loaded using a caller-constructed distance model.
 
     The template supplies the model class, static settings, and numerical shapes
     and dtypes. Reproducing uninterrupted training requires the original inputs

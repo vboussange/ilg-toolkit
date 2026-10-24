@@ -1,4 +1,4 @@
-"""Fully data-driven U-Net with a global patch-grid receptive field."""
+"""A U-Net distance model deriving squared embedding distances from landscape features."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .common import encode_patches
 
 
 def _match_shape(values: jax.Array, reference: jax.Array) -> jax.Array:
-    """Centre-crop or zero-pad a CHW tensor to a reference spatial shape."""
+    """A channel, height, width array cropped or zero-padded to a reference spatial shape."""
     target_height, target_width = reference.shape[1:]
     height, width = values.shape[1:]
     if height > target_height:
@@ -59,7 +59,7 @@ class ResidualConvBlock(eqx.Module):
         self.dropout = eqx.nn.Dropout(dropout, inference=True)
 
     def __call__(self, values: jax.Array) -> jax.Array:
-        """Apply the block to one channel-first feature map."""
+        """Residual convolutional features for one channel-first feature map."""
         residual = values if self.projection is None else self.projection(values)
         values = jax.nn.gelu(self.norm1(self.conv1(values)))
         values = self.norm2(self.conv2(values))
@@ -69,7 +69,11 @@ class ResidualConvBlock(eqx.Module):
 
 @final
 class UNet(EmbeddingModel):
-    """Predict patch embeddings and squared distances between population nodes."""
+    """A distance model using a pooled U-Net backbone and species-specific embeddings.
+
+    The backbone combines landscape features across the region's patch grid,
+    and squared embedding distances provide ecological distances between sampling units.
+    """
 
     patch_embedding: eqx.nn.Linear
     patch_norm: eqx.nn.GroupNorm

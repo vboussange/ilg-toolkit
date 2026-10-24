@@ -61,7 +61,7 @@ class Prediction(eqx.Module):
     def as_matrix(self, name: str | None = None) -> jax.Array:
         """Symmetric matrix of stored values or a named extra in sampling-unit order.
 
-        The diagonal and unrequested pairs are NaN.
+        The diagonal and unrequested pairs are not-a-number (NaN).
         """
         values = self.values if name is None else self.extras[name]
         lookup = {label: index for index, label in enumerate(self.sampling_unit_ids)}

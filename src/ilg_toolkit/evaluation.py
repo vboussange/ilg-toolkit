@@ -2,6 +2,7 @@
 
 Eligibility tracks observation use separately for each region–species group.
 Query measurements enter only after eligible ensemble predictions are fixed.
+
 """
 
 from collections.abc import Mapping, Sequence
@@ -33,31 +34,15 @@ from .training import _normalize_inputs
 
 @dataclass(frozen=True)
 class EvaluationRegime:
-    """Choose endpoint eligibility and marginal or conditional prediction.
+    """Sampling-unit eligibility and population-effect conditioning for out-of-fold evaluation.
 
-    A qualifying endpoint belongs to the member's nominal regional holdout and
-    has no actual training, validation-selection or calibration target access.
-    The query pair's own target is excluded in every mode, including support.
-    This configuration governs OOF evaluation, not deployment prediction.
-
-    Attributes:
-        endpoint_regime: ``"both_unseen"`` (default) requires two qualifying
-            endpoints; ``"at_least_one_unseen"`` requires one. Holdout and
-            untouched status must apply to the same endpoint.
-        prediction_mode: ``"marginal"`` (default) uses population effects
-            marginalised to zero. ``"known_effects"`` uses the saved regional
-            MLPE effect posterior. ``"support"`` conditions that posterior on
-            an explicit ``EvaluationSupport`` declaration. Conditional modes
-            require regional MLPE calibration and retain its access history.
-        support_endpoint_policy: ``"unseen"`` (default) counts support endpoints
-            as accessed before checking eligibility. ``"allow_declared_support"``
-            checks endpoint eligibility before disjoint declared support is
-            consumed and explicitly reports conditional prediction. It is valid
-            only with support mode; it never permits the query target as support.
-
-    Raises:
-        ValueError: A field is unsupported, or permissive support policy is used
-            outside support mode.
+    ``endpoint_regime`` requires both or at least one unseen sampling unit in the
+    same ensemble member's holdout, with query observations reserved for scoring.
+    ``prediction_mode`` selects marginal predictions, saved population effects, or
+    support conditioning of maximum-likelihood population effects (MLPE) calibration.
+    ``support_endpoint_policy`` counts support sampling units as seen by default;
+    ``"allow_declared_support"`` checks eligibility before conditioning on disjoint
+    support observations and requires support prediction mode.
     """
 
     endpoint_regime: str = "both_unseen"
@@ -72,29 +57,18 @@ class EvaluationRegime:
         if self.support_endpoint_policy not in {"unseen", "allow_declared_support"}:
             raise ValueError("support_endpoint_policy must be unseen or allow_declared_support")
         if self.prediction_mode != "support" and self.support_endpoint_policy != "unseen":
-            raise ValueError("A permissive support policy requires explicit support prediction")
+            raise ValueError("A permissive support policy requires support prediction")
 
 
 @dataclass(frozen=True)
 class EvaluationSupport:
-    """Declare every target that conditional prediction may consume as support.
+    """Support observations and their data-role partition for conditional prediction.
 
-    Support is distinct from query measurements used only for scoring. The
-    evaluation call checks regional alignment, target compatibility and disjoint
-    query identities. Each member additionally rejects support already consumed
-    by its regional calibration; such member failures remain visible in OOF.
-
-    Attributes:
-        observations: Original-scale ``PairwiseObservations`` containing exactly
-            the measured support pairs, with the same ``TargetSpec`` as queries.
-            Its labelled universe may include units without support measurements.
-        partition: ``ObservationPartition`` with role ``"support"`` and the
-            query region's name. Its unordered pairs must equal the measured
-            support identities, including canonical treatment of reversals.
-
-    Raises:
-        ValueError: Inputs have incompatible types, the role is not support, or
-            the measured and declared support pair sets differ.
+    ``observations`` supplies original-scale measurements with the query target
+    specification, and ``partition`` identifies those same pairs with role
+    ``"support"`` in the query region.
+    Support pairs must be disjoint from query pairs and each member's calibration pairs.
+    A rejected member remains visible in out-of-fold failure records.
     """
 
     observations: PairwiseObservations
@@ -111,7 +85,7 @@ class EvaluationSupport:
             )
         observed = {tuple(sorted(pair)) for pair in self.observations.observed_pairs}
         if observed != set(self.partition.pairs):
-            raise ValueError("Support observations must contain exactly the declared support pairs")
+            raise ValueError("Support observations must contain exactly the support pairs")
 
 
 @dataclass(frozen=True)
@@ -136,13 +110,14 @@ class EvaluationAccess:
 
 @dataclass(frozen=True)
 class OOFPrediction:
-    """Out-of-fold predictions, eligible-member counts, coverage, and failures.
+    """Out-of-fold genetic predictions, eligible-member counts, coverage, and failures.
 
-    Group keys are region names for unnamed species and ``(region, species)`` for
-    named species; ``keys`` orders all arrays by region, species, and query pair.
-    Uncovered predictions and descriptive member spread are NaN, while conditional
-    variances remain on the model scale. ``species`` retains the modeled species
-    order so scoring can include per-species metrics for multispecies models.
+    Region–species group keys are region names for unnamed species and
+    ``(region, species)`` for named species; ``keys`` orders arrays by region,
+    species, and query pair.
+    Uncovered predictions and member spread are not-a-number (NaN), while
+    conditional variances remain on the model scale.
+    ``species`` retains the species order for per-species scoring.
     """
 
     predictions: dict[FoldKey, Prediction]
@@ -169,7 +144,7 @@ class OOFPrediction:
 
     @property
     def keys(self) -> tuple[tuple[FoldKey, tuple[str, str]], ...]:
-        """Return sorted region/pair identities in member-output column order."""
+        """Region–species group and query-pair identities in ensemble member output order."""
         return tuple(
             (name, pair)
             for name in sorted(self.predictions, key=_group_sort_key)
@@ -189,12 +164,12 @@ class OOFPrediction:
 
     @property
     def scale(self) -> str:
-        """Return ``"original"`` for the regional and derived point values."""
+        """The original scale of genetic predictions."""
         return "original"
 
     @property
     def eligible_member_ids(self):
-        """Member identities that successfully contributed to each unique pair."""
+        """Ensemble member identities with successful genetic predictions for each query pair."""
         return tuple(
             tuple(
                 self.member_ids[row]
@@ -205,12 +180,12 @@ class OOFPrediction:
 
     @property
     def coverage(self):
-        """Return the fraction of unique queries with a successful contributor."""
+        """Out-of-fold coverage as the fraction of query pairs with a genetic prediction."""
         return float(np.mean(self.covered_mask))
 
     @property
     def coverage_status(self):
-        """Return ``"complete"``, ``"partial"`` or ``"none"`` point coverage."""
+        """Out-of-fold coverage status: ``"complete"``, ``"partial"``, or ``"none"``."""
         return (
             "complete"
             if self.covered_mask.all()
@@ -269,7 +244,7 @@ def _evaluation_metrics(values, targets, covered):
 
 
 def _canonical_pairs(pairs, universe=None):
-    """Deduplicate evaluation identities; ordinary prediction rejects duplicates."""
+    """Unique unordered query pairs for evaluation."""
     try:
         pairs = tuple(tuple(pair) for pair in pairs)
         if any(
@@ -278,12 +253,12 @@ def _canonical_pairs(pairs, universe=None):
             or pair[0] == pair[1]
             for pair in pairs
         ):
-            raise ValueError("Invalid labelled query pairs")
+            raise ValueError("Invalid labeled query pairs")
         canonical = tuple(sorted({tuple(sorted(pair)) for pair in pairs}))
     except (TypeError, ValueError) as error:
         raise ValueError("Pairs require distinct nonempty sampling-unit labels") from error
     if universe is not None and any(not set(pair).issubset(universe) for pair in canonical):
-        raise ValueError("Query pair endpoints need locations in the prepared region")
+        raise ValueError("Query pair sampling units need locations in the region batch")
     return canonical
 
 
@@ -370,10 +345,10 @@ def _ensemble_species(ensemble: Ensemble) -> tuple[str, ...] | None:
 def _support_inputs(support, regions, queries, target, regime, order):
     if regime.prediction_mode != "support":
         if support is not None:
-            raise ValueError("Support targets require explicit support prediction mode")
+            raise ValueError("Support targets require support prediction mode")
         return {}
     if support is None:
-        raise ValueError("Support prediction requires declared support observations and partitions")
+        raise ValueError("Support prediction requires support observations and partitions")
     if isinstance(support, EvaluationSupport) and len(regions) == 1:
         support = {next(iter(regions)): support}
     if not isinstance(support, Mapping) or set(support) != set(regions):
@@ -395,7 +370,7 @@ def _support_inputs(support, regions, queries, target, regime, order):
 
 
 def _access(model, identity, support, regime):
-    """Read the fitted model's access, rather than infer it from nominal folds."""
+    """Observation-use records retained by the fitted landscape genetics model."""
     name, species = _group_names(identity)
     index = select_species(model.species, species)[0][1]
     key = (name, index) if model.distance_model.num_species > 1 else name
@@ -421,7 +396,7 @@ def _access(model, identity, support, regime):
 
 
 def _exclusion(pair, held_out, access, regime):
-    """Require the same endpoint to satisfy nominal holdout and actual non-access."""
+    """Exclusion reason from the ensemble member's holdout and observation-use records."""
     if not access.encoder_access_declared:
         return "unknown_encoder_access"
     consumed = (
@@ -453,9 +428,7 @@ def _member_predict(model, region, pairs, regime, support, species):
     values = result.values
     variances = result.extras.get("model_variance")
     if values.shape != (len(pairs),) or not bool(jnp.isfinite(values).all()):
-        raise FloatingPointError(
-            "Member prediction must return aligned finite original-scale values"
-        )
+        raise FloatingPointError("Ensemble member must return aligned finite genetic predictions")
     if variances is not None and (
         variances.shape != values.shape or not bool(jnp.isfinite(variances).all())
     ):
@@ -479,12 +452,12 @@ def predict_out_of_fold(
     selection, and ``pairs`` can map region names or ``(region, species)`` keys
     to query pairs or query partitions. Eligibility combines each member's
     holdout with training, validation, calibration, and support observation use,
-    under ``regime``; support declarations use the same group keys as queries.
+    under ``regime``; support declarations use the same region–species group keys as queries.
     The result reports successful-member coverage and failures, and every-member
     failure requires ``target`` metadata for reporting.
     """
     if not isinstance(ensemble, Ensemble):
-        raise ValueError("Provide an Ensemble with its complete requested composition")
+        raise ValueError("Provide an Ensemble with all its requested ensemble members")
     regime = EvaluationRegime() if regime is None else regime
     if not isinstance(regime, EvaluationRegime):
         raise ValueError("regime must be an EvaluationRegime")
@@ -495,7 +468,7 @@ def predict_out_of_fold(
         assert completed_model is not None  # Ensemble validates completed members.
         inferred = completed_model.target
         if target is not None and target != inferred:
-            raise ValueError("Declared evaluation target scale must match ensemble members")
+            raise ValueError("Evaluation target scale must match ensemble members")
         target = inferred
     if not isinstance(target, TargetSpec):
         raise ValueError("All members unavailable: declare target metadata for coverage reporting")
@@ -599,7 +572,7 @@ def predict_out_of_fold(
 
 
 def score_out_of_fold(prediction: OOFPrediction, observations) -> OOFEvaluation:
-    """Score fixed out-of-fold predictions on the original target scale.
+    """Scores for fixed out-of-fold predictions on the original target scale.
 
     Supply one observations object or a species-labeled sequence for one region,
     or a mapping from region names to those inputs. Each covered region–species
@@ -693,7 +666,7 @@ def evaluate_ensemble(
     regime: EvaluationRegime | None = None,
     support=None,
 ) -> OOFEvaluation:
-    """Predict eligible query pairs, then score their genetic observations.
+    """Out-of-fold predictions and scores for eligible query pairs.
 
     Observations and optional query partitions align with regions and species
     as in ``fit``. The ``regime`` and ``support`` arguments follow

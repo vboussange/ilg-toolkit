@@ -1,4 +1,4 @@
-"""Isolation-by-distance reference fitted independently of landscape encoders."""
+"""Isolation by distance (IBD) reference relating geographic distances and genetic dissimilarity."""
 
 from __future__ import annotations
 
@@ -42,13 +42,12 @@ def _validate_metadata(distance_units: str, target: TargetSpec) -> None:
 @final
 @dataclass(frozen=True)
 class IBDModel:
-    """Original-scale affine reference ``slope * distance + intercept``.
+    """An isolation-by-distance model predicting original-scale genetic dissimilarity.
 
-    Geographic distances must be Euclidean separations in the declared units.
-    Supply any conversion from raster positions before calling this boundary.
-    Fitting compares predictions and targets using log1p; it does not transform
-    the returned predictions or learn a conductance surface. Enable JAX float64
-    before creating inputs for fitting or prediction.
+    Geographic distances must be Euclidean separations in ``distance_units``;
+    convert raster positions to those units before fitting or prediction.
+    Fitting compares genetic predictions and observations using log1p.
+    Enable JAX float64 before creating inputs for fitting or prediction.
     """
 
     slope: float
@@ -68,7 +67,7 @@ class IBDModel:
         _validate_metadata(self.distance_units, self.target)
 
     def predict(self, distances: ArrayLike, *, distance_units: str) -> jax.Array:
-        """Predict a vector or square matrix, retaining a structural zero diagonal."""
+        """Genetic predictions as a vector or square matrix, with a structural zero diagonal."""
         if distance_units != self.distance_units:
             raise ValueError("Prediction distance_units must match the fitted model")
         if not jax.config.read("jax_enable_x64"):
@@ -98,7 +97,7 @@ class IBDModel:
         target: TargetSpec,
         max_iterations: int = 2000,
     ) -> IBDModel:
-        """Minimize the equal-weight mean of regional mean log1p squared errors."""
+        """An isolation-by-distance model fitted with equal regional influence."""
         _validate_metadata(distance_units, target)
         if not jax.config.read("jax_enable_x64"):
             raise ValueError("IBD fitting requires JAX float64; enable x64 explicitly")

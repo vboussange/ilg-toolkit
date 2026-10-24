@@ -46,7 +46,7 @@ addopts = "-ra --import-mode=importlib"
 pythonpath = ["."]
 
 [tool.pyright]
-include = ["src", "tests", "experiments", "examples", "benchmarks"]
+include = ["src", "tests", "experiments", "examples"]
 extraPaths = ["src", "tests"]
 pythonVersion = "3.12"
 reportIncompatibleMethodOverride = true

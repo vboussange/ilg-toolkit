@@ -10,10 +10,10 @@ sampling units, and genetic observations to `fit`, then request genetic predicti
 with `predict`. Multispecies support is experimental.
 
 <p align="center">
-  <img src="docs/assets/ilg-overview.webp" width="420" alt="Landscape features pass through a patch encoder to a conductance grid graph; effective resistance between sampling units is calibrated to genetic dissimilarity.">
+  <img src="docs/assets/ilg-overview.webp" width="420" alt="Landscape features pass through a pooled backbone to a conductance grid graph; effective resistance between sampling units is calibrated to genetic dissimilarity.">
 </p>
 
-**Conductance model illustration.** A patch encoder maps landscape features to a
+**Conductance model illustration.** A pooled backbone maps landscape features to a
 conductance surface. Effective resistance through its grid graph is the ecological
 distance between sampling units. Genetic calibration relates that distance to the
 observed genetic dissimilarity.

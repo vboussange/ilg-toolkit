@@ -413,7 +413,7 @@ def test_actual_recalibration_changes_eligibility_and_query_calibration_always_e
     from ilg_toolkit import EvaluationRegime
 
     with jax.enable_x64():
-        region, observations, ensemble = fitted_member_problem()
+        region, observations, ensemble = fitted_member_problem
         member = ensemble.members[0]
         held = member.fold.held_out_units[region.name]
         old = next(label for label in region.sampling_unit_ids if label not in held)
@@ -523,7 +523,7 @@ def test_known_effects_and_support_require_explicit_modes_and_report_separate_va
     from ilg_toolkit import EvaluationRegime, EvaluationSupport
 
     with jax.enable_x64():
-        region, observations, ensemble = fitted_member_problem()
+        region, observations, ensemble = fitted_member_problem
         member = ensemble.members[0]
         held = member.fold.held_out_units[region.name]
         old = next(label for label in region.sampling_unit_ids if label not in held)
@@ -699,7 +699,7 @@ def test_reused_calibration_support_cannot_contribute_and_target_scales_must_mat
     from ilg_toolkit import EvaluationRegime, EvaluationSupport
 
     with jax.enable_x64():
-        region, observations, ensemble = fitted_member_problem()
+        region, observations, ensemble = fitted_member_problem
         member = ensemble.members[0]
         held = member.fold.held_out_units[region.name]
         calibration = completed_model(member).calibration

@@ -1,4 +1,4 @@
-"""Landscape encoders extracted from the cleaned research architecture."""
+"""Distance models with pooled backbones and species-specific ecological distances."""
 
 from .base import AbstractDistanceModel, ConductanceModel, EmbeddingModel
 from .loglinear import LogLinearConductance

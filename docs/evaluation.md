@@ -82,7 +82,7 @@ Its `keys` order aligns the combined arrays:
 | Result | Meaning |
 | --- | --- |
 | `values`, `member_values` | Original-scale means and values from each requested member |
-| `eligible_counts`, `eligible_member_ids` | Successful contributors for each query pair |
+| `eligible_counts`, `eligible_member_ids` | Ensemble members with successful genetic predictions for each query pair |
 | `covered_mask`, `coverage`, `coverage_status` | Covered pairs, covered fraction, and `"complete"`, `"partial"`, or `"none"` |
 | `exclusion_reasons`, `access` | Eligibility decisions and observation use |
 | `member_failures`, `prediction_failures` | Fitting and prediction failures |
@@ -147,11 +147,11 @@ Repeated sampling-unit identifiers in different species remain separate.
 `ensemble.predict` and `predict_out_of_fold` accept `species="name"` or a sequence
 of names. Deployment returns one result for a string and a mapping for a sequence.
 For named species, OOF pair and support mappings use `(region_name, species_name)`
-keys, as do `predictions` and `access` records. A single queried group can use a
+keys, as do `predictions` and `access` records. A single queried region–species group can use a
 pair sequence directly. Flat query order is region, species, then pair.
 
 Scoring accepts a species-labeled observations sequence for one region, or a
 mapping from region names to those sequences. Each covered region–species pair
 contributes once to pooled metrics. `by_species` adds metrics when the ensemble
-models more than one species. Only groups present in the queried regions are
+models more than one species. Only region–species groups present in the queried regions are
 required, supporting species with different regional coverage.

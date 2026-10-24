@@ -1,4 +1,4 @@
-"""Fit genetic calibration for a new region with a frozen distance model."""
+"""Maximum-likelihood population effects (MLPE) calibration for a new region."""
 
 from dataclasses import replace
 
@@ -59,7 +59,7 @@ print(
 try:
     calibrated.predict(new_region)
 except ValueError as error:
-    print("Before regional calibration:", error)
+    print("Before MLPE calibration:", error)
 new_observations = PairwiseObservations.from_matrix(
     new_region.sampling_unit_ids, observations.values * 2, target=observations.target
 )
@@ -75,6 +75,4 @@ assert isinstance(transferred.calibration, MLPECalibrationModule)
 assert tuple(transferred.calibration.regions) == (new_region.name,)
 print("Calibrated new-region predictions:\n", transferred.predict(new_region).as_matrix())
 assert isinstance(transferred.calibration, MLPECalibrationModule)
-print(
-    "Declared data roles:", set(transferred.calibration.regions[new_region.name].calibration_roles)
-)
+print("Data roles:", set(transferred.calibration.regions[new_region.name].calibration_roles))

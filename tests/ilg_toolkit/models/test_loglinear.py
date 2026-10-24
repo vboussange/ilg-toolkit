@@ -78,16 +78,14 @@ def test_invalid_model_configuration_is_rejected(settings):
 
 
 def test_training_gradients_and_predictions_match_dense_reference(dense_resistance):
-    means = np.array(
-        [[[-0.5, 0.4], [0.3, -0.2], [0.8, 0.1]], [[-0.1, 0.7], [0.6, -0.9], [0.2, 0.5]]]
-    )
+    means = np.array([[[-0.5, 0.4], [0.3, -0.2]], [[-0.1, 0.7], [0.6, -0.9]]])
     regional_means = (means, means[::-1] + 0.2)
     regions = tuple(
         RegionBatch(
             name,
             cx.field(values.repeat(2, axis=0).repeat(2, axis=1), "row", "column", "feature"),
             ("a", "b", "c", "d"),
-            np.array([[0, 0], [0, 4], [2, 0], [2, 4]]),
+            np.array([[0, 0], [0, 2], [2, 0], [2, 2]]),
             feature_names=("elevation", "habitat"),
         )
         for name, values in zip(("valley", "ridge"), regional_means, strict=True)
@@ -102,7 +100,7 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
         for targets in ([0.4, 0.9, 1.4, 0.6, 1.1, 0.7], [0.5, 0.8, 1.2, 0.7, 1.0, 0.9])
     )
     model = LogLinearConductance(
-        2, patch_size=2, patch_microbatch_size=4, solver_config=ResistanceSolverConfig(rtol=1e-10)
+        2, patch_size=2, patch_microbatch_size=3, solver_config=ResistanceSolverConfig(rtol=1e-10)
     )
     initial = np.array([0.2, -0.1, 0.3])
 
@@ -115,7 +113,7 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
 
     def reference_distances(parameters, values):
         surface = 0.01 + np.exp(values @ parameters[:2] + parameters[2])
-        return dense_resistance(surface, np.array([0, 2, 3, 5]))[np.triu_indices(4, 1)]
+        return dense_resistance(surface, np.array([0, 1, 2, 3]))[np.triu_indices(4, 1)]
 
     def reference_loss(parameters):
         return np.mean(

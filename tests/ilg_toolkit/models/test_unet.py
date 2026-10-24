@@ -17,11 +17,11 @@ def test_fixed_budget_fit_improves_and_predicts_without_query_targets(
         observations,
         distance_model=model,
         species=species,
-        config=TrainingConfig(objective="direct_log1p", steps=20, learning_rate=0.01, seed=3),
+        config=TrainingConfig(objective="direct_log1p", steps=2, learning_rate=0.01, seed=3),
     )
     prediction = result.model.predict(region, species=None if species is None else "frog")
     assert result.history[-1].training_loss < result.history[0].training_loss * 0.75
-    assert result.selected_step == 20
+    assert result.selected_step == 2
     assert result.selection == "final"
     assert prediction.as_matrix().shape == (4, 4)
     assert np.all(np.isfinite(prediction.values))

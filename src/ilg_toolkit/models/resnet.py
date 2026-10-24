@@ -1,4 +1,4 @@
-"""ResNet-9 patch encoder for positive graph conductances."""
+"""A residual-network conductance model with a pooled backbone over raster patches."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class ResidualBlock(eqx.Module):
         self.norm2 = eqx.nn.GroupNorm(min(8, channels), channels, dtype=jnp.float32)
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
-        """Encode one channel-first feature map."""
+        """Residual convolutional features for one channel-first feature map."""
         residual = inputs
         outputs = jax.nn.relu(self.norm1(self.conv1(inputs)))
         outputs = self.norm2(self.conv2(outputs))
@@ -41,7 +41,11 @@ class ResidualBlock(eqx.Module):
 
 @final
 class ResNet9Conductance(ConductanceModel):
-    """Map each native-resolution raster patch to one positive conductance."""
+    """A conductance model using a pooled residual-network backbone over raster patches.
+
+    Species-specific linear coefficients map each patch's features to positive
+    conductance through softplus and ``min_conductance``.
+    """
 
     conv1: eqx.nn.Conv2d
     conv2: eqx.nn.Conv2d

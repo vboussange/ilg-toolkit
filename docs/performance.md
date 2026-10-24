@@ -27,8 +27,8 @@ constructing `LogLinearConductance`, `ResNet9Conductance`, or `UNet`.
 
 `TrainingConfig.region_batch_size` samples regions uniformly without replacement
 for each optimizer update, up to the number available. `None` uses all regions.
-Each selected group uses all its training pairs. Full evaluation uses all training
-and validation groups at step zero, every `eval_every` updates, and the final step.
+Each selected region–species group uses all its training pairs. Full evaluation
+uses all training and validation region–species groups at step zero, every `eval_every` updates, and the final step.
 Increase `eval_every` to reduce evaluation frequency within a long fit.
 
 For experimental multispecies training, `species_batch_size` samples species

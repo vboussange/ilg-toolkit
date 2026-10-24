@@ -42,10 +42,11 @@ from ilg_toolkit.models import (
 
 
 @pytest.fixture(scope="module", autouse=True)
-def compilation_cache_lifetime() -> Iterator[None]:
-    """Compilation cache shared by the tests in one module."""
+def release_neural_compilations(request) -> Iterator[None]:
+    """Compilation-cache cleanup after canonical neural-model checks."""
     yield
-    jax.clear_caches()
+    if request.path.name in {"test_common.py", "test_checkpoint.py", "test_persistence.py"}:
+        jax.clear_caches()
 
 
 _R_DISTANCES = np.array(
@@ -145,8 +146,8 @@ _R_BLUPS = np.array(
 
 def _checkpoint_problem(name="alpine", seed=14):
     rng = np.random.default_rng(seed)
-    features = rng.normal(size=(4, 4, 2)).astype(np.float32)
-    positions = np.array([[0, 0], [0, 3], [1, 1], [2, 2], [3, 0], [3, 3]])
+    features = rng.normal(size=(3, 3, 2)).astype(np.float32)
+    positions = np.array([[0, 0], [0, 2], [1, 0], [1, 1], [2, 0], [2, 2]])
     ids = tuple(f"population-{i}" for i in range(len(positions)))
     region = RegionBatch(
         name,
@@ -165,20 +166,15 @@ def _checkpoint_problem(name="alpine", seed=14):
     return region, observations
 
 
-def _checkpoint_model():
+def _checkpoint_model(seed=8):
     return UNet(
         2,
         patch_size=1,
         base_channels=2,
         embedding_dim=2,
         dropout=0.2,
-        key=jax.random.PRNGKey(8),
+        key=jax.random.PRNGKey(seed),
     )
-
-
-def _assert_same_state(actual, expected):
-    # Includes history, both calibrated models, posteriors, optimizer and random generator.
-    assert eqx.tree_equal(actual, expected)
 
 
 def _dense_resistance(surface, nodes):
@@ -228,11 +224,14 @@ class _PointConductance(ConductanceModel):
 @final
 class _CustomDistance(AbstractDistanceModel):
     scale: jax.Array
+    numpy_preprocessing: bool = eqx.field(static=True, default=False)
 
     num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
 
     def backbone(self, features):
+        if self.numpy_preprocessing:
+            features = jnp.asarray(np.asarray(features))
         return features.reshape(-1) * self.scale
 
     def ecological_distances(self, latent, pairs, species_index):
@@ -288,22 +287,6 @@ def dropout_conductance_class():
     return _DropoutConductance
 
 
-@final
-class _FeatureEmbedding(EmbeddingModel):
-    weight: jax.Array
-    num_species: int = eqx.field(static=True, default=1)
-    patch_size: int = eqx.field(static=True, default=1)
-
-    def __init__(self, weight: jax.Array):
-        self.weight = weight
-
-    def backbone(self, features):
-        return features
-
-    def embedding(self, latent, species_index):
-        return latent * self.weight
-
-
 def _completed_model(member: EnsembleMember) -> LandscapeGeneticsModel:
     assert member.model is not None
     return member.model
@@ -334,7 +317,7 @@ def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec
             {"alpine": ObservationPartition("alpine", (("c", "d"),), "query")},
         )
         model = LandscapeGeneticsModel(
-            _FeatureEmbedding(jnp.asarray(weight)),
+            _ScalarEmbedding(jnp.asarray(weight)),
             DirectCalibrationModule(target),
             1,
             training_pairs={"alpine": (("a", "b"),)},
@@ -369,7 +352,6 @@ def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec
 
 
 def _fitted_member_problem():
-
     region, observations = _embedding_problem()
     fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)[0]
     ensemble = fit_ensemble(
@@ -473,22 +455,23 @@ class _WeightedEmbedding(EmbeddingModel):
         return latent * jnp.exp(weights)
 
 
-def _embedding_problem(name="alpine", offset=0.0, seed=14):
+def _embedding_problem(name="alpine", offset=0.0, seed=14, *, columns=3):
     rng = np.random.default_rng(seed)
-    features = rng.normal(size=(2, 3, 2)).astype(np.float32)
-    ids = tuple(f"unit-{i}" for i in range(6))
+    features = rng.normal(size=(2, columns, 2)).astype(np.float32)
+    unit_count = 2 * columns
+    ids = tuple(f"unit-{i}" for i in range(unit_count))
     region = RegionBatch(
         name,
         cx.field(features, "row", "column", "feature"),
         ids,
-        np.array(list(np.ndindex(2, 3))),
+        np.array(list(np.ndindex(2, columns))),
         feature_names=("elevation", "canopy"),
     )
-    embedding = features.reshape(6, 2) * np.array([0.3, 1.5])
+    embedding = features.reshape(unit_count, 2) * np.array([0.3, 1.5])
     matrix = ((embedding[:, None] - embedding[None, :]) ** 2).sum(axis=-1)
-    left, right = np.triu_indices(6, 1)
+    left, right = np.triu_indices(unit_count, 1)
     distances = matrix[left, right]
-    effects = rng.normal(scale=0.04, size=6)
+    effects = rng.normal(scale=0.04, size=unit_count)
     values = (
         1.4
         + offset
@@ -567,25 +550,21 @@ class _ScalarEmbedding(EmbeddingModel):
         return latent[..., :1] * weight
 
 
-@pytest.fixture
-def SharedParameterEmbedding():
-    @final
-    class Model(EmbeddingModel):
-        weights: jax.Array
-        num_species: int = eqx.field(static=True)
-        patch_size: int = eqx.field(static=True, default=1)
+@final
+class _SharedParameterEmbedding(EmbeddingModel):
+    weights: jax.Array
+    num_species: int = eqx.field(static=True)
+    patch_size: int = eqx.field(static=True, default=1)
 
-        def __init__(self, weights):
-            self.weights = weights
-            self.num_species = len(weights)
+    def __init__(self, weights):
+        self.weights = weights
+        self.num_species = len(weights)
 
-        def backbone(self, features):
-            return features * self.weights.sum()
+    def backbone(self, features):
+        return features * self.weights.sum()
 
-        def embedding(self, latent, species_index):
-            return latent * self.weights[species_index]
-
-    return Model
+    def embedding(self, latent, species_index):
+        return latent * self.weights[species_index]
 
 
 def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObservations]]:
@@ -689,12 +668,12 @@ def _calibration_problem(
 
 
 def _synthetic_problem(*, num_species=1):
-    features = np.arange(32, dtype=np.float32).reshape(4, 4, 2) / 32
+    features = np.arange(18, dtype=np.float32).reshape(3, 3, 2) / 18
     region = RegionBatch(
         name="arbitrary-catchment",
         features=cx.field(features, "row", "column", "feature"),
         sampling_unit_ids=("north", "east", "south", "west"),
-        grid_positions=np.array([[0, 0], [0, 3], [3, 0], [3, 3]]),
+        grid_positions=np.array([[0, 0], [0, 2], [2, 0], [2, 2]]),
         feature_names=("gradient", "texture"),
     )
     # Synthetic dissimilarity values in target units.
@@ -868,11 +847,6 @@ def checkpoint_model_fixture():
     return _checkpoint_model
 
 
-@pytest.fixture(name="assert_same_state", scope="session")
-def assert_same_state_fixture():
-    return _assert_same_state
-
-
 @pytest.fixture(name="dense_resistance", scope="session")
 def dense_resistance_fixture():
     return _dense_resistance
@@ -905,7 +879,7 @@ def constant_conductance_fixture():
 
 @pytest.fixture(name="FeatureEmbedding", scope="session")
 def feature_embedding_fixture():
-    return _FeatureEmbedding
+    return _ScalarEmbedding
 
 
 @pytest.fixture(name="completed_model", scope="session")
@@ -920,7 +894,8 @@ def known_ensemble_fixture():
 
 @pytest.fixture(name="fitted_member_problem", scope="session")
 def fitted_member_problem_fixture():
-    return _fitted_member_problem
+    with jax.enable_x64():
+        return _fitted_member_problem()
 
 
 @pytest.fixture(name="reference_observations", scope="session")
@@ -928,7 +903,7 @@ def reference_observations_fixture():
     return _reference_observations
 
 
-@pytest.fixture(name="calibrated", scope="module")
+@pytest.fixture(name="calibrated", scope="session")
 def calibrated_fixture():
     return _calibrated()
 
@@ -966,6 +941,11 @@ def covariate_conductance_fixture():
 @pytest.fixture(name="ScalarEmbedding", scope="session")
 def scalar_embedding_fixture():
     return _ScalarEmbedding
+
+
+@pytest.fixture(name="SharedParameterEmbedding", scope="session")
+def shared_parameter_embedding_fixture():
+    return _SharedParameterEmbedding
 
 
 @pytest.fixture(name="regions_and_observations", scope="session")
@@ -1025,13 +1005,15 @@ def mlpe_reference():
     )
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def training_problem():
     """Build the same identifiable observations for each distance-model family."""
 
     def build(family, *, name="alpine", num_species=1):
-        side = {"embedding": 2, "conductance": 2, "unet": 4, "resnet": 8}[family]
-        features = np.random.default_rng(14).uniform(0.8, 1.6, size=(side, side, 2))
+        side = {"embedding": 2, "conductance": 2, "unet": 3, "resnet": 8}[family]
+        features = (
+            np.random.default_rng(14).uniform(0.8, 1.6, size=(side, side, 2)).astype(np.float32)
+        )
         region = RegionBatch(
             name,
             cx.field(features, "row", "column", "feature"),

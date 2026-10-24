@@ -1,4 +1,7 @@
-"""Landscape genetics models saved as Equinox files with prediction metadata."""
+"""Landscape genetics models saved as Equinox files with prediction metadata.
+
+Calibration is direct or maximum-likelihood population effects (MLPE).
+"""
 
 import json
 import os
@@ -26,7 +29,7 @@ class ArtifactError(ValueError):
 
 
 def _write_native(path, tree, *, kind, metadata):
-    """Atomically replace a header and native leaves; retain the previous file on failure."""
+    """Atomic storage of metadata and model arrays, retaining the previous file if writing fails."""
     header = {
         "format": "ilg-toolkit-equinox",
         "kind": kind,
@@ -56,17 +59,17 @@ def _write_native(path, tree, *, kind, metadata):
 
 
 def _read_header(stream, *, kind):
-    """Read the file format and precision requirements before loading model values."""
+    """File format and precision requirements used before loading model values."""
     try:
         header = json.loads(stream.readline())
     except (ValueError, UnicodeError) as error:
-        raise ArtifactError("Unsupported or incomplete native Equinox artifact header") from error
+        raise ArtifactError("Unsupported or incomplete saved-model or checkpoint header") from error
     if not isinstance(header, dict) or header.get("format") != "ilg-toolkit-equinox":
-        raise ArtifactError("Unsupported native Equinox artifact format")
+        raise ArtifactError("Unsupported saved-model or checkpoint format")
     if header.get("kind") != kind:
-        raise ArtifactError(f"Expected {kind} artifact, found {header.get('kind')!r}")
+        raise ArtifactError(f"Expected {kind} file, found {header.get('kind')!r}")
     if type(header.get("requires_x64")) is not bool:
-        raise ArtifactError("Missing native artifact precision requirement")
+        raise ArtifactError("Missing saved-model or checkpoint precision requirement")
     if header["requires_x64"] and not jax.config.read("jax_enable_x64"):
         raise ArtifactError("Saved JAX leaves require JAX_ENABLE_X64=true before loading")
     return header["metadata"]
@@ -93,7 +96,7 @@ def _model_metadata(model):
             ),
         }
     else:
-        raise ArtifactError("Native persistence requires a direct or MLPE calibration module")
+        raise ArtifactError("Saving a model requires a direct or MLPE calibration module")
     return {
         "target": asdict(model.target),
         "feature_count": model.feature_count,
@@ -177,7 +180,7 @@ def _model_template(metadata, distance_model):
             },
         )
     else:
-        raise ArtifactError("Unsupported calibration module in native artifact")
+        raise ArtifactError("Unsupported calibration module in the saved model")
     return LandscapeGeneticsModel(
         distance_model,
         calibration,
@@ -193,14 +196,14 @@ def _model_template(metadata, distance_model):
 
 
 def save_model(path, model: LandscapeGeneticsModel) -> None:
-    """Atomically save a calibrated model, including compatible custom distance models."""
+    """Atomic storage of a calibrated model, including compatible custom distance models."""
     if not isinstance(model, LandscapeGeneticsModel):
         raise ArtifactError("save_model requires a fitted LandscapeGeneticsModel")
     _write_native(path, model, kind="model", metadata=_model_metadata(model))
 
 
 def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGeneticsModel:
-    """Load a landscape genetics model using a caller-constructed distance model.
+    """A saved landscape genetics model loaded using a caller-constructed distance model.
 
     The template supplies the model class, static settings, and compatible
     numerical shapes and dtypes. Saved parameters and conductance solver settings
