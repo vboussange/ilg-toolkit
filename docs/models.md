@@ -1,7 +1,7 @@
 # Custom distance models
 
 Built-in model parameters, shapes, formulas, and numerical requirements live in
-the [distance-model API](api/models.md). The [MLPE tutorial](examples/mlpe_workflow.md)
+the [distance-model API](api/models.md). The [maximum-likelihood population effects (MLPE) tutorial](examples/mlpe_workflow.md)
 shows practical resistance and patch-processing choices.
 
 ## Implement an abstract boundary

@@ -33,8 +33,12 @@ def save_checkpoint(path, state: TrainingState) -> None:
     ``state.latest_model`` matches the current distance and statistical parameters;
     continuation uses those parameters with optimizer and random state.
     ``state.selected_model`` is the evaluated fitted model retained for prediction,
-    and can come from an earlier step. No observation data or rasters are embedded:
-    supply the original inputs and validation arguments when resuming.
+    and can come from an earlier step. Supply the original inputs and validation
+    arguments when resuming.
+
+    Notes
+    -----
+    No observation data or rasters are embedded in the checkpoint.
 
     Examples
     --------

@@ -92,7 +92,8 @@ class LandscapeGeneticsModel(eqx.Module):
         Requested pairs retain their order and orientation; omitted pairs select
         every distinct pair. A species sequence returns a mapping of predictions.
         The distance model computes ecological distances, and fitted calibration
-        converts these into genetic predictions. MLPE defaults to marginal means;
+        converts these into genetic predictions. Maximum-likelihood population effects
+        (MLPE) defaults to marginal means;
         ``known_effects=True`` and ``support=...`` condition population effects.
 
         | Mode | Population effects | Statistical extras |
@@ -163,10 +164,14 @@ class LandscapeGeneticsModel(eqx.Module):
             conditioned.extras["effect_variance"]
 
         All point predictions inverse-transform model-scale means. Conditional
-        variances stay on the model scale; for nonlinear target transforms these
-        are neither original-scale variances nor bias-corrected original-scale
-        expectations. Use ``as_matrix()`` or ``as_matrix("effect_variance")`` to
-        arrange the corresponding values by sampling-unit identity.
+        variances stay on the model scale. Use ``as_matrix()`` or
+        ``as_matrix("effect_variance")`` to arrange the corresponding values by
+        sampling-unit identity.
+
+        Notes
+        -----
+        With nonlinear target transforms, conditional variances are not original-scale
+        variances, and inverse-transformed means are not bias-corrected expectations.
 
         Support must have matching target/species metadata and located sampling
         units, with pairs disjoint from both calibration and query pairs, including

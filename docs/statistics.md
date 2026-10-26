@@ -14,10 +14,13 @@ $$L_r=\frac{1}{m_r}\sum_{(i,j)\in\mathcal O_r}
 [\log(1+s_{ij})-\log(1+t_{ij})]^2.$$
 
 The log1p comparison and target transform are separate choices. Direct calibration
-returns $T^{-1}(s)$ and has no fitted coefficients or variance parameters. Training
-averages regional losses equally within each species, then averages species equally.
+returns $T^{-1}(s)$. Training averages regional losses equally within each species,
+then averages species equally.
 
-## Maximum-likelihood population effects
+!!! note
+    Direct calibration has no fitted coefficients or variance parameters.
+
+## Maximum-likelihood population effects (MLPE)
 
 [`MLPELoss`](api/training.md#ilg_toolkit.MLPELoss) accounts for dependence between
 measurements sharing a population. With sample-standardized ecological distances
@@ -40,12 +43,14 @@ training minimizes the marginal negative log likelihood per observed pair:
 $$\ell=\tfrac12\{m\log(2\pi)+\log\det V+
 (t-X\hat\theta)^\top V^{-1}(t-X\hat\theta)\}.$$
 
-This is maximum likelihood, without restricted-likelihood correction. `train`
-updates distance and variance parameters with a fixed Adam budget. Even at zero
-steps it is **initialization**, not converged variance fitting. `calibrate` keeps
-the distance model fixed and optimizes both variance components using deterministic
-multistart optimization. See [advanced MLPE](api/mlpe.md) for identifiability,
-precision, diagnostics, and the standalone array-distance fitter.
+`train` updates distance and variance parameters with a fixed Adam budget.
+`calibrate` keeps the distance model fixed and optimizes both variance components
+using deterministic multistart optimization. See [advanced MLPE](api/mlpe.md) for
+identifiability, precision, diagnostics, and the standalone array-distance fitter.
+
+!!! note
+    The criterion uses maximum likelihood without restricted-likelihood correction.
+    A zero-step training run performs initialization, not converged variance fitting.
 
 ## Evaluation answers a specified question
 
@@ -59,13 +64,16 @@ fresh test calibration. Both baseline and landscape fits use matching targets,
 observations, settings, and optimizer budgets.
 
 Test observations fit and score the test calibration. The score describes
-association of a representation learned without those populations' genetic
-observations; it is not untouched end-to-end predictive accuracy. Inspect signed
-slopes, both variances, convergence, and population/pair counts across repeated
-splits. A favorable likelihood alone does not establish the expected direction.
-`IBDModel` fits a separate log1p geographic regression and is not the matching MLPE
-likelihood baseline. A constant-distance intercept-only null is unsupported because
-the MLPE distance design must be identifiable.
+association of a representation learned from separate populations' genetic
+observations. Inspect signed slopes, both variances, convergence, and
+population/pair counts across repeated splits.
+
+!!! note
+    This score is not untouched end-to-end predictive accuracy. A favorable likelihood
+    alone does not establish the expected direction. `IBDModel` fits a separate log1p
+    geographic regression and is not the matching MLPE likelihood baseline. A
+    constant-distance intercept-only null is unsupported because the MLPE distance
+    design must be identifiable.
 
 ## Prediction and conditioning
 
@@ -75,11 +83,13 @@ the saved posterior; `support=...` updates that posterior with additional,
 disjoint observations while keeping the distance model, coefficients, moments,
 and variances fixed. A new region–species relationship requires fresh calibration.
 
-Genetic predictions apply the inverse target transform. With nonlinear transforms,
-this transformed fitted mean is not automatically the expectation on the original
-scale. Population-effect uncertainty describes that posterior conditional on the
-fitted model; ensemble spread describes variability among members. Neither alone
-quantifies all model or ecological uncertainty.
+Genetic predictions apply the inverse target transform. Population-effect uncertainty
+is conditional on the fitted model; ensemble spread describes variability among members.
+
+!!! note
+    With nonlinear transforms, the inverse-transformed fitted mean is not automatically
+    the expectation on the original scale. Neither population-effect uncertainty nor
+    ensemble spread alone quantifies all model or ecological uncertainty.
 
 ## Wishart diagnostic (experimental)
 
@@ -87,9 +97,10 @@ The research-only [Wishart experiment](https://github.com/vboussange/ilg-toolkit
 scores a **fixed-parameter** Gaussian marker-contrast model. It assumes independent,
 zero-mean Gaussian marker contrasts and a complete squared-distance matrix with
 explicit scatter-versus-average scaling and a known marker count. The ordinary
-Wishart diagnostic requires a positive-definite contrast scatter; missing pairs,
-insufficient marker rank, or unmodeled marker dependence do not satisfy it.
+Wishart diagnostic requires a positive-definite contrast scatter. It provides a
+reproducible reference for comparing fixed covariance hypotheses under those assumptions.
 
-This experiment is not a toolkit loss or calibration method and performs no
-Wishart fitting. It provides a reproducible diagnostic reference for comparing
-fixed covariance hypotheses under those assumptions.
+!!! note
+    Missing pairs, insufficient marker rank, or unmodeled marker dependence do not
+    satisfy these assumptions. This experiment is not a toolkit loss or calibration
+    method and performs no Wishart fitting.

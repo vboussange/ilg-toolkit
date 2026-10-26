@@ -1,4 +1,4 @@
-# Advanced MLPE calibration
+# Advanced maximum-likelihood population effects (MLPE) calibration
 
 ::: ilg_toolkit.calibrate_mlpe
 

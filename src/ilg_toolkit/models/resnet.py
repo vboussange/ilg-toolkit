@@ -64,7 +64,8 @@ class ResNet9Conductance(ConductanceModel):
         Lower values trade throughput for peak activation memory without changing
         the patch grid or the model's receptive field.
     solver_config
-        Resistance tolerances, iteration limit, and optional AMG preconditioner.
+        Resistance tolerances, iteration limit, and optional algebraic multigrid (AMG)
+        preconditioner.
     key
         JAX random key for reproducible parameter initialization.
 
@@ -76,7 +77,8 @@ class ResNet9Conductance(ConductanceModel):
     by a species-specific linear map and softplus. It does not mix features across
     neighboring patches; the resistance graph connects their conductances.
 
-    See the [MLPE workflow](../examples/mlpe_workflow.md) for pooled regional
+    See the [maximum-likelihood population effects (MLPE) workflow](../examples/mlpe_workflow.md)
+    for pooled regional
     training, solver choices, and practical patch/cropping guidance.
     """
 

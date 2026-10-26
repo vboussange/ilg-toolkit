@@ -22,7 +22,11 @@ class EnsemblePrediction:
 
     ``member_values`` rows follow the zero-based ``member_ids`` positions and
     columns follow query-pair order. Spread is population standard deviation,
-    describing member disagreement rather than statistical predictive uncertainty.
+    describing member disagreement.
+
+    Notes
+    -----
+    Member spread is not statistical predictive uncertainty.
     """
 
     prediction: Prediction
@@ -241,7 +245,16 @@ class Ensemble:
         surfaces = self._map_members("conductance-surface prediction", surface)
 
         def summarize(values) -> EnsembleSurface:
-            stacked = jnp.stack([jnp.asarray(value, dtype=jnp.float64) for value in values])
+            arrays = [jnp.asarray(value, dtype=jnp.float64) for value in values]
+            for index, value in enumerate(arrays):
+                if value.shape != arrays[0].shape:
+                    raise ValueError(
+                        f"Ensemble member {index} conductance surface shape {value.shape} "
+                        f"does not match member 0 shape {arrays[0].shape}"
+                    )
+                if not bool(jnp.isfinite(value).all()):
+                    raise ValueError(f"Ensemble member {index} conductance surface is nonfinite")
+            stacked = jnp.stack(arrays)
             mean, spread = _summarize_members(stacked)
             return EnsembleSurface(
                 mean, tuple(range(len(self.members))), stacked, spread, region.name

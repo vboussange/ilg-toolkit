@@ -17,19 +17,16 @@ a stated evaluation design.
 
 ## Install and start
 
-Python 3.12 or newer is required. Install from a tagged GitHub release:
+Python 3.12 or newer is required. Install the development checkout to use the
+API and notebooks documented here:
 
 ```bash
-uv add "ilg-toolkit @ git+https://github.com/vboussange/ilg-toolkit@v0.0.3"
-```
-
-For the development API documented here, install from the repository checkout:
-
-```bash
+git clone https://github.com/vboussange/ilg-toolkit.git
+cd ilg-toolkit
 uv sync --extra docs
 ```
 
-Enable float64 before creating resistance or MLPE inputs:
+Enable float64 before creating resistance or maximum-likelihood population effects (MLPE) inputs:
 
 ```python
 import jax

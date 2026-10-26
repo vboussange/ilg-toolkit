@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 from .data import PairwiseObservations, RegionBatch
 from .losses import GroupKey
-from .models.base import region_for_species
+from .models.base import region_for_species, validate_species_order
 
 RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
 RegionObservations = PairwiseObservations | Sequence[PairwiseObservations]
@@ -84,6 +84,36 @@ def _normalize_inputs(
                 raise ValueError("Observations contain unsupported input types")
             inputs.append(_RegionalInput(region, observed_group))
     return tuple(sorted(inputs, key=lambda item: item.region.name))
+
+
+def _validate_input_contract(inputs: Sequence[_RegionalInput]) -> _RegionalInput:
+    """Common target semantics and feature meanings for training or calibration inputs."""
+    first = inputs[0]
+    if len({item.region.name for item in inputs}) > 1 and first.region.feature_names is None:
+        raise ValueError("Multi-region fitting requires feature_names meanings and order")
+    for region, observations in inputs:
+        if observations.target != first.observations.target:
+            raise ValueError("Regional observations must share one target contract and scale")
+        if region.feature_array.shape[-1] != first.region.feature_array.shape[-1]:
+            raise ValueError("Regional feature channels must match")
+        if region.feature_names != first.region.feature_names:
+            raise ValueError("Regional feature contracts must match meanings and order")
+    return first
+
+
+def _resolve_species_order(
+    inputs: Sequence[_RegionalInput], species: Sequence[str] | None, num_species: int
+) -> tuple[str, ...] | None:
+    """Retained parameter order, inferred only for a single-species distance model."""
+    if species is None:
+        if num_species > 1:
+            raise ValueError("A multispecies distance model requires species= in parameter order")
+        names = {name for item in inputs for name in (item.region.species or ())}
+        names.update(
+            item.observations.species for item in inputs if item.observations.species is not None
+        )
+        species = tuple(sorted(names)) if names else None
+    return validate_species_order(species, num_species)
 
 
 def _index_inputs(

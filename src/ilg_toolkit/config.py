@@ -18,12 +18,15 @@ class ResistanceSolverConfig:
     """Float64 settings for resistance calculation.
 
     Conjugate gradient is the default solver; ``use_amg=True`` enables algebraic
-    multigrid preconditioning through the optional ``amg`` extra.
+    multigrid (AMG) preconditioning through the optional ``amg`` extra.
     The preconditioner is prepared before resistance calculation.
     Exhausting ``max_steps`` raises an error. ``rtol`` and ``atol`` default to
     1e-6 and ``max_steps`` to 1000; at least one tolerance must be positive.
     Tighter tolerances increase solve work and can expose conditioning limits.
     Settings belong to the conductance model, independently of training budgets.
+
+    Notes
+    -----
     AMG preparation is specific to graph shape and must be rebuilt for a new
     region shape; it does not fix poorly chosen ecological boundaries.
     """

@@ -809,7 +809,7 @@ def test_incompatible_regional_inputs_fail_before_optimization(
     regions, observations = regions_and_observations()
     model = ScalarEmbedding(jnp.asarray(1.0))
     cases = [
-        ([regions[0], regions[0]], observations, None),
+        ([regions[0], regions[0]], observations),
         (
             [
                 replace(
@@ -820,7 +820,6 @@ def test_incompatible_regional_inputs_fail_before_optimization(
                 for region in regions
             ],
             observations,
-            None,
         ),
         (
             [
@@ -832,12 +831,11 @@ def test_incompatible_regional_inputs_fail_before_optimization(
                 ),
             ],
             observations,
-            None,
         ),
-        ({"wrong-name": regions[0]}, {"wrong-name": observations[0]}, None),
-        (regions, {regions[0].name: observations[0]}, None),
+        ({"wrong-name": regions[0]}, {"wrong-name": observations[0]}),
+        (regions, {regions[0].name: observations[0]}),
     ]
-    for supplied_regions, supplied_observations, _supplied_partitions in cases:
+    for supplied_regions, supplied_observations in cases:
         with pytest.raises(ValueError):
             train(
                 supplied_regions,
