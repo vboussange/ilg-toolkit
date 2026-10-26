@@ -38,6 +38,18 @@ how many selected species are processed together before their gradients form one
 update. It changes memory use while retaining the objective. Both default to
 `None`.
 
+## Subregions
+
+Prepare subregions according to the scientific domain of each analysis. Cropping
+changes the resistance paths available to conductance models and the landscape
+context available to a U-Net. Overlapping rasters can supply context, while each
+biological sampling unit within a species belongs to one chosen region for
+training and evaluation. Assign observations using those same region assignments.
+A halo supplies surrounding context around a crop.
+
+Note: a halo alone does not establish equivalence with full-domain resistance or
+U-Net predictions; check the consequences of the chosen boundaries for the study.
+
 ## Resistance calculation
 
 Conductance models use JAXScape with conjugate-gradient solves in float64. Enable

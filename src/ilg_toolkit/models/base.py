@@ -38,7 +38,7 @@ class AbstractDistanceModel(eqx.Module):
 
     @abstractmethod
     def ecological_distances(
-        self, latent: jax.Array, pairs: DistancePairs, species_index: int
+        self, latent: jax.Array, pairs: DistancePairs, species_index: int | jax.Array
     ) -> jax.Array:
         """Ecological distances aligned with pairs of sampling-unit indices.
 
@@ -116,14 +116,14 @@ class ConductanceModel(AbstractDistanceModel):
     solver_config: eqx.AbstractVar[ResistanceSolverConfig]
 
     @abstractmethod
-    def conductance(self, latent: jax.Array, species_index: int) -> jax.Array:
+    def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Positive conductance surface for one species from pooled landscape features."""
 
     def ecological_distances(
         self,
         latent: jax.Array,
         pairs: DistancePairs,
-        species_index: int,
+        species_index: int | jax.Array,
         *,
         context: ResistanceSolverContext | None = None,
     ) -> jax.Array:
@@ -188,11 +188,11 @@ class EmbeddingModel(AbstractDistanceModel):
     """A distance model deriving squared embedding distances from landscape features."""
 
     @abstractmethod
-    def embedding(self, latent: jax.Array, species_index: int) -> jax.Array:
+    def embedding(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Embedding grid for one species from pooled landscape features."""
 
     def ecological_distances(
-        self, latent: jax.Array, pairs: DistancePairs, species_index: int
+        self, latent: jax.Array, pairs: DistancePairs, species_index: int | jax.Array
     ) -> jax.Array:
         """Squared embedding distances aligned with the requested sampling-unit pairs."""
         nodes, (left, right) = pairs
@@ -298,7 +298,7 @@ def query_distances_from_latent(
     region: RegionBatch,
     pairs: Sequence[tuple[str, str]] | None,
     *,
-    species_index: int,
+    species_index: int | jax.Array,
     context: ResistanceSolverContext | None,
 ) -> tuple[tuple[tuple[str, str], ...], jax.Array]:
     """Query pair labels and valid ecological distances for one species."""
@@ -329,7 +329,7 @@ def distance_values(
     context: ResistanceSolverContext | None = None,
     inference: bool = True,
     key: jax.Array | None = None,
-    species_index: int = 0,
+    species_index: int | jax.Array = 0,
 ) -> jax.Array:
     """Ecological distances for located sampling-unit pairs."""
     model = with_dropout_mode(model, inference=inference, key=key)
@@ -352,7 +352,7 @@ def distances_from_latent(
     indices: tuple[jax.Array, jax.Array],
     *,
     raster_shape: tuple[int, int],
-    species_index: int = 0,
+    species_index: int | jax.Array = 0,
     context: ResistanceSolverContext | None = None,
 ) -> jax.Array:
     """Ecological distances from pooled landscape features for one species."""

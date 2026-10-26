@@ -663,13 +663,20 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
         cast(Any, states[1].optimizer_state)[0].mu[0].weights / 0.1, gradient, atol=1e-8
     )
     for size in (2,) if num_species == 1 else (1, 2):
+        traces = []
+        observed_model = SharedParameterEmbedding(
+            jnp.asarray(initial), on_embedding=lambda traces=traces: traces.append(None)
+        )
         result = fit(
             region,
             observations,
-            distance_model=model,
+            distance_model=observed_model,
             species=species,
             config=replace(config, species_microbatch_size=size),
         )
+        if jit:
+            # Compatible species reuse evaluation and microbatch gradient programs.
+            assert 0 < len(traces) <= 1 + min(size, num_species)
         for actual, expected in zip(
             jax.tree.leaves((result.distance_model, result.optimizer_state)),
             jax.tree.leaves((reference.distance_model, reference.optimizer_state)),

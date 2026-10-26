@@ -80,7 +80,7 @@ class LogLinearConductance(ConductanceModel):
             raise ValueError(f"Expected row, column, feature data with {self.in_channels} features")
         return encode_patches(self, features, partial(jnp.mean, axis=(1, 2)))
 
-    def conductance(self, latent: jax.Array, species_index: int) -> jax.Array:
+    def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Conductance surface for one species from patch-averaged covariates."""
         predictor = latent @ self.coefficients[species_index] + self.intercepts[species_index]
         ceiling = jnp.log(self.max_conductance - self.min_conductance)

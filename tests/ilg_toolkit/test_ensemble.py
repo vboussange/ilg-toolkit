@@ -1,5 +1,6 @@
 """Scientific behavior of ensemble."""
 
+from dataclasses import replace
 from typing import Any, cast
 
 import coordax as cx
@@ -42,14 +43,13 @@ def test_folds_hold_out_sampling_units_within_each_species(training_problem, num
         )
 
 
+@pytest.mark.parametrize("family", ["embedding", "conductance"])
 def test_multispecies_deployment_averages_every_member_and_requires_shared_order(
-    training_problem, completed_model
+    training_problem, completed_model, family
 ):
-    from dataclasses import replace
-
     from ilg_toolkit import Ensemble
 
-    region, observations, distance_model = training_problem("embedding", num_species=2)
+    region, observations, distance_model = training_problem(family, num_species=2)
     order = ("species-1", "species-0")
     ensemble = fit_ensemble(
         region,
@@ -64,6 +64,40 @@ def test_multispecies_deployment_averages_every_member_and_requires_shared_order
     with pytest.raises(ValueError):
         ensemble.predict(region)
     predictions = ensemble.predict(region, species=order)
+    ecological = ensemble.ecological_distances(region, species=order)
+    with pytest.raises(ValueError):
+        ensemble.ecological_distances(region)
+    for name in order:
+        for member in ensemble.members:
+            expected = (
+                completed_model(member)
+                .distance_model.predict(region, species=name, species_order=order)
+                .as_matrix()
+            )
+            np.testing.assert_allclose(ecological[name][member.identity.member_id], expected)
+            np.testing.assert_allclose(
+                ensemble.ecological_distances(region, species=name)[member.identity.member_id],
+                expected,
+            )
+    if family == "conductance":
+        surfaces = ensemble.conductance_surfaces(region, species=order)
+        with pytest.raises(ValueError):
+            ensemble.conductance_surfaces(region)
+        for name in order:
+            expected = np.stack(
+                [
+                    completed_model(member).distance_model.conductance_surface(
+                        region, species=name, species_order=order
+                    )
+                    for member in ensemble.members
+                ]
+            )
+            np.testing.assert_allclose(surfaces[name].member_values, expected)
+            np.testing.assert_allclose(surfaces[name].values, expected.mean(axis=0))
+            np.testing.assert_allclose(surfaces[name].member_spread, expected.std(axis=0))
+            np.testing.assert_allclose(
+                ensemble.conductance_surfaces(region, species=name).values, surfaces[name].values
+            )
     for name in order:
         reference = np.stack(
             [
@@ -291,8 +325,6 @@ def test_original_scale_aggregation_preserves_large_finite_means_and_spreads():
 def test_failed_members_and_missing_composition_cannot_be_silently_dropped(
     model_factory, embedding_problem
 ):
-    import pytest
-
     from ilg_toolkit import Ensemble
 
     region, observations = embedding_problem()
@@ -332,8 +364,6 @@ def test_failed_members_and_missing_composition_cannot_be_silently_dropped(
 def test_explicit_validation_retains_selection_target_access_on_every_member(
     completed_fit, embedding_problem, model_factory
 ):
-    from dataclasses import replace
-
     from ilg_toolkit import ObservationPartition
 
     with jax.enable_x64():
@@ -369,10 +399,6 @@ def test_explicit_validation_retains_selection_target_access_on_every_member(
 def test_incompatible_scales_and_invalid_fold_membership_fail_clearly(
     embedding_problem, model_factory
 ):
-    from dataclasses import replace
-
-    import pytest
-
     from ilg_toolkit import (
         ObservationPartition,
         PopulationFold,
@@ -447,7 +473,7 @@ def test_shared_region_members_fit_one_encoder_with_distinct_regional_calibratio
     )
 
 
-def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(ConstantConductance):
+def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(PointConductance):
     from ilg_toolkit import (
         Ensemble,
         ObservationPartition,
@@ -473,7 +499,7 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(Const
                 {"graph": ObservationPartition("graph", (("c", "d"),), "query")},
             )
             model = LandscapeGeneticsModel(
-                ConstantConductance(level=jnp.asarray(level)),
+                PointConductance(jnp.log(jnp.asarray(level))),
                 DirectCalibrationModule(TargetSpec("divergence")),
                 1,
                 training_objective="direct_log1p",
@@ -485,7 +511,7 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(Const
         prediction = ensemble.predict(region)
         summary = ensemble.conductance_surfaces(region)
         averaged_surface_model = LandscapeGeneticsModel(
-            ConstantConductance(level=jnp.asarray(2.5)),
+            PointConductance(jnp.log(jnp.asarray(2.5))),
             DirectCalibrationModule(TargetSpec("divergence")),
             1,
             training_objective="direct_log1p",
@@ -505,8 +531,6 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(Const
 def test_member_callback_failure_interrupts_before_starting_another_member(
     model_factory, embedding_problem
 ):
-    import pytest
-
     region, observations = embedding_problem()
     initialized = []
 
@@ -536,8 +560,6 @@ def test_member_callback_failure_interrupts_before_starting_another_member(
 def test_epoch_hook_resumes_pending_members_without_reinitializing_completed_updates(
     completed_fit, embedding_problem, model_factory
 ):
-    import pytest
-
     with jax.enable_x64():
         region, observations = embedding_problem()
         folds = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)
