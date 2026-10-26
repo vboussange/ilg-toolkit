@@ -202,62 +202,55 @@ def calibrate_mlpe(
     Coefficients, variance parameters, and population effects are fitted with
     the distance model fixed.
 
-    Parameters
-    ----------
-    distances
-        Finite vector with one value per ``observations.observed_pairs`` in exactly
-        that order. Geographic distances are allowed for a matching MLPE baseline.
-    observations
-        Population dissimilarities and their target transformation. At least three
-        observed pairs must share populations, and the intercept/distance design
-        must be nonsingular. Constant distances are not an intercept-only null.
-    region_name
-        Nonempty identity retained by the calibration.
-    loss
-        Shared ``MLPELoss`` settings, including variance floors, distance-scale
-        threshold, and fixed jitter. Omitted settings use ``MLPELoss()``.
-    max_iterations
-        Positive iteration budget for each of five deterministic L-BFGS-B starts.
-        The finite converged start with the highest marginal likelihood is retained.
+    Args:
+        distances:
+            Finite vector with one value per ``observations.observed_pairs`` in exactly
+            that order. Geographic distances are allowed for a matching MLPE baseline.
+        observations: Population dissimilarities and their target transformation. At
+            least three
+            observed pairs must share populations, and the intercept/distance design
+            must be nonsingular. Constant distances are not an intercept-only null.
+        region_name: Nonempty identity retained by the calibration.
+        loss: Shared ``MLPELoss`` settings, including variance floors, distance-scale
+            threshold, and fixed jitter. Omitted settings use ``MLPELoss()``.
+        max_iterations: Positive iteration budget for each of five deterministic
+            L-BFGS-B starts.
+            The finite converged start with the highest marginal likelihood is retained.
 
-    Returns
-    -------
-    RegionalMLPECalibration
-        Signed coefficients, both variance estimates, distance moments, population
-        posterior, pair identities, and optimizer diagnostics.
+    Returns:
+        RegionalMLPECalibration:
+            Signed coefficients, both variance estimates, distance moments, population
+            posterior, pair identities, and optimizer diagnostics.
 
-    Raises
-    ------
-    MLPEError
-        For invalid, unidentifiable, numerically unsupported, or unconverged fits.
+    Raises:
+        MLPEError:
+            For invalid, unidentifiable, numerically unsupported, or unconverged fits.
 
-    Notes
-    -----
-    This call uses float64 internally. Joint MLPE training requires float64 enabled
-    beforehand. Population-sized covariance algebra avoids a dense pair-by-pair
-    covariance matrix. For population variance u, residual variance e, jitter j,
-    and maximum observed population degree dmax, supported precision requires
-    ``eps * (1 + 2 * dmax * u / (e + j)) <= 0.01``. Failed factorizations,
-    nonfinite inputs, and unsupported variance ratios fail explicitly.
+    Notes:
+        This call uses float64 internally. Joint MLPE training requires float64 enabled
+        beforehand. Population-sized covariance algebra avoids a dense pair-by-pair
+        covariance matrix. For population variance u, residual variance e, jitter j,
+        and maximum observed population degree dmax, supported precision requires
+        ``eps * (1 + 2 * dmax * u / (e + j)) <= 0.01``. Failed factorizations,
+        nonfinite inputs, and unsupported variance ratios fail explicitly.
 
-    Examples
-    --------
-    To compare geographic and learned distances, use exactly the same observations,
-    target transformation, numerical settings, and optimizer budget for both fits:
+    Examples:
+        To compare geographic and learned distances, use exactly the same observations,
+        target transformation, numerical settings, and optimizer budget for both fits:
 
-    >>> loss = MLPELoss(jitter=0.0)
-    >>> baseline = calibrate_mlpe(geographic_distances, observations,
-    ...                           region_name=region.name, loss=loss,
-    ...                           max_iterations=2000)
-    >>> learned = calibrate(region, observations, frozen_distance_model,
-    ...                     loss=loss, max_iterations=2000)
-    >>> landscape = learned.calibration.for_region(region.name)
-    >>> improvement = landscape.ml_log_likelihood - baseline.ml_log_likelihood
+        >>> loss = MLPELoss(jitter=0.0)
+        >>> baseline = calibrate_mlpe(geographic_distances, observations,
+        ...                           region_name=region.name, loss=loss,
+        ...                           max_iterations=2000)
+        >>> learned = calibrate(region, observations, frozen_distance_model,
+        ...                     loss=loss, max_iterations=2000)
+        >>> landscape = learned.calibration.for_region(region.name)
+        >>> improvement = landscape.ml_log_likelihood - baseline.ml_log_likelihood
 
-    ``geographic_distances`` must align with ``observations.observed_pairs``.
-    These observations fit and score both calibrations; the difference describes
-    explanatory association. The [MLPE workflow](../examples/mlpe_workflow.md)
-    demonstrates candidate selection and repeated disjoint population splits.
+        ``geographic_distances`` must align with ``observations.observed_pairs``.
+        These observations fit and score both calibrations; the difference describes
+        explanatory association. The [MLPE workflow](../examples/mlpe_workflow.md)
+        demonstrates candidate selection and repeated disjoint population splits.
     """
     from ..losses import MLPELoss
 

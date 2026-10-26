@@ -1,8 +1,9 @@
-name: Checks
+name: Run tests
 
 on:
   pull_request:
   push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -27,14 +28,14 @@ jobs:
           node-version: "22"
           package-manager-cache: false
       - name: Install toolkit and declared development dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --extra amg
       - name: Check formatting
         run: uv run --no-sync ruff format --check .
       - name: Lint
         run: uv run --no-sync ruff check .
       - name: Check types
         run: uv run --no-sync pyright
-      - name: Test public workflows
+      - name: Run the full CPU test suite
         run: uv run --no-sync pytest
       - name: Test experimental Wishart statistics
         run: uv run --no-sync pytest experiments/wishart/test_diagnostic.py

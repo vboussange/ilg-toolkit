@@ -20,7 +20,7 @@ from ilg_toolkit import (
     save_checkpoint,
     train,
 )
-from ilg_toolkit.training import (
+from ilg_toolkit._training_inputs import (
     ObservationCollection,
     RegionCollection,
 )

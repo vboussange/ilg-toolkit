@@ -36,16 +36,21 @@ def save_checkpoint(path, state: TrainingState) -> None:
     and can come from an earlier step. Supply the original inputs and validation
     arguments when resuming.
 
-    Notes
-    -----
-    No observation data or rasters are embedded in the checkpoint.
+    Args:
+        path: Destination checkpoint file in an existing directory.
+        state: Training state returned by ``train``.
 
-    Examples
-    --------
-    >>> save_checkpoint("training.eqx", state)
-    >>> restored = load_checkpoint("training.eqx", distance_model=distance_model_template)
-    >>> continued = train(region, observations, state=restored,
-    ...                   config=dataclasses.replace(restored.config, steps=1000))
+    Raises:
+        ArtifactError: The state is incompatible with checkpoint persistence.
+
+    Notes:
+        No observation data or rasters are embedded in the checkpoint.
+
+    Examples:
+        >>> save_checkpoint("training.eqx", state)
+        >>> restored = load_checkpoint("training.eqx", distance_model=distance_model_template)
+        >>> continued = train(region, observations, state=restored,
+        ...                   config=dataclasses.replace(restored.config, steps=1000))
     """
     if not isinstance(state, TrainingState):
         raise ArtifactError("save_checkpoint requires a TrainingState returned by train")
@@ -78,8 +83,19 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
     dropout, and patch microbatch size). Reproducible continuation also requires
     the same inputs, observations, validation arguments, library versions, device,
     and execution settings. An already-exhausted unchanged budget returns the saved
-    state. See ``save_checkpoint`` and the [quickstart](../examples/quickstart.md)
+    state. See ``save_checkpoint`` and the [ensemble workflow](../examples/ensemble.md)
     for continuation examples.
+
+    Args:
+        path: Checkpoint file previously written by ``save_checkpoint``.
+        distance_model: Template matching the saved model's class, static settings,
+            array shapes, and dtypes.
+
+    Returns:
+        Training state containing its latest parameters, selected model, and history.
+
+    Raises:
+        ArtifactError: The artifact or supplied template is incompatible.
     """
     try:
         with Path(path).open("rb") as stream:

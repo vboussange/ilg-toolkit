@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING, final
 
 import equinox as eqx
 
+from ._training_inputs import RegionSpeciesKey
 from .data import PairwiseObservations, TargetSpec
-from .losses import GroupKey
 from .mlpe import RegionalMLPECalibration
 from .prediction import Prediction
 
 if TYPE_CHECKING:
-    from ._groups import ObservationCollection, RegionCollection
+    from ._training_inputs import ObservationCollection, RegionCollection
     from .losses import AbstractLoss
     from .model import LandscapeGeneticsModel
     from .models import AbstractDistanceModel
@@ -61,6 +61,7 @@ class DirectCalibrationModule(AbstractCalibrationModule):
         support: PairwiseObservations | None = None,
         support_distances=None,
     ) -> Prediction:
+        """Original-scale genetic predictions from the inverse target transform."""
         if known_effects or support is not None or support_distances is not None:
             raise ValueError("Direct calibration does not support population-effect conditioning")
         return Prediction(
@@ -80,7 +81,7 @@ class MLPECalibrationModule(AbstractCalibrationModule):
     """
 
     target: TargetSpec
-    regions: dict[GroupKey, RegionalMLPECalibration] = eqx.field(default_factory=dict)
+    regions: dict[RegionSpeciesKey, RegionalMLPECalibration] = eqx.field(default_factory=dict)
 
     def __post_init__(self):
         if not isinstance(self.target, TargetSpec) or self.target.kind != "dissimilarity":
@@ -124,6 +125,7 @@ class MLPECalibrationModule(AbstractCalibrationModule):
         support: PairwiseObservations | None = None,
         support_distances=None,
     ) -> Prediction:
+        """Genetic predictions from the requested region–species MLPE calibration."""
         if sampling_unit_kinds is not None and any(
             kind != "population" for kind in sampling_unit_kinds
         ):
@@ -156,34 +158,45 @@ def calibrate(
     Transferring a multispecies distance model requires its original full species
     order, even when observations cover only one species.
 
-    Notes
-    -----
-    Earlier calibrations are not merged into the returned model.
+    Args:
+        region: One region batch or a sequence or mapping of region batches.
+        observations: Genetic observations aligned with regions and their species.
+        distance_model: Distance model whose parameters remain fixed during calibration.
+        loss: Statistical criterion and numerical settings for genetic calibration.
+        species: Full species parameter order retained by the distance model, even
+            when calibration observations cover only a subset of species.
+        max_iterations: Per-start calibration optimization budget. MLPE defaults to
+            2,000 iterations; direct calibration requires this to be omitted.
 
-    Examples
-    --------
-    Train a landscape relationship, then fit new genetic calibration without
-    further landscape updates::
+    Returns:
+        A landscape genetics model with calibration for the supplied region–species groups.
 
-        loss = MLPELoss(jitter=0.0)
-        state = train(region, observations, distance_model=distance_model,
-                      config=TrainingConfig(loss=loss, steps=500))
-        adapted = calibrate(new_region, new_observations,
-                            state.selected_model.distance_model, loss=loss,
-                            species=state.selected_model.species, max_iterations=2000)
-        prediction = adapted.predict(new_region, pairs=query_pairs)
+    Notes:
+        Earlier calibrations are not merged into the returned model.
 
-    For parameter-free direct prediction, use ``loss=Log1pLoss()`` and omit
-    ``max_iterations``. For updating only population effects of an existing MLPE
-    calibration, see the worked modes in
-    [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
-    and the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md).
+    Examples:
+        Train a landscape relationship, then fit new genetic calibration without
+        further landscape updates::
+
+            loss = MLPELoss(jitter=0.0)
+            state = train(region, observations, distance_model=distance_model,
+                          config=TrainingConfig(loss=loss, steps=500))
+            adapted = calibrate(new_region, new_observations,
+                                state.selected_model.distance_model, loss=loss,
+                                species=state.selected_model.species, max_iterations=2000)
+            prediction = adapted.predict(new_region, pairs=query_pairs)
+
+        For parameter-free direct prediction, use ``loss=Log1pLoss()`` and omit
+        ``max_iterations``. For updating only population effects of an existing MLPE
+        calibration, see the worked modes in
+        [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
+        and the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md).
     """
-    from ._groups import (
-        _index_inputs,
-        _normalize_inputs,
-        _resolve_species_order,
-        _validate_input_contract,
+    from ._training_inputs import (
+        _normalize_training_inputs,
+        _prepare_region_species_inputs,
+        _resolve_training_species_order,
+        _validate_shared_training_contract,
     )
     from .losses import AbstractLoss
     from .model import LandscapeGeneticsModel
@@ -198,10 +211,10 @@ def calibrate(
         raise TypeError("distance_model must implement AbstractDistanceModel")
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
-    inputs = _normalize_inputs(region, observations)
-    first = _validate_input_contract(inputs)
-    order = _resolve_species_order(inputs, species, distance_model.num_species)
-    groups = _index_inputs(inputs, order, distance_model.num_species)
+    inputs = _normalize_training_inputs(region, observations)
+    first = _validate_shared_training_contract(inputs)
+    order = _resolve_training_species_order(inputs, species, distance_model.num_species)
+    groups = _prepare_region_species_inputs(inputs, order, distance_model.num_species)
     target = first.observations.target
     feature_count, feature_names = first.region.feature_array.shape[-1], first.region.feature_names
     for group in groups:
@@ -225,7 +238,7 @@ def calibrate(
             species_index=group.species_index,
             context=context,
         )
-        fitted[group.identity] = loss._fit_group(
+        fitted[group.key] = loss._fit_group(
             distances,
             group.observations,
             region_name=group.region.name,

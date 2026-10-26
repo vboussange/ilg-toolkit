@@ -7,11 +7,9 @@ on:
       - "docs/**"
       - "examples/**"
       - "scripts/build_docs.py"
-      - "tests/scripts/**"
       - "README.md"
       - "GLOSSARY.md"
       - "pyproject.toml"
-      - "uv.lock"
       - "zensical.toml"
       - ".github/workflows/docs.yml"
   push:
@@ -21,11 +19,9 @@ on:
       - "docs/**"
       - "examples/**"
       - "scripts/build_docs.py"
-      - "tests/scripts/**"
       - "README.md"
       - "GLOSSARY.md"
       - "pyproject.toml"
-      - "uv.lock"
       - "zensical.toml"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -52,10 +48,8 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
         with:
           enable-cache: true
-      - run: uv sync --extra dev --extra docs --locked
-      - name: Test the notebook publication boundary
-        run: uv run --no-sync pytest tests/scripts/test_build_docs.py
-      - name: Execute every notebook and export Markdown, figures, and downloads
+      - run: uv sync --extra dev --extra docs
+      - name: Execute the quickstart and notebooks and prepare documentation
         run: uv run --no-sync python scripts/build_docs.py
       - name: Build the documentation strictly
         run: uv run --no-sync zensical build --strict

@@ -5,8 +5,10 @@ from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
 from .data import PairwiseObservations, RegionBatch
-from .losses import GroupKey
-from .models.base import region_for_species, validate_species_order
+
+# Region name and index in the retained full species parameter order.
+type RegionSpeciesKey = tuple[str, int]
+
 
 RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
 RegionObservations = PairwiseObservations | Sequence[PairwiseObservations]
@@ -15,20 +17,26 @@ ObservationCollection = (
 )
 
 
-class _RegionalInput(NamedTuple):
+class _RegionWithGeneticObservations(NamedTuple):
+    """One region batch paired with one species' genetic observations."""
+
     region: RegionBatch
     observations: PairwiseObservations
 
 
-class _GroupInput(NamedTuple):
+class _RegionSpeciesTrainingInput(NamedTuple):
+    """Species-specific region inputs, retained parameter index, and loss weight."""
+
     region: RegionBatch
     observations: PairwiseObservations
     species_index: int
-    identity: GroupKey
-    weight: float
+    key: RegionSpeciesKey
+    loss_weight: float
 
 
-def _align_collection(values: object, names: Sequence[str], description: str) -> tuple[object, ...]:
+def _align_observations_to_regions(
+    values: object, names: Sequence[str], description: str
+) -> tuple[object, ...]:
     """A labeled collection aligned with its region batches."""
     if isinstance(values, Mapping):
         if set(values) != set(names):
@@ -43,10 +51,10 @@ def _align_collection(values: object, names: Sequence[str], description: str) ->
     raise ValueError(f"{description} must align with the supplied region collection")
 
 
-def _normalize_inputs(
+def _normalize_training_inputs(
     regions: RegionCollection,
     observations: ObservationCollection,
-) -> tuple[_RegionalInput, ...]:
+) -> tuple[_RegionWithGeneticObservations, ...]:
     """Aligned collections with region identities sorted for reproducible random sampling."""
     if isinstance(regions, RegionBatch):
         ordered = [regions]
@@ -65,12 +73,14 @@ def _normalize_inputs(
         raise ValueError("Regions must be a nonempty collection of RegionBatch inputs")
     names = [region.name for region in ordered]
     if len(set(names)) != len(names):
-        raise ValueError("Region names must be unique; duplicate names cannot share a fit")
+        raise ValueError(
+            "Region names must be unique; duplicate names cannot share training inputs"
+        )
 
     observed = (
         (observations,)
         if isinstance(regions, RegionBatch) and not isinstance(observations, Mapping)
-        else _align_collection(observations, names, "Observations")
+        else _align_observations_to_regions(observations, names, "Observations")
     )
     inputs = []
     for region, observation in zip(ordered, observed, strict=True):
@@ -82,15 +92,17 @@ def _normalize_inputs(
         for observed_group in group_observations:
             if not isinstance(observed_group, PairwiseObservations):
                 raise ValueError("Observations contain unsupported input types")
-            inputs.append(_RegionalInput(region, observed_group))
+            inputs.append(_RegionWithGeneticObservations(region, observed_group))
     return tuple(sorted(inputs, key=lambda item: item.region.name))
 
 
-def _validate_input_contract(inputs: Sequence[_RegionalInput]) -> _RegionalInput:
+def _validate_shared_training_contract(
+    inputs: Sequence[_RegionWithGeneticObservations],
+) -> _RegionWithGeneticObservations:
     """Common target semantics and feature meanings for training or calibration inputs."""
     first = inputs[0]
     if len({item.region.name for item in inputs}) > 1 and first.region.feature_names is None:
-        raise ValueError("Multi-region fitting requires feature_names meanings and order")
+        raise ValueError("Multi-region training requires feature_names meanings and order")
     for region, observations in inputs:
         if observations.target != first.observations.target:
             raise ValueError("Regional observations must share one target contract and scale")
@@ -101,10 +113,14 @@ def _validate_input_contract(inputs: Sequence[_RegionalInput]) -> _RegionalInput
     return first
 
 
-def _resolve_species_order(
-    inputs: Sequence[_RegionalInput], species: Sequence[str] | None, num_species: int
+def _resolve_training_species_order(
+    inputs: Sequence[_RegionWithGeneticObservations],
+    species: Sequence[str] | None,
+    num_species: int,
 ) -> tuple[str, ...] | None:
     """Retained parameter order, inferred only for a single-species distance model."""
+    from .models.base import validate_species_order
+
     if species is None:
         if num_species > 1:
             raise ValueError("A multispecies distance model requires species= in parameter order")
@@ -116,11 +132,16 @@ def _resolve_species_order(
     return validate_species_order(species, num_species)
 
 
-def _index_inputs(
-    inputs: Sequence[_RegionalInput], order: tuple[str, ...] | None, num_species: int
-) -> tuple[_GroupInput, ...]:
+def _prepare_region_species_inputs(
+    inputs: Sequence[_RegionWithGeneticObservations],
+    order: tuple[str, ...] | None,
+    num_species: int,
+) -> tuple[_RegionSpeciesTrainingInput, ...]:
+    """Prepare species-specific inputs with equal species and within-species region weights."""
+    from .models.base import region_for_species
+
     groups = []
-    identities = set()
+    keys = set()
     for region, observations in inputs:
         name = observations.species
         if name is None and order is not None and len(order) == 1:
@@ -135,14 +156,14 @@ def _index_inputs(
             index = order.index(name)
             if region.species is not None and not set(region.species).issubset(order):
                 raise ValueError("Sampling-unit species must belong to the model species order")
-        identity = (region.name, index)
-        if identity in identities:
+        key = (region.name, index)
+        if key in keys:
             raise ValueError("Provide one observations object per region–species group")
-        identities.add(identity)
+        keys.add(key)
         selected = region_for_species(region, name)
-        groups.append(_GroupInput(selected, observations, index, identity, 0.0))
+        groups.append(_RegionSpeciesTrainingInput(selected, observations, index, key, 0.0))
     coverage = Counter(group.species_index for group in groups)
     return tuple(
-        group._replace(weight=1 / (len(coverage) * coverage[group.species_index]))
+        group._replace(loss_weight=1 / (len(coverage) * coverage[group.species_index]))
         for group in sorted(groups, key=lambda group: (group.region.name, group.species_index))
     )

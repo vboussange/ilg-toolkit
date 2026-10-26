@@ -1,4 +1,4 @@
-"""Execute authoritative notebooks and stage disposable Zensical inputs.
+"""Execute authoritative examples and stage disposable Zensical inputs.
 
 Run with the installed package and docs extra. Each notebook receives its own
 working directory and a kernel from this Python interpreter; source files are
@@ -7,7 +7,9 @@ never executed in place. Zensical then reads build/docs via zensical.toml.
 
 import argparse
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -21,20 +23,66 @@ from nbconvert.preprocessors import ExecutePreprocessor
 from nbconvert.writers import FilesWriter
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTEBOOKS = ("quickstart", "ibd", "mlpe_workflow", "ensemble", "multispecies")
+NOTEBOOKS = ("ibd", "mlpe_workflow", "ensemble", "multispecies")
 
 
-def prepare(notebook_dir: Path, output_dir: Path, *, timeout: int) -> None:
-    """Execute sources, export rendered pages/assets, and retain source downloads."""
-    notebook_dir, output_dir = notebook_dir.resolve(), output_dir.resolve()
-    sources = sorted(notebook_dir.glob("*.ipynb"))
+def _render_quickstart(
+    source: Path,
+    output_dir: Path,
+    scratch: Path,
+    environment: dict[str, str],
+    *,
+    timeout: int,
+) -> None:
+    """Execute the quickstart script and render its source and output."""
+    started = time.monotonic()
+    print(f"Executing {source.name} on CPU with float64", flush=True)
+    work = scratch / "quickstart"
+    work.mkdir()
+    try:
+        result = subprocess.run(
+            [sys.executable, str(source)],
+            cwd=work,
+            env=os.environ | environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Quickstart execution failed:\n{error.stdout}") from error
+    body = (
+        "# Quickstart\n\n"
+        f"[Download the Python script]({source.name})\n\n"
+        f"```python\n{source.read_text(encoding='utf-8').rstrip()}\n```\n\n"
+        f"## Output\n\n```text\n{result.stdout.rstrip()}\n```\n"
+    )
+    (output_dir / "quickstart.md").write_text(body, encoding="utf-8")
+    shutil.copyfile(source, output_dir / source.name)
+    print(f"Rendered {source.name} in {time.monotonic() - started:.1f}s", flush=True)
+
+
+def prepare(example_dir: Path, output_dir: Path, *, timeout: int) -> None:
+    """Execute examples and stage documentation with their source downloads.
+
+    Args:
+        example_dir: Directory containing the quickstart script and notebooks.
+        output_dir: Disposable directory for generated documentation inputs.
+        timeout: Maximum seconds for the quickstart or a single notebook cell.
+    """
+    example_dir, output_dir = example_dir.resolve(), output_dir.resolve()
+    quickstart = example_dir / "quickstart.py"
+    if not quickstart.is_file():
+        raise ValueError(f"Quickstart script not found: {quickstart}")
+    sources = sorted(example_dir.glob("*.ipynb"))
     if not sources:
-        raise ValueError(f"No notebooks found in {notebook_dir}")
-    if notebook_dir == ROOT / "examples":
+        raise ValueError(f"No notebooks found in {example_dir}")
+    if example_dir == ROOT / "examples":
         if {source.stem for source in sources} != set(NOTEBOOKS):
-            raise ValueError(f"Expected exactly the five authoritative notebooks: {NOTEBOOKS}")
-        sources = [notebook_dir / f"{name}.ipynb" for name in NOTEBOOKS]
-    for source in (ROOT / "docs", notebook_dir, ROOT / "GLOSSARY.md"):
+            raise ValueError(f"Expected exactly the four authoritative notebooks: {NOTEBOOKS}")
+        sources = [example_dir / f"{name}.ipynb" for name in NOTEBOOKS]
+    for source in (ROOT / "docs", example_dir, ROOT / "GLOSSARY.md", ROOT / "README.md"):
         if output_dir == source or output_dir in source.parents or source in output_dir.parents:
             raise ValueError("Output must be separate from documentation and notebook sources")
     for source in sources:
@@ -53,6 +101,7 @@ def prepare(notebook_dir: Path, output_dir: Path, *, timeout: int) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     shutil.copytree(ROOT / "docs", output_dir, ignore=shutil.ignore_patterns("agents", "adr"))
+    shutil.copyfile(ROOT / "README.md", output_dir / "index.md")
     shutil.copyfile(ROOT / "GLOSSARY.md", output_dir / "glossary.md")
     examples = output_dir / "examples"
     examples.mkdir(exist_ok=True)
@@ -63,6 +112,7 @@ def prepare(notebook_dir: Path, output_dir: Path, *, timeout: int) -> None:
     }
     with tempfile.TemporaryDirectory(prefix="ilg-docs-") as temporary:
         scratch = Path(temporary)
+        _render_quickstart(quickstart, examples, scratch, environment, timeout=timeout)
         kernel_dir = scratch / "kernels" / "ilg-docs"
         kernel_dir.mkdir(parents=True)
         (kernel_dir / "kernel.json").write_text(
@@ -117,12 +167,15 @@ def prepare(notebook_dir: Path, output_dir: Path, *, timeout: int) -> None:
 
 
 def main() -> None:
+    """Prepare documentation using command-line source and execution settings."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--notebook-dir", type=Path, default=ROOT / "examples")
+    parser.add_argument("--examples-dir", type=Path, default=ROOT / "examples")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "build" / "docs")
-    parser.add_argument("--timeout", type=int, default=1200, help="Per-cell timeout in seconds")
+    parser.add_argument(
+        "--timeout", type=int, default=1200, help="Script and per-cell timeout in seconds"
+    )
     options = parser.parse_args()
-    prepare(options.notebook_dir, options.output_dir, timeout=options.timeout)
+    prepare(options.examples_dir, options.output_dir, timeout=options.timeout)
 
 
 if __name__ == "__main__":

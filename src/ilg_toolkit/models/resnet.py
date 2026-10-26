@@ -46,40 +46,36 @@ class ResNet9Conductance(ConductanceModel):
     Species-specific linear coefficients map each patch's features to positive
     conductance through softplus and ``min_conductance``.
 
-    Parameters
-    ----------
-    in_channels
-        Number of raster covariates in the retained feature order.
-    num_species
-        Number of species-specific output rows; default 1. The convolutional
-        backbone is pooled across all regions and species.
-    patch_size
-        Square patch side length, at least 4 (default 4). Raster dimensions must
-        be divisible by it; output shape is ``(rows // patch_size, columns // patch_size)``.
-        Sampling units in the same patch share a graph node.
-    min_conductance
-        Positive conductance floor added after softplus, default 1e-6.
-    patch_microbatch_size
-        Maximum patches processed together; ``None`` processes all patches.
-        Lower values trade throughput for peak activation memory without changing
-        the patch grid or the model's receptive field.
-    solver_config
-        Resistance tolerances, iteration limit, and optional algebraic multigrid (AMG)
-        preconditioner.
-    key
-        JAX random key for reproducible parameter initialization.
+    Args:
+        in_channels:
+            Number of raster covariates in the retained feature order.
+        num_species: Number of species-specific output rows; default 1. The
+            convolutional
+            backbone is pooled across all regions and species.
+        patch_size: Square patch side length, at least 4 (default 4). Raster dimensions
+            must
+            be divisible by it; output shape is ``(rows // patch_size, columns // patch_size)``.
+            Sampling units in the same patch share a graph node.
+        min_conductance: Positive conductance floor added after softplus, default 1e-6.
+        patch_microbatch_size: Maximum patches processed together; ``None`` processes
+            all patches.
+            Lower values trade throughput for peak activation memory without changing
+            the patch grid or the model's receptive field.
+        solver_config: Resistance tolerances, iteration limit, and optional algebraic
+            multigrid (AMG)
+            preconditioner.
+        key: JAX random key for reproducible parameter initialization.
 
-    Notes
-    -----
-    Patch convolutions and GroupNorm use float32 parameters; effective resistance
-    uses float64, which must be enabled before constructing inputs. The network
-    encodes each patch through two residual blocks and spatial pooling, followed
-    by a species-specific linear map and softplus. It does not mix features across
-    neighboring patches; the resistance graph connects their conductances.
+    Notes:
+        Patch convolutions and GroupNorm use float32 parameters; effective resistance
+        uses float64, which must be enabled before constructing inputs. The network
+        encodes each patch through two residual blocks and spatial pooling, followed
+        by a species-specific linear map and softplus. It does not mix features across
+        neighboring patches; the resistance graph connects their conductances.
 
-    See the [maximum-likelihood population effects (MLPE) workflow](../examples/mlpe_workflow.md)
-    for pooled regional
-    training, solver choices, and practical patch/cropping guidance.
+        See the maximum-likelihood population effects (MLPE)
+        [workflow](../examples/mlpe_workflow.md) for pooled regional training,
+        solver choices, and practical patch/cropping guidance.
     """
 
     conv1: eqx.nn.Conv2d

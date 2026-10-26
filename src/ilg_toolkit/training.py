@@ -1,6 +1,7 @@
-"""Joint fitting with equal species influence and equal region influence within species.
+"""Joint training with equal species influence and equal region influence within species.
 
-Maximum-likelihood population effects (MLPE) calibration is fitted with the distance model."""
+Maximum-likelihood population effects (MLPE) calibration is fitted with the distance model.
+"""
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -12,15 +13,15 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from ._groups import (
-    GroupKey,
+from ._training_inputs import (
     ObservationCollection,
     RegionCollection,
-    _GroupInput,
-    _index_inputs,
-    _normalize_inputs,
-    _resolve_species_order,
-    _validate_input_contract,
+    RegionSpeciesKey,
+    _normalize_training_inputs,
+    _prepare_region_species_inputs,
+    _RegionSpeciesTrainingInput,
+    _resolve_training_species_order,
+    _validate_shared_training_contract,
 )
 from .config import TrainingConfig
 from .data import PairwiseObservations, RegionBatch
@@ -70,19 +71,22 @@ class TrainingState(eqx.Module):
     selected_model: LandscapeGeneticsModel
     selected_step: int
     step: int
-    training_groups: tuple[GroupKey, ...]
-    validation_groups: tuple[GroupKey, ...]
+    training_groups: tuple[RegionSpeciesKey, ...]
+    validation_groups: tuple[RegionSpeciesKey, ...]
 
     @property
     def region_names(self) -> tuple[str, ...]:
+        """Names of the regions represented in the training observations."""
         return tuple(sorted({key[0] for key in self.training_groups}))
 
     @property
     def selection(self) -> str:
+        """Selection rule: minimum validation loss or the final training evaluation."""
         return "validation" if self.validation_groups else "final"
 
     @property
     def selected_loss(self) -> float:
+        """Validation or training loss at the selected model's evaluation."""
         record = next(record for record in self.history if record.step == self.selected_step)
         return record.training_loss if record.validation_loss is None else record.validation_loss
 
@@ -105,15 +109,15 @@ class _TrainingPayload(NamedTuple):
 
 
 @dataclass(frozen=True)
-class _RegionalBatch:
-    """One region–species group's observations, numerical settings, and objective weight."""
+class _RegionSpeciesTrainingBatch:
+    """One region–species group's observations, numerical settings, and loss weight."""
 
     region: RegionBatch
     observations: PairwiseObservations
     payload: _TrainingPayload
     species_index: int
-    identity: GroupKey
-    weight: float
+    key: RegionSpeciesKey
+    loss_weight: float
     context: ResistanceSolverContext | None = None
 
 
@@ -142,22 +146,22 @@ _compiled_distances = eqx.filter_jit(_group_distances)
 
 class _Contribution(NamedTuple):
     payload: _TrainingPayload
-    identity: GroupKey
+    key: RegionSpeciesKey
     species_index: jax.Array
-    weight: jax.Array
+    loss_weight: jax.Array
 
 
 class _NumericContribution(NamedTuple):
     payload: _TrainingPayload
     species_index: jax.Array
-    weight: jax.Array
+    loss_weight: jax.Array
 
 
 def _microbatch_objective(parameters, contributions, loss, context, key):
     model, latent, states = parameters
     configured = with_dropout_mode(model, inference=False, key=key)
     return sum(
-        item.weight
+        item.loss_weight
         * loss._value(
             _group_distances(configured, latent, item.payload, item.species_index, context),
             item.payload.context,
@@ -190,12 +194,13 @@ def _regional_gradient(parameters, contributions, config, context, key):
         selected = contributions[start : start + size]
         selected_states, state_backward = eqx.filter_vjp(
             lambda current, selected=selected: tuple(
-                config.loss._group_state(current, item.identity) for item in selected
+                config.loss._group_state(current, item.key) for item in selected
             ),
             loss_state,
         )
         numeric = tuple(
-            _NumericContribution(item.payload, item.species_index, item.weight) for item in selected
+            _NumericContribution(item.payload, item.species_index, item.loss_weight)
+            for item in selected
         )
         model_gradient, latent_gradient, selected_gradient = differentiate(
             (model, latent, selected_states), numeric, config.loss, context, key
@@ -212,7 +217,7 @@ def _regional_gradient(parameters, contributions, config, context, key):
     return model_gradient, state_gradient
 
 
-def _labelled_pairs(batch: _RegionalBatch) -> tuple[tuple[str, str], ...]:
+def _labelled_pairs(batch: _RegionSpeciesTrainingBatch) -> tuple[tuple[str, str], ...]:
     return tuple(
         (
             min(batch.region.sampling_unit_ids[i], batch.region.sampling_unit_ids[j]),
@@ -223,30 +228,32 @@ def _labelled_pairs(batch: _RegionalBatch) -> tuple[tuple[str, str], ...]:
 
 
 def _prepare_batches(
-    training_inputs: Sequence[_GroupInput],
-    validation_inputs: Sequence[_GroupInput],
+    training_inputs: Sequence[_RegionSpeciesTrainingInput],
+    validation_inputs: Sequence[_RegionSpeciesTrainingInput],
     distance_model: AbstractDistanceModel,
     config: TrainingConfig,
-) -> tuple[tuple[_RegionalBatch, ...], tuple[_RegionalBatch, ...]]:
+) -> tuple[tuple[_RegionSpeciesTrainingBatch, ...], tuple[_RegionSpeciesTrainingBatch, ...]]:
     """Regional genetic targets with reusable resistance solvers."""
     contexts: dict[tuple[int, int], ResistanceSolverContext | None] = {}
 
-    def make_batch(inputs: _GroupInput, *, training: bool) -> _RegionalBatch:
-        region, observations, species_index, identity, weight = inputs
+    def make_batch(
+        inputs: _RegionSpeciesTrainingInput, *, training: bool
+    ) -> _RegionSpeciesTrainingBatch:
+        region, observations, species_index, key, loss_weight = inputs
         payload = _prepared(region, observations, config.loss, training=training)
         shape = (region.feature_array.shape[0], region.feature_array.shape[1])
         if shape not in contexts:
             contexts[shape] = prepare_distance_context(distance_model, region.feature_array)
         context = contexts[shape]
-        return _RegionalBatch(
-            region, observations, payload, species_index, identity, weight, context
+        return _RegionSpeciesTrainingBatch(
+            region, observations, payload, species_index, key, loss_weight, context
         )
 
     training = tuple(make_batch(inputs, training=True) for inputs in training_inputs)
     validation = tuple(make_batch(inputs, training=False) for inputs in validation_inputs)
-    training_by_name = {batch.identity: batch for batch in training}
+    training_by_name = {batch.key: batch for batch in training}
     for batch in validation:
-        training_batch = training_by_name.get(batch.identity)
+        training_batch = training_by_name.get(batch.key)
         if training_batch is None:
             continue
         if set(_labelled_pairs(training_batch)) & set(_labelled_pairs(batch)):
@@ -302,7 +309,7 @@ _compiled_criterion = eqx.filter_jit(_criterion)
 
 def _evaluate_regions(
     parameters: Parameters,
-    batches: Sequence[_RegionalBatch],
+    batches: Sequence[_RegionSpeciesTrainingBatch],
     config: TrainingConfig,
     step: int,
     calibrations: Mapping | None = None,
@@ -321,8 +328,8 @@ def _evaluate_regions(
         distances = calculate(
             configured, latent, batch.payload, jnp.asarray(batch.species_index), batch.context
         )
-        group_state = config.loss._group_state(parameters[1], batch.identity)
-        calibration = None if calibrations is None else calibrations.get(batch.identity)
+        group_state = config.loss._group_state(parameters[1], batch.key)
+        calibration = None if calibrations is None else calibrations.get(batch.key)
         if calibrations is not None and group_state is not None and calibration is None:
             raise ValueError(
                 "Validation requires a training calibration for the same region–species group"
@@ -336,7 +343,7 @@ def _evaluate_regions(
                 f"{batch.region.name}, species {batch.species_index}: nonfinite loss at step {step}"
             )
         if calibrations is None:
-            fitted[batch.identity] = config.loss._finalize(
+            fitted[batch.key] = config.loss._finalize(
                 distances,
                 batch.payload.context,
                 group_state,
@@ -344,9 +351,9 @@ def _evaluate_regions(
                 observations=batch.observations,
                 step=step,
             )
-        values[batch.identity] = value
+        values[batch.key] = value
     regional = {
-        name: float(np.mean([values[b.identity] for b in batches if b.region.name == name]))
+        name: float(np.mean([values[b.key] for b in batches if b.region.name == name]))
         for name in dict.fromkeys(b.region.name for b in batches)
     }
     by_species = (
@@ -354,13 +361,13 @@ def _evaluate_regions(
         if parameters[0].num_species == 1 or species is None
         else {
             species[index]: float(
-                np.mean([values[b.identity] for b in batches if b.species_index == index])
+                np.mean([values[b.key] for b in batches if b.species_index == index])
             )
             for index in sorted({b.species_index for b in batches})
         }
     )
     return (
-        sum(batch.weight * values[batch.identity] for batch in batches),
+        sum(batch.loss_weight * values[batch.key] for batch in batches),
         regional,
         fitted,
         by_species,
@@ -385,19 +392,35 @@ def train(
     the final model without validation. ``on_step`` receives resumable state after
     every update; supplied ``state`` continues the latest parameters and random state.
 
-    Examples
-    --------
-    >>> loss = MLPELoss()
-    >>> state = train(region, observations.select_pairs(training_pairs),
-    ...               distance_model=distance_model,
-    ...               config=TrainingConfig(loss=loss, steps=500))
-    >>> fitted = state.selected_model
-    >>> continued = train(region, observations.select_pairs(training_pairs), state=state,
-    ...                   config=dataclasses.replace(state.config, steps=1000))
+    Args:
+        region: One region batch, a sequence, or a mapping keyed by region name.
+        observations: Genetic observations aligned with the supplied regions; each
+            region may supply observations for several species.
+        distance_model: Initial distance model for a new training run; omit for continuation.
+        config: Loss and training settings. For continuation, only the total step
+            budget may increase; omitted settings use the saved configuration.
+        species: Species names in distance-model parameter order. Required for
+            multispecies models; a single species can be inferred from the inputs.
+        validation: Regions and disjoint observations used to select the model by
+            validation loss, using calibration estimated from training observations.
+        state: Saved training state to continue with unchanged inputs and settings.
+        on_step: Callback receiving resumable state after initialization and each update.
 
-    Zero steps initializes statistical parameters and fits the coefficients at those
-    parameters; use :func:`calibrate` to optimize calibration on a frozen distance
-    model. Built-in validation uses training-fitted coefficients and distance moments.
+    Returns:
+        Training progress, optimizer and random state, and the latest and selected models.
+
+    Examples:
+        >>> loss = MLPELoss()
+        >>> state = train(region, observations.select_pairs(training_pairs),
+        ...               distance_model=distance_model,
+        ...               config=TrainingConfig(loss=loss, steps=500))
+        >>> fitted = state.selected_model
+        >>> continued = train(region, observations.select_pairs(training_pairs), state=state,
+        ...                   config=dataclasses.replace(state.config, steps=1000))
+
+        Zero steps initializes statistical parameters and fits the coefficients at those
+        parameters; use ``calibrate`` to optimize calibration on a frozen distance
+        model. Built-in validation uses training-fitted coefficients and distance moments.
     """
     if species is not None and (
         isinstance(species, (str, bytes)) or not isinstance(species, Sequence)
@@ -411,9 +434,9 @@ def train(
         )
     if state is None:
         if distance_model is None:
-            raise ValueError("Fresh fitting requires a distance_model")
+            raise ValueError("Fresh training requires a distance_model")
         if config is None:
-            raise ValueError("Fresh fitting requires a TrainingConfig with loss")
+            raise ValueError("Fresh training requires a TrainingConfig with loss")
     else:
         _validate_state(state)
         distance_model = state.latest_model.distance_model
@@ -434,16 +457,16 @@ def train(
             raise ValueError(
                 "Continuation requires identical configuration except an increased step budget"
             )
-    training_inputs = _normalize_inputs(region, observations)
+    training_inputs = _normalize_training_inputs(region, observations)
     if validation is not None and (not isinstance(validation, tuple) or len(validation) != 2):
         raise ValueError("validation must be a (regions, observations) tuple")
     validation_inputs = (
-        () if validation is None else _normalize_inputs(validation[0], validation[1])
+        () if validation is None else _normalize_training_inputs(validation[0], validation[1])
     )
-    first_region, first_observations = _validate_input_contract(
+    first_region, first_observations = _validate_shared_training_contract(
         (*training_inputs, *validation_inputs)
     )
-    species = _resolve_species_order(training_inputs, species, distance_model.num_species)
+    species = _resolve_training_species_order(training_inputs, species, distance_model.num_species)
     prototype = LandscapeGeneticsModel(
         distance_model,
         config.loss._calibration(first_observations.target, {}),
@@ -452,8 +475,12 @@ def train(
         species=None if species is None else tuple(species),
     )
     species = prototype.species
-    indexed_training = _index_inputs(training_inputs, species, distance_model.num_species)
-    indexed_validation = _index_inputs(validation_inputs, species, distance_model.num_species)
+    indexed_training = _prepare_region_species_inputs(
+        training_inputs, species, distance_model.num_species
+    )
+    indexed_validation = _prepare_region_species_inputs(
+        validation_inputs, species, distance_model.num_species
+    )
     random_key = (
         jax.random.split(jax.random.PRNGKey(config.seed))[1] if state is None else state.rng_key
     )
@@ -465,7 +492,7 @@ def train(
         state.loss_state
         if state is not None
         else config.loss._initialize(
-            {batch.identity: batch.payload.context for batch in training_batches}
+            {batch.key: batch.payload.context for batch in training_batches}
         )
     )
     parameters = (distance_model, loss_state)
@@ -484,8 +511,8 @@ def train(
     region_count = len(regional_batches)
     selected_count = min(region_count, config.region_batch_size or region_count)
 
-    training_groups = tuple(batch.identity for batch in training_batches)
-    validation_groups = tuple(batch.identity for batch in validation_batches)
+    training_groups = tuple(batch.key for batch in training_batches)
+    validation_groups = tuple(batch.key for batch in validation_batches)
     if state is not None and (
         training_groups != state.training_groups or validation_groups != state.validation_groups
     ):
@@ -562,9 +589,9 @@ def train(
                 contributions = tuple(
                     _Contribution(
                         groups[i].payload,
-                        groups[i].identity,
+                        groups[i].key,
                         jnp.asarray(groups[i].species_index),
-                        jnp.asarray(groups[i].weight * correction),
+                        jnp.asarray(groups[i].loss_weight * correction),
                     )
                     for i in chosen
                 )

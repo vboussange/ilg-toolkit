@@ -64,7 +64,7 @@ fresh test calibration. Both baseline and landscape fits use matching targets,
 observations, settings, and optimizer budgets.
 
 Test observations fit and score the test calibration. The score describes
-association of a representation learned from separate populations' genetic
+association of a representation trained on separate populations' genetic
 observations. Inspect signed slopes, both variances, convergence, and
 population/pair counts across repeated splits.
 

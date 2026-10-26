@@ -1,6 +1,6 @@
 # ILG Toolkit
 
-Inverse landscape genetics: learning relationships between landscapes and pairwise genetic observations among sampled populations or individuals.
+Inverse landscape genetics concerns estimating relationships between landscapes and pairwise genetic observations among sampled populations or individuals.
 
 ## Language
 
@@ -12,6 +12,10 @@ _Avoid_: Prepared region, when naming this input boundary.
 **Training configuration**:
 The chosen loss, joint optimization budget, and execution settings for training a distance model and its statistical parameters.
 _Avoid_: Calibration settings, when referring to the training budget.
+
+**Training**:
+Joint estimation of distance-model parameters and the statistical parameters required by a loss, using supplied genetic observations.
+_Avoid_: Fitting, when naming this optimization workflow.
 
 **Loss**:
 A statistical criterion relating a region–species group's ecological distances to its genetic observations, together with the criterion's numerical settings.
@@ -42,7 +46,7 @@ A vector representation of a sampling unit's landscape features whose squared Eu
 _Avoid_: Squared separation, when referring to squared embedding distance.
 
 **Pooled backbone**:
-Landscape feature learning with one set of parameters estimated jointly across
+Landscape feature representation with one set of parameters estimated jointly across
 regions and species.
 _Avoid_: Shared encoder, when describing this pooling policy.
 
@@ -126,7 +130,7 @@ _Avoid_: Observation partition, when referring to the selected measurements them
 
 **Query pair**:
 An unordered pair of distinct sampling units for which a prediction is requested.
-Like a query in meta-learning, it identifies what to predict; its measured target, when available for evaluation, is used afterward to score the prediction.
+Its measured target, when available for evaluation, is used afterward to score the prediction.
 
 **Support observations**:
 Pairwise genetic observations used to condition population effects for predictions on separate query pairs.

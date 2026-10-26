@@ -18,23 +18,9 @@ Before exploring or changing domain behavior, read `docs/agents/domain.md`. This
 ## Repository conventions
 
 - Keep benchmarks on `perf/<topic>` branches that are never merged. Each contains a README, a results report, and the scripts needed to reproduce the results.
-- Docs, docstrings, comments, and examples describe current behavior only, following the authoring rules below.
-- Docstrings first state what the object is, using glossary terms, and contain at most four sentences.
-- The README's Documentation section indexes every Markdown documentation page.
+- Before changing docs, docstrings, comments, or examples, read the documentation and prose conventions in `CONTRIBUTING.md`.
 - Perform one-off operational tasks directly; do not add scripts for them.
 - Organize tests to mirror the modules and packages under `src` one-to-one.
-
-## Authoring rules
-
-1. Say what something is or does. Mention a non-behavior only in a separate note.
-2. Use emphasis words ("explicit", "declared", "exact", "complete", "actual", "independent") only when they contrast with a named alternative.
-3. Use domain language in public text, without implementation jargon such as "tail", "VJP", "pullback", "kernel", "chunk", "seam", "host", or "bounded".
-4. Use one glossary term per concept.
-5. Use US spelling and write "region–species" with an en dash.
-6. Expand abbreviations on first use in each module or page.
-7. Omit history and contrasts with absent alternatives.
-8. Give each word one meaning.
-9. Follow the docstring shape in Repository conventions: what the object is first, glossary terms, at most four sentences.
 
 ## Coding practices
 

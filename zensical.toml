@@ -10,7 +10,6 @@ strict = true
 nav = [
   {"Overview" = "index.md"},
   {"Examples" = [
-    {"Start here" = "examples/index.md"},
     {"Quickstart" = "examples/quickstart.md"},
     {"Isolation by distance" = "examples/ibd.md"},
     {"MLPE workflow" = "examples/mlpe_workflow.md"},
@@ -21,7 +20,6 @@ nav = [
     {"Statistics" = "statistics.md"},
     {"Custom distance models" = "models.md"},
     {"Glossary" = "glossary.md"},
-    {"Development" = "development.md"},
   ]},
   {"API" = [
     {"Inputs and outputs" = "api/data.md"},
@@ -67,7 +65,7 @@ toc = {permalink = true}
 paths = ["src"]
 
 [project.plugins.mkdocstrings.handlers.python.options]
-docstring_style = "numpy"
+docstring_style = "google"
 show_source = false
 show_root_heading = true
 show_root_full_path = false

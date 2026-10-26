@@ -19,11 +19,11 @@ concrete model.
 Declare static `num_species` and `patch_size` fields. Conductance models also
 provide a static `solver_config` containing `ResistanceSolverConfig`. The
 `features` array has row, column, and feature dimensions. A species index may be
-a scalar integer array during fitting; use array indexing to select its parameters.
+a scalar integer array during training; use array indexing to select its parameters.
 For a new distance family, `pairs` is `(nodes, (left, right))`: `nodes` locates sampling units on the
 flattened patch grid, and `left` and `right` index those sampling units.
 
-This single-species embedding model learns a linear feature transformation:
+This single-species embedding model applies a trainable linear feature transformation:
 
 ```python
 from typing import final
@@ -53,7 +53,7 @@ class LinearEmbedding(EmbeddingDistanceModel):
 distance_model = LinearEmbedding(jnp.eye(2))
 ```
 
-The inherited `predict` returns a `Prediction`, and `train` learns the array-valued
+The inherited `predict` returns a `Prediction`, and `train` estimates the array-valued
 parameters using the selected loss.
 
 Use the [experimental multispecies tutorial](examples/multispecies.md) for

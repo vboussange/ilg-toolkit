@@ -53,6 +53,7 @@ class PopulationCovarianceFactor(NamedTuple):
         return remaining, effects
 
     def inner_products(self, values):
+        """Covariance-weighted inner products, residuals, and population effects."""
         remaining, effects = self.residual_components(values)
         inner = remaining.T @ remaining / self.residual + effects.T @ effects / self.unit
         return inner, remaining, effects

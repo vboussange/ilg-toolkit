@@ -11,3 +11,4 @@ benchmarks/results/
 *.ilg
 site/
 .cache/
+uv.lock

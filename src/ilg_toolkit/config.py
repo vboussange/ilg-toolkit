@@ -25,10 +25,15 @@ class ResistanceSolverConfig:
     Tighter tolerances increase solve work and can expose conditioning limits.
     Settings belong to the conductance model, independently of training budgets.
 
-    Notes
-    -----
-    AMG preparation is specific to graph shape and must be rebuilt for a new
-    region shape; it does not fix poorly chosen ecological boundaries.
+    Attributes:
+        rtol: Relative residual tolerance for the resistance solve.
+        atol: Absolute residual tolerance for the resistance solve.
+        max_steps: Maximum conjugate-gradient iterations.
+        use_amg: Enable the optional algebraic multigrid preconditioner.
+
+    Notes:
+        AMG preparation is specific to graph shape and must be rebuilt for a new
+        region shape; it does not fix poorly chosen ecological boundaries.
     """
 
     rtol: float = 1e-6
@@ -69,6 +74,18 @@ class TrainingConfig:
     before their gradients are combined into one update.
     Evaluation at step zero, every ``eval_every`` updates, and the final step
     determines model selection.
+
+    Attributes:
+        loss: Statistical criterion and its numerical settings.
+        steps: Total update budget, including completed updates when resuming.
+        eval_every: Number of updates between evaluations.
+        learning_rate: Adam learning rate.
+        region_batch_size: Maximum regions sampled per update; ``None`` uses all.
+        species_batch_size: Maximum species sampled per region; ``None`` uses all.
+        species_microbatch_size: Maximum species processed together before their
+            gradients are combined; ``None`` processes all sampled species together.
+        seed: Seed for training's random sampling.
+        jit: Compile numerical training calculations with JAX.
     """
 
     loss: AbstractLoss

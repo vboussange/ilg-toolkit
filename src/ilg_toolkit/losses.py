@@ -11,13 +11,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from ._training_inputs import RegionSpeciesKey
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 
 if TYPE_CHECKING:
     from .calibration import AbstractCalibrationModule
-
-
-type GroupKey = tuple[str, int]
 
 
 @final
@@ -40,10 +38,10 @@ class AbstractLoss(ABC):
     def _prepare(self, region, observations, *, training: bool) -> _LossContext: ...
 
     @abstractmethod
-    def _initialize(self, groups: Mapping[GroupKey, _LossContext]) -> Any: ...
+    def _initialize(self, groups: Mapping[RegionSpeciesKey, _LossContext]) -> Any: ...
 
     @abstractmethod
-    def _group_state(self, state, identity: GroupKey) -> Any: ...
+    def _group_state(self, state, identity: RegionSpeciesKey) -> Any: ...
 
     @abstractmethod
     def _value(self, distances, context: _LossContext, state, fitted=None) -> jax.Array: ...
@@ -78,12 +76,11 @@ class Log1pLoss(AbstractLoss):
     calibration applies the target's inverse transformation to ecological distances.
     This loss has no statistical parameters or standalone optimization budget.
 
-    Examples
-    --------
-    >>> config = TrainingConfig(loss=Log1pLoss(), steps=100)
-    >>> state = train(region, observations, distance_model=distance_model, config=config)
-    >>> fitted = calibrate(region, observations, state.selected_model.distance_model,
-    ...                    loss=Log1pLoss())
+    Examples:
+        >>> config = TrainingConfig(loss=Log1pLoss(), steps=100)
+        >>> state = train(region, observations, distance_model=distance_model, config=config)
+        >>> fitted = calibrate(region, observations, state.selected_model.distance_model,
+        ...                    loss=Log1pLoss())
     """
 
     def _prepare(self, region, observations, *, training):
@@ -129,7 +126,7 @@ class _MLPEGroupState(eqx.Module):
 
 @final
 class _MLPEState(eqx.Module):
-    groups: dict[GroupKey, _MLPEGroupState]
+    groups: dict[RegionSpeciesKey, _MLPEGroupState]
 
 
 @final
@@ -139,31 +136,27 @@ class MLPELoss(AbstractLoss):
 
     Ecological distances are sample standardized and signed intercept/slope
     coefficients are estimated by generalized least squares. Population and residual
-    variances are positive learned parameters; ``jitter`` adds to residual variance
-    in the criterion and population-effect posterior. MLPE requires float64,
+    variances are positive parameters estimated during training; ``jitter`` adds to
+    residual variance in the criterion and population-effect posterior. MLPE requires float64,
     population sampling units, and dissimilarity targets.
 
-    Parameters
-    ----------
-    variance_floor
-        Positive lower limit for both variance components.
-    min_distance_scale
-        Minimum sample standard deviation of ecological distances.
-    jitter
-        Fixed residual variance addition in [0, 1e-6].
+    Args:
+        variance_floor:
+            Positive lower limit for both variance components.
+        min_distance_scale: Minimum sample standard deviation of ecological distances.
+        jitter: Fixed residual variance addition in [0, 1e-6].
 
-    Examples
-    --------
-    >>> loss = MLPELoss(jitter=0.0)
-    >>> state = train(region, observations, distance_model=distance_model,
-    ...               config=TrainingConfig(loss=loss, steps=500))
-    >>> fitted = calibrate(new_region, new_observations,
-    ...                    state.selected_model.distance_model,
-    ...                    loss=loss, max_iterations=2000)
+    Examples:
+        >>> loss = MLPELoss(jitter=0.0)
+        >>> state = train(region, observations, distance_model=distance_model,
+        ...               config=TrainingConfig(loss=loss, steps=500))
+        >>> fitted = calibrate(new_region, new_observations,
+        ...                    state.selected_model.distance_model,
+        ...                    loss=loss, max_iterations=2000)
 
-    Built-in training validation uses training-fitted coefficients, distance moments,
-    and variances. Fresh calibration estimates the two variance components with
-    deterministic multistart optimization; zero training steps only initializes them.
+        Built-in training validation uses training-fitted coefficients, distance moments,
+        and variances. Fresh calibration estimates the two variance components with
+        deterministic multistart optimization; zero training steps only initializes them.
     """
 
     variance_floor: float = 1e-10

@@ -102,90 +102,102 @@ class LandscapeGeneticsModel(eqx.Module):
         | `known_effects=True` | Saved posterior from calibration | Mean + variances |
         | `support=observations` | Saved posterior updated with support | Mean + variances |
 
-        Examples
-        --------
-        Prepare one landscape containing six located populations and fit MLPE
-        calibration from measurements among its first four populations::
+        Args:
+            region: Landscape features and located sampling units for prediction.
+            species: One species name, a sequence, or all modeled species when omitted.
+            pairs: Ordered sampling-unit pairs; omission requests every distinct pair.
+            known_effects: Include the saved MLPE population-effect posterior.
+            support: Additional genetic observations that update the saved MLPE
+                population-effect posterior for this call. Support pairs must be
+                disjoint from calibration and query pairs.
 
-            import coordax as cx
-            import jax
-            import jax.numpy as jnp
+        Returns:
+            Pair-aligned genetic predictions for one species, or a mapping by species
+            when several species are requested.
 
-            jax.config.update("jax_enable_x64", True)
-            from ilg_toolkit import (
-                MLPELoss, PairwiseObservations, RegionBatch, TargetSpec, calibrate,
-            )
-            from ilg_toolkit.models import LogLinearConductance
+        Examples:
+            Prepare one landscape containing six located populations and fit MLPE
+            calibration from measurements among its first four populations::
 
-            region = RegionBatch(
-                "valley", cx.field(jnp.arange(6.0).reshape(1, 6, 1),
-                                   "row", "column", "feature"),
-                tuple(f"p{i}" for i in range(6)),
-                [[0, i] for i in range(6)], feature_names=("elevation",),
-            )
-            observations = PairwiseObservations.from_pairs(
-                [("p0", "p1"), ("p0", "p2"), ("p0", "p3"),
-                 ("p1", "p2"), ("p1", "p3"), ("p2", "p3")],
-                [1.2, 1.6, 2.9, 1.7, 2.0, 1.3],
-                target=TargetSpec("genetic divergence", units="index"),
-            )
-            model = calibrate(region, observations,
-                              LogLinearConductance(1, patch_size=1), loss=MLPELoss())
-            query_pairs = [("p4", "p2"), ("p5", "p3")]
+                import coordax as cx
+                import jax
+                import jax.numpy as jnp
 
-        Marginal predictions use only fitted intercept, slope, and distance
-        standardization. Population identities do not add saved effects::
+                jax.config.update("jax_enable_x64", True)
+                from ilg_toolkit import (
+                    MLPELoss, PairwiseObservations, RegionBatch, TargetSpec, calibrate,
+                )
+                from ilg_toolkit.models import LogLinearConductance
 
-            marginal = model.predict(region, pairs=query_pairs)
-            marginal.values                 # Genetic means in original units.
-            marginal.extras["model_values"] # Means before the target inverse transform.
-            marginal.pairs                  # Same alignment as query_pairs.
+                region = RegionBatch(
+                    "valley", cx.field(jnp.arange(6.0).reshape(1, 6, 1),
+                                       "row", "column", "feature"),
+                    tuple(f"p{i}" for i in range(6)),
+                    [[0, i] for i in range(6)], feature_names=("elevation",),
+                )
+                observations = PairwiseObservations.from_pairs(
+                    [("p0", "p1"), ("p0", "p2"), ("p0", "p3"),
+                     ("p1", "p2"), ("p1", "p3"), ("p2", "p3")],
+                    [1.2, 1.6, 2.9, 1.7, 2.0, 1.3],
+                    target=TargetSpec("genetic divergence", units="index"),
+                )
+                model = calibrate(region, observations,
+                                  LogLinearConductance(1, patch_size=1), loss=MLPELoss())
+                query_pairs = [("p4", "p2"), ("p5", "p3")]
 
-        Saved-effect predictions add posterior population means learned from the
-        calibration observations. Unobserved populations retain zero prior mean
-        and prior population variance; calibration/query overlap is allowed::
+            Marginal predictions use only fitted intercept, slope, and distance
+            standardization. Population identities do not add saved effects::
 
-            saved = model.predict(region, pairs=query_pairs, known_effects=True)
-            saved.extras["effect_variance"] # Uncertainty in the summed population effects.
-            saved.extras["model_variance"]  # Effect + residual variance + fixed jitter.
+                marginal = model.predict(region, pairs=query_pairs)
+                marginal.values                 # Genetic means in original units.
+                marginal.extras["model_values"] # Means before the target inverse transform.
+                marginal.pairs                  # Same alignment as query_pairs.
 
-        Additional support observations update that saved posterior, including
-        newly observed populations, for this prediction only. The landscape
-        parameters, coefficients, standardization, and variance components remain
-        fixed; the model itself is unchanged::
+            Saved-effect predictions add posterior population means learned from the
+            calibration observations. Unobserved populations retain zero prior mean
+            and prior population variance; calibration/query overlap is allowed::
 
-            support = PairwiseObservations.from_pairs(
-                [("p4", "p0"), ("p4", "p1")], [2.7, 2.2], target=model.target,
-            )
-            conditioned = model.predict(region, pairs=query_pairs, support=support)
-            conditioned.values
-            conditioned.extras["model_values"]
-            conditioned.extras["model_variance"]
-            conditioned.extras["effect_variance"]
+                saved = model.predict(region, pairs=query_pairs, known_effects=True)
+                saved.extras["effect_variance"] # Uncertainty in the summed population effects.
+                saved.extras["model_variance"]  # Effect + residual variance + fixed jitter.
 
-        All point predictions inverse-transform model-scale means. Conditional
-        variances stay on the model scale. Use ``as_matrix()`` or
-        ``as_matrix("effect_variance")`` to arrange the corresponding values by
-        sampling-unit identity.
+            Additional support observations update that saved posterior, including
+            newly observed populations, for this prediction only. The landscape
+            parameters, coefficients, standardization, and variance components remain
+            fixed; the model itself is unchanged::
 
-        Notes
-        -----
-        With nonlinear target transforms, conditional variances are not original-scale
-        variances, and inverse-transformed means are not bias-corrected expectations.
+                support = PairwiseObservations.from_pairs(
+                    [("p4", "p0"), ("p4", "p1")], [2.7, 2.2], target=model.target,
+                )
+                conditioned = model.predict(region, pairs=query_pairs, support=support)
+                conditioned.values
+                conditioned.extras["model_values"]
+                conditioned.extras["model_variance"]
+                conditioned.extras["effect_variance"]
 
-        Support must have matching target/species metadata and located sampling
-        units, with pairs disjoint from both calibration and query pairs, including
-        reversals. Shared population identities are allowed. Omitting ``pairs``
-        with support requests all pairs and consequently creates invalid overlap.
-        Passing both ``known_effects=True`` and support is invalid; direct
-        calibration supports neither conditional mode. Every MLPE mode requires
-        existing calibration for the query region/species and population units.
+            All point predictions inverse-transform model-scale means. Conditional
+            variances stay on the model scale. Use ``as_matrix()`` or
+            ``as_matrix("effect_variance")`` to arrange the corresponding values by
+            sampling-unit identity.
 
-        Support conditioning does not establish calibration in a new region.
-        Use [`calibrate`][ilg_toolkit.calibrate] to fit a fresh relationship there,
-        passing ``species=model.species`` when transferring a multispecies model.
-        See the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md)
-        for training, fresh calibration, evaluation, and checkpoint continuation.
+        Notes:
+            With nonlinear target transforms, conditional variances are not original-scale
+            variances, and inverse-transformed means are not bias-corrected expectations.
+
+            Support must have matching target/species metadata and located sampling
+            units, with pairs disjoint from both calibration and query pairs, including
+            reversals. Shared population identities are allowed. Omitting ``pairs``
+            with support requests all pairs and consequently creates invalid overlap.
+            Passing both ``known_effects=True`` and support is invalid; direct
+            calibration supports neither conditional mode. Every MLPE mode requires
+            existing calibration for the query region/species and population units.
+
+            Support conditioning does not establish calibration in a new region.
+            Use [`calibrate`][ilg_toolkit.calibrate] to fit a fresh relationship there,
+            passing ``species=model.species`` when transferring a multispecies model.
+            See the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md)
+            for training, fresh calibration, and evaluation, and the
+            [ensemble workflow](../examples/ensemble.md) for checkpoint continuation.
         """
         self._validate_region(region)
         selected = select_species(self.species, species)

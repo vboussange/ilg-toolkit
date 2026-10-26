@@ -319,13 +319,12 @@ class PairwiseObservations:
         independently of selection order. Empty selections, duplicate identities,
         and unobserved pairs are rejected.
 
-        Examples
-        --------
-        >>> observations = PairwiseObservations.from_pairs(
-        ...     [("a", "b"), ("b", "c")], [0.2, 0.4], target=TargetSpec("Fst")
-        ... )
-        >>> observations.select_pairs([("c", "b")]).observed_pairs
-        (("b", "c"),)
+        Examples:
+            >>> observations = PairwiseObservations.from_pairs(
+            ...     [("a", "b"), ("b", "c")], [0.2, 0.4], target=TargetSpec("Fst")
+            ... )
+            >>> observations.select_pairs([("c", "b")]).observed_pairs
+            (("b", "c"),)
         """
         selected = {tuple(sorted(pair)) for pair in _validate_pairs(pairs)}
         observed = self.observed_pairs

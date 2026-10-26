@@ -16,7 +16,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .calibration import DirectCalibrationModule, GroupKey, MLPECalibrationModule
+from ._training_inputs import RegionSpeciesKey
+from .calibration import DirectCalibrationModule, MLPECalibrationModule
 from .config import ResistanceSolverConfig
 from .data import TargetSpec
 from .losses import MLPELoss
@@ -118,7 +119,7 @@ def _encode_groups(values):
     ]
 
 
-def _decode_groups(values) -> dict[GroupKey, Any]:
+def _decode_groups(values) -> dict[RegionSpeciesKey, Any]:
     return {(item["region"], item["species_index"]): item["value"] for item in values}
 
 
@@ -197,14 +198,21 @@ def save_model(path, model: LandscapeGeneticsModel) -> None:
     Save each ensemble member separately. See ``save_checkpoint`` when optimizer
     and random state are needed for continuation.
 
-    Examples
-    --------
-    >>> save_model("analysis.eqx", state.selected_model)
-    >>> restored = load_model("analysis.eqx", distance_model=matching_template)
-    >>> prediction = restored.predict(region, pairs=query_pairs)
+    Args:
+        path: Destination model file in an existing directory.
+        model: Fitted landscape genetics model to save.
 
-    The [quickstart](../examples/quickstart.md) constructs a matching template and
-    demonstrates both model loading and checkpoint continuation.
+    Raises:
+        ArtifactError: The supplied object is not a landscape genetics model.
+
+    Examples:
+        >>> save_model("analysis.eqx", state.selected_model)
+        >>> restored = load_model("analysis.eqx", distance_model=matching_template)
+        >>> prediction = restored.predict(region, pairs=query_pairs)
+
+        The [multispecies workflow](../examples/multispecies.md) constructs a
+        matching template for model loading; the
+        [ensemble workflow](../examples/ensemble.md) demonstrates checkpoint continuation.
     """
     if not isinstance(model, LandscapeGeneticsModel):
         raise ArtifactError("save_model requires a fitted LandscapeGeneticsModel")
@@ -226,6 +234,17 @@ def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGenet
     artifacts or templates raise ``ArtifactError``. Static settings supplied by
     the caller remain part of the model contract, so retain the original constructor
     settings alongside the artifact.
+
+    Args:
+        path: Model file previously written by ``save_model``.
+        distance_model: Template matching the saved model's class, static settings,
+            array shapes, and dtypes.
+
+    Returns:
+        The saved model with its genetic calibration and prediction contract.
+
+    Raises:
+        ArtifactError: The artifact or supplied template is incompatible.
     """
     try:
         with Path(path).open("rb") as stream:

@@ -24,9 +24,8 @@ class EnsemblePrediction:
     columns follow query-pair order. Spread is population standard deviation,
     describing member disagreement.
 
-    Notes
-    -----
-    Member spread is not statistical predictive uncertainty.
+    Notes:
+        Member spread is not statistical predictive uncertainty.
     """
 
     prediction: Prediction
