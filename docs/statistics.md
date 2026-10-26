@@ -1,145 +1,95 @@
 # Training losses and genetic prediction
 
-Let $y_{ij}$ be a pairwise genetic observation on its original scale and
-$t_{ij}=T(y_{ij})$ its model-scale value under the `TargetSpec` transform.
-Ecological distances $s_{ij}$ are effective resistance or squared embedding
-distance. `TrainingConfig.objective` selects direct regression or
-maximum-likelihood population effects (MLPE).
+Let $y_{ij}$ be an observed genetic dissimilarity and $t_{ij}=T(y_{ij})$ its value
+under the [target transformation](api/data.md#ilg_toolkit.TargetSpec).
+Ecological distances $s_{ij}$ come from effective resistance or squared embedding
+distance. Choose a loss explicitly with `TrainingConfig(loss=...)`.
 
-Training observations determine the fitted distance model and genetic calibration.
-Validation observations select among evaluated training steps. Query observations
-score predictions afterward. [Evaluation](evaluation.md) explains these data roles
-for fold ensembles.
+## Direct log1p regression
 
-## Direct regression
-
-For $m_r$ observed pairs in region $r$, direct training minimizes
+[`Log1pLoss`](api/training.md#ilg_toolkit.Log1pLoss) compares nonnegative ecological
+distances and transformed targets:
 
 $$L_r=\frac{1}{m_r}\sum_{(i,j)\in\mathcal O_r}
- [\log(1+s_{ij})-\log(1+t_{ij})]^2.$$
+[\log(1+s_{ij})-\log(1+t_{ij})]^2.$$
 
-Both inputs are nonnegative dissimilarities. The log1p comparison emphasizes
-relative changes as values grow; the target transform $T$ is configured
-separately. Direct calibration predicts $T^{-1}(s)$.
+The log1p comparison and target transform are separate choices. Direct calibration
+returns $T^{-1}(s)$ and has no fitted coefficients or variance parameters. Training
+averages regional losses equally within each species, then averages species equally.
 
-For one species, training averages regional losses equally. Experimental
-multispecies training gives species equal weight and averages regional losses
-within each species. Missing observations are excluded from these losses.
+## Maximum-likelihood population effects
 
-## Population MLPE
-
-Within each region, observed-pair distances have mean $c$ and sample standard
-deviation $a$ (`ddof=1`). Standardized distances are $x_{ij}=(s_{ij}-c)/a$, and
+[`MLPELoss`](api/training.md#ilg_toolkit.MLPELoss) accounts for dependence between
+measurements sharing a population. With sample-standardized ecological distances
+$x_{ij}=(s_{ij}-c)/a$,
 
 $$t_{ij}=\alpha+\beta x_{ij}+b_i+b_j+\epsilon_{ij},\qquad
- b_i\overset{\mathrm{iid}}\sim N(0,u),\quad
- \epsilon_{ij}\overset{\mathrm{iid}}\sim N(0,d),\quad d=e+j.$$
+b_i\sim N(0,u),\quad\epsilon_{ij}\sim N(0,e+j).$$
 
-Population effects $b_i$ are independent and identically distributed, as are
-residuals $\epsilon_{ij}$. Here $u$ is population
-variance, $e$ is residual variance, and $j$ is configured jitter. Intercept $\alpha$ and slope $\beta$ are
-signed. `MLPEConfig` defines positive variance floors and jitter. The observation
-model supports population dissimilarities with either distance-model family.
+The intercept and slope are **signed**; $u$ and $e$ are positive population and
+residual variances, and $j$ is fixed numerical jitter. A pair has variance
+$2u+e+j$; distinct pairs sharing a population have covariance $u$. Coefficients,
+variance components, distance moments, and population-effect posteriors are
+estimated separately for each region–species group. Distance-model parameters
+can be pooled across those groups.
 
-A pair has variance $2u+d$. Distinct pairs sharing a population have covariance
-$u$; disjoint pairs have covariance zero. With pair-to-population incidence matrix
-$Z$ containing two ones per row,
-
-$$t\sim N(X\theta,V),\qquad
- X=[\mathbf1,x],\quad\theta=(\alpha,\beta)^\top,\quad V=dI+uZZ^\top.$$
-
-At fixed variances, generalized least squares (GLS) gives
-
-$$\hat\theta=(X^\top V^{-1}X)^{-1}X^\top V^{-1}t,$$
-
-and the Gaussian negative log likelihood is
+With incidence matrix $Z$ and $X=[\mathbf1,x]$, the covariance is
+$V=(e+j)I+uZZ^\top$. Generalized least squares profiles the coefficients, and
+training minimizes the marginal negative log likelihood per observed pair:
 
 $$\ell=\tfrac12\{m\log(2\pi)+\log\det V+
- (t-X\hat\theta)^\top V^{-1}(t-X\hat\theta)\}.$$
+(t-X\hat\theta)^\top V^{-1}(t-X\hat\theta)\}.$$
 
-Joint training updates distance-model parameters and variance parameters with
-Adam. It minimizes the equal-region mean of $\ell_r/m_r$ for one species, or the
-equal-species mean of within-species regional means for multispecies fits. Each
-region–species group has unpooled genetic calibration. At evaluations, training
-observations determine $c,a,\hat\theta$ and the population-effect posterior;
-validation uses those fitted quantities.
+This is maximum likelihood, without restricted-likelihood correction. `train`
+updates distance and variance parameters with a fixed Adam budget. Even at zero
+steps it is **initialization**, not converged variance fitting. `calibrate` keeps
+the distance model fixed and optimizes both variance components using deterministic
+multistart optimization. See [advanced MLPE](api/mlpe.md) for identifiability,
+precision, diagnostics, and the standalone array-distance fitter.
 
-`fit(..., config=TrainingConfig(objective="mlpe", steps=0))` keeps the distance
-model fixed and fits coefficients and population effects using the initial
-variances in `TrainingConfig.mlpe`. It returns calibration for the supplied
-regions. The standalone `calibrate_mlpe(distances, observations, ...)` also
-optimizes variance parameters to convergence. Joint and zero-step fits report
-`converged=False`; their budget is determined by `steps`.
+## Evaluation answers a specified question
 
-Note: This is maximum likelihood, without a restricted-likelihood correction.
-Individual relatedness requires a different observation model.
+Built-in validation uses the training-fitted calibration to select an evaluated
+training step. For explanatory association on unseen populations, the
+[MLPE workflow](examples/mlpe_workflow.md) implements a different design:
+train distance parameters on training populations; fit fresh validation calibration
+for each frozen candidate; select by marginal-log-likelihood improvement over a
+geographic MLPE baseline; then freeze the selected distance parameters and fit
+fresh test calibration. Both baseline and landscape fits use matching targets,
+observations, settings, and optimizer budgets.
 
-Constant distances, singular GLS systems, and observations that cannot identify
-the variance components are rejected. [Performance](performance.md#mlpe-calculations)
-describes the population-sized calculation and precision limits.
+Test observations fit and score the test calibration. The score describes
+association of a representation learned without those populations' genetic
+observations; it is not untouched end-to-end predictive accuracy. Inspect signed
+slopes, both variances, convergence, and population/pair counts across repeated
+splits. A favorable likelihood alone does not establish the expected direction.
+`IBDModel` fits a separate log1p geographic regression and is not the matching MLPE
+likelihood baseline. A constant-distance intercept-only null is unsupported because
+the MLPE distance design must be identifiable.
 
-## MLPE conditioning
+## Prediction and conditioning
 
-`model.predict(region)` uses marginal genetic predictions with model-scale mean
-$\hat\alpha+\hat\beta x$. `model.predict(region, known_effects=True)` adds saved
-population effects. For fitted residual $r=t-X\hat\theta$, their posterior is
+The [prediction API](api/prediction.md) gives worked examples and constraints.
+Marginal predictions use zero-mean population effects. `known_effects=True` uses
+the saved posterior; `support=...` updates that posterior with additional,
+disjoint observations while keeping the distance model, coefficients, moments,
+and variances fixed. A new region–species relationship requires fresh calibration.
 
-$$E[b\mid t]=uZ^\top V^{-1}r,\qquad
- \operatorname{Cov}(b\mid t)=(u^{-1}I+d^{-1}Z^\top Z)^{-1}.$$
+Genetic predictions apply the inverse target transform. With nonlinear transforms,
+this transformed fitted mean is not automatically the expectation on the original
+scale. Population-effect uncertainty describes that posterior conditional on the
+fitted model; ensemble spread describes variability among members. Neither alone
+quantifies all model or ecological uncertainty.
 
-Unseen sampling units receive zero-mean effects with prior variance $u$.
-Support observations condition these effects while keeping the distance model,
-distance moments, coefficients, and variance parameters fixed:
+## Wishart diagnostic (experimental)
 
-```python
-from ilg_toolkit import PairwiseObservations
+The research-only [Wishart experiment](https://github.com/vboussange/ilg-toolkit/tree/main/experiments/wishart)
+scores a **fixed-parameter** Gaussian marker-contrast model. It assumes independent,
+zero-mean Gaussian marker contrasts and a complete squared-distance matrix with
+explicit scatter-versus-average scaling and a known marker count. The ordinary
+Wishart diagnostic requires a positive-definite contrast scatter; missing pairs,
+insufficient marker rank, or unmodeled marker dependence do not satisfy it.
 
-support = PairwiseObservations.from_pairs(
-    [("new-north", "known-west"), ("new-north", "known-east")],
-    [0.8, 1.1],
-    target=model.target,
-)
-prediction = model.predict(
-    region, pairs=[("new-north", "known-south")], support=support,
-)
-```
-
-Both modes require MLPE calibration for the query region; `known_effects=True`
-and `support=` are mutually exclusive. Support targets must match `model.target`.
-Support pairs must be disjoint from calibration and query pairs, including
-reversed pairs. Since omitted `pairs` requests every distinct pair, support
-conditioning requires a query selection disjoint from support. The query region
-provides locations for all sampling units and the training feature meanings and
-order. Identifiers determine observation identity; resolve aliases when preparing
-data.
-
-Conditional predictions return a `Prediction` with pair-aligned `extras`:
-
-| Name | Meaning |
-| --- | --- |
-| `model_values` | Conditional mean on the model scale |
-| `effect_variance` | Variance from conditioned population effects |
-| `model_variance` | Effect variance plus residual variance and jitter |
-
-For a single-species `MLPECalibrationModule`,
-`model.calibration.regions[region.name]` provides `residual_variance`, `config.jitter`,
-and calibration observation-use records. For experimental multispecies models,
-`model.calibration.for_region(region.name, species_index)` selects the calibration
-using the index in `model.species`.
-
-Conditional calculations use float64 within the call. Resistance calculations
-and joint MLPE fitting require float64 enabled before constructing inputs.
-`prediction.as_matrix("effect_variance")` arranges a named extra in sampling-unit
-order, with not-a-number (`NaN`) values on the diagonal and for unrequested pairs.
-
-All genetic predictions apply $T^{-1}$ to the fitted mean and return the original
-scale. Conditional variances remain on the model scale and treat distance-model
-parameters, coefficients, and variance parameters as fixed. Ensemble member
-spread describes disagreement on the original scale; see [evaluation](evaluation.md).
-
-Note: For nonlinear $T$, inverse-transformed means are not expectations of the
-original random target. Conditional prediction alone imposes no holdout restriction;
-[out-of-fold evaluation](evaluation.md#holdouts-and-observation-use) checks observation use.
-
-The [Wishart reference](statistics/wishart.md) describes experimental
-fixed-parameter likelihood scoring.
+This experiment is not a toolkit loss or calibration method and performs no
+Wishart fitting. It provides a reproducible diagnostic reference for comparing
+fixed covariance hypotheses under those assumptions.

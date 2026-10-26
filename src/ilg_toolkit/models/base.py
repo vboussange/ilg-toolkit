@@ -26,7 +26,14 @@ class AbstractDistanceModel(eqx.Module):
     """Abstract distance model combining a pooled backbone with an ecological-distance relationship.
 
     Custom models implement ``backbone`` and ``ecological_distances`` and supply
-    static ``num_species`` and ``patch_size`` fields.
+    static ``num_species`` and ``patch_size`` fields. Raster features have shape
+    ``(rows, columns, features)``; sampling locations are integer ``(row, column)``
+    cells mapped to their containing patch. Feature meanings and ordering must
+    remain compatible across regions.
+
+    Implement a final concrete class directly from an abstract boundary. Keep its
+    fields and initialization together; compose existing concrete models to reuse
+    behavior. See the [custom model guide](../models.md) for a minimal extension.
     """
 
     num_species: eqx.AbstractVar[int]
@@ -79,6 +86,10 @@ class AbstractDistanceModel(eqx.Module):
         Omitted pairs request every distinct pair in sampling-unit order.
         ``species_order`` associates names with parameter rows for named species.
         A species sequence returns a mapping and shares the pooled backbone.
+        Explicit ``pairs`` limit the returned vector and avoid generating all
+        pair labels; this does not guarantee that an underlying resistance solver
+        avoids its sampling-node distance matrix. Calling ``as_matrix()`` on the
+        result explicitly allocates a sampling-unit-square array.
         """
         order = validate_species_order(species_order, self.num_species)
         selected = select_species(order, species)

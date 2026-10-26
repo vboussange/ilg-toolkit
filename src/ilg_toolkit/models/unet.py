@@ -73,6 +73,36 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
 
     The backbone combines landscape features across the region's patch grid,
     and squared embedding distances provide ecological distances between sampling units.
+
+    Parameters
+    ----------
+    in_channels
+        Number of raster features, with meanings and order preserved across regions.
+    num_species
+        Number of species-specific embedding projections; default 1.
+    patch_size
+        Square raster patch side length, default 32. Both raster dimensions must
+        be divisible by it; sampling units use their containing patch.
+    base_channels
+        Width of the first U-Net stage, default 32. Later stages expand this width.
+    embedding_dim
+        Dimension of each species' embedding at a patch, default 16.
+    dropout
+        Dropout probability during training, default 0.1; prediction disables it.
+    patch_microbatch_size
+        Maximum patches embedded together; ``None`` processes all patches.
+        It limits patch-embedding work but does not microbatch the whole U-Net.
+    key
+        JAX initialization key.
+
+    Notes
+    -----
+    The pooled backbone combines neighboring patch features through two downsampling
+    stages, a bottleneck, and skip-connected upsampling. The output grid has one
+    embedding per patch and species. Ecological distance is the sum of squared
+    coordinate differences between the two sampled embeddings, without a resistance
+    solve. Cropping changes the spatial context available to the U-Net and can
+    therefore change predictions even at retained sampling locations.
     """
 
     patch_embedding: eqx.nn.Linear

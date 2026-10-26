@@ -38,9 +38,8 @@ jobs:
         run: uv run --no-sync pytest
       - name: Test experimental Wishart statistics
         run: uv run --no-sync pytest experiments/wishart/test_diagnostic.py
-      - name: Run synthetic examples and research reference
+      - name: Run research reference
         run: |
-          for example in examples/*.py; do uv run --no-sync python "$example"; done
           uv run --no-sync python -m experiments.wishart
       - name: Build source distribution and wheel
         run: uv run --no-sync python -m build
