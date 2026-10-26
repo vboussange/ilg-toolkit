@@ -1,4 +1,4 @@
-"""A ResNet9 conductance fit on a synthetic landscape.
+"""A ResNet9 conductance train on a synthetic landscape.
 
 Run with JAX_ENABLE_X64=true to enable float64 resistance calculations.
 """
@@ -10,12 +10,13 @@ import jax
 import jax.numpy as jnp
 
 from ilg_toolkit import (
+    Log1pLoss,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
     TrainingConfig,
-    fit,
+    train,
 )
 from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 
@@ -43,12 +44,12 @@ distance_model = ResNet9Conductance(
     solver_config=ResistanceSolverConfig(rtol=1e-8),
     key=jax.random.key(6),
 )
-result = fit(
+result = train(
     region,
     observations,
     distance_model=distance_model,
     config=TrainingConfig(
-        objective="direct_log1p",
+        loss=Log1pLoss(),
         steps=4,
         learning_rate=0.001,
     ),
@@ -57,10 +58,10 @@ print("Training loss:", result.history[0].training_loss, "->", result.history[-1
 # These queries use landscape features and sampling-unit locations.
 print(
     "Conductance surface:\n",
-    cast(ConductanceModel, result.model.distance_model).conductance_surface(region),
+    cast(ConductanceModel, result.selected_model.distance_model).conductance_surface(region),
 )
 print(
     "Ecological distances (effective resistance):\n",
-    result.model.distance_model.predict(region).as_matrix(),
+    result.selected_model.distance_model.predict(region).as_matrix(),
 )
-print("Direct genetic predictions:\n", result.model.predict(region).as_matrix())
+print("Direct genetic predictions:\n", result.selected_model.predict(region).as_matrix())

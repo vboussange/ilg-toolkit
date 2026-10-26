@@ -6,9 +6,8 @@ from typing import cast, final, overload
 import equinox as eqx
 import jax.numpy as jnp
 
-from .calibration import AbstractCalibrationModule, GroupKey, MLPECalibrationModule
+from .calibration import AbstractCalibrationModule
 from .data import PairwiseObservations, RegionBatch, TargetSpec
-from .mlpe import RegionalMLPECalibration
 from .models import AbstractDistanceModel
 from .models.base import (
     _query_pairs,
@@ -24,12 +23,11 @@ from .prediction import Prediction
 
 @final
 class LandscapeGeneticsModel(eqx.Module):
-    """A distance model composed with genetic calibration and observation-use records.
+    """A distance model composed with fitted genetic calibration.
 
     ``species`` associates names with the distance model's parameter rows.
-    The calibration owns the target contract and returns genetic predictions
-    on the original scale. Training and validation pairs record observation use
-    for each region–species group.
+    Feature meanings define the query contract. The calibration owns target
+    semantics and statistical prediction behavior.
     """
 
     distance_model: AbstractDistanceModel
@@ -37,9 +35,6 @@ class LandscapeGeneticsModel(eqx.Module):
     feature_count: int
     feature_names: tuple[str, ...] | None = None
     species: tuple[str, ...] | None = eqx.field(default=None, kw_only=True)
-    training_objective: str | None = eqx.field(default=None, kw_only=True)
-    training_pairs: dict[GroupKey, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
-    validation_pairs: dict[GroupKey, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
 
     def __post_init__(self):
         if not isinstance(self.distance_model, AbstractDistanceModel):
@@ -47,14 +42,6 @@ class LandscapeGeneticsModel(eqx.Module):
         if not isinstance(self.calibration, AbstractCalibrationModule):
             raise TypeError("calibration must implement AbstractCalibrationModule")
         self.species = validate_species_order(self.species, self.distance_model.num_species)
-        if self.training_objective not in {None, "direct_log1p", "mlpe"}:
-            raise ValueError("Training objective provenance must be direct_log1p, mlpe or None")
-        for name in ("training_pairs", "validation_pairs"):
-            access = {
-                region: tuple(tuple(sorted(pair)) for pair in pairs)
-                for region, pairs in getattr(self, name).items()
-            }
-            setattr(self, name, access)
 
     @property
     def target(self) -> TargetSpec:
@@ -68,18 +55,6 @@ class LandscapeGeneticsModel(eqx.Module):
             raise ValueError(
                 "Query feature contract must match training feature meanings and order"
             )
-
-    def _regional_head(self, region: RegionBatch, species_index: int) -> RegionalMLPECalibration:
-        self._validate_region(region)
-        if not isinstance(self.calibration, MLPECalibrationModule):
-            raise ValueError("This operation requires an MLPE model")
-        index = species_index if self.distance_model.num_species > 1 else None
-        head = self.calibration.for_region(region.name, index)
-        kinds = region.sampling_unit_kinds
-        assert kinds is not None
-        if any(kind != "population" for kind in kinds):
-            raise ValueError("Population MLPE prediction requires population sampling units")
-        return head
 
     @overload
     def predict(
@@ -112,22 +87,101 @@ class LandscapeGeneticsModel(eqx.Module):
         known_effects: bool = False,
         support: PairwiseObservations | Sequence[PairwiseObservations] | None = None,
     ) -> Prediction | dict[str, Prediction]:
-        """Genetic predictions on the original scale, mapped by species for a species sequence.
+        """Predict genetic relationships on the target's original scale.
 
-        Maximum-likelihood population effects (MLPE) modes ``known_effects=True``
-        and ``support=observations`` are mutually exclusive, require MLPE
-        calibration, and use saved or support-conditioned population effects.
-        Their extras are ``model_values`` (model-scale values), ``model_variance``
-        (effect variance plus residual variance and jitter), and ``effect_variance``
-        (population-effect variance); residual variance and jitter remain on the
-        model's calibration, and support pairs must be disjoint from calibration
-        and query pairs.
-        Values inverse-transform model means, variances stay on the model scale,
-        and the distance model, calibration coefficients and variance parameters
-        are held fixed.
+        Requested pairs retain their order and orientation; omitted pairs select
+        every distinct pair. A species sequence returns a mapping of predictions.
+        The distance model computes ecological distances, and fitted calibration
+        converts these into genetic predictions. MLPE defaults to marginal means;
+        ``known_effects=True`` and ``support=...`` condition population effects.
+
+        | Mode | Population effects | Statistical extras |
+        | --- | --- | --- |
+        | Default | Marginal mean, without fitted effects | `model_values` |
+        | `known_effects=True` | Saved posterior from calibration | Mean + variances |
+        | `support=observations` | Saved posterior updated with support | Mean + variances |
+
+        Examples
+        --------
+        Prepare one landscape containing six located populations and fit MLPE
+        calibration from measurements among its first four populations::
+
+            import coordax as cx
+            import jax
+            import jax.numpy as jnp
+
+            jax.config.update("jax_enable_x64", True)
+            from ilg_toolkit import (
+                MLPELoss, PairwiseObservations, RegionBatch, TargetSpec, calibrate,
+            )
+            from ilg_toolkit.models import LogLinearConductance
+
+            region = RegionBatch(
+                "valley", cx.field(jnp.arange(6.0).reshape(1, 6, 1),
+                                   "row", "column", "feature"),
+                tuple(f"p{i}" for i in range(6)),
+                [[0, i] for i in range(6)], feature_names=("elevation",),
+            )
+            observations = PairwiseObservations.from_pairs(
+                [("p0", "p1"), ("p0", "p2"), ("p0", "p3"),
+                 ("p1", "p2"), ("p1", "p3"), ("p2", "p3")],
+                [1.2, 1.6, 2.9, 1.7, 2.0, 1.3],
+                target=TargetSpec("genetic divergence", units="index"),
+            )
+            model = calibrate(region, observations,
+                              LogLinearConductance(1, patch_size=1), loss=MLPELoss())
+            query_pairs = [("p4", "p2"), ("p5", "p3")]
+
+        Marginal predictions use only fitted intercept, slope, and distance
+        standardization. Population identities do not add saved effects::
+
+            marginal = model.predict(region, pairs=query_pairs)
+            marginal.values                 # Genetic means in original units.
+            marginal.extras["model_values"] # Means before the target inverse transform.
+            marginal.pairs                  # Same alignment as query_pairs.
+
+        Saved-effect predictions add posterior population means learned from the
+        calibration observations. Unobserved populations retain zero prior mean
+        and prior population variance; calibration/query overlap is allowed::
+
+            saved = model.predict(region, pairs=query_pairs, known_effects=True)
+            saved.extras["effect_variance"] # Uncertainty in the summed population effects.
+            saved.extras["model_variance"]  # Effect + residual variance + fixed jitter.
+
+        Additional support observations update that saved posterior, including
+        newly observed populations, for this prediction only. The landscape
+        parameters, coefficients, standardization, and variance components remain
+        fixed; the model itself is unchanged::
+
+            support = PairwiseObservations.from_pairs(
+                [("p4", "p0"), ("p4", "p1")], [2.7, 2.2], target=model.target,
+            )
+            conditioned = model.predict(region, pairs=query_pairs, support=support)
+            conditioned.values
+            conditioned.extras["model_values"]
+            conditioned.extras["model_variance"]
+            conditioned.extras["effect_variance"]
+
+        All point predictions inverse-transform model-scale means. Conditional
+        variances stay on the model scale; for nonlinear target transforms these
+        are neither original-scale variances nor bias-corrected original-scale
+        expectations. Use ``as_matrix()`` or ``as_matrix("effect_variance")`` to
+        arrange the corresponding values by sampling-unit identity.
+
+        Support must have matching target/species metadata and located sampling
+        units, with pairs disjoint from both calibration and query pairs, including
+        reversals. Shared population identities are allowed. Omitting ``pairs``
+        with support requests all pairs and consequently creates invalid overlap.
+        Passing both ``known_effects=True`` and support is invalid; direct
+        calibration supports neither conditional mode. Every MLPE mode requires
+        existing calibration for the query region/species and population units.
+
+        Support conditioning does not establish calibration in a new region.
+        Use [`calibrate`][ilg_toolkit.calibrate] to fit a fresh relationship there,
+        passing ``species=model.species`` when transferring a multispecies model.
+        See the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md)
+        for training, fresh calibration, evaluation, and checkpoint continuation.
         """
-        if known_effects and support is not None:
-            raise ValueError("known_effects and support are mutually exclusive")
         self._validate_region(region)
         selected = select_species(self.species, species)
         if self.distance_model.num_species > 1 and region.species is None:
@@ -139,13 +193,6 @@ class LandscapeGeneticsModel(eqx.Module):
         results = {}
         for name, index in selected:
             prepared = region_for_species(region, name)
-            head = None
-            if (
-                known_effects
-                or support is not None
-                or isinstance(self.calibration, MLPECalibrationModule)
-            ):
-                head = self._regional_head(prepared, index)
             observations = support_by_species.get(name)
             query_pairs = pairs
             if observations is not None:
@@ -161,31 +208,23 @@ class LandscapeGeneticsModel(eqx.Module):
             )
             if observations is not None:
                 labels = labels[: len(labels) - len(observations.observed_pairs)]
-            extras = {}
-            if known_effects or observations is not None:
-                assert head is not None
-                result = head.predict(
-                    distances[: len(labels)],
-                    labels,
-                    known_effects=known_effects,
-                    support=observations,
-                    support_distances=None if observations is None else distances[len(labels) :],
-                )
-                values, extras = result.values, result.extras
-            else:
-                values = self.calibration.predict(
-                    distances,
-                    labels,
-                    region_name=region.name,
-                    species_index=index if distance_model.num_species > 1 else None,
-                )
+            result = self.calibration.predict(
+                distances[: len(labels)],
+                labels,
+                region_name=region.name,
+                species_index=index,
+                sampling_unit_kinds=prepared.sampling_unit_kinds,
+                known_effects=known_effects,
+                support=observations,
+                support_distances=None if observations is None else distances[len(labels) :],
+            )
             results[name] = Prediction(
-                jnp.asarray(values),
+                jnp.asarray(result.values),
                 labels,
                 region.name,
                 prepared.sampling_unit_ids,
                 species=name,
-                extras=extras,
+                extras=result.extras,
             )
         if isinstance(species, str) or species is None:
             return results[selected[0][0]]

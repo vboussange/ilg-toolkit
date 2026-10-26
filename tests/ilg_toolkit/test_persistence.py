@@ -12,23 +12,25 @@ import pytest
 
 from ilg_toolkit import (
     DirectCalibrationModule,
+    Log1pLoss,
     MLPECalibrationModule,
+    MLPELoss,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
     TrainingConfig,
-    fit,
     load_checkpoint,
     load_model,
     save_checkpoint,
     save_model,
+    train,
 )
-from ilg_toolkit.models import ConductanceModel, UNet
+from ilg_toolkit.models import ConductanceModel, UNetEmbeddingDistance
 
 
-@pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
+@pytest.mark.parametrize("loss", [Log1pLoss(), MLPELoss()])
 @pytest.mark.parametrize("num_species", [1, 2])
-def test_saved_precision_is_preserved(tmp_path, training_problem, objective, num_species):
+def test_saved_precision_is_preserved(tmp_path, training_problem, loss, num_species):
     from ilg_toolkit import ArtifactError
 
     with jax.enable_x64():
@@ -36,26 +38,26 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, objective, num
             "embedding", num_species=num_species
         )
         species = ("species-1", "species-0") if num_species > 1 else None
-        state = fit(
+        state = train(
             region,
             observations,
             distance_model=distance_model,
-            config=TrainingConfig(objective=objective, steps=0),
+            config=TrainingConfig(loss=loss, steps=0),
             species=species,
         )
         for kind in ("model", "checkpoint"):
             path = tmp_path / f"{kind}.eqx"
             if kind == "model":
-                save_model(path, state.model)
+                save_model(path, state.selected_model)
                 model = load_model(path, distance_model=distance_model)
-                assert eqx.tree_equal(model, state.model)
+                assert eqx.tree_equal(model, state.selected_model)
             else:
                 save_checkpoint(path, state)
                 restored = load_checkpoint(path, distance_model=distance_model)
                 assert eqx.tree_equal(restored, state)
-                model = restored.model
+                model = restored.selected_model
             for name in species or (None,):
-                predictions = state.model.predict(region, species=name).values
+                predictions = state.selected_model.predict(region, species=name).values
                 np.testing.assert_array_equal(
                     model.predict(region, species=name).values, predictions
                 )
@@ -77,12 +79,12 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
     region, observations, encoder = training_problem("unet")
     observations = replace(observations, target=replace(observations.target, transform="log1p"))
 
-    model = fit(
+    model = train(
         region,
         observations,
         distance_model=encoder,
-        config=TrainingConfig(steps=0, objective="direct_log1p"),
-    ).model
+        config=TrainingConfig(steps=0, loss=Log1pLoss()),
+    ).selected_model
     path = tmp_path / "direct.eqx"
     save_model(path, model)
     restored = load_model(path, distance_model=checkpoint_model(7))
@@ -93,17 +95,13 @@ def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
     np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
     assert restored.target == model.target
     assert restored.feature_names == model.feature_names
-    assert restored.training_pairs == model.training_pairs
-    assert restored.training_objective == "direct_log1p"
-    assert cast(UNet, restored.distance_model).encoder1.dropout.p == 0.2
+    assert cast(UNetEmbeddingDistance, restored.distance_model).encoder1.dropout.p == 0.2
 
 
 def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
     persistence_problem, WeightedEmbedding, tmp_path
 ):
     from dataclasses import replace
-
-    from ilg_toolkit import ObservationPartition
 
     region, observations = persistence_problem()
     other = replace(region, name="second-calibration")
@@ -112,17 +110,13 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
     )
     labels = set(region.sampling_unit_ids[:4])
     pairs = tuple(pair for pair in observations.observed_pairs if set(pair) <= labels)
-    training = ObservationPartition(region.name, pairs[:-1], role="training")
-    validation = ObservationPartition(region.name, pairs[-1:], role="validation")
-    model = fit(
+    model = train(
         (region, other),
-        (observations, other_observations),
+        (observations.select_pairs(pairs[:-1]), other_observations.select_pairs(pairs[:-1])),
         distance_model=WeightedEmbedding(jnp.asarray([0.2, -0.7])),
-        config=TrainingConfig(steps=0, objective="mlpe"),
-        partition=(training, replace(training, region_name=other.name)),
-        validation=(region, observations),
-        validation_partition=validation,
-    ).model
+        config=TrainingConfig(steps=0, loss=MLPELoss()),
+        validation=(region, observations.select_pairs(pairs[-1:])),
+    ).selected_model
     path = tmp_path / "custom-mlpe.eqx"
     save_model(path, model)
     restored = load_model(path, distance_model=WeightedEmbedding(jnp.asarray([4.0, 3.0])))
@@ -132,11 +126,9 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
             restored.predict(prepared).values, model.predict(prepared).values
         )
         assert eqx.tree_equal(
-            cast(MLPECalibrationModule, restored.calibration).regions[prepared.name],
-            cast(MLPECalibrationModule, model.calibration).regions[prepared.name],
+            cast(MLPECalibrationModule, restored.calibration).regions[(prepared.name, 0)],
+            cast(MLPECalibrationModule, model.calibration).regions[(prepared.name, 0)],
         )
-    assert restored.training_pairs == model.training_pairs
-    assert restored.validation_pairs == model.validation_pairs
     query = (("population-4", "population-2"), ("population-5", "population-3"))
     before = model.predict(region, pairs=query, known_effects=True)
     after = restored.predict(region, pairs=query, known_effects=True)
@@ -149,37 +141,10 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
     after = restored.predict(region, pairs=query, support=support)
     np.testing.assert_array_equal(after.values, before.values)
     np.testing.assert_array_equal(after.extras["model_variance"], before.extras["model_variance"])
-    assert cast(MLPECalibrationModule, restored.calibration).regions[region.name].converged is False
-
-    from ilg_toolkit import (
-        Ensemble,
-        EnsembleMember,
-        MemberIdentity,
-        PopulationFold,
-        predict_out_of_fold,
+    assert (
+        cast(MLPECalibrationModule, restored.calibration).regions[(region.name, 0)].converged
+        is False
     )
-
-    fold = PopulationFold(
-        "held-out",
-        {region.name: region.sampling_unit_ids[-2:]},
-        {region.name: training},
-        validation={region.name: validation},
-    )
-    evaluation_pairs = (
-        validation.pairs[0],
-        ("population-2", "population-4"),
-        ("population-4", "population-5"),
-    )
-
-    def evaluate(calibrated):
-        member = EnsembleMember(MemberIdentity(fold.fold_id, 3), fold, "completed", calibrated)
-        return predict_out_of_fold(Ensemble((member,)), region, evaluation_pairs)
-
-    before_evaluation, after_evaluation = evaluate(model), evaluate(restored)
-    np.testing.assert_array_equal(after_evaluation.eligible_counts, [0, 0, 1])
-    np.testing.assert_array_equal(after_evaluation.values, before_evaluation.values)
-    assert after_evaluation.access == before_evaluation.access
-    assert after_evaluation.exclusion_reasons == before_evaluation.exclusion_reasons
 
 
 def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_path):
@@ -214,7 +179,6 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_
         DirectCalibrationModule(TargetSpec("divergence")),
         feature_count=2,
         feature_names=region.feature_names,
-        training_objective="direct_log1p",
     )
     path = tmp_path / "conductance.eqx"
     save_model(path, model)
@@ -239,16 +203,19 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(tmp_
 def test_model_reload_uses_native_shape_and_dtype_compatibility(tmp_path):
     from ilg_toolkit import ArtifactError, LandscapeGeneticsModel
 
-    encoder = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0))
+    encoder = UNetEmbeddingDistance(
+        2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(0)
+    )
     model = LandscapeGeneticsModel(
         encoder,
         DirectCalibrationModule(TargetSpec("divergence")),
         2,
-        training_objective="direct_log1p",
     )
     path = tmp_path / "model.eqx"
     save_model(path, model)
-    wrong_shape = UNet(2, patch_size=1, base_channels=2, embedding_dim=3, key=jax.random.key(0))
+    wrong_shape = UNetEmbeddingDistance(
+        2, patch_size=1, base_channels=2, embedding_dim=3, key=jax.random.key(0)
+    )
     with pytest.raises(ArtifactError):
         load_model(path, distance_model=wrong_shape)
     wrong_dtype = jax.tree.map(
@@ -275,11 +242,12 @@ def test_interrupted_model_replacement_preserves_previous_predictions(
 
     def model(seed):
         return LandscapeGeneticsModel(
-            UNet(2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(seed)),
+            UNetEmbeddingDistance(
+                2, patch_size=1, base_channels=2, embedding_dim=2, key=jax.random.key(seed)
+            ),
             DirectCalibrationModule(TargetSpec("divergence")),
             2,
             feature_names=region.feature_names,
-            training_objective="direct_log1p",
         )
 
     first, replacement = model(3), model(7)

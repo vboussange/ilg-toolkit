@@ -9,14 +9,17 @@ import jax.numpy as jnp
 import numpy as np
 
 from ilg_toolkit import (
+    Log1pLoss,
     MLPECalibrationModule,
+    MLPELoss,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
     TrainingConfig,
-    fit,
+    calibrate,
+    train,
 )
-from ilg_toolkit.models import UNet
+from ilg_toolkit.models import UNetEmbeddingDistance
 
 rng = np.random.default_rng(4)
 region = RegionBatch(
@@ -26,7 +29,9 @@ region = RegionBatch(
     np.array([[0, 0], [0, 3], [1, 1], [2, 2], [3, 0], [3, 3]]),
     feature_names=("elevation", "canopy"),
 )
-model = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4))
+model = UNetEmbeddingDistance(
+    2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4)
+)
 initial_distances = model.predict(region).as_matrix()
 effects = np.array([0.2, -0.1, 0.15, -0.2, 0.25, -0.05])
 noise = rng.normal(scale=0.08, size=(6, 6))
@@ -35,18 +40,15 @@ targets = targets.at[jnp.diag_indices(len(region.sampling_unit_ids))].set(0)
 observations = PairwiseObservations.from_matrix(
     region.sampling_unit_ids, targets, target=TargetSpec("synthetic divergence", units="index")
 )
-result = fit(
+result = train(
     region,
     observations,
     distance_model=model,
-    config=TrainingConfig(objective="direct_log1p", steps=3, learning_rate=0.0001, seed=4),
+    config=TrainingConfig(loss=Log1pLoss(), steps=3, learning_rate=0.0001, seed=4),
 )
-calibrated = fit(
-    region,
-    observations,
-    distance_model=result.selected_model.distance_model,
-    config=TrainingConfig(objective="mlpe", steps=0),
-).selected_model
+calibrated = calibrate(
+    region, observations, result.selected_model.distance_model, loss=MLPELoss(), max_iterations=2000
+)
 new_region = replace(
     region,
     name="new-catchment",
@@ -63,16 +65,13 @@ except ValueError as error:
 new_observations = PairwiseObservations.from_matrix(
     new_region.sampling_unit_ids, observations.values * 2, target=observations.target
 )
-transferred = fit(
-    new_region,
-    new_observations,
-    distance_model=calibrated.distance_model,
-    config=TrainingConfig(objective="mlpe", steps=0),
-).selected_model
+transferred = calibrate(
+    new_region, new_observations, calibrated.distance_model, loss=MLPELoss(), max_iterations=2000
+)
 assert eqx.tree_equal(transferred.distance_model, calibrated.distance_model)
 assert isinstance(calibrated.calibration, MLPECalibrationModule)
 assert isinstance(transferred.calibration, MLPECalibrationModule)
-assert tuple(transferred.calibration.regions) == (new_region.name,)
+assert tuple(transferred.calibration.regions) == ((new_region.name, 0),)
 print("Calibrated new-region predictions:\n", transferred.predict(new_region).as_matrix())
 assert isinstance(transferred.calibration, MLPECalibrationModule)
-print("Data roles:", set(transferred.calibration.regions[new_region.name].calibration_roles))
+print("Calibration pairs:", transferred.calibration.regions[new_region.name, 0].calibration_pairs)

@@ -30,20 +30,19 @@ def test_calibration_matches_frozen_r_full_ml_and_predicts_without_query_targets
     assert query.values[0] < 0  # Signed calibration is not clipped or repaired.
     assert head.region_name == "alpine"
     assert head.calibration_pairs == observations.observed_pairs
-    assert set(head.calibration_roles) == {"calibration"}
 
 
 def test_calibration_honors_the_declared_distance_scale_threshold(
     reference_observations, mlpe_reference
 ):
-    from ilg_toolkit import MLPEConfig, MLPEError
+    from ilg_toolkit import MLPEError, MLPELoss
 
     distances = mlpe_reference.distances * 1e-14
     observations = reference_observations()
     with pytest.raises(MLPEError):
         calibrate_mlpe(distances, observations, region_name="alpine")
     head = calibrate_mlpe(
-        distances, observations, region_name="alpine", config=MLPEConfig(min_distance_scale=1e-16)
+        distances, observations, region_name="alpine", loss=MLPELoss(min_distance_scale=1e-16)
     )
     np.testing.assert_allclose(
         [head.intercept, head.slope], mlpe_reference.fixed, rtol=3e-5, atol=3e-6
@@ -53,18 +52,10 @@ def test_calibration_honors_the_declared_distance_scale_threshold(
     )
 
 
-def test_calibration_rejects_query_targets_and_unidentified_variances(
-    reference_observations, mlpe_reference
-):
-    from ilg_toolkit import ObservationPartition
+def test_calibration_rejects_unidentified_variances(reference_observations, mlpe_reference):
     from ilg_toolkit.mlpe import MLPEError
 
     observations = reference_observations()
-    query = ObservationPartition("alpine", observations.observed_pairs, role="query")
-    with pytest.raises(MLPEError):
-        calibrate_mlpe(
-            mlpe_reference.distances, observations, region_name="alpine", partition=query
-        )
     disjoint = PairwiseObservations.from_pairs(
         [("a", "b"), ("c", "d"), ("e", "f")], [1, 3, 2], target=observations.target
     )
@@ -74,11 +65,11 @@ def test_calibration_rejects_query_targets_and_unidentified_variances(
         calibrate_mlpe(np.ones(len(mlpe_reference.distances)), observations, region_name="alpine")
 
 
-def test_incomplete_partition_calibration_records_roles_and_original_target_scale(
+def test_incomplete_calibration_preserves_original_target_scale(
     dense_profile, reference_observations, mlpe_reference
 ):
 
-    from ilg_toolkit import MLPEConfig, ObservationPartition, calibrate_mlpe
+    from ilg_toolkit import MLPELoss, calibrate_mlpe
 
     reference = reference_observations()
     target = TargetSpec("divergence", units="fraction", transform="log1p")
@@ -90,13 +81,12 @@ def test_incomplete_partition_calibration_records_roles_and_original_target_scal
     selected = tuple(
         pair for i, pair in enumerate(observations.observed_pairs) if i not in {2, 7, 11}
     )
-    partition = ObservationPartition("river", selected, role="training")
+    mask = np.array([pair in selected for pair in observations.observed_pairs])
     head = calibrate_mlpe(
-        mlpe_reference.distances,
-        observations,
+        mlpe_reference.distances[mask],
+        observations.select_pairs(selected),
         region_name="river",
-        partition=partition,
-        config=MLPEConfig(jitter=1e-7),
+        loss=MLPELoss(jitter=1e-7),
     )
     lookup = {label: i for i, label in enumerate(head.population_ids)}
     left = np.array([lookup[a] for a, b in selected])
@@ -116,7 +106,6 @@ def test_incomplete_partition_calibration_records_roles_and_original_target_scal
     query = head.predict([0.1], [("new-north", "new-south")])
     assert query.values[0] == pytest.approx(np.expm1(query.extras["model_values"][0]))
     assert head.calibration_pairs == selected
-    assert set(head.calibration_roles) == {"training"}
     # No extra measurements from absent pairs enter the fit or posterior.
     assert len(head.calibration_pairs) == 25
     z = np.zeros((len(selected), len(lookup)))
@@ -130,7 +119,7 @@ def test_incomplete_partition_calibration_records_roles_and_original_target_scal
 def test_explicit_numerical_constraints_and_optimization_failure_are_visible(
     reference_observations, mlpe_reference
 ):
-    from ilg_toolkit.mlpe import MLPEConfig, MLPEError
+    from ilg_toolkit import MLPEError, MLPELoss
 
     invalid_options: tuple[dict[str, Any], ...] = (
         {"variance_floor": 0},
@@ -138,12 +127,12 @@ def test_explicit_numerical_constraints_and_optimization_failure_are_visible(
         {"jitter": 1e-3},
     )
     for options in invalid_options:
-        with pytest.raises(MLPEError):
-            MLPEConfig(**options)
+        with pytest.raises(ValueError):
+            MLPELoss(**options)
     with pytest.raises(MLPEError):
         calibrate_mlpe(
             mlpe_reference.distances,
             reference_observations(),
             region_name="alpine",
-            config=MLPEConfig(max_iterations=1),
+            max_iterations=1,
         )

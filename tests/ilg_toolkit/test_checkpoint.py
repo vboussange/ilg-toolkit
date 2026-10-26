@@ -1,7 +1,7 @@
 """Scientific behavior of checkpoint."""
 
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import TypedDict, cast
 
 import coordax as cx
@@ -12,17 +12,16 @@ import numpy as np
 import pytest
 
 from ilg_toolkit import (
-    MLPEConfig,
-    ObservationPartition,
+    Log1pLoss,
+    MLPELoss,
     PairwiseObservations,
     TrainingConfig,
-    fit,
     load_checkpoint,
     save_checkpoint,
+    train,
 )
 from ilg_toolkit.training import (
     ObservationCollection,
-    PartitionCollection,
     RegionCollection,
 )
 
@@ -60,7 +59,7 @@ def test_resume_equals_uninterrupted(
     if family in ("unet", "resnet"):
         regions, targets = (region,), (observations,)
     config = TrainingConfig(
-        objective=objective,
+        loss=Log1pLoss() if objective == "direct_log1p" else MLPELoss(),
         steps=2,
         eval_every=2,
         seed=21,
@@ -73,41 +72,28 @@ def test_resume_equals_uninterrupted(
     if selection == "validation" and num_species > 1:
         group_targets = cast(tuple[tuple[PairwiseObservations, ...], ...], targets)
         options = _ValidationOptions(
-            partition={
-                r.name: tuple(
-                    ObservationPartition(r.name, o.observed_pairs[:-1], role="training")
-                    for o in groups
-                )
-                for r, groups in zip(regions, group_targets, strict=True)
-            },
-            validation=(regions, tuple(groups[0] for groups in group_targets)),
-            validation_partition={
-                r.name: ObservationPartition(
-                    r.name, groups[0].observed_pairs[-1:], role="validation"
-                )
-                for r, groups in zip(regions, group_targets, strict=True)
-            },
+            validation=(
+                regions,
+                tuple(
+                    groups[0].select_pairs(groups[0].observed_pairs[-1:])
+                    for groups in group_targets
+                ),
+            )
+        )
+        targets = tuple(
+            tuple(o.select_pairs(o.observed_pairs[:-1]) for o in groups) for groups in group_targets
         )
     elif selection == "validation":
         problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
         regions = tuple(problem[0] for problem in problems)
         targets = tuple(problem[1] for problem in problems)
         encoder = checkpoint_model()
-        config = replace(
-            config, learning_rate=0.002, mlpe=MLPEConfig(initial_variances=(0.05, 0.1))
-        )
+        config = replace(config, learning_rate=0.002)
         if objective == "mlpe":
             options = _ValidationOptions(
-                partition={
-                    r.name: ObservationPartition(r.name, o.observed_pairs[:-2], role="training")
-                    for r, o in zip(regions, targets, strict=True)
-                },
-                validation=(regions, targets),
-                validation_partition={
-                    r.name: ObservationPartition(r.name, o.observed_pairs[-2:], role="validation")
-                    for r, o in zip(regions, targets, strict=True)
-                },
+                validation=(regions, tuple(o.select_pairs(o.observed_pairs[-2:]) for o in targets))
             )
+            targets = tuple(o.select_pairs(o.observed_pairs[:-2]) for o in targets)
         else:
             validation_regions = tuple(replace(r, name=r.name + "-validation") for r in regions)
             predictions = tuple(encoder.predict(r) for r in regions)
@@ -119,7 +105,7 @@ def test_resume_equals_uninterrupted(
             )
             options = _ValidationOptions(validation=(validation_regions, validation_targets))
     states = []
-    uninterrupted = fit(
+    uninterrupted = train(
         regions,
         targets,
         distance_model=encoder,
@@ -137,13 +123,13 @@ def test_resume_equals_uninterrupted(
     restored = load_checkpoint(path, distance_model=encoder)
     assert eqx.tree_equal(restored, partial)
     # Reversing region order also checks restoration of the random trajectory.
-    resumed = fit(regions[::-1], targets[::-1], state=restored, **options)
+    resumed = train(regions[::-1], targets[::-1], state=restored, **options)
     assert eqx.tree_equal(resumed, uninterrupted)
     if selection == "validation" and objective == "mlpe" and num_species == 1:
         save_checkpoint(path, resumed)
         completed = load_checkpoint(path, distance_model=encoder)
         callbacks = []
-        unchanged = fit(regions, targets, state=completed, on_step=callbacks.append, **options)
+        unchanged = train(regions, targets, state=completed, on_step=callbacks.append, **options)
         assert callbacks == []
         assert eqx.tree_equal(unchanged, resumed)
         assert resumed.selected_step == 0
@@ -152,8 +138,8 @@ def test_resume_equals_uninterrupted(
     for prepared in regions:
         for name in species or (None,):
             np.testing.assert_array_equal(
-                resumed.model.predict(prepared, species=name).values,
-                uninterrupted.model.predict(prepared, species=name).values,
+                resumed.selected_model.predict(prepared, species=name).values,
+                uninterrupted.selected_model.predict(prepared, species=name).values,
             )
     if num_species > 1 and selection == "validation":
         assert resumed.history[-1].validation_by_species is not None
@@ -162,8 +148,6 @@ def test_resume_equals_uninterrupted(
 
 class _ValidationOptions(TypedDict, total=False):
     validation: tuple[RegionCollection, ObservationCollection]
-    partition: PartitionCollection
-    validation_partition: PartitionCollection
 
 
 def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(training_problem, tmp_path):
@@ -172,11 +156,11 @@ def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(training
         model = jax.tree.map(
             lambda value: value.astype(np.float32) if eqx.is_inexact_array(value) else value, model
         )
-        result = fit(
+        result = train(
             region,
             observations,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", steps=0),
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
 
         changed_optimizer = jax.tree.map(
@@ -197,8 +181,8 @@ def test_interrupted_replacement_retains_previous_complete_generation(
 
     region, observations, model = training_problem("embedding")
     completed = []
-    config = TrainingConfig(objective="direct_log1p", steps=1, seed=21, learning_rate=0.002)
-    result = fit(
+    config = TrainingConfig(loss=Log1pLoss(), steps=1, seed=21, learning_rate=0.002)
+    result = train(
         region,
         observations,
         distance_model=model,
@@ -226,10 +210,10 @@ def test_interrupted_replacement_retains_previous_complete_generation(
     assert eqx.tree_equal(restored, completed[0])
 
 
-def test_disk_continuation_uses_caller_supplied_inputs_and_partitions(training_problem, tmp_path):
+def test_disk_continuation_uses_caller_supplied_observations(training_problem, tmp_path):
     region, observations, distance_model = training_problem("embedding")
-    config = TrainingConfig(objective="direct_log1p", steps=0)
-    original = fit(region, observations, distance_model=distance_model, config=config)
+    config = TrainingConfig(loss=Log1pLoss(), steps=0)
+    original = train(region, observations, distance_model=distance_model, config=config)
     path = tmp_path / "continuation.eqx"
     save_checkpoint(path, original)
     restored = load_checkpoint(path, distance_model=distance_model)
@@ -244,17 +228,17 @@ def test_disk_continuation_uses_caller_supplied_inputs_and_partitions(training_p
         sampling_unit_ids=region.sampling_unit_ids[::-1],
     )
     changed_observations = replace(observations, values=observations.values * 1.2)
-    partition = ObservationPartition(region.name, observations.observed_pairs[:-1], role="training")
-    resumed = fit(
+    resumed = train(
         changed_region,
-        changed_observations,
+        changed_observations.select_pairs(observations.observed_pairs[:-1]),
         state=restored,
         config=replace(config, steps=1),
-        partition=partition,
     )
     assert resumed.step == 1
-    assert not eqx.tree_equal(resumed.distance_model, restored.distance_model)
-    assert np.isfinite(resumed.model.predict(changed_region).values).all()
+    assert not eqx.tree_equal(
+        resumed.latest_model.distance_model, restored.latest_model.distance_model
+    )
+    assert np.isfinite(resumed.selected_model.predict(changed_region).values).all()
 
 
 def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
@@ -263,11 +247,11 @@ def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
     from ilg_toolkit import ArtifactError
 
     region, observations, model = training_problem("embedding")
-    result = fit(
+    result = train(
         region,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=0),
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
     )
 
     path = tmp_path / "incompatible.eqx"
@@ -285,11 +269,11 @@ def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
 @pytest.mark.parametrize("boundary", ["save", "load", "resume"])
 def test_checkpoint_enforces_progress_bounds(training_problem, tmp_path, boundary):
     region, observations, distance_model = training_problem("embedding")
-    state = fit(
+    state = train(
         region,
         observations,
         distance_model=distance_model,
-        config=TrainingConfig(objective="direct_log1p", steps=0),
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
     )
     path = tmp_path / "bounds.eqx"
     save_checkpoint(path, state)
@@ -306,7 +290,7 @@ def test_checkpoint_enforces_progress_bounds(training_problem, tmp_path, boundar
     for change in changes:
         invalid = replace(state, **change)
         if boundary == "load":
-            header["metadata"]["history_length"] = len(invalid.history)
+            header["metadata"]["history"] = [asdict(record) for record in invalid.history]
             with path.open("wb") as stream:
                 stream.write(json.dumps(header).encode() + b"\n")
                 eqx.tree_serialise_leaves(stream, invalid)
@@ -316,4 +300,4 @@ def test_checkpoint_enforces_progress_bounds(training_problem, tmp_path, boundar
             elif boundary == "load":
                 load_checkpoint(path, distance_model=distance_model)
             else:
-                fit(region, observations, state=invalid)
+                train(region, observations, state=invalid)

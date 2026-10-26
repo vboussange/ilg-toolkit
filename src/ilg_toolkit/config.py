@@ -1,10 +1,10 @@
 """Training and resistance calculation settings."""
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from numbers import Integral, Real
 
-from .mlpe import MLPEConfig
+from .losses import AbstractLoss
 
 
 def validate_patch_microbatch_size(value: int | None) -> None:
@@ -63,7 +63,7 @@ class TrainingConfig:
     determines model selection.
     """
 
-    objective: str
+    loss: AbstractLoss
     steps: int = 100
     eval_every: int = 1
     learning_rate: float = 0.001
@@ -72,13 +72,10 @@ class TrainingConfig:
     species_microbatch_size: int | None = None
     seed: int = 0
     jit: bool = True
-    mlpe: MLPEConfig = field(default_factory=MLPEConfig)
 
     def __post_init__(self):
-        if self.objective not in {"direct_log1p", "mlpe"}:
-            raise ValueError("objective must be direct_log1p or mlpe")
-        if not isinstance(self.mlpe, MLPEConfig):
-            raise ValueError("mlpe must be an MLPEConfig")
+        if not isinstance(self.loss, AbstractLoss):
+            raise ValueError("loss must be an AbstractLoss")
         if not isinstance(self.jit, bool):
             raise ValueError("jit must be a boolean")
         if (

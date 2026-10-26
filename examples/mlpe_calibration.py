@@ -5,8 +5,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, calibrate_mlpe
-from ilg_toolkit.models import UNet
+from ilg_toolkit import (
+    MLPECalibrationModule,
+    MLPELoss,
+    PairwiseObservations,
+    RegionBatch,
+    TargetSpec,
+    calibrate,
+)
+from ilg_toolkit.models import UNetEmbeddingDistance
 
 rng = np.random.default_rng(5)
 region = RegionBatch(
@@ -15,7 +22,7 @@ region = RegionBatch(
     tuple(f"population-{i}" for i in range(8)),
     np.array([[0, 0], [0, 1], [0, 3], [1, 1], [1, 3], [2, 0], [3, 1], [3, 3]]),
 )
-distance_model = UNet(
+distance_model = UNetEmbeddingDistance(
     2,
     patch_size=1,
     base_channels=2,
@@ -44,8 +51,10 @@ observations = PairwiseObservations.from_pairs(
     sampling_unit_ids=region.sampling_unit_ids,
     target=TargetSpec("synthetic divergence", units="index"),
 )
-calibration = calibrate_mlpe(distances, observations, region_name=region.name)
-prediction = calibration.predict(distances, observations.observed_pairs)
+model = calibrate(region, observations, distance_model, loss=MLPELoss(), max_iterations=2000)
+prediction = model.predict(region, pairs=observations.observed_pairs)
+assert isinstance(model.calibration, MLPECalibrationModule)
+calibration = model.calibration.for_region(region.name, 0)
 print("Ecological distances:", distances[:4])
 print(
     "Genetic predictions:",

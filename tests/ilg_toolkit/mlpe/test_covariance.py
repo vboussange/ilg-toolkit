@@ -1,4 +1,4 @@
-"""Scientific behavior of mlpe.system."""
+"""Scientific behavior of mlpe.covariance."""
 
 import numpy as np
 import pytest

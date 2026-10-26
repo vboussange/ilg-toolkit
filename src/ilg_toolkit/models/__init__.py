@@ -1,15 +1,15 @@
 """Distance models with pooled backbones and species-specific ecological distances."""
 
-from .base import AbstractDistanceModel, ConductanceModel, EmbeddingModel
+from .base import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
 from .loglinear import LogLinearConductance
 from .resnet import ResNet9Conductance
-from .unet import UNet
+from .unet import UNetEmbeddingDistance
 
 __all__ = [
     "AbstractDistanceModel",
     "ConductanceModel",
-    "EmbeddingModel",
+    "EmbeddingDistanceModel",
     "LogLinearConductance",
     "ResNet9Conductance",
-    "UNet",
+    "UNetEmbeddingDistance",
 ]

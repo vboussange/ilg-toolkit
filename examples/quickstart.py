@@ -7,13 +7,14 @@ import jax
 import jax.numpy as jnp
 
 from ilg_toolkit import (
+    Log1pLoss,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
     TrainingConfig,
-    fit,
     load_model,
     save_model,
+    train,
 )
 from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 
@@ -42,13 +43,13 @@ observations = PairwiseObservations.from_matrix(
 distance_model = ResNet9Conductance(
     in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(6)
 )
-result = fit(
+result = train(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(objective="direct_log1p", steps=4, learning_rate=0.001),
+    config=TrainingConfig(loss=Log1pLoss(), steps=4, learning_rate=0.001),
 )
-model = result.model  # The selected landscape genetics model.
+model = result.selected_model  # The selected landscape genetics model.
 
 print(
     "Conductance surface:\n",

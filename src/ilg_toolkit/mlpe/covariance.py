@@ -20,7 +20,7 @@ def endpoint_sums(values, left, right, weights, n_populations):
     return result.at[left].add(weighted).at[right].add(weighted)
 
 
-class PopulationSystem(NamedTuple):
+class PopulationCovarianceFactor(NamedTuple):
     """Factor of I + (u/d) Z.T Z and the observed sampling-unit indices."""
 
     left: Array
@@ -50,7 +50,7 @@ class PopulationSystem(NamedTuple):
         return inner, remaining, effects
 
 
-def population_system(left, right, *, n_populations, unit, residual, weights, dtype):
+def population_covariance_factor(left, right, *, n_populations, unit, residual, weights, dtype):
     """Population covariance factor for observed unordered pairs.
 
     ``residual`` includes the configured jitter.
@@ -88,7 +88,7 @@ def population_system(left, right, *, n_populations, unit, residual, weights, dt
         & (residual > 0)
         & (roundoff_bound <= MAX_ROUNDOFF_BOUND)
     )
-    return PopulationSystem(
+    return PopulationCovarianceFactor(
         left,
         right,
         weights,

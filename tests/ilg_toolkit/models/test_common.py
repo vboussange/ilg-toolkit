@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from ilg_toolkit import RegionBatch
-from ilg_toolkit.models import ResNet9Conductance, UNet
+from ilg_toolkit.models import ResNet9Conductance, UNetEmbeddingDistance
 
 
 @pytest.mark.parametrize("family", ["conductance", "embedding"])
@@ -30,8 +30,10 @@ def test_patch_microbatch_size_preserves_predictions_and_gradients(family, dense
         reference = ResNet9Conductance(2, patch_size=4, key=key)
         microbatched = ResNet9Conductance(2, patch_size=4, key=key, patch_microbatch_size=4)
     else:
-        reference = UNet(2, patch_size=patch_size, key=key, base_channels=2, embedding_dim=2)
-        microbatched = UNet(
+        reference = UNetEmbeddingDistance(
+            2, patch_size=patch_size, key=key, base_channels=2, embedding_dim=2
+        )
+        microbatched = UNetEmbeddingDistance(
             2,
             patch_size=patch_size,
             key=key,

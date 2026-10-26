@@ -6,8 +6,15 @@ import coordax as cx
 import jax
 import jax.numpy as jnp
 
-from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec, TrainingConfig, fit
-from ilg_toolkit.models import UNet
+from ilg_toolkit import (
+    Log1pLoss,
+    PairwiseObservations,
+    RegionBatch,
+    TargetSpec,
+    TrainingConfig,
+    train,
+)
+from ilg_toolkit.models import UNetEmbeddingDistance
 
 
 def synthetic_region(name, width, locations):
@@ -37,14 +44,20 @@ for region in regions:
     observations.append(
         PairwiseObservations.from_matrix(region.sampling_unit_ids, dissimilarities, target=target)
     )
-model = UNet(2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4))
-result = fit(
+model = UNetEmbeddingDistance(
+    2, patch_size=1, base_channels=2, embedding_dim=2, dropout=0, key=jax.random.key(4)
+)
+result = train(
     regions,
     observations,
     distance_model=model,
-    config=TrainingConfig(objective="direct_log1p", steps=10, learning_rate=0.001, seed=4),
+    config=TrainingConfig(loss=Log1pLoss(), steps=10, learning_rate=0.001, seed=4),
 )
 print("Selected model at step", result.selected_step)
 print("Per-region training objectives:", result.history[-1].training_by_region)
 for region in regions:
-    print(region.name, result.model.predict(region).as_matrix(), result.model.target.units)
+    print(
+        region.name,
+        result.selected_model.predict(region).as_matrix(),
+        result.selected_model.target.units,
+    )

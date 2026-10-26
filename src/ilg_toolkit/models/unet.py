@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from ..config import validate_patch_microbatch_size
-from .base import EmbeddingModel
+from .base import EmbeddingDistanceModel
 from .common import encode_patches
 
 
@@ -68,7 +68,7 @@ class ResidualConvBlock(eqx.Module):
 
 
 @final
-class UNet(EmbeddingModel):
+class UNetEmbeddingDistance(EmbeddingDistanceModel):
     """A distance model using a pooled U-Net backbone and species-specific embeddings.
 
     The backbone combines landscape features across the region's patch grid,

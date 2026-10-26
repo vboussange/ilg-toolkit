@@ -9,14 +9,14 @@ import numpy as np
 
 from ilg_toolkit import (
     MLPECalibrationModule,
+    MLPELoss,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
     TrainingConfig,
-    fit,
+    train,
 )
-from ilg_toolkit.mlpe import MLPEConfig
-from ilg_toolkit.models import UNet
+from ilg_toolkit.models import UNetEmbeddingDistance
 
 
 def main():
@@ -49,10 +49,10 @@ def main():
                     for label in present
                 )
             )
-        state = fit(
+        state = train(
             regions,
             observations,
-            distance_model=UNet(
+            distance_model=UNetEmbeddingDistance(
                 2,
                 num_species=2,
                 patch_size=1,
@@ -64,21 +64,20 @@ def main():
             ),
             species=species,
             config=TrainingConfig(
-                objective="mlpe",
+                loss=MLPELoss(),
                 steps=3,
                 eval_every=3,
                 region_batch_size=1,
                 species_batch_size=1,
                 species_microbatch_size=1,
-                mlpe=MLPEConfig(initial_variances=(0.05, 0.1)),
             ),
         )
         print("Experimental multispecies training:", state.history[-1].training_by_species)
-        calibration = cast(MLPECalibrationModule, state.model.calibration)
+        calibration = cast(MLPECalibrationModule, state.selected_model.calibration)
         for region, present in zip(regions, coverage, strict=True):
-            predictions = state.model.predict(region, species=present)
-            distances = state.model.distance_model.predict(
-                region, species=present, species_order=state.model.species
+            predictions = state.selected_model.predict(region, species=present)
+            distances = state.selected_model.distance_model.predict(
+                region, species=present, species_order=state.selected_model.species
             )
             for name in present:
                 fitted = calibration.for_region(region.name, species.index(name))
