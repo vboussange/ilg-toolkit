@@ -11,12 +11,14 @@ import pytest
 from ilg_toolkit import (
     DirectCalibrationModule,
     LandscapeGeneticsModel,
+    Log1pLoss,
     MLPECalibrationModule,
-    ObservationPartition,
+    MLPELoss,
     PairwiseObservations,
     TargetSpec,
     TrainingConfig,
-    fit,
+    calibrate,
+    train,
 )
 from ilg_toolkit.models import LogLinearConductance
 
@@ -65,8 +67,7 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
     ScalarEmbedding, calibration_problem
 ):
     region, observations, training, _ = calibration_problem()
-    training = ObservationPartition(
-        region.name,
+    training = observations.select_pairs(
         tuple(
             pair
             for pair in observations.observed_pairs
@@ -76,13 +77,12 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     names = ("stoat", "hare")
     references = tuple(
-        fit(
+        calibrate(
             region,
-            replace(observations, values=observations.values * factor),
-            distance_model=ScalarEmbedding(jnp.asarray(factor)),
-            config=TrainingConfig(objective="mlpe", steps=0),
-            partition=training,
-        ).model
+            replace(training, values=training.values * factor),
+            ScalarEmbedding(jnp.asarray(factor)),
+            loss=MLPELoss(),
+        )
         for factor in (1.0, 2.0)
     )
     model = LandscapeGeneticsModel(
@@ -150,29 +150,18 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     import jax.numpy as jnp
 
     from ilg_toolkit import (
+        Log1pLoss,
+        MLPELoss,
         PairwiseObservations,
-        TrainingConfig,
-        fit,
+        calibrate,
     )
 
     region, observations, _, _ = calibration_problem("conditioned-landscape")
     calibration_pairs = tuple(itertools.combinations(region.sampling_unit_ids[:4], 2))
-    training = ObservationPartition(region.name, calibration_pairs, role="training")
-    direct = fit(
-        region,
-        observations,
-        distance_model=ScalarEmbedding(weight=jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", steps=0),
-        partition=training,
-    ).model
-    model = fit(
-        region,
-        observations,
-        distance_model=direct.distance_model,
-        partition=training,
-        config=TrainingConfig(objective="mlpe", steps=0),
-    ).selected_model
-    head = cast(MLPECalibrationModule, model.calibration).regions[region.name]
+    training = observations.select_pairs(calibration_pairs)
+    direct = calibrate(region, training, ScalarEmbedding(weight=jnp.asarray(1.0)), loss=Log1pLoss())
+    model = calibrate(region, training, direct.distance_model, loss=MLPELoss())
+    head = cast(MLPECalibrationModule, model.calibration).regions[(region.name, 0)]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict(region, pairs=pairs, known_effects=True)
     distances = model.distance_model.predict(region).as_matrix()
@@ -217,7 +206,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     np.testing.assert_allclose(result.as_matrix()[[4, 5], [2, 3]], expected_mean, atol=1e-10)
     np.testing.assert_allclose(
         result.as_matrix("effect_variance")[[4, 5], [2, 3]],
-        expected_variance - head.residual_variance - head.config.jitter,
+        expected_variance - head.residual_variance - head.loss.jitter,
         atol=1e-10,
     )
     assert eqx.tree_equal(model.distance_model, direct.distance_model)
@@ -252,16 +241,18 @@ def test_explicit_transform_returns_original_units_and_separate_ecological_dista
     observations = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20")], [np.e - 1], target=target
     )
-    result = fit(
+    result = train(
         region,
         observations,
         distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", steps=0),
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
     )
-    prediction = result.model.predict(region)
+    prediction = result.selected_model.predict(region)
     assert result.history[0].training_loss < 1e-12
     np.testing.assert_allclose(prediction.as_matrix()[0, 1], np.e - 1, rtol=1e-6)
-    np.testing.assert_allclose(result.model.distance_model.predict(region).as_matrix()[0, 1], 1)
+    np.testing.assert_allclose(
+        result.selected_model.distance_model.predict(region).as_matrix()[0, 1], 1
+    )
 
 
 def test_recalibrated_model_retains_target_scale_after_save_and_load(
@@ -275,30 +266,29 @@ def test_recalibrated_model_retains_target_scale_after_save_and_load(
     )
 
     region, observations, training, _ = calibration_problem()
-    state = fit(
+    target = replace(observations.target, transform="log1p")
+    observations = replace(observations, values=jnp.expm1(observations.values), target=target)
+    training = replace(training, values=jnp.expm1(training.values), target=target)
+    state = train(
         region,
-        observations,
+        training,
         distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", steps=0),
-        partition=training,
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
     )
-    assert state.model.target is state.model.calibration.target
-    converted = fit(
+    assert state.selected_model.target is state.selected_model.calibration.target
+    converted = calibrate(
         region,
-        observations,
-        distance_model=state.model.distance_model,
-        partition=training,
-        config=TrainingConfig(objective="mlpe", steps=0),
-    ).selected_model
-    assert converted.training_objective == "mlpe"
-    assert eqx.tree_equal(converted.distance_model, state.model.distance_model)
+        training,
+        state.selected_model.distance_model,
+        loss=MLPELoss(),
+    )
+    assert eqx.tree_equal(converted.distance_model, state.selected_model.distance_model)
     unseen = replace(region, name="unseen")
-    assert np.isfinite(state.model.predict(unseen).values).all()
+    assert np.isfinite(state.selected_model.predict(unseen).values).all()
     with pytest.raises(ValueError):
         converted.predict(unseen)
     path = tmp_path / "converted.ilg"
     save_model(path, converted)
     restored = load_model(path, distance_model=ScalarEmbedding(jnp.asarray(0.0)))
-    assert restored.training_objective == "mlpe"
     assert restored.target == observations.target
     np.testing.assert_array_equal(restored.predict(region).values, converted.predict(region).values)

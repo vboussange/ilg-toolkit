@@ -9,12 +9,13 @@ import numpy as np
 import pytest
 
 from ilg_toolkit import (
+    Log1pLoss,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
     TrainingConfig,
-    fit,
+    train,
 )
 from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
 
@@ -57,30 +58,30 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions(
                 replace(observations, species=name, values=observations.values * (i + 1))
                 for i, name in enumerate(species)
             )
-        result = fit(
+        result = train(
             region,
             observations,
             distance_model=model,
             species=species,
             config=TrainingConfig(
-                objective="direct_log1p",
+                loss=Log1pLoss(),
                 steps=2,
                 learning_rate=0.001,
             ),
         )
         assert result.history[-1].training_loss < result.history[0].training_loss
         for name in (None,) if species is None else species:
-            surface = cast(ConductanceModel, result.model.distance_model).conductance_surface(
-                region, species=name, species_order=species
-            )
-            prediction = result.model.predict(region, species=name)
+            surface = cast(
+                ConductanceModel, result.selected_model.distance_model
+            ).conductance_surface(region, species=name, species_order=species)
+            prediction = result.selected_model.predict(region, species=name)
             assert surface.shape == (2, 2)
             assert np.all(np.isfinite(surface) & (surface > 0))
             expected = dense_resistance(surface, np.array([0, 1, 3]))
             np.fill_diagonal(expected, np.nan)
             np.testing.assert_allclose(prediction.as_matrix(), expected, atol=2e-6, rtol=2e-6)
             np.testing.assert_allclose(
-                result.model.distance_model.predict(
+                result.selected_model.distance_model.predict(
                     region, species=name, species_order=species
                 ).as_matrix(),
                 prediction.as_matrix(),

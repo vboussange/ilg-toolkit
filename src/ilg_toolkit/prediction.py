@@ -1,13 +1,13 @@
 """Pair-aligned predictions and their symmetric matrix representation."""
 
 from collections.abc import Mapping
-from typing import cast, final
+from typing import final
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from .data import ObservationPartition
+from .data import _validate_pairs
 
 
 @final
@@ -27,10 +27,11 @@ class Prediction(eqx.Module):
     extras: Mapping[str, jax.Array] = eqx.field(default_factory=dict)
 
     def __post_init__(self):
-        self.pairs = cast(tuple[tuple[str, str], ...], tuple(tuple(pair) for pair in self.pairs))
+        self.pairs = _validate_pairs(self.pairs)
         self.sampling_unit_ids = tuple(self.sampling_unit_ids)
         self.extras = dict(self.extras)
-        ObservationPartition(self.region_name, self.pairs, role="query")
+        if not isinstance(self.region_name, str) or not self.region_name:
+            raise ValueError("region_name must be a nonempty string")
         if self.values.shape != (len(self.pairs),) or not jnp.issubdtype(
             self.values.dtype, jnp.floating
         ):

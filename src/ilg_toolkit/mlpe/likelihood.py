@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
 
-from .system import population_system
+from .covariance import population_covariance_factor
 
 DEFAULT_VARIANCE_FLOOR = 1e-10
 DEFAULT_MIN_DISTANCE_SCALE = 1e-12
@@ -106,7 +106,7 @@ def _components(
     )
     design = jnp.stack([weights.astype(distances.dtype), standardized], axis=1)
     unit, residual = decode_mlpe_variances(raw_variances, variance_floor=variance_floor)
-    system = population_system(
+    system = population_covariance_factor(
         left,
         right,
         n_populations=n_populations,

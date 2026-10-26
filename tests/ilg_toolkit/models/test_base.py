@@ -12,13 +12,15 @@ import pytest
 from jaxscape import GridGraph, ResistanceDistance
 
 from ilg_toolkit import (
+    Log1pLoss,
+    MLPELoss,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
     TrainingConfig,
-    fit,
     load_model,
     save_model,
+    train,
 )
 from ilg_toolkit.models import ConductanceModel, LogLinearConductance
 
@@ -139,28 +141,28 @@ def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductan
         [1.0, 2.0, 1.0],
         target=TargetSpec("dissimilarity"),
     )
-    state = fit(
+    state = train(
         region,
         observations,
         distance_model=distance_model,
-        config=TrainingConfig(objective="direct_log1p", steps=3, learning_rate=0.1),
+        config=TrainingConfig(loss=Log1pLoss(), steps=3, learning_rate=0.1),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     np.testing.assert_allclose(
-        state.model.predict(region).values,
-        state.model.distance_model.predict(region).values,
+        state.selected_model.predict(region).values,
+        state.selected_model.distance_model.predict(region).values,
     )
     assert np.all(
-        cast(ConductanceModel, state.model.distance_model).conductance_surface(region) > 0
+        cast(ConductanceModel, state.selected_model.distance_model).conductance_surface(region) > 0
     )
 
 
 @pytest.mark.parametrize(
-    ("objective", "numpy_preprocessing"),
-    [("direct_log1p", False), ("mlpe", False), ("direct_log1p", True)],
+    ("loss", "numpy_preprocessing"),
+    [(Log1pLoss(), False), (MLPELoss(), False), (Log1pLoss(), True)],
 )
 def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels(
-    CustomDistance, tmp_path, objective, numpy_preprocessing
+    CustomDistance, tmp_path, loss, numpy_preprocessing
 ):
     region = RegionBatch(
         "custom",
@@ -173,25 +175,23 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
         [[0, 4, 36], [4, 0, 16], [36, 16, 0]],
         target=TargetSpec("divergence"),
     )
-    state = fit(
+    state = train(
         region,
         observations,
         distance_model=CustomDistance(jnp.array(1.0), numpy_preprocessing=numpy_preprocessing),
-        config=TrainingConfig(
-            objective=objective, steps=3, learning_rate=0.1, jit=not numpy_preprocessing
-        ),
+        config=TrainingConfig(loss=loss, steps=3, learning_rate=0.1, jit=not numpy_preprocessing),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     path = tmp_path / "custom.ilg"
-    save_model(path, state.model)
+    save_model(path, state.selected_model)
     restored = load_model(
         path,
         distance_model=CustomDistance(jnp.array(0.0), numpy_preprocessing=numpy_preprocessing),
     )
     np.testing.assert_array_equal(
         restored.distance_model.predict(region).as_matrix(),
-        state.model.distance_model.predict(region).as_matrix(),
+        state.selected_model.distance_model.predict(region).as_matrix(),
     )
     np.testing.assert_array_equal(
-        restored.predict(region).values, state.model.predict(region).values
+        restored.predict(region).values, state.selected_model.predict(region).values
     )

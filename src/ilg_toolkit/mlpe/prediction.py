@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
 
-from ..data import PairwiseObservations
+from ..data import PairwiseObservations, _validate_pairs
 from ..prediction import Prediction
 from .fit import MLPEError, RegionalMLPECalibration
 
@@ -12,24 +12,12 @@ from .fit import MLPEError, RegionalMLPECalibration
 def _query(distances, pairs):
     distances = jnp.asarray(distances, dtype=jnp.float64)
     try:
-        raw_pairs = tuple(pairs)
-        if any(isinstance(pair, str) for pair in raw_pairs):
-            raise ValueError("Each pair must contain two labels")
-        pairs = tuple(tuple(pair) for pair in raw_pairs)
-    except (TypeError, ValueError) as error:
-        raise MLPEError("Query pairs must contain sampling-unit labels") from error
-    if not pairs or distances.shape != (len(pairs),) or not bool(jnp.isfinite(distances).all()):
+        pairs = _validate_pairs(pairs)
+    except ValueError as error:
+        raise MLPEError(str(error)) from error
+    if distances.shape != (len(pairs),) or not bool(jnp.isfinite(distances).all()):
         raise MLPEError("Query distances must be finite and aligned with labeled pairs")
-    if any(
-        len(pair) != 2
-        or any(not isinstance(label, str) or not label for label in pair)
-        or pair[0] == pair[1]
-        for pair in pairs
-    ):
-        raise MLPEError("Query pairs require distinct nonempty sampling-unit labels")
     canonical = tuple(tuple(sorted(pair)) for pair in pairs)
-    if len(set(canonical)) != len(canonical):
-        raise MLPEError("Query pairs contain duplicate unordered identities, including reversals")
     return distances, pairs, canonical
 
 
@@ -105,7 +93,7 @@ def predict(
         if not bool(valid):
             raise MLPEError("Population-effect prediction covariance is not positive definite")
         model_values += effects
-        variance = effect_variance + calibration.residual_variance + calibration.config.jitter
+        variance = effect_variance + calibration.residual_variance + calibration.loss.jitter
         if not bool(jnp.isfinite(model_values).all() & jnp.isfinite(variance).all()):
             raise MLPEError("Conditional prediction produced nonfinite means or variances")
         extras.update(model_variance=variance, effect_variance=effect_variance)
@@ -156,7 +144,7 @@ def _condition_on_support(
     residual -= (
         head.intercept + head.slope * (distances - head.distance_center) / head.distance_scale
     )
-    d = head.residual_variance + head.config.jitter
+    d = head.residual_variance + head.loss.jitter
     updated_mean, updated_covariance = _condition_posterior(
         mean, covariance, residual, left, right, d
     )

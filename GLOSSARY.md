@@ -5,25 +5,33 @@ Inverse landscape genetics: learning relationships between landscapes and pairwi
 ## Language
 
 **Region batch**:
-The prepared landscape features, sampling-unit identifiers, and grid positions for one region, prepared before genetic observations are attached.
+The prepared landscape features, sampling-unit identifiers, and grid positions for one region, independent of genetic observations.
 An optional species column labels each sampling unit; when omitted, all sampling units belong to one species.
 _Avoid_: Prepared region, when naming this input boundary.
 
 **Training configuration**:
-The optimization budget and numerical settings supplied as `TrainingConfig`.
-_Avoid_: FitConfig, when naming this public configuration.
+The chosen loss, joint optimization budget, and execution settings for training a distance model and its statistical parameters.
+_Avoid_: Calibration settings, when referring to the training budget.
+
+**Loss**:
+A statistical criterion relating a region–species group's ecological distances to its genetic observations, together with the criterion's numerical settings.
+_Avoid_: Objective name, when referring to the criterion and its settings.
+
+**Statistical parameter state**:
+The current statistical parameters estimated jointly with distance-model parameters during training, as required by the chosen loss.
+For maximum-likelihood population effects (MLPE) these are variance parameters; the direct log1p criterion has none.
+_Avoid_: Fitted calibration, when referring only to the parameters being optimized.
 
 **Landscape genetics model**:
 A distance model composed with genetic calibration, retaining feature meanings,
-target semantics and the observations used for training and selection.
-Its `predict` returns genetic predictions on the original scale.
+target semantics, and species order.
+Its predictions describe genetic relationships on the original scale.
 _Avoid_: Encoder, when referring to the complete genetic prediction model.
 
 **Distance model**:
 A relationship deriving ecological distances from prepared features and
 sampling-unit locations without genetic observations. Effective resistance and
-squared embedding distance are supported forms of ecological distance; its `predict`
-returns ecological distances.
+squared embedding distance are supported forms of ecological distance.
 _Avoid_: Genetic predictor, when the relationship has no genetic calibration.
 
 **Conductance surface**:
@@ -44,15 +52,17 @@ jointly from its observations across regions.
 _Avoid_: Shared distance model, without specifying the pooling axis.
 
 **Calibration module**:
-The authoritative target contract and relationship mapping ecological distances to
-genetic predictions. Direct calibration applies the inverse target
-transform. Maximum-likelihood population effects (MLPE) calibration selects a
-fitted relationship for the query region and species.
+A fitted genetic relationship and its target contract, mapping ecological distances to genetic predictions.
+Direct calibration applies the inverse target transform; MLPE calibration retains a fitted relationship for each supplied region–species group.
+
+**Fitted calibration**:
+A genetic relationship estimated for supplied observations and a particular distance model.
+For MLPE it includes distance moments, coefficients, variance estimates, and a population-effect posterior.
+_Avoid_: Recalibrated distance model, when its distance parameters have stayed fixed.
 
 **MLPE calibration**:
 One region–species group's fitted relationship between ecological distances
-and genetic targets, including population dependence, uncertainty and
-observation-use provenance.
+and genetic targets, including population dependence and population-effect uncertainty.
 _Avoid_: Regional MLPE calibration; complete model, when referring only to this
 fitted relationship.
 
@@ -62,22 +72,24 @@ region–species group, retaining population dependence within each MLPE calibra
 _Avoid_: Regional calibration, when describing the across-group pooling policy.
 
 **Resistance calculation**:
-Effective resistance between sampling-unit nodes in a conductance graph, computed
-by `effective_resistance`. `ResistanceSolverConfig` declares numerical settings;
-`ResistanceSolverContext` holds a reusable solver for one graph shape.
+Effective resistance between sampling-unit nodes in a conductance graph.
 _Avoid_: Distance solver, when referring specifically to resistance computation.
 
 **Isolation by distance (IBD)**:
 A reference relationship between geographic separation and genetic dissimilarity, independent of landscape resistance.
 _Avoid_: IBR, when referring to the geographic-distance baseline.
 
-**Fold ensemble**:
-A collection of fitted models trained using different sampling-unit partitions of the same dataset.
-_Avoid_: Fold-averaged model, when referring to the collection rather than an aggregate prediction.
+**Ensemble**:
+An ordered collection of compatible fitted landscape genetics models whose genetic predictions are averaged on the original target scale.
+_Avoid_: Fold ensemble, when no particular training split is implied.
 
 **Ensemble member**:
-One fitted model belonging to a fold ensemble.
+One fitted model at a given position in an ensemble.
 _Avoid_: Fold, when referring to the fitted model rather than the population partition.
+
+**Member spread**:
+Descriptive variability among ensemble members' predictions or conductance surfaces.
+_Avoid_: Predictive uncertainty, when referring only to member variability.
 
 **Population pair**:
 An unordered pair of distinct populations within a landscape, associated with an observed or predicted genetic dissimilarity.
@@ -85,19 +97,16 @@ _Avoid_: Sample, when referring to a pair rather than an individual population o
 
 **Selected model**:
 A fitted landscape genetics model retained for prediction from the evaluated training steps, chosen by the lowest validation loss when validation observations are supplied.
+Without built-in validation, the final evaluated model is selected; a study's own candidate-selection procedure may retain a different model.
 _Avoid_: Best model; snapshot, when referring to the selected model.
 
-**Out-of-fold prediction**:
-A genetic prediction for a query pair averaged over ensemble members eligible under the sampling-unit holdout and observation-use rules.
-The default rules require both sampling units to remain unseen by each eligible ensemble member.
-_Avoid_: Deployment prediction, which uses all ensemble members.
+**Latest model**:
+The fitted landscape genetics model corresponding to the current training step's distance and statistical parameters.
+_Avoid_: Selected model, when referring to the state used for continued training.
 
-**Unseen sampling unit**:
-A sampling unit whose genetic observations have not been used by a particular ensemble member for training, model selection, calibration, or support conditioning.
-_Avoid_: Unseen location, when referring to genetic-observation use.
-
-**Out-of-fold coverage**:
-The count and fraction of requested query pairs with a successful genetic prediction from at least one eligible ensemble member.
+**Explanatory evaluation**:
+Assessment of the association between frozen ecological distances and genetic observations through fresh calibration on the assessed populations.
+When those observations fit and score calibration, the resulting score measures association rather than untouched predictive accuracy of the complete model.
 
 **Sampling unit**:
 An identified population or individual with a landscape location, linked to other sampling units by pairwise genetic observations.
@@ -111,8 +120,9 @@ _Avoid_: Genetic distance, when the observation is a similarity or relatedness m
 A landscape and its associated sampling units and genetic observations, with its own relationship between ecological distances and observed genetic targets.
 _Avoid_: Dataset, when referring to one region within a multi-region study.
 
-**Data role**:
-The permitted use of pairwise genetic observations for training, validation-based model selection, genetic calibration, support conditioning, or query evaluation.
+**Observation selection**:
+A subset of measured sampling-unit pairs that retains their targets, species, and sampling-unit identities.
+_Avoid_: Observation partition, when referring to the selected measurements themselves.
 
 **Query pair**:
 An unordered pair of distinct sampling units for which a prediction is requested.
@@ -120,7 +130,18 @@ Like a query in meta-learning, it identifies what to predict; its measured targe
 
 **Support observations**:
 Pairwise genetic observations used to condition population effects for predictions on separate query pairs.
-Like the support set in meta-learning, they supply measurements for adaptation before predicting queries; here the distance model and fitted calibration coefficients and variance parameters stay fixed.
+The distance model, distance moments, fitted coefficients, and variance parameters stay fixed.
+
+**Marginal prediction**:
+A genetic prediction using the fitted relationship with population effects averaged over their zero-mean distribution.
+
+**Saved-effect prediction**:
+A genetic prediction using the population-effect posterior retained by fitted calibration.
+_Avoid_: Support conditioning, when no additional observations are supplied.
+
+**Support conditioning**:
+An update of the saved population-effect posterior using additional observations disjoint from calibration and query measurements.
+_Avoid_: Recalibration, which estimates a new genetic relationship.
 
 **Population effect**:
 A population's additive random contribution to model-scale genetic targets in MLPE calibration, shared by every pair involving that population.

@@ -13,7 +13,7 @@ import jax.numpy as jnp
 from numpy.typing import ArrayLike
 
 from ..config import ResistanceSolverConfig
-from ..data import ObservationPartition, RegionBatch
+from ..data import RegionBatch, _validate_pairs
 from ..prediction import Prediction
 from ..resistance import ResistanceSolverContext, build_resistance_context, effective_resistance
 from .common import pixel_to_patch_nodes, with_dropout_mode
@@ -184,7 +184,7 @@ class ConductanceModel(AbstractDistanceModel):
         return cast(dict[str, jax.Array], results)
 
 
-class EmbeddingModel(AbstractDistanceModel):
+class EmbeddingDistanceModel(AbstractDistanceModel):
     """A distance model deriving squared embedding distances from landscape features."""
 
     @abstractmethod
@@ -265,10 +265,7 @@ def _query_pairs(
 ) -> tuple[tuple[tuple[str, str], ...], tuple[jax.Array, jax.Array]]:
     raw = tuple(combinations(region.sampling_unit_ids, 2)) if pairs is None else tuple(pairs)
     try:
-        if any(isinstance(pair, str) for pair in raw):
-            raise ValueError("Each pair requires two labels")
-        labels = cast(tuple[tuple[str, str], ...], tuple(tuple(pair) for pair in raw))
-        ObservationPartition(region.name, labels, role="query")
+        labels = _validate_pairs(raw)
         lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
         indices = jnp.asarray([(lookup[a], lookup[b]) for a, b in labels], dtype=jnp.int32)
     except (TypeError, ValueError, KeyError) as error:

@@ -8,12 +8,13 @@ import numpy as np
 import pytest
 
 from ilg_toolkit import (
+    Log1pLoss,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
     TrainingConfig,
-    fit,
+    train,
 )
 from ilg_toolkit.models import LogLinearConductance
 
@@ -168,18 +169,18 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
             * (first_moment / (1 - 0.9**step))
             / (np.sqrt(second_moment / (1 - 0.999**step)) + 1e-8)
         )
-    state = fit(
+    state = train(
         regions,
         observations,
         distance_model=with_parameters(jnp.asarray(initial)),
-        config=TrainingConfig(objective="direct_log1p", steps=2, learning_rate=0.02),
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.02),
     )
     np.testing.assert_allclose(
         state.history[-1].training_loss, reference_loss(expected), atol=1e-10
     )
     for region, values in zip(regions, regional_means, strict=True):
         np.testing.assert_allclose(
-            state.model.predict(region).values,
+            state.selected_model.predict(region).values,
             reference_distances(expected, values),
             atol=1e-8,
             rtol=1e-8,

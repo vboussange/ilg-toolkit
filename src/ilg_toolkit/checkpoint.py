@@ -1,4 +1,4 @@
-"""Training checkpoints saved as Equinox files for continuing a fit."""
+"""Training checkpoints saved as Equinox files for continuing optimization."""
 
 from dataclasses import asdict
 from pathlib import Path
@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import optax
 
 from .config import TrainingConfig
-from .mlpe import MLPEConfig
+from .losses import _loss_from_metadata, _loss_metadata
 from .models import AbstractDistanceModel
 from .persistence import (
     ArtifactError,
@@ -21,17 +21,30 @@ from .training import StepRecord, TrainingState, _validate_state
 
 
 def save_checkpoint(path, state: TrainingState) -> None:
-    """An Equinox checkpoint containing the latest training state and selected model.
+    """Atomic storage of the latest training state and selected fitted model.
 
-    ``fit(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
-    initialization and every optimizer update. A failed replacement leaves the prior file intact.
+    ``train(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
+    initialization and each update. Statistical parameters, optimizer/random state,
+    and the selected model retain their respective training steps.
+
+    Examples
+    --------
+    >>> save_checkpoint("training.eqx", state)
+    >>> restored = load_checkpoint("training.eqx", distance_model=distance_model_template)
+    >>> continued = train(region, observations, state=restored,
+    ...                   config=dataclasses.replace(restored.config, steps=1000))
     """
     if not isinstance(state, TrainingState):
-        raise ArtifactError("save_checkpoint requires a TrainingState returned by fit")
+        raise ArtifactError("save_checkpoint requires a TrainingState returned by train")
     _validate_state(state)
+    options = asdict(state.config)
+    options["loss"] = _loss_metadata(state.config.loss)
     metadata = {
-        "config": asdict(state.config),
-        "history_length": len(state.history),
+        "config": options,
+        "loss_state": state.config.loss._state_metadata(state.loss_state),
+        "history": [asdict(record) for record in state.history],
+        "training_groups": state.training_groups,
+        "validation_groups": state.validation_groups,
         "latest_model": _model_metadata(state.latest_model),
         "selected_model": _model_metadata(state.selected_model),
     }
@@ -39,58 +52,30 @@ def save_checkpoint(path, state: TrainingState) -> None:
 
 
 def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingState:
-    """A checkpoint training state loaded using a caller-constructed distance model.
+    """A saved training state restored with a caller-constructed distance model template.
 
-    The template supplies the model class, static settings, and numerical shapes
-    and dtypes. Reproducing uninterrupted training requires the original inputs
-    and execution conditions. Only the total step budget may increase.
+    The template supplies the model class, static settings, numerical shapes, and
+    dtypes; float64 checkpoints require float64 enabled before loading. Continuation
+    uses unchanged inputs and execution settings, allowing only the total step
+    budget to increase. See :func:`save_checkpoint` for a continuation example.
     """
     try:
         with Path(path).open("rb") as stream:
             metadata = _read_header(stream, kind="training_checkpoint")
             options = dict(metadata["config"])
-            options["mlpe"] = MLPEConfig(**options["mlpe"])
+            options["loss"] = _loss_from_metadata(options["loss"])
             config = TrainingConfig(**options)
             latest = _model_template(metadata["latest_model"], distance_model)
             selected = _model_template(metadata["selected_model"], distance_model)
-            raw = (
-                {name: jnp.zeros(2, dtype=jnp.float64) for name in latest.training_pairs}
-                if config.objective == "mlpe"
-                else None
-            )
+            loss_state = config.loss._state_template(metadata["loss_state"])
             optimizer_state = optax.adam(config.learning_rate).init(
-                eqx.filter((latest.distance_model, raw), eqx.is_inexact_array)
+                eqx.filter((latest.distance_model, loss_state), eqx.is_inexact_array)
             )
-            history_length = metadata["history_length"]
-            if not 1 <= history_length <= config.steps + 1:
+            history = tuple(StepRecord(**record) for record in metadata["history"])
+            if not 1 <= len(history) <= config.steps + 1:
                 raise ArtifactError("Checkpoint history length must be within the step budget")
-
-            def metrics(groups):
-                regions = {key if isinstance(key, str) else key[0]: 0.0 for key in groups}
-                species = latest.species
-                by_species = (
-                    None
-                    if species is None or len(species) == 1
-                    else {species[key[1]]: 0.0 for key in groups}
-                )
-                return regions, by_species
-
-            training_regions, training_species = metrics(latest.training_pairs)
-            validation_regions, validation_species = metrics(latest.validation_pairs)
-            history = tuple(
-                StepRecord(
-                    step=0,
-                    training_loss=0.0,
-                    validation_loss=0.0 if latest.validation_pairs else None,
-                    training_by_region=training_regions,
-                    validation_by_region=validation_regions,
-                    training_by_species=training_species,
-                    validation_by_species=validation_species,
-                )
-                for _ in range(history_length)
-            )
             template = TrainingState(
-                raw_variances=raw,
+                loss_state=loss_state,
                 optimizer_state=optimizer_state,
                 rng_key=jnp.zeros(2, dtype=jnp.uint32),
                 config=config,
@@ -99,6 +84,8 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
                 selected_model=selected,
                 selected_step=0,
                 step=0,
+                training_groups=tuple(tuple(group) for group in metadata["training_groups"]),
+                validation_groups=tuple(tuple(group) for group in metadata["validation_groups"]),
             )
             state = eqx.tree_deserialise_leaves(stream, template)
             _validate_state(state)

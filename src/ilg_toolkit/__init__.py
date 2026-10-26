@@ -4,91 +4,49 @@ from .calibration import (
     AbstractCalibrationModule,
     DirectCalibrationModule,
     MLPECalibrationModule,
+    calibrate,
 )
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
-from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
-from .ensemble import (
-    Ensemble,
-    EnsembleMember,
-    EnsemblePrediction,
-    EnsembleSurface,
-    MemberFailure,
-    MemberIdentity,
-    PopulationFold,
-    aggregate_predictions,
-    ensemble_member_identity,
-    fit_ensemble,
-    fit_ensemble_member,
-    generate_population_folds,
-)
-from .evaluation import (
-    EvaluationAccess,
-    EvaluationMetrics,
-    EvaluationRegime,
-    EvaluationSupport,
-    OOFEvaluation,
-    OOFPrediction,
-    evaluate_ensemble,
-    predict_out_of_fold,
-    score_out_of_fold,
-)
+from .data import PairwiseObservations, RegionBatch, TargetSpec
+from .ensemble import Ensemble, EnsemblePrediction, EnsembleSurface, aggregate_predictions
 from .ibd import IBDModel
-from .mlpe import (
-    MLPEConfig,
-    MLPEError,
-    RegionalMLPECalibration,
-    calibrate_mlpe,
-)
+from .losses import AbstractLoss, Log1pLoss, MLPELoss
+from .mlpe import MLPEError, RegionalMLPECalibration, calibrate_mlpe
 from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
 from .prediction import Prediction
-from .training import StepRecord, TrainingState, fit
+from .training import StepRecord, TrainingState, train
 
 __all__ = [
     "AbstractCalibrationModule",
+    "AbstractLoss",
+    "ArtifactError",
     "DirectCalibrationModule",
-    "MLPECalibrationModule",
-    "IBDModel",
-    "EvaluationAccess",
-    "EvaluationMetrics",
-    "EvaluationRegime",
-    "EvaluationSupport",
-    "OOFEvaluation",
-    "OOFPrediction",
-    "evaluate_ensemble",
-    "predict_out_of_fold",
-    "score_out_of_fold",
     "Ensemble",
-    "EnsembleMember",
     "EnsemblePrediction",
     "EnsembleSurface",
-    "MemberFailure",
-    "MemberIdentity",
-    "PopulationFold",
-    "aggregate_predictions",
-    "ensemble_member_identity",
-    "fit_ensemble",
-    "fit_ensemble_member",
-    "generate_population_folds",
-    "ArtifactError",
-    "load_model",
-    "save_model",
-    "MLPEConfig",
+    "IBDModel",
+    "LandscapeGeneticsModel",
+    "Log1pLoss",
+    "MLPECalibrationModule",
     "MLPEError",
+    "MLPELoss",
+    "PairwiseObservations",
+    "Prediction",
+    "RegionBatch",
     "RegionalMLPECalibration",
-    "calibrate_mlpe",
+    "ResistanceSolverConfig",
     "StepRecord",
+    "TargetSpec",
     "TrainingConfig",
     "TrainingState",
-    "PairwiseObservations",
-    "ObservationPartition",
-    "Prediction",
-    "LandscapeGeneticsModel",
-    "RegionBatch",
-    "ResistanceSolverConfig",
-    "TargetSpec",
-    "fit",
+    "aggregate_predictions",
+    "calibrate",
+    "calibrate_mlpe",
     "load_checkpoint",
+    "load_model",
     "save_checkpoint",
+    "save_model",
+    "train",
 ]

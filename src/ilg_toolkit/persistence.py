@@ -19,7 +19,8 @@ import numpy as np
 from .calibration import DirectCalibrationModule, GroupKey, MLPECalibrationModule
 from .config import ResistanceSolverConfig
 from .data import TargetSpec
-from .mlpe import MLPEConfig, RegionalMLPECalibration
+from .losses import MLPELoss
+from .mlpe import RegionalMLPECalibration
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel, ConductanceModel
 
@@ -76,7 +77,7 @@ def _read_header(stream, *, kind):
 
 
 def _model_metadata(model):
-    """Target, feature, calibration, and observation-use metadata for a saved model."""
+    """Target, feature, and fitted calibration metadata for a saved model."""
     if isinstance(model.calibration, DirectCalibrationModule):
         calibration = {"kind": "direct"}
     elif isinstance(model.calibration, MLPECalibrationModule):
@@ -87,8 +88,7 @@ def _model_metadata(model):
                     name: {
                         "population_ids": value.population_ids,
                         "calibration_pairs": value.calibration_pairs,
-                        "calibration_roles": value.calibration_roles,
-                        "config": asdict(value.config),
+                        "loss": asdict(value.loss),
                         "optimizer_message": value.optimizer_message,
                     }
                     for name, value in model.calibration.regions.items()
@@ -106,17 +106,12 @@ def _model_metadata(model):
             if isinstance(model.distance_model, ConductanceModel)
             else None
         ),
-        "training_objective": model.training_objective,
         "species": model.species,
-        "training_pairs": _encode_groups(model.training_pairs),
-        "validation_pairs": _encode_groups(model.validation_pairs),
         "calibration": calibration,
     }
 
 
 def _encode_groups(values):
-    if all(isinstance(key, str) for key in values):
-        return values
     return [
         {"region": region, "species_index": index, "value": value}
         for (region, index), value in values.items()
@@ -124,32 +119,29 @@ def _encode_groups(values):
 
 
 def _decode_groups(values) -> dict[GroupKey, Any]:
-    if isinstance(values, dict):
-        return values
     return {(item["region"], item["species_index"]): item["value"] for item in values}
 
 
 def _head_template(name, metadata, target):
-    config = MLPEConfig(**metadata["config"])
+    loss = MLPELoss(**metadata["loss"])
     population_ids = tuple(metadata["population_ids"])
     count = len(population_ids)
     return RegionalMLPECalibration(
-        region_name=name if isinstance(name, str) else name[0],
+        region_name=name[0],
         target=target,
         population_ids=population_ids,
         distance_center=0.0,
-        distance_scale=max(1.0, 2 * config.min_distance_scale),
+        distance_scale=max(1.0, 2 * loss.min_distance_scale),
         intercept=0.0,
         slope=0.0,
-        unit_variance=config.variance_floor,
-        residual_variance=config.variance_floor,
+        unit_variance=loss.variance_floor,
+        residual_variance=loss.variance_floor,
         effect_mean=jnp.zeros(count, dtype=jnp.float64),
         effect_covariance=jnp.eye(count, dtype=jnp.float64),
         effect_precision_cholesky=jnp.eye(count, dtype=jnp.float64),
         calibration_pairs=tuple(tuple(pair) for pair in metadata["calibration_pairs"]),
-        calibration_roles=tuple(metadata["calibration_roles"]),
         ml_log_likelihood=0.0,
-        config=config,
+        loss=loss,
         optimizer_iterations=0,
         optimizer_message=metadata["optimizer_message"],
         converged=False,
@@ -188,10 +180,7 @@ def _model_template(metadata, distance_model):
         feature_names=(
             None if metadata["feature_names"] is None else tuple(metadata["feature_names"])
         ),
-        training_objective=metadata["training_objective"],
         species=None if metadata["species"] is None else tuple(metadata["species"]),
-        training_pairs=_decode_groups(metadata["training_pairs"]),
-        validation_pairs=_decode_groups(metadata["validation_pairs"]),
     )
 
 

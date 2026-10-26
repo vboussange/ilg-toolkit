@@ -126,7 +126,7 @@ def test_nonlinear_points_inverse_transform_mean_but_variance_stays_model_scale(
     np.testing.assert_allclose(result.extras["model_variance"], expected_variance, atol=1e-11)
     np.testing.assert_allclose(
         result.extras["model_variance"],
-        result.extras["effect_variance"] + head.residual_variance + head.config.jitter,
+        result.extras["effect_variance"] + head.residual_variance + head.loss.jitter,
     )
     assert result.values[0] != pytest.approx(np.expm1(expected_mean[0] + expected_variance[0] / 2))
 

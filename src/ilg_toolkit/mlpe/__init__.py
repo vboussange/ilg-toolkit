@@ -1,6 +1,6 @@
 """Maximum-likelihood population effects (MLPE) genetic calibration."""
 
-from .fit import MLPEConfig, MLPEError, RegionalMLPECalibration, calibrate_mlpe
+from .fit import MLPEError, RegionalMLPECalibration, calibrate_mlpe
 from .likelihood import (
     decode_mlpe_variances,
     finalize_mlpe_fit,
@@ -13,7 +13,6 @@ from .likelihood import (
 )
 
 __all__ = [
-    "MLPEConfig",
     "MLPEError",
     "RegionalMLPECalibration",
     "calibrate_mlpe",

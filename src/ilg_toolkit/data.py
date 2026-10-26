@@ -161,37 +161,25 @@ class RegionBatch:
         return positions[:, 0] * self.features.shape[1] + positions[:, 1]
 
 
-@dataclass(frozen=True)
-class ObservationPartition:
-    """Observed unordered sampling-unit pairs assigned a data role in one region.
-
-    The partition selects observations for training, validation, calibration,
-    support conditioning, or query evaluation.
-    """
-
-    region_name: str
-    pairs: tuple[tuple[str, str], ...]
-    role: str = "training"
-
-    def __post_init__(self):
-        if not isinstance(self.region_name, str) or not self.region_name:
-            raise ValueError("Partition region_name must be nonempty")
-        if self.role not in {"training", "validation", "calibration", "support", "query"}:
-            raise ValueError(
-                "Partition role must be training, validation, calibration, support, or query"
-            )
-        pairs = tuple(tuple(pair) for pair in self.pairs)
-        if not pairs or any(
-            len(pair) != 2
-            or any(not isinstance(x, str) or not x for x in pair)
-            or pair[0] == pair[1]
-            for pair in pairs
-        ):
-            raise ValueError("Partition pairs require two distinct, nonempty sampling-unit labels")
-        pairs = tuple(tuple(sorted(pair)) for pair in pairs)
-        if len(set(pairs)) != len(pairs):
-            raise ValueError("Partition pairs must be unique, including reversed duplicates")
-        object.__setattr__(self, "pairs", pairs)
+def _validate_pairs(pairs) -> tuple[tuple[str, str], ...]:
+    """Validate unordered identities while preserving requested orientation and order."""
+    try:
+        raw = tuple(pairs)
+        if any(isinstance(pair, (str, bytes)) for pair in raw):
+            raise ValueError("Each pair must contain two sampling-unit labels")
+        labels = tuple(tuple(pair) for pair in raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Pairs must contain two sampling-unit labels") from error
+    if not labels or any(
+        len(pair) != 2
+        or any(not isinstance(label, str) or not label for label in pair)
+        or pair[0] == pair[1]
+        for pair in labels
+    ):
+        raise ValueError("Pairs require two distinct nonempty sampling-unit labels")
+    if len({tuple(sorted(pair)) for pair in labels}) != len(labels):
+        raise ValueError("Pairs must be unique, including reversed duplicates")
+    return labels
 
 
 @dataclass(frozen=True)
@@ -249,7 +237,7 @@ class PairwiseObservations:
         ``sampling_unit_ids`` declares a larger set of sampling units containing
         sampling units with no observed pairs.
         """
-        pairs = tuple(tuple(pair) for pair in pairs)
+        pairs = _validate_pairs(pairs)
         values = jnp.asarray(values)
         if not pairs or values.shape != (len(pairs),) or not jnp.isfinite(values).all():
             raise ValueError("Observed pairs must be nonempty and have one finite value each")
@@ -323,28 +311,40 @@ class PairwiseObservations:
         order = jnp.asarray([lookup[label] for label in self.sampling_unit_ids])
         return matrix.at[jnp.ix_(order, order)].set(self.values)
 
-    def aligned_pairs(self, region: RegionBatch, partition: ObservationPartition | None = None):
+    def select_pairs(self, pairs) -> "PairwiseObservations":
+        """Select measured pairs, preserving target, species, precision, and label order.
+
+        Pair identities are unordered. The returned ``observed_pairs`` and
+        ``observed_values`` follow the original sampling-unit matrix order,
+        independently of selection order. Empty selections, duplicate identities,
+        and unobserved pairs are rejected.
+
+        Examples
+        --------
+        >>> observations = PairwiseObservations.from_pairs(
+        ...     [("a", "b"), ("b", "c")], [0.2, 0.4], target=TargetSpec("Fst")
+        ... )
+        >>> observations.select_pairs([("c", "b")]).observed_pairs
+        (("b", "c"),)
+        """
+        selected = {tuple(sorted(pair)) for pair in _validate_pairs(pairs)}
+        observed = self.observed_pairs
+        if not selected.issubset({tuple(sorted(pair)) for pair in observed}):
+            raise ValueError("Selection contains an unobserved pair")
+        mask = jnp.asarray([tuple(sorted(pair)) in selected for pair in observed])
+        return type(self).from_pairs(
+            [pair for pair, keep in zip(observed, mask, strict=True) if keep],
+            self.observed_values[mask],
+            target=self.target,
+            species=self.species,
+            sampling_unit_ids=self.sampling_unit_ids,
+        )
+
+    def aligned_pairs(self, region: RegionBatch):
         """Observed index pairs and measurements in the region batch's sampling-unit order."""
         values = self.aligned_values(region)
         left, right = jnp.triu_indices(len(region.sampling_unit_ids), 1)
         present = jnp.isfinite(values[left, right])
-        if partition is not None:
-            if partition.region_name != region.name:
-                raise ValueError("Partition region_name does not match the region batch")
-            endpoints = {endpoint for pair in partition.pairs for endpoint in pair}
-            if not endpoints.issubset(region.sampling_unit_ids):
-                raise ValueError("Partition contains sampling units outside the region batch")
-            observed = {tuple(sorted(pair)) for pair in self.observed_pairs}
-            if not set(partition.pairs).issubset(observed):
-                raise ValueError("Partition selects an unobserved pair")
-            selected = set(partition.pairs)
-            present &= jnp.asarray(
-                [
-                    tuple(sorted((region.sampling_unit_ids[i], region.sampling_unit_ids[j])))
-                    in selected
-                    for i, j in zip(left, right, strict=True)
-                ]
-            )
         pairs = left[present], right[present]
         if not len(pairs[0]):
             raise ValueError("Selected observations must contain at least one observed pair")

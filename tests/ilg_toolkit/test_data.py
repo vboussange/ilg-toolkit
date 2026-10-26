@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from ilg_toolkit import PairwiseObservations, TargetSpec, TrainingConfig, fit
+from ilg_toolkit import Log1pLoss, PairwiseObservations, TargetSpec, TrainingConfig, train
 
 
 def test_species_observations_align_repeated_ids_without_cross_species_pairs(observation_problem):
@@ -103,18 +103,18 @@ def test_labelled_raster_axes_normalize_without_changing_feature_meaning(observa
     observations = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20"), ("unit/20", "unit/99")], [0.4, 0.6], target=target
     )
-    expected = fit(
+    expected = train(
         plain,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=1),
-    ).model
-    actual = fit(
+        config=TrainingConfig(loss=Log1pLoss(), steps=1),
+    ).selected_model
+    actual = train(
         labelled,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=1),
-    ).model
+        config=TrainingConfig(loss=Log1pLoss(), steps=1),
+    ).selected_model
     assert labelled.features.dims == ("row", "column", "feature")
     row_axis = labelled.features.axes["row"]
     column_axis = labelled.features.axes["column"]
@@ -143,13 +143,13 @@ def test_array_like_observations_and_targets_follow_configured_precision(
             for transformed in (target.forward(values), target.inverse(values)):
                 assert transformed.dtype == dtype
                 assert float(transformed[0]) == expected
-            fitted = fit(
+            fitted = train(
                 region,
                 observations,
                 distance_model=model,
-                config=TrainingConfig(objective="direct_log1p", steps=0),
+                config=TrainingConfig(loss=Log1pLoss(), steps=0),
             )
-            prediction = fitted.model.predict(region)
+            prediction = fitted.selected_model.predict(region)
             assert prediction.values.dtype == prediction.as_matrix().dtype == dtype
             predictions.append(prediction.values)
         np.testing.assert_array_equal(predictions[0], predictions[1])
@@ -199,20 +199,22 @@ def test_equivalent_matrix_and_pair_inputs_train_equivalent_models(observation_p
         [4, 1, 1],
         target=target,
     )
-    left = fit(
+    left = train(
         region,
         matrix,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=2),
+        config=TrainingConfig(loss=Log1pLoss(), steps=2),
     )
-    right = fit(
+    right = train(
         region,
         pairs,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=2),
+        config=TrainingConfig(loss=Log1pLoss(), steps=2),
     )
     np.testing.assert_allclose(
-        left.model.predict(region).values, right.model.predict(region).values, rtol=1e-6
+        left.selected_model.predict(region).values,
+        right.selected_model.predict(region).values,
+        rtol=1e-6,
     )
     assert left.history[-1].training_loss == right.history[-1].training_loss
 
@@ -225,66 +227,41 @@ def test_incomplete_pairs_remain_absent_through_fitting(ScalarEmbedding, observa
         target=target,
         sampling_unit_ids=region.sampling_unit_ids,
     )
-    result = fit(
+    result = train(
         region,
         observations,
         distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(objective="direct_log1p", steps=0),
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
     )
     assert observations.observed_pairs == (("unit/7", "unit/20"),)
     assert np.isnan(observations.values[0, 2])
     assert result.history[0].training_loss == pytest.approx(0, abs=1e-14)
     # Unobserved pairs can still be predicted, but never become zero training targets.
-    np.testing.assert_allclose(result.model.predict(region).as_matrix()[0, 2], 4)
+    np.testing.assert_allclose(result.selected_model.predict(region).as_matrix()[0, 2], 4)
 
 
-def test_supplied_partitions_select_observations_and_reject_invalid_membership(observation_problem):
-    import pytest
-
-    from ilg_toolkit import ObservationPartition
-
+def test_selected_observations_are_disjoint_for_training_and_validation(observation_problem):
     region, target, model = observation_problem()
     observations = PairwiseObservations.from_matrix(
         region.sampling_unit_ids, [[0, 1, 4], [1, 0, 1], [4, 1, 0]], target=target
     )
-    training = ObservationPartition(region.name, (("unit/7", "unit/20"),), role="training")
-    validation = ObservationPartition(region.name, (("unit/7", "unit/99"),), role="validation")
-    result = fit(
+    training = observations.select_pairs([("unit/7", "unit/20")])
+    validation = observations.select_pairs([("unit/7", "unit/99")])
+    result = train(
         region,
-        observations,
+        training,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=0),
-        partition=training,
-        validation=(region, observations),
-        validation_partition=validation,
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        validation=(region, validation),
     )
     assert result.history[0].validation_loss is not None
     with pytest.raises(ValueError):
-        fit(
+        train(
             region,
             observations,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", steps=0),
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
             validation=(region, observations),
-        )
-    wrong_region = ObservationPartition("somewhere-else", training.pairs)
-    with pytest.raises(ValueError):
-        fit(
-            region,
-            observations,
-            distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", steps=0),
-            partition=wrong_region,
-        )
-    incomplete = PairwiseObservations.from_pairs(training.pairs, [1], target=target)
-    absent = ObservationPartition(region.name, (("unit/7", "unit/99"),))
-    with pytest.raises(ValueError):
-        fit(
-            region,
-            incomplete,
-            distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", steps=0),
-            partition=absent,
         )
 
 
@@ -300,37 +277,35 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit(observation_problem)
         sampling_unit_kinds=("individual", "population", "individual"),
     )
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
-    result = fit(
+    result = train(
         region,
         observations,
         distance_model=model,
-        config=TrainingConfig(objective="direct_log1p", steps=0),
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
     )
     assert region.sampling_unit_kinds == ("individual", "population", "individual")
-    assert result.model.feature_names == ("elevation", "canopy")
+    assert result.selected_model.feature_names == ("elevation", "canopy")
     swapped = replace(
         region,
         features=cx.field(region.feature_array, "row", "column", "feature"),
         feature_names=("canopy", "elevation"),
     )
     with pytest.raises(ValueError):
-        result.model.predict(swapped)
+        result.selected_model.predict(swapped)
     relatedness = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20")], [-0.2], target=TargetSpec("relatedness", kind="relatedness")
     )
     with pytest.raises(ValueError):
-        fit(
+        train(
             region,
             relatedness,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", steps=0),
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
 
 
-def test_invalid_observations_and_partitions_fail_at_the_public_boundary(observation_problem):
+def test_invalid_observations_fail_at_the_public_boundary(observation_problem):
     import pytest
-
-    from ilg_toolkit import ObservationPartition
 
     region, target, model = observation_problem()
     for pairs, values, labels in [
@@ -344,29 +319,12 @@ def test_invalid_observations_and_partitions_fail_at_the_public_boundary(observa
             PairwiseObservations.from_pairs(pairs, values, target=target, sampling_unit_ids=labels)
     unknown = PairwiseObservations.from_pairs([("unit/7", "missing")], [1], target=target)
     with pytest.raises(ValueError):
-        fit(
+        train(
             region,
             unknown,
             distance_model=model,
-            config=TrainingConfig(objective="direct_log1p", steps=0),
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
-    observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
-    for (partition,) in [
-        (ObservationPartition(region.name, (("unit/7", "missing"),)),),
-        (ObservationPartition(region.name, observations.observed_pairs, role="validation"),),
-    ]:
-        with pytest.raises(ValueError):
-            fit(
-                region,
-                observations,
-                distance_model=model,
-                config=TrainingConfig(objective="direct_log1p", steps=0),
-                partition=partition,
-            )
-    with pytest.raises(ValueError):
-        ObservationPartition(region.name, ())
-    with pytest.raises(ValueError):
-        ObservationPartition(region.name, (("a", "b"), ("b", "a")))
 
 
 def test_sqrt_transform_has_an_explicit_nonnegative_codomain_and_preserves_measurements():
@@ -381,3 +339,37 @@ def test_sqrt_transform_has_an_explicit_nonnegative_codomain_and_preserves_measu
         target.forward([-1])
     observations = PairwiseObservations.from_pairs([("a", "b")], [0.123456789012345], target=target)
     assert observations.observed_values[0] == 0.123456789012345
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_select_pairs_preserves_metadata_precision_and_deterministic_alignment(dtype):
+    target = TargetSpec("divergence", units="index", transform="log1p")
+    observations = PairwiseObservations.from_pairs(
+        [("c", "a"), ("b", "c"), ("a", "b")],
+        jnp.asarray([0.123456789012345, 2, 3], dtype=dtype),
+        target=target,
+        species="newt",
+        sampling_unit_ids=("c", "b", "a"),
+    )
+    selected = observations.select_pairs([("a", "c"), ("b", "a")])
+    assert selected.target == target and selected.species == "newt"
+    assert selected.sampling_unit_ids == ("c", "b", "a")
+    assert selected.observed_pairs == (("c", "a"), ("b", "a"))
+    assert selected.values.dtype == dtype
+    np.testing.assert_array_equal(
+        selected.observed_values, observations.observed_values[jnp.asarray([1, 2])]
+    )
+    for pairs in (
+        [],
+        ["ab"],
+        [("a", "a")],
+        [("a", "missing")],
+        [("a", "b"), ("b", "a")],
+        [("", "a")],
+        [(1, "a")],
+        [("a",)],
+    ):
+        with pytest.raises(ValueError):
+            observations.select_pairs(pairs)
+    with pytest.raises(ValueError, match="unobserved"):
+        selected.select_pairs([("c", "b")])

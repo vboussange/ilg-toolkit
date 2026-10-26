@@ -16,28 +16,20 @@ import pytest
 from ilg_toolkit import (
     DirectCalibrationModule,
     Ensemble,
-    EnsembleMember,
     LandscapeGeneticsModel,
-    ObservationPartition,
+    MLPELoss,
     PairwiseObservations,
-    PopulationFold,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
-    TrainingConfig,
-    TrainingState,
-    ensemble_member_identity,
-    fit_ensemble,
-    generate_population_folds,
 )
-from ilg_toolkit.ensemble import FoldKey
-from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
+from ilg_toolkit.mlpe import calibrate_mlpe
 from ilg_toolkit.models import (
     AbstractDistanceModel,
     ConductanceModel,
-    EmbeddingModel,
+    EmbeddingDistanceModel,
     ResNet9Conductance,
-    UNet,
+    UNetEmbeddingDistance,
 )
 
 
@@ -167,7 +159,7 @@ def _checkpoint_problem(name="alpine", seed=14):
 
 
 def _checkpoint_model(seed=8):
-    return UNet(
+    return UNetEmbeddingDistance(
         2,
         patch_size=1,
         base_channels=2,
@@ -240,17 +232,6 @@ class _CustomDistance(AbstractDistanceModel):
         return (values[left] - values[right]) ** 2
 
 
-def _model_factory(key):
-    return _WeightedEmbedding(log_weights=jax.random.normal(key, (2,)) * 0.1)
-
-
-def _completed_fit(member: EnsembleMember) -> tuple[LandscapeGeneticsModel, TrainingState]:
-    assert member.status == "completed"
-    assert member.model is not None
-    assert member.training_state is not None
-    return member.model, member.training_state
-
-
 @final
 class _DropoutConductance(ConductanceModel):
     dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
@@ -271,11 +252,6 @@ def dropout_conductance_class():
     return _DropoutConductance
 
 
-def _completed_model(member: EnsembleMember) -> LandscapeGeneticsModel:
-    assert member.model is not None
-    return member.model
-
-
 def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec]:
     region = RegionBatch(
         "alpine",
@@ -292,62 +268,19 @@ def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec
             sampling_unit_kinds=None,
             species=("frog",) * 4 + ("newt",) * 4,
         )
-    members = []
-    for index, weight in enumerate((1.0, 2.0)):
-        fold = PopulationFold(
-            f"fold-{index}",
-            {"alpine": ("c", "d")},
-            {"alpine": ObservationPartition("alpine", (("a", "b"),), "training")},
-            {"alpine": ObservationPartition("alpine", (("c", "d"),), "query")},
-        )
-        model = LandscapeGeneticsModel(
-            _ScalarEmbedding(jnp.asarray(weight)),
+    members = [
+        LandscapeGeneticsModel(
+            _ScalarEmbedding(
+                jnp.asarray(weight if num_species == 1 else [weight, weight + 2]),
+                num_species=num_species,
+            ),
             DirectCalibrationModule(target),
             1,
-            training_pairs={"alpine": (("a", "b"),)},
-            training_objective="direct_log1p",
+            species=None if num_species == 1 else ("frog", "newt"),
         )
-        if num_species == 2:
-            held: dict[FoldKey, tuple[str, ...]] = {
-                ("alpine", "frog"): ("c", "d"),
-                ("alpine", "newt"): ("a", "b") if index == 0 else ("c", "d"),
-            }
-            training = {
-                identity: ObservationPartition(
-                    "alpine", (("c", "d"),) if units == ("a", "b") else (("a", "b"),), "training"
-                )
-                for identity, units in held.items()
-            }
-            fold = PopulationFold(fold.fold_id, held, training)
-            model = LandscapeGeneticsModel(
-                _ScalarEmbedding(jnp.asarray([weight, weight + 2]), num_species=2),
-                DirectCalibrationModule(target),
-                1,
-                species=("frog", "newt"),
-                training_pairs={
-                    ("alpine", i): training["alpine", name].pairs
-                    for i, name in enumerate(("frog", "newt"))
-                },
-            )
-        members.append(
-            EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
-        )
-    return region, Ensemble(tuple(members)), target
-
-
-def _fitted_member_problem():
-    region, observations = _embedding_problem()
-    fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)[0]
-    ensemble = fit_ensemble(
-        region,
-        observations,
-        folds=[fold],
-        initialization_seeds=(13,),
-        config=TrainingConfig(objective="mlpe", steps=1),
-        model_factory=_model_factory,
-    )
-    assert ensemble.members[0].status == "completed"
-    return region, observations, ensemble
+        for weight in (1.0, 2.0)
+    ]
+    return region, Ensemble(members), target
 
 
 def _reference_observations():
@@ -361,7 +294,7 @@ def _reference_observations():
 def _calibrated():
     observations = _reference_observations()
     head = calibrate_mlpe(
-        _R_DISTANCES, observations, region_name="alpine", config=MLPEConfig(jitter=1e-7)
+        _R_DISTANCES, observations, region_name="alpine", loss=MLPELoss(jitter=1e-7)
     )
     return head, observations
 
@@ -374,7 +307,7 @@ def _joint_gaussian_reference(
     labels = sorted({label for pair in all_pairs for label in pair})
     incidence = np.array([[float(label in pair) for label in labels] for pair in all_pairs])
     covariance = head.unit_variance * incidence @ incidence.T
-    covariance += (head.residual_variance + head.config.jitter) * np.eye(len(all_pairs))
+    covariance += (head.residual_variance + head.loss.jitter) * np.eye(len(all_pairs))
     all_distances = np.r_[observed_distances, distances]
     fixed = (
         head.intercept + head.slope * (all_distances - head.distance_center) / head.distance_scale
@@ -418,7 +351,7 @@ def _frozen_r_conditional_reference(
 
 
 @final
-class _WeightedEmbedding(EmbeddingModel):
+class _WeightedEmbedding(EmbeddingDistanceModel):
     """Distance model with a learned scale for each embedding feature."""
 
     log_weights: jax.Array
@@ -517,7 +450,7 @@ class _CovariateConductance(ConductanceModel):
 
 
 @final
-class _ScalarEmbedding(EmbeddingModel):
+class _ScalarEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
     num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
@@ -535,7 +468,7 @@ class _ScalarEmbedding(EmbeddingModel):
 
 
 @final
-class _SharedParameterEmbedding(EmbeddingModel):
+class _SharedParameterEmbedding(EmbeddingDistanceModel):
     weights: jax.Array
     num_species: int = eqx.field(static=True)
     patch_size: int = eqx.field(static=True, default=1)
@@ -584,7 +517,7 @@ def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObserva
 
 
 @final
-class _StochasticEmbedding(EmbeddingModel):
+class _StochasticEmbedding(EmbeddingDistanceModel):
     distance_model: _ScalarEmbedding
     dropout: eqx.nn.Dropout
     num_species: int = eqx.field(static=True, default=1)
@@ -647,12 +580,12 @@ def _persistence_problem(name="inference"):
 
 def _calibration_problem(
     name: str = "original",
-) -> tuple[RegionBatch, PairwiseObservations, ObservationPartition, ObservationPartition]:
+) -> tuple[RegionBatch, PairwiseObservations, PairwiseObservations, PairwiseObservations]:
     region, observations = _population_effect_problem(
         name, TargetSpec("synthetic divergence", units="index")
     )
-    training = ObservationPartition(name, observations.observed_pairs[:10], role="training")
-    validation = ObservationPartition(name, observations.observed_pairs[10:], role="validation")
+    training = observations.select_pairs(observations.observed_pairs[:10])
+    validation = observations.select_pairs(observations.observed_pairs[10:])
     return region, observations, training, validation
 
 
@@ -672,7 +605,7 @@ def _synthetic_problem(*, num_species=1):
     observations = PairwiseObservations.from_matrix(
         region.sampling_unit_ids, targets, target=TargetSpec("synthetic divergence", units="index")
     )
-    model = UNet(
+    model = UNetEmbeddingDistance(
         2,
         num_species=num_species,
         patch_size=1,
@@ -851,35 +784,14 @@ def custom_distance_fixture():
     return _CustomDistance
 
 
-@pytest.fixture(name="model_factory", scope="session")
-def model_factory_fixture():
-    return _model_factory
-
-
-@pytest.fixture(name="completed_fit", scope="session")
-def completed_fit_fixture():
-    return _completed_fit
-
-
 @pytest.fixture(name="FeatureEmbedding", scope="session")
 def feature_embedding_fixture():
     return _ScalarEmbedding
 
 
-@pytest.fixture(name="completed_model", scope="session")
-def completed_model_fixture():
-    return _completed_model
-
-
 @pytest.fixture(name="known_ensemble", scope="session")
 def known_ensemble_fixture():
     return _known_ensemble
-
-
-@pytest.fixture(name="fitted_member_problem", scope="session")
-def fitted_member_problem_fixture():
-    with jax.enable_x64():
-        return _fitted_member_problem()
 
 
 @pytest.fixture(name="reference_observations", scope="session")
@@ -1011,7 +923,7 @@ def training_problem():
             target=TargetSpec("synthetic divergence", units="index"),
         )
         if family == "unet":
-            model = UNet(
+            model = UNetEmbeddingDistance(
                 2,
                 num_species=num_species,
                 patch_size=1,
