@@ -199,7 +199,7 @@ def save_model(path, model: LandscapeGeneticsModel) -> None:
     and random state are needed for continuation.
 
     Args:
-        path: Destination model file in an existing directory.
+        path (str | Path): Destination model file in an existing directory.
         model: Fitted landscape genetics model to save.
 
     Raises:
@@ -236,7 +236,7 @@ def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGenet
     settings alongside the artifact.
 
     Args:
-        path: Model file previously written by ``save_model``.
+        path (str | Path): Model file previously written by ``save_model``.
         distance_model: Template matching the saved model's class, static settings,
             array shapes, and dtypes.
 

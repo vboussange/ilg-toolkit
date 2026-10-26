@@ -203,7 +203,7 @@ def calibrate_mlpe(
     the distance model fixed.
 
     Args:
-        distances:
+        distances (numpy.typing.ArrayLike):
             Finite vector with one value per ``observations.observed_pairs`` in exactly
             that order. Geographic distances are allowed for a matching MLPE baseline.
         observations: Population dissimilarities and their target transformation. At

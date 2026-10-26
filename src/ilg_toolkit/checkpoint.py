@@ -37,7 +37,7 @@ def save_checkpoint(path, state: TrainingState) -> None:
     arguments when resuming.
 
     Args:
-        path: Destination checkpoint file in an existing directory.
+        path (str | Path): Destination checkpoint file in an existing directory.
         state: Training state returned by ``train``.
 
     Raises:
@@ -87,7 +87,7 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
     for continuation examples.
 
     Args:
-        path: Checkpoint file previously written by ``save_checkpoint``.
+        path (str | Path): Checkpoint file previously written by ``save_checkpoint``.
         distance_model: Template matching the saved model's class, static settings,
             array shapes, and dtypes.
 
