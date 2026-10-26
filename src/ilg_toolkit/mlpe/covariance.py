@@ -21,7 +21,15 @@ def endpoint_sums(values, left, right, weights, n_populations):
 
 
 class PopulationCovarianceFactor(NamedTuple):
-    """Factor of I + (u/d) Z.T Z and the observed sampling-unit indices."""
+    """Factor of I + (u/d) Z.T Z and the observed sampling-unit indices.
+
+    For V = d I + u Z Z.T, the determinant lemma gives
+    logdet(V) = m log(d) + logdet(I + (u/d) Z.T Z). For columns B,
+    A = (u/d) K^-1 Z.T B and R = B - Z A give the positive identity
+    B.T V^-1 B = R.T R / d + A.T A / u. This avoids cancellation from
+    subtracting large, nearly equal terms in the Woodbury form. Accumulation
+    uses O(n^2 + m) storage and the population-sized factorization O(n^3) work.
+    """
 
     left: Array
     right: Array

@@ -185,7 +185,27 @@ def _model_template(metadata, distance_model):
 
 
 def save_model(path, model: LandscapeGeneticsModel) -> None:
-    """Atomic storage of a calibrated model, including compatible custom distance models."""
+    """Save a fitted model and its prediction contract atomically.
+
+    The Equinox file retains distance parameters, direct or MLPE calibration,
+    target semantics, species order, feature count/names, and MLPE calibration-pair
+    identities. Compatible custom distance models use the same template protocol.
+    Files contain a small JSON metadata header followed by serialized array values.
+
+    The destination parent directory must exist. Writing and flushing a temporary
+    file precedes atomic replacement; a failed write preserves the previous file.
+    Save each ensemble member separately. See ``save_checkpoint`` when optimizer
+    and random state are needed for continuation.
+
+    Examples
+    --------
+    >>> save_model("analysis.eqx", state.selected_model)
+    >>> restored = load_model("analysis.eqx", distance_model=matching_template)
+    >>> prediction = restored.predict(region, pairs=query_pairs)
+
+    The [quickstart](../examples/quickstart.md) constructs a matching template and
+    demonstrates both model loading and checkpoint continuation.
+    """
     if not isinstance(model, LandscapeGeneticsModel):
         raise ArtifactError("save_model requires a fitted LandscapeGeneticsModel")
     _write_native(path, model, kind="model", metadata=_model_metadata(model))
@@ -195,8 +215,17 @@ def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGenet
     """A saved landscape genetics model loaded using a caller-constructed distance model.
 
     The template supplies the model class, static settings, and compatible
-    numerical shapes and dtypes. Saved parameters and conductance solver settings
-    replace the template's values. Solver preparation is rebuilt for each region.
+    numerical shapes and dtypes. Match patch size, patch microbatch size, dropout,
+    species count, and custom activation functions. Initial parameter values may
+    differ. Saved parameters and conductance solver settings replace the template's
+    values; solver preparation is rebuilt for each region.
+
+    Enable ``JAX_ENABLE_X64=true`` before constructing the template and loading any
+    artifact containing float64 JAX leaves. Loading does not change global JAX
+    precision. Equinox checks array structure, shapes, and dtypes; incompatible
+    artifacts or templates raise ``ArtifactError``. Static settings supplied by
+    the caller remain part of the model contract, so retain the original constructor
+    settings alongside the artifact.
     """
     try:
         with Path(path).open("rb") as stream:

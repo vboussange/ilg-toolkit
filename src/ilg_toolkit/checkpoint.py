@@ -25,7 +25,16 @@ def save_checkpoint(path, state: TrainingState) -> None:
 
     ``train(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
     initialization and each update. Statistical parameters, optimizer/random state,
-    and the selected model retain their respective training steps.
+    and the selected model retain their respective training steps. History,
+    configuration, loss-specific state, and training/validation group identities
+    are included. The parent directory must exist; writes atomically replace the
+    destination after flushing a temporary file.
+
+    ``state.latest_model`` matches the current distance and statistical parameters;
+    continuation uses those parameters with optimizer and random state.
+    ``state.selected_model`` is the evaluated fitted model retained for prediction,
+    and can come from an earlier step. No observation data or rasters are embedded:
+    supply the original inputs and validation arguments when resuming.
 
     Examples
     --------
@@ -57,7 +66,16 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
     The template supplies the model class, static settings, numerical shapes, and
     dtypes; float64 checkpoints require float64 enabled before loading. Continuation
     uses unchanged inputs and execution settings, allowing only the total step
-    budget to increase. See :func:`save_checkpoint` for a continuation example.
+    budget to increase. The built-in loss reconstructs its own statistical-state
+    template from checkpoint metadata. Checkpoint persistence supports built-in
+    losses; custom distance models still use caller-constructed templates.
+
+    Match the original model's static settings (including patch size, species count,
+    dropout, and patch microbatch size). Reproducible continuation also requires
+    the same inputs, observations, validation arguments, library versions, device,
+    and execution settings. An already-exhausted unchanged budget returns the saved
+    state. See ``save_checkpoint`` and the [quickstart](../examples/quickstart.md)
+    for continuation examples.
     """
     try:
         with Path(path).open("rb") as stream:

@@ -44,7 +44,22 @@ def _optimizer_value_and_gradient(log_variances, distances, targets, left, right
 
 @final
 class RegionalMLPECalibration(eqx.Module):
-    """A fitted MLPE relationship, population posterior, and calibration-pair identities."""
+    """A fitted MLPE relationship, population posterior, and calibration-pair identities.
+
+    ``distance_center`` and ``distance_scale`` standardize the calibrated distances
+    (sample standard deviation, ddof=1). ``intercept`` and ``slope`` are signed
+    coefficients on the target's model scale. ``unit_variance`` and
+    ``residual_variance`` are the two fitted variance components; configured jitter
+    is added to the residual component in likelihoods and conditioning.
+
+    ``population_ids`` orders ``effect_mean`` and ``effect_covariance``. The saved
+    posterior applies to ``calibration_pairs``; support observations must be
+    disjoint from those measurements. ``ml_log_likelihood`` is the marginal
+    likelihood of the calibration observations, not a score on untouched targets.
+    ``converged``, ``optimizer_iterations``, and ``optimizer_message`` describe the
+    standalone variance optimizer. Fixed-budget joint training makes no convergence
+    claim. Inspect both the likelihood and signed slope when interpreting association.
+    """
 
     region_name: str
     target: TargetSpec
@@ -186,6 +201,63 @@ def calibrate_mlpe(
     each deterministic multistart optimization.
     Coefficients, variance parameters, and population effects are fitted with
     the distance model fixed.
+
+    Parameters
+    ----------
+    distances
+        Finite vector with one value per ``observations.observed_pairs`` in exactly
+        that order. Geographic distances are allowed for a matching MLPE baseline.
+    observations
+        Population dissimilarities and their target transformation. At least three
+        observed pairs must share populations, and the intercept/distance design
+        must be nonsingular. Constant distances are not an intercept-only null.
+    region_name
+        Nonempty identity retained by the calibration.
+    loss
+        Shared ``MLPELoss`` settings, including variance floors, distance-scale
+        threshold, and fixed jitter. Omitted settings use ``MLPELoss()``.
+    max_iterations
+        Positive iteration budget for each of five deterministic L-BFGS-B starts.
+        The finite converged start with the highest marginal likelihood is retained.
+
+    Returns
+    -------
+    RegionalMLPECalibration
+        Signed coefficients, both variance estimates, distance moments, population
+        posterior, pair identities, and optimizer diagnostics.
+
+    Raises
+    ------
+    MLPEError
+        For invalid, unidentifiable, numerically unsupported, or unconverged fits.
+
+    Notes
+    -----
+    This call uses float64 internally. Joint MLPE training requires float64 enabled
+    beforehand. Population-sized covariance algebra avoids a dense pair-by-pair
+    covariance matrix. For population variance u, residual variance e, jitter j,
+    and maximum observed population degree dmax, supported precision requires
+    ``eps * (1 + 2 * dmax * u / (e + j)) <= 0.01``. Failed factorizations,
+    nonfinite inputs, and unsupported variance ratios fail explicitly.
+
+    Examples
+    --------
+    To compare geographic and learned distances, use exactly the same observations,
+    target transformation, numerical settings, and optimizer budget for both fits:
+
+    >>> loss = MLPELoss(jitter=0.0)
+    >>> baseline = calibrate_mlpe(geographic_distances, observations,
+    ...                           region_name=region.name, loss=loss,
+    ...                           max_iterations=2000)
+    >>> learned = calibrate(region, observations, frozen_distance_model,
+    ...                     loss=loss, max_iterations=2000)
+    >>> landscape = learned.calibration.for_region(region.name)
+    >>> improvement = landscape.ml_log_likelihood - baseline.ml_log_likelihood
+
+    ``geographic_distances`` must align with ``observations.observed_pairs``.
+    These observations fit and score both calibrations; the difference describes
+    explanatory association. The [MLPE workflow](../examples/mlpe_workflow.md)
+    demonstrates candidate selection and repeated disjoint population splits.
     """
     from ..losses import MLPELoss
 

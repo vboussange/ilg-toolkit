@@ -21,6 +21,36 @@ class LogLinearConductance(ConductanceModel):
     Patch-averaged covariates form a linear predictor for each species index.
     Conductance is ``min_conductance + exp(predictor)``, capped at ``max_conductance``.
     Coefficient columns follow the raster feature order; coefficients and intercepts start at zero.
+
+    Parameters
+    ----------
+    in_channels
+        Number of raster covariates, in their retained feature order.
+    num_species
+        Number of species-specific coefficient rows; default 1.
+    patch_size
+        Side length of square raster patches, default 32. Both raster dimensions
+        must be divisible by it. Populations in the same patch share a graph node.
+    patch_microbatch_size
+        Maximum patches encoded together; ``None`` encodes all patches at once.
+        This changes peak encoder memory, not graph resolution or ecological context.
+    min_conductance, max_conductance
+        Positive floor and cap, default 0.01 and 1000. Conductance is
+        ``min(max_conductance, min_conductance + exp(features @ coefficients + intercept))``.
+    solver_config
+        Resistance tolerances and iteration limit; see ``ResistanceSolverConfig``.
+        Enable JAX float64 before using conductance models.
+
+    Notes
+    -----
+    Prepare covariate scaling and categorical reference levels before constructing
+    a region batch. Use full-rank coding with the intercept (for example, k-1
+    indicators for k categories). Coefficients are pooled across a species' regions;
+    this model does not learn a cross-species neural backbone.
+
+    The intercept scales the exponential before the floor and cap, so those limits
+    can alter relative conductances. Standardized MLPE does not identify an absolute
+    connectivity scale; interpret conductance patterns on a relative scale.
     """
 
     coefficients: jax.Array

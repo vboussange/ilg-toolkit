@@ -9,3 +9,5 @@ dist/
 experiments/**/results/
 benchmarks/results/
 *.ilg
+site/
+.cache/
