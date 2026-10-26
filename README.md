@@ -23,16 +23,12 @@ surfaces alongside ecological knowledge and a stated evaluation design.
 
 ## Install
 
-Python 3.12 or newer is required. Install a GitHub release with:
+Python 3.12 or newer is required. This documentation and its notebooks describe
+the development API. Install from the development checkout:
 
 ```bash
-uv add "ilg-toolkit @ git+https://github.com/vboussange/ilg-toolkit@v0.0.3"
-```
-
-The documentation describes the development API. To run that API and its notebooks
-from this checkout:
-
-```bash
+git clone https://github.com/vboussange/ilg-toolkit.git
+cd ilg-toolkit
 uv sync --extra dev --extra docs
 export JAX_PLATFORMS=cpu JAX_ENABLE_X64=true
 ```
@@ -40,7 +36,7 @@ export JAX_PLATFORMS=cpu JAX_ENABLE_X64=true
 Optional extras include `amg` for resistance preconditioning, `geo` for geospatial
 input preparation, and `gpu` for CUDA-enabled JAX on Linux x86-64. Prepare aligned,
 normalized rasters before constructing a `RegionBatch`. Enable float64 before
-creating resistance or MLPE inputs.
+creating resistance or maximum-likelihood population effects (MLPE) inputs.
 
 ## Learn through notebooks
 

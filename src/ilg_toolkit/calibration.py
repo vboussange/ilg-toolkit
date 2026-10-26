@@ -148,13 +148,17 @@ def calibrate(
 ) -> "LandscapeGeneticsModel":
     """Fit genetic calibration while preserving every distance-model parameter.
 
-    Target semantics come from observations. Only supplied region–species groups
-    are fitted; earlier calibrations are not merged. Distances are computed once
+    Target semantics come from observations, and the supplied region–species groups
+    receive fitted calibration. Distances are computed once
     per group with dropout disabled, and MLPE estimates both variance components
     with deterministic multistart optimization (2,000 iterations by default).
     ``Log1pLoss`` constructs a direct calibration and rejects an iteration budget.
     Transferring a multispecies distance model requires its original full species
     order, even when observations cover only one species.
+
+    Notes
+    -----
+    Earlier calibrations are not merged into the returned model.
 
     Examples
     --------
@@ -175,14 +179,18 @@ def calibrate(
     [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
     and the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md).
     """
-    from ._groups import _index_inputs, _normalize_inputs
+    from ._groups import (
+        _index_inputs,
+        _normalize_inputs,
+        _resolve_species_order,
+        _validate_input_contract,
+    )
     from .losses import AbstractLoss
     from .model import LandscapeGeneticsModel
     from .models import AbstractDistanceModel
     from .models.base import (
         prepare_distance_context,
         query_distances_from_latent,
-        validate_species_order,
     )
     from .models.common import with_dropout_mode
 
@@ -191,28 +199,12 @@ def calibrate(
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
     inputs = _normalize_inputs(region, observations)
-    if species is None and distance_model.num_species == 1:
-        observed_names = {
-            value.observations.species for value in inputs if value.observations.species is not None
-        }
-        observed_names.update(name for value in inputs for name in (value.region.species or ()))
-        if len(observed_names) == 1:
-            species = tuple(observed_names)
-    order = validate_species_order(species, distance_model.num_species)
+    first = _validate_input_contract(inputs)
+    order = _resolve_species_order(inputs, species, distance_model.num_species)
     groups = _index_inputs(inputs, order, distance_model.num_species)
-    first = groups[0]
     target = first.observations.target
     feature_count, feature_names = first.region.feature_array.shape[-1], first.region.feature_names
-    if len({group.region.name for group in groups}) > 1 and feature_names is None:
-        raise ValueError("Multi-region calibration requires feature_names meanings and order")
     for group in groups:
-        if group.observations.target != target:
-            raise ValueError("Calibration observations must share one target contract")
-        if (
-            group.region.feature_array.shape[-1] != feature_count
-            or group.region.feature_names != feature_names
-        ):
-            raise ValueError("Calibration regions must share feature meanings and order")
         loss._prepare(group.region, group.observations, training=True)
     inference_model = with_dropout_mode(distance_model, inference=True, key=None)
     prepared_regions = {}

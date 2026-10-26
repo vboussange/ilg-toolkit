@@ -162,3 +162,39 @@ def test_feature_meanings_are_validated_for_every_ensemble_operation(known_ensem
     changed = replace(region, feature_names=("different meaning",))
     with pytest.raises(RuntimeError, match="member 0.*feature"):
         getattr(ensemble, method)(changed)
+
+
+@pytest.mark.parametrize("failure", ["shape", "nonfinite"])
+def test_surface_failures_identify_member_without_restricting_genetic_prediction(failure):
+    import coordax as cx
+    import equinox as eqx
+
+    from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, RegionBatch, TargetSpec
+    from ilg_toolkit.models import LogLinearConductance
+
+    region = RegionBatch(
+        "grid",
+        cx.field(np.ones((4, 4, 1)), "row", "column", "feature"),
+        ("west", "east"),
+        [[0, 0], [3, 3]],
+    )
+    first = LandscapeGeneticsModel(
+        LogLinearConductance(1, patch_size=1),
+        DirectCalibrationModule(TargetSpec("divergence")),
+        1,
+    )
+    distance_model = LogLinearConductance(1, patch_size=2 if failure == "shape" else 1)
+    if failure == "nonfinite":
+        distance_model = eqx.tree_at(
+            lambda model: model.intercepts, distance_model, jnp.asarray([float("nan")])
+        )
+    second = replace(first, distance_model=distance_model)
+    ensemble = Ensemble([first, second, first])
+    if failure == "shape":
+        result = ensemble.predict(region, pairs=[("east", "west")])
+        assert result.member_ids == (0, 1, 2)
+        np.testing.assert_array_equal(result.member_values[0], result.member_values[2])
+        assert np.isfinite(result.prediction.values).all()
+    with pytest.raises((ValueError, RuntimeError), match=f"(?s)member 1.*{failure}"):
+        ensemble.conductance_surfaces(region)
+    assert ensemble.members == (first, second, first)

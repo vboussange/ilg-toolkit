@@ -9,7 +9,7 @@ the documentation build. Install the `docs` extra to run all notebook dependenci
    save/load, and continuation from a single-run checkpoint.
 2. [Isolation by distance](ibd.md): geographic units, fitting a reference relationship,
    diagnostic plots, and the limits of the log1p comparison.
-3. [MLPE workflow](mlpe_workflow.md): ResNet9 conductance across regions,
+3. [Maximum-likelihood population effects (MLPE) workflow](mlpe_workflow.md): ResNet9 conductance across regions,
    population splits, fresh calibration and geographic comparison, prediction
    modes, and transfer to a separate region.
 4. [Ensemble](ensemble.md): ordinary training loops, seeds, checkpoints and
@@ -17,8 +17,10 @@ the documentation build. Install the `docs` extra to run all notebook dependenci
 5. [Multispecies](multispecies.md): experimental labeled inputs, pooled feature
    learning, species-specific parameters, calibration, and species queries.
 
-The examples teach workflow and interpretation. Their small optimization budgets
-make execution practical; they do not establish ecological validity, statistical
-power, or a recommended training budget for a real study. Scientific correctness
-is checked separately by the package tests. See [development](../development.md)
-for the execution and strict-build commands.
+The examples teach workflow and interpretation. Scientific correctness is checked
+separately by the package tests. See [development](../development.md) for the
+execution and strict-build commands.
+
+!!! note
+    The small optimization budgets make execution practical; they do not establish
+    ecological validity, statistical power, or a recommended training budget for a real study.

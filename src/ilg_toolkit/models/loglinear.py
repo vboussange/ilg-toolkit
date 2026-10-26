@@ -33,7 +33,7 @@ class LogLinearConductance(ConductanceModel):
         must be divisible by it. Populations in the same patch share a graph node.
     patch_microbatch_size
         Maximum patches encoded together; ``None`` encodes all patches at once.
-        This changes peak encoder memory, not graph resolution or ecological context.
+        This controls peak encoder memory.
     min_conductance, max_conductance
         Positive floor and cap, default 0.01 and 1000. Conductance is
         ``min(max_conductance, min_conductance + exp(features @ coefficients + intercept))``.
@@ -43,14 +43,16 @@ class LogLinearConductance(ConductanceModel):
 
     Notes
     -----
+    Patch microbatch size does not change graph resolution or ecological context.
     Prepare covariate scaling and categorical reference levels before constructing
     a region batch. Use full-rank coding with the intercept (for example, k-1
     indicators for k categories). Coefficients are pooled across a species' regions;
     this model does not learn a cross-species neural backbone.
 
     The intercept scales the exponential before the floor and cap, so those limits
-    can alter relative conductances. Standardized MLPE does not identify an absolute
-    connectivity scale; interpret conductance patterns on a relative scale.
+    can alter relative conductances. Standardized maximum-likelihood population effects
+    (MLPE) does not identify an absolute connectivity scale; interpret conductance
+    patterns on a relative scale.
     """
 
     coefficients: jax.Array

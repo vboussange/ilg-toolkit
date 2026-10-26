@@ -19,6 +19,8 @@ from ._groups import (
     _GroupInput,
     _index_inputs,
     _normalize_inputs,
+    _resolve_species_order,
+    _validate_input_contract,
 )
 from .config import TrainingConfig
 from .data import PairwiseObservations, RegionBatch
@@ -432,33 +434,16 @@ def train(
             raise ValueError(
                 "Continuation requires identical configuration except an increased step budget"
             )
-    if distance_model.num_species > 1 and species is None:
-        raise ValueError("A multispecies distance model requires species= in parameter order")
     training_inputs = _normalize_inputs(region, observations)
     if validation is not None and (not isinstance(validation, tuple) or len(validation) != 2):
         raise ValueError("validation must be a (regions, observations) tuple")
     validation_inputs = (
         () if validation is None else _normalize_inputs(validation[0], validation[1])
     )
-    first_region, first_observations = training_inputs[0]
-    regional_names = {inputs[0].name for inputs in (*training_inputs, *validation_inputs)}
-    if len(regional_names) > 1 and first_region.feature_names is None:
-        raise ValueError("Shared multi-region fitting requires feature_names meanings and order")
-    for prepared_region, regional_observations in (*training_inputs, *validation_inputs):
-        if regional_observations.target != first_observations.target:
-            raise ValueError("Regional training and validation target scales must match")
-        if prepared_region.feature_array.shape[-1] != first_region.feature_array.shape[-1]:
-            raise ValueError("Regional training and validation feature channels must match")
-        if prepared_region.feature_names != first_region.feature_names:
-            raise ValueError("Regional feature contracts must match meanings and order")
-    if species is None:
-        names = {name for item in training_inputs for name in (item.region.species or ())}
-        names.update(
-            item.observations.species
-            for item in training_inputs
-            if item.observations.species is not None
-        )
-        species = tuple(sorted(names)) if names else None
+    first_region, first_observations = _validate_input_contract(
+        (*training_inputs, *validation_inputs)
+    )
+    species = _resolve_species_order(training_inputs, species, distance_model.num_species)
     prototype = LandscapeGeneticsModel(
         distance_model,
         config.loss._calibration(first_observations.target, {}),
