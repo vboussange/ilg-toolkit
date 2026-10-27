@@ -4,7 +4,9 @@ from dataclasses import replace
 from typing import cast
 
 import coordax as cx
+import equinox as eqx
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -86,3 +88,32 @@ def test_resnet_fit_exposes_surface_and_label_free_target_predictions(
                 ).as_matrix(),
                 prediction.as_matrix(),
             )
+
+
+def test_narrow_resnet_widths_give_patch_surfaces_and_finite_gradients():
+    with jax.enable_x64():
+        features = np.random.default_rng(4).normal(size=(8, 12, 3)).astype(np.float32)
+        region = RegionBatch(
+            "narrow-valley",
+            cx.field(features, "row", "column", "feature"),
+            ("south", "north"),
+            np.array([[0, 0], [7, 11]]),
+        )
+        model = ResNet9Conductance(3, patch_size=4, channels=(8, 8, 8), key=jax.random.key(2))
+        surface = model.conductance_surface(region)
+        assert surface.shape == (2, 3)
+        assert np.all(np.isfinite(surface) & (surface > 0))
+
+        def total_resistance(model):
+            return jnp.sum(model.predict(region).values)
+
+        gradient = eqx.filter_grad(total_resistance)(model)
+        leaves = jax.tree.leaves(eqx.filter(gradient, eqx.is_inexact_array))
+        assert all(np.all(np.isfinite(leaf)) for leaf in leaves)
+        assert any(np.any(leaf != 0) for leaf in leaves)
+
+
+@pytest.mark.parametrize("channels", [(8, 8), (8, 12, 16), (0, 8, 8), (8, 8, -8), (8.0, 8, 8)])
+def test_resnet_widths_must_be_three_positive_multiples_of_eight(channels):
+    with pytest.raises(ValueError):
+        ResNet9Conductance(2, channels=channels, key=jax.random.key(0))

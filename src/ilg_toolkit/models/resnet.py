@@ -56,6 +56,9 @@ class ResNet9Conductance(ConductanceModel):
             must
             be divisible by it; output shape is ``(rows // patch_size, columns // patch_size)``.
             Sampling units in the same patch share a graph node.
+        channels: Widths of the three convolutional stages, default ``(64, 128, 256)``
+            as in the paper. Each width must be a positive multiple of 8 because
+            GroupNorm uses 8 groups; narrower widths suit small studies and CPU runs.
         min_conductance: Positive conductance floor added after softplus, default 1e-6.
         patch_microbatch_size: Maximum patches processed together; ``None`` processes
             all patches.
@@ -88,6 +91,7 @@ class ResNet9Conductance(ConductanceModel):
     residual2: ResidualBlock
     output: eqx.nn.Linear
     num_species: int = eqx.field(static=True, default=1, kw_only=True)
+    channels: tuple[int, int, int] = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
     patch_microbatch_size: int | None = eqx.field(static=True)
@@ -99,6 +103,7 @@ class ResNet9Conductance(ConductanceModel):
         *,
         num_species: int = 1,
         patch_size: int = 4,
+        channels: tuple[int, int, int] = (64, 128, 256),
         min_conductance: float = 1e-6,
         patch_microbatch_size: int | None = None,
         solver_config: ResistanceSolverConfig | None = None,
@@ -114,23 +119,31 @@ class ResNet9Conductance(ConductanceModel):
             raise ValueError("in_channels must be a positive integer")
         if isinstance(patch_size, bool) or not isinstance(patch_size, Integral) or patch_size < 4:
             raise ValueError("ResNet9Conductance requires integer patch_size >= 4")
+        widths = tuple(channels)
+        if len(widths) != 3 or any(
+            isinstance(width, bool) or not isinstance(width, Integral) or width < 8 or width % 8
+            for width in widths
+        ):
+            raise ValueError("ResNet9Conductance channels must be three positive multiples of 8")
         if not math.isfinite(min_conductance) or min_conductance <= 0:
             raise ValueError("min_conductance must be finite and positive")
         validate_patch_microbatch_size(patch_microbatch_size)
         solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
         if not isinstance(solver_config, ResistanceSolverConfig):
             raise TypeError("solver_config must be a ResistanceSolverConfig")
+        first, second, third = (int(width) for width in widths)
         keys = jax.random.split(key, 8)
-        self.conv1 = eqx.nn.Conv2d(in_channels, 64, 3, padding=1, dtype=jnp.float32, key=keys[0])
-        self.norm1 = eqx.nn.GroupNorm(8, 64, dtype=jnp.float32)
-        self.residual1 = ResidualBlock(64, key=keys[1])
-        self.conv2 = eqx.nn.Conv2d(64, 128, 3, padding=1, dtype=jnp.float32, key=keys[2])
-        self.norm2 = eqx.nn.GroupNorm(8, 128, dtype=jnp.float32)
-        self.residual2 = ResidualBlock(128, key=keys[3])
-        self.conv3 = eqx.nn.Conv2d(128, 256, 3, padding=1, dtype=jnp.float32, key=keys[4])
-        self.norm3 = eqx.nn.GroupNorm(8, 256, dtype=jnp.float32)
-        self.output = eqx.nn.Linear(256, num_species, dtype=jnp.float32, key=keys[5])
+        self.conv1 = eqx.nn.Conv2d(in_channels, first, 3, padding=1, dtype=jnp.float32, key=keys[0])
+        self.norm1 = eqx.nn.GroupNorm(8, first, dtype=jnp.float32)
+        self.residual1 = ResidualBlock(first, key=keys[1])
+        self.conv2 = eqx.nn.Conv2d(first, second, 3, padding=1, dtype=jnp.float32, key=keys[2])
+        self.norm2 = eqx.nn.GroupNorm(8, second, dtype=jnp.float32)
+        self.residual2 = ResidualBlock(second, key=keys[3])
+        self.conv3 = eqx.nn.Conv2d(second, third, 3, padding=1, dtype=jnp.float32, key=keys[4])
+        self.norm3 = eqx.nn.GroupNorm(8, third, dtype=jnp.float32)
+        self.output = eqx.nn.Linear(third, num_species, dtype=jnp.float32, key=keys[5])
         self.num_species = num_species
+        self.channels = (first, second, third)
         self.patch_size = patch_size
         self.min_conductance = min_conductance
         self.patch_microbatch_size = patch_microbatch_size
