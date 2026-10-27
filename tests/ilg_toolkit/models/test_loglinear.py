@@ -9,6 +9,7 @@ import pytest
 
 from ilg_toolkit import (
     Log1pLoss,
+    MLPELoss,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
@@ -16,7 +17,7 @@ from ilg_toolkit import (
     TrainingConfig,
     train,
 )
-from ilg_toolkit.models import LogLinearConductance
+from ilg_toolkit.models import LogLinearConductance, initialize_uniform_conductance
 
 
 @pytest.mark.parametrize("patch_microbatch_size", [None, 3])
@@ -192,3 +193,137 @@ def test_surface_rejects_incompatible_feature_count(observation_problem):
     model = LogLinearConductance(3, patch_size=1)
     with pytest.raises(ValueError):
         model.conductance_surface(region)
+
+
+_UNIFORM_POSITIONS = np.array([[0, 0], [0, 7], [3, 4], [7, 0], [7, 6], [5, 2]])
+
+
+def _uniform_problem(dense_resistance, conductance, *, name="valley", seed=3, noise=0.0):
+    """Region on a 4x4 conductance grid graph and resistances at a uniform conductance."""
+    rng = np.random.default_rng(seed)
+    region = RegionBatch(
+        name,
+        cx.field(rng.normal(size=(8, 8, 2)), "row", "column", "feature"),
+        tuple(f"population-{index}" for index in range(len(_UNIFORM_POSITIONS))),
+        _UNIFORM_POSITIONS,
+        feature_names=("grassland", "water"),
+    )
+    vertices = (_UNIFORM_POSITIONS[:, 0] // 2) * 4 + _UNIFORM_POSITIONS[:, 1] // 2
+    resistance = dense_resistance(np.full((4, 4), conductance), vertices)
+    left, right = np.triu_indices(len(vertices), 1)
+    values = resistance[left, right] * np.exp(rng.normal(scale=noise, size=len(left)))
+    observations = PairwiseObservations.from_pairs(
+        [
+            (region.sampling_unit_ids[i], region.sampling_unit_ids[j])
+            for i, j in zip(left, right, strict=True)
+        ],
+        values,
+        target=TargetSpec("synthetic divergence", units="index"),
+    )
+    return region, observations
+
+
+def _training_loss(model, region, observations, loss, species=None):
+    state = train(
+        region,
+        observations,
+        distance_model=model,
+        species=species,
+        config=TrainingConfig(loss=loss, steps=0),
+    )
+    return state.history[0].training_loss
+
+
+def test_uniform_initialization_recovers_the_generating_conductance(dense_resistance):
+    region, observations = _uniform_problem(dense_resistance, 3.7)
+    model = eqx.tree_at(
+        lambda model: model.coefficients,
+        LogLinearConductance(2, patch_size=2),
+        jnp.array([[0.4, -0.2]]),
+    )
+    initialized = initialize_uniform_conductance(model, region, observations, Log1pLoss())
+    np.testing.assert_array_equal(initialized.coefficients, np.zeros((1, 2)))
+    np.testing.assert_allclose(initialized.conductance_surface(region), 3.7, rtol=1e-6)
+    np.testing.assert_allclose(
+        _training_loss(initialized, region, observations, Log1pLoss()), 0, atol=1e-12
+    )
+
+
+def test_uniform_initialization_minimizes_the_region_weighted_loss(dense_resistance):
+    regions = [
+        _uniform_problem(dense_resistance, 2.0, name="ridge", seed=5, noise=0.4)[0],
+        _uniform_problem(dense_resistance, 9.0, name="valley", seed=6, noise=0.4)[0],
+    ]
+    observations = [
+        _uniform_problem(dense_resistance, 2.0, name="ridge", seed=5, noise=0.4)[1],
+        _uniform_problem(dense_resistance, 9.0, name="valley", seed=6, noise=0.4)[1].select_pairs(
+            [("population-0", "population-1"), ("population-2", "population-4")]
+        ),
+    ]
+    model = initialize_uniform_conductance(
+        LogLinearConductance(2, patch_size=2), regions, observations, Log1pLoss()
+    )
+    conductance = float(model.conductance_surface(regions[0])[0, 0])
+    assert 2.0 < conductance < 9.0
+    best = _training_loss(model, regions, observations, Log1pLoss())
+    for factor in (0.999, 1.001, 0.9, 1.1):
+        neighbour = eqx.tree_at(
+            lambda model: model.intercepts,
+            model,
+            jnp.log(jnp.array([conductance * factor - model.min_conductance])),
+        )
+        assert best <= _training_loss(neighbour, regions, observations, Log1pLoss())
+
+
+@pytest.mark.parametrize("generating", [1e5, 1e-5])
+def test_uniform_initialization_stays_inside_the_conductance_bounds(dense_resistance, generating):
+    region, observations = _uniform_problem(dense_resistance, generating)
+    model = LogLinearConductance(2, patch_size=2, min_conductance=0.01, max_conductance=1000.0)
+    initialized = initialize_uniform_conductance(model, region, observations, Log1pLoss())
+    surface = np.asarray(initialized.conductance_surface(region))
+    assert np.all(np.isfinite(initialized.intercepts))
+    assert np.all((surface > 0.01) & (surface < 1000.0))
+    np.testing.assert_allclose(surface, 1000.0 if generating > 1 else 0.01, rtol=1e-3)
+
+
+def test_uniform_initialization_sets_one_intercept_per_species(dense_resistance):
+    from dataclasses import replace
+
+    region, frog = _uniform_problem(dense_resistance, 0.5)
+    newt = replace(frog, values=frog.values / 6.0, species="newt")
+    frog = replace(frog, species="frog")
+    count = len(region.sampling_unit_ids)
+    region = replace(
+        region,
+        sampling_unit_ids=region.sampling_unit_ids * 2,
+        grid_positions=np.tile(region.grid_positions, (2, 1)),
+        sampling_unit_kinds=None,
+        species=("frog",) * count + ("newt",) * count,
+    )
+    model = initialize_uniform_conductance(
+        LogLinearConductance(2, num_species=2, patch_size=2),
+        region,
+        (frog, newt),
+        Log1pLoss(),
+        species=("newt", "frog"),
+    )
+    surfaces = model.conductance_surface(
+        region, species=("newt", "frog"), species_order=("newt", "frog")
+    )
+    np.testing.assert_allclose(surfaces["frog"], 0.5, rtol=1e-6)
+    np.testing.assert_allclose(surfaces["newt"], 3.0, rtol=1e-6)
+
+
+def test_standardized_mlpe_does_not_move_the_uniform_conductance(dense_resistance):
+    region, observations = _uniform_problem(dense_resistance, 3.7, noise=0.3)
+    model = LogLinearConductance(2, patch_size=2)
+    initialized = initialize_uniform_conductance(model, region, observations, MLPELoss())
+    np.testing.assert_array_equal(initialized.intercepts, model.intercepts)
+
+
+def test_uniform_initialization_requires_a_log_linear_model(dense_resistance, PointConductance):
+    region, observations = _uniform_problem(dense_resistance, 1.0)
+    with pytest.raises(TypeError):
+        initialize_uniform_conductance(
+            PointConductance(jnp.array(0.0)), region, observations, Log1pLoss()
+        )
