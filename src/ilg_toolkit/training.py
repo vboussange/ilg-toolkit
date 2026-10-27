@@ -101,7 +101,7 @@ def _validate_state(state: TrainingState) -> None:
 
 
 class _TrainingPayload(NamedTuple):
-    """Regional features, sampling-unit nodes, and aligned training observations."""
+    """Regional features, sampling-unit vertices, and aligned training observations."""
 
     features: jax.Array
     nodes: jax.Array
@@ -382,6 +382,9 @@ def train(
     ``eval_every`` updates, and the final step selects by validation loss or keeps
     the final model without validation. ``on_step`` receives resumable state after
     every update; supplied ``state`` continues the latest parameters and random state.
+
+    Training always compiles its update and evaluation steps. To debug them
+    eagerly, call ``train`` inside ``with jax.disable_jit():``.
 
     Args:
         region: One region batch, a sequence, or a mapping keyed by region name.

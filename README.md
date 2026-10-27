@@ -79,8 +79,8 @@ conductance = state.selected_model.distance_model.conductance_surface(region)
 resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 ```
 
-Swap in `ResNet9Conductance` as a deep patch encoder to learn conductance from
-raw patches of landscape features.
+Swap in `ResNet9Conductance` as a deep patch encoder that maps raw patches of
+landscape features to vertex conductances.
 
 ## Documentation
 

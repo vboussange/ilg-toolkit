@@ -316,17 +316,17 @@ def diagnose_wishart(
     parameter_source: str,
     solver_config: ResistanceSolverConfig | None = None,
 ) -> WishartDiagnostic:
-    """Connect an actual resistance graph to a frozen Gaussian-marker covariance.
+    """Connect an actual conductance grid graph to a frozen Gaussian-marker covariance.
 
     In orthonormal population contrasts H, Sigma = scale*(-H R H.T/2)+nugget*I.
     Scale is positive; nugget is nonnegative scientific variance, not numerical
     jitter. No target repair, parameter estimation, gradient or training switch
-    is provided. The scale/nugget rank describes fixed-encoder algebra only;
-    shared scale identification during encoder training remains unresolved.
+    is provided. The scale/nugget rank describes fixed patch-encoder algebra only;
+    shared scale identification during patch-encoder training remains unresolved.
     """
     _require_marker_observations(observations)
     if not isinstance(encoder, ConductanceModel):
-        raise TypeError("Wishart graph diagnostics require a conductance encoder")
+        raise TypeError("Wishart graph diagnostics require a conductance patch encoder")
     if region.name != observations.region_name or set(region.sampling_unit_ids) != set(
         observations.sampling_unit_ids
     ):

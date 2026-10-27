@@ -1,11 +1,21 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "numpy>=2.2.6,<3",
+#   "pandas>=2.2,<4",
+#   "pyproj>=3.7,<4",
+#   "rioxarray>=0.19,<1",
+# ]
+# ///
 """Rebuild the quickstart's example-data release asset from JAXScape's v0.0.6 data.zip.
 
 The asset holds Mountain Pygmy-possum (Burramys parvus) pairwise Fst between 12
 sampling units, kindly provided by Cesar Australia, and ESA WorldCover 2021 land
-cover (CC BY 4.0). Run once with the examples extra, check the output by hand,
-and attach it to the ``example-data-v1`` pre-release:
+cover (CC BY 4.0). The script declares its own dependencies inline (PEP 723),
+so it needs no project extra. Run it once, check the output by hand, and attach
+it to the ``example-data-v1`` pre-release:
 
-    uv run --extra examples python scripts/build_example_data.py
+    uv run scripts/build_example_data.py
 
 The archive contains, under ``mountain-pygmy-possum/``:
 
@@ -68,7 +78,8 @@ def read_sites(path: Path) -> pd.DataFrame:
 
 def build(source_dir: Path, output: Path) -> None:
     """Write the release asset from the extracted JAXScape ``data/cesar`` directory."""
-    landcover = rioxarray.open_rasterio(source_dir / "landcover_7855.tif")
+    with rioxarray.open_rasterio(source_dir / "landcover_7855.tif") as source:
+        landcover = source.load()
     if landcover.rio.crs.to_epsg() != 7855:
         raise ValueError(f"Expected EPSG:7855 land cover, found {landcover.rio.crs}")
     classes = set(np.unique(landcover.values).astype(int).tolist())

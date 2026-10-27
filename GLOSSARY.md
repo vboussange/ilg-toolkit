@@ -15,6 +15,8 @@ term and the public identifier that implements it.
 | --- | --- | --- |
 | Patch encoder | Patch encoder | `LogLinearConductance`, `ResNet9Conductance` |
 | Conductance grid graph | Conductance grid graph | `ConductanceModel.conductance_surface` |
+| Vertex | Vertex | One cell of `ConductanceModel.conductance_surface(...)` |
+| Conductance $C$ | Conductance surface | `ConductanceModel.conductance_surface` |
 | Effective-resistance layer | Effective-resistance layer | `ResistanceSolverConfig`, `ConductanceModel.ecological_distances` |
 | Local resistance $Q$ | Resistance surface | `1 / ConductanceModel.conductance_surface(...)` |
 | Complete pooling | Complete pooling | `train` with a region collection |
@@ -97,6 +99,12 @@ weighted by the conductance surface; the edge between neighboring vertices $k$
 and $l$ has conductance $(C_k + C_l)/2$.
 _Avoid_: Conductance graph; resistance graph.
 
+**Vertex**:
+One point of a conductance grid graph, standing for one patch of landscape
+features and carrying one conductance; sampling units in the same patch share a
+vertex. Identifiers such as `RegionBatch.pixel_nodes` keep their names.
+_Avoid_: Node, in prose.
+
 **Effective-resistance layer**:
 The differentiable computation of effective resistance between sampling-unit
 vertices of a conductance grid graph, with gradients with respect to its
@@ -149,7 +157,7 @@ _Avoid_: Fitted calibration, when referring only to the parameters being optimiz
 A distance model composed with genetic calibration, retaining feature meanings,
 target semantics, and species order.
 Its predictions describe genetic relationships on the original scale.
-_Avoid_: Patch encoder, when referring to the complete genetic prediction model.
+_Avoid_: Distance model, when referring to the complete genetic prediction model.
 
 **Genetic calibration**:
 The relationship between ecological distances and genetic observations on the target scale.

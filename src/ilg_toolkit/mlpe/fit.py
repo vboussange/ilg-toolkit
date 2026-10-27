@@ -46,7 +46,7 @@ def _optimizer_value_and_gradient(log_variances, distances, targets, left, right
 class RegionalMLPECalibration(eqx.Module):
     """A fitted MLPE relationship, population posterior, and calibration-pair identities.
 
-    ``distance_center`` and ``distance_scale`` standardize the calibrated distances
+    ``distance_center`` and ``distance_scale`` standardize the distances used in calibration
     (sample standard deviation, ddof=1). ``intercept`` and ``slope`` are signed
     coefficients on the target's model scale. ``unit_variance`` and
     ``residual_variance`` are the two fitted variance components; configured jitter

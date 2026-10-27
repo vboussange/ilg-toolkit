@@ -1,4 +1,4 @@
-"""Learn a resistance surface for the Mountain Pygmy-possum from land cover and genetic data.
+"""A Mountain Pygmy-possum resistance surface trained on land cover and genetic data.
 
 Pairwise Fst between 12 Mountain Pygmy-possum (Burramys parvus) sampling units in
 the Victorian Alps, kindly provided by Cesar Australia, is related to ESA WorldCover

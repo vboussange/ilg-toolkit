@@ -153,7 +153,7 @@ class LandscapeGeneticsModel(eqx.Module):
                 marginal.extras["model_values"] # Means before the target inverse transform.
                 marginal.pairs                  # Same alignment as query_pairs.
 
-            Saved-effect predictions add posterior population means learned from the
+            Saved-effect predictions add posterior population means estimated from the
             calibration observations. Unobserved populations retain zero prior mean
             and prior population variance; calibration/query overlap is allowed::
 

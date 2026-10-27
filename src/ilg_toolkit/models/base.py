@@ -127,7 +127,7 @@ class AbstractDistanceModel(eqx.Module):
         A species sequence returns a mapping and computes patch features once.
         Explicit ``pairs`` limit the returned vector and avoid generating all
         pair labels; this does not guarantee that an underlying resistance solver
-        avoids its sampling-node distance matrix. Calling ``as_matrix()`` on the
+        avoids its distance matrix among sampling-unit vertices. Calling ``as_matrix()`` on the
         result explicitly allocates a sampling-unit-square array.
         """
         order = validate_species_order(species_order, self.num_species)

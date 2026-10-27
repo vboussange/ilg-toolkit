@@ -43,8 +43,8 @@ image URLs in README so both renderings work. Agent instructions and
 contributor documentation remain outside the public site.
 
 The quickstart trains on real data downloaded from the `example-data-v1`
-pre-release, which is never marked latest; `scripts/build_example_data.py`
-rebuilds that asset. Credit Cesar Australia (genetic data) and ESA WorldCover
+pre-release, which is never marked latest; `uv run scripts/build_example_data.py`
+rebuilds that asset from its inline (PEP 723) dependencies. Credit Cesar Australia (genetic data) and ESA WorldCover
 2021 (CC BY 4.0) wherever the example data appears. The README's quickstart
 code block must appear verbatim in `examples/quickstart.py`: documentation
 preparation fails otherwise, and regenerates the quickstart figure that README

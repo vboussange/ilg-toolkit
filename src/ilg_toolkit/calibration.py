@@ -102,7 +102,7 @@ class MLPECalibrationModule(AbstractCalibrationModule):
                 raise ValueError("MLPE calibration keys require a region and species index")
             if key[0] != value.region_name or value.target != self.target:
                 raise ValueError(
-                    "Regional calibration names and target contracts must match the module"
+                    "MLPE calibration region names and target contracts must match the module"
                 )
         self.regions = regions
 
