@@ -1,9 +1,9 @@
 """Strict Gaussian-marker Wishart references; this module enables no training.
 
-The contract and conditional-score derivation live in
-``docs/statistics/wishart.md``. Inputs declare known-zero-mean,
-independent Gaussian marker contrasts; structural validation cannot establish
-that scientific assumption for real genetic observations.
+The assumptions and scope are described in ``README.md`` beside this module.
+Inputs declare known-zero-mean, independent Gaussian marker contrasts; structural
+validation cannot establish that scientific assumption for real genetic
+observations.
 """
 
 import math

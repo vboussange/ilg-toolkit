@@ -69,30 +69,29 @@ class ResidualConvBlock(eqx.Module):
 
 @final
 class UNetEmbeddingDistance(EmbeddingDistanceModel):
-    """A distance model using a pooled U-Net backbone and species-specific embeddings.
+    """A U-Net embedding-distance model with species-specific embeddings.
 
-    The backbone combines landscape features across the region's patch grid,
-    and squared embedding distances provide ecological distances between sampling units.
+    A U-Net combines patch features across the region's patch grid, and squared
+    embedding distances provide ecological distances between sampling units.
 
     Args:
         in_channels:
             Number of raster features, with meanings and order preserved across regions.
         num_species: Number of species-specific embedding projections; default 1.
         patch_size: Square raster patch side length, default 32. Both raster dimensions
-            must
-            be divisible by it; sampling units use their containing patch.
+            must be divisible by it; sampling units use their containing patch.
         base_channels: Width of the first U-Net stage, default 32. Later stages expand
             this width.
         embedding_dim: Dimension of each species' embedding at a patch, default 16.
         dropout: Dropout probability during training, default 0.1; prediction disables
             it.
         patch_microbatch_size: Maximum patches embedded together; ``None`` processes all
-            patches.
-            It limits patch-embedding work but does not microbatch the whole U-Net.
+            patches. It limits patch-embedding work but does not microbatch the whole
+            U-Net.
         key: JAX initialization key.
 
     Notes:
-        The pooled backbone combines neighboring patch features through two downsampling
+        The U-Net combines neighboring patch features through two downsampling
         stages, a bottleneck, and skip-connected upsampling. The output grid has one
         embedding per patch and species. Ecological distance is the sum of squared
         coordinate differences between the two sampled embeddings, without a resistance
@@ -210,7 +209,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         self.embedding_dim = embedding_dim
 
     def backbone(self, features: jax.Array) -> jax.Array:
-        """Pooled landscape features with a region-wide receptive field."""
+        """Patch features with a region-wide receptive field."""
         values = encode_patches(
             self,
             features,
@@ -235,7 +234,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         return jnp.moveaxis(values, 0, -1)
 
     def embedding(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Embedding grid from pooled landscape features."""
+        """Embedding grid from patch features."""
         start = species_index * self.embedding_dim
         weights = jax.lax.dynamic_slice_in_dim(
             self.embedding_head.weight, start, self.embedding_dim, axis=0

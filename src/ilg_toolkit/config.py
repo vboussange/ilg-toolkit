@@ -1,4 +1,4 @@
-"""Training and resistance calculation settings."""
+"""Training and effective-resistance layer settings."""
 
 import math
 from dataclasses import dataclass
@@ -15,11 +15,11 @@ def validate_patch_microbatch_size(value: int | None) -> None:
 
 @dataclass(frozen=True)
 class ResistanceSolverConfig:
-    """Float64 settings for resistance calculation.
+    """Float64 solver settings for the effective-resistance layer.
 
     Conjugate gradient is the default solver; ``use_amg=True`` enables algebraic
     multigrid (AMG) preconditioning through the optional ``amg`` extra.
-    The preconditioner is prepared before resistance calculation.
+    The preconditioner is prepared before solving.
     Exhausting ``max_steps`` raises an error. ``rtol`` and ``atol`` default to
     1e-6 and ``max_steps`` to 1000; at least one tolerance must be positive.
     Tighter tolerances increase solve work and can expose conditioning limits.

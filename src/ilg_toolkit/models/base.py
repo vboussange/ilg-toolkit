@@ -1,4 +1,4 @@
-"""Distance models with pooled backbones and species-specific relationships."""
+"""Abstract distance models deriving ecological distances from patch features."""
 
 from abc import abstractmethod
 from collections.abc import Sequence
@@ -18,22 +18,60 @@ from ..prediction import Prediction
 from ..resistance import ResistanceSolverContext, build_resistance_context, effective_resistance
 from .common import pixel_to_patch_nodes, with_dropout_mode
 
-# Sampling-unit nodes, followed by pairs indexing those sampling units.
+# Sampling-unit vertices, followed by pairs indexing those sampling units.
 type DistancePairs = tuple[jax.Array, tuple[jax.Array, jax.Array]]
 
 
 class AbstractDistanceModel(eqx.Module):
-    """Abstract distance model combining a pooled backbone with an ecological-distance relationship.
+    """Abstract distance model deriving ecological distances from landscape features.
 
-    Custom models implement ``backbone`` and ``ecological_distances`` and supply
-    static ``num_species`` and ``patch_size`` fields. Raster features have shape
-    ``(rows, columns, features)``; sampling locations are integer ``(row, column)``
-    cells mapped to their containing patch. Feature meanings and ordering must
-    remain compatible across regions.
+    A distance model maps a region's landscape features to ecological distances
+    between its sampling units, without genetic observations. ``backbone`` computes
+    patch features shared by every species, and ``ecological_distances`` turns one
+    species' patch features into distances for requested pairs. ``train`` estimates
+    one set of parameters from every supplied region (complete pooling).
 
-    Implement a final concrete class directly from an abstract boundary. Keep its
-    fields and initialization together; compose existing concrete models to reuse
-    behavior. See the [custom model guide](../models.md) for a minimal extension.
+    Write a custom distance model as a final concrete subclass of one abstract
+    class, and implement its abstract methods:
+
+    - ``ConductanceModel``: ``backbone(features)`` and
+      ``conductance(latent, species_index)``, returning a positive conductance grid.
+    - ``EmbeddingDistanceModel``: ``backbone(features)`` and
+      ``embedding(latent, species_index)``, returning a grid with the embedding
+      dimension last.
+    - ``AbstractDistanceModel``: ``backbone(features)`` and
+      ``ecological_distances(latent, pairs, species_index)``, returning ecological
+      distances aligned with ``pairs``.
+
+    Declare static ``num_species`` and ``patch_size`` fields; conductance models
+    also declare a static ``solver_config`` holding a ``ResistanceSolverConfig``.
+    Keep fields and initialization together in the concrete class, and compose
+    existing concrete models to reuse their behavior rather than subclassing them.
+
+    Raster features have shape ``(rows, columns, features)``, with meanings and
+    order compatible across regions. Sampling locations are integer
+    ``(row, column)`` cells mapped to the vertex of their containing patch. During
+    training, ``species_index`` may be a scalar integer array, so select species
+    parameters by array indexing. The inherited ``predict`` returns a
+    ``Prediction``, and ``train`` estimates the array-valued parameters with the
+    chosen loss. See the experimental [multispecies example](../examples/multispecies.md)
+    for species labels and parameter order.
+
+    Examples:
+        A single-species embedding-distance model with a trainable linear feature map:
+
+        >>> @final
+        ... class LinearEmbedding(EmbeddingDistanceModel):
+        ...     weights: jax.Array
+        ...     num_species: int = eqx.field(static=True, default=1)
+        ...     patch_size: int = eqx.field(static=True, default=1)
+        ...
+        ...     def backbone(self, features: jax.Array) -> jax.Array:
+        ...         return features @ self.weights
+        ...
+        ...     def embedding(self, latent: jax.Array, species_index) -> jax.Array:
+        ...         return latent
+        >>> distance_model = LinearEmbedding(jnp.eye(2))
     """
 
     num_species: eqx.AbstractVar[int]
@@ -41,7 +79,7 @@ class AbstractDistanceModel(eqx.Module):
 
     @abstractmethod
     def backbone(self, features: jax.Array) -> jax.Array:
-        """Pooled landscape features derived from a row, column, feature raster."""
+        """Patch features, shared by every species, from a row, column, feature raster."""
 
     @abstractmethod
     def ecological_distances(
@@ -49,8 +87,9 @@ class AbstractDistanceModel(eqx.Module):
     ) -> jax.Array:
         """Ecological distances aligned with pairs of sampling-unit indices.
 
-        ``pairs`` contains the sampling-unit graph nodes and two arrays indexing
-        those nodes, one for each sampling unit in a pair.
+        ``pairs`` is ``(vertices, (left, right))``: ``vertices`` locates sampling
+        units on the flattened patch grid, and ``left`` and ``right`` index those
+        sampling units, one array for each end of a pair.
         """
 
     @overload
@@ -85,7 +124,7 @@ class AbstractDistanceModel(eqx.Module):
 
         Omitted pairs request every distinct pair in sampling-unit order.
         ``species_order`` associates names with parameter rows for named species.
-        A species sequence returns a mapping and shares the pooled backbone.
+        A species sequence returns a mapping and computes patch features once.
         Explicit ``pairs`` limit the returned vector and avoid generating all
         pair labels; this does not guarantee that an underlying resistance solver
         avoids its sampling-node distance matrix. Calling ``as_matrix()`` on the
@@ -118,17 +157,20 @@ class AbstractDistanceModel(eqx.Module):
 
 
 class ConductanceModel(AbstractDistanceModel):
-    """A distance model deriving effective resistance from a conductance surface.
+    """A patch encoder whose conductance surface forms a conductance grid graph.
 
-    Custom models implement ``backbone`` and ``conductance`` and declare a static
-    ``solver_config`` alongside their other model fields.
+    Each patch is one vertex with a positive conductance, and each edge between
+    neighboring vertices averages their conductances. The effective-resistance
+    layer returns the effective resistance between sampling-unit vertices as
+    ecological distance. Custom models implement ``backbone`` and ``conductance``
+    and declare a static ``solver_config`` alongside their other model fields.
     """
 
     solver_config: eqx.AbstractVar[ResistanceSolverConfig]
 
     @abstractmethod
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Positive conductance surface for one species from pooled landscape features."""
+        """Positive conductance surface for one species from patch features."""
 
     def ecological_distances(
         self,
@@ -176,7 +218,7 @@ class ConductanceModel(AbstractDistanceModel):
         """Positive conductance surfaces for the selected species.
 
         ``species_order`` associates names with parameter rows for named species.
-        A species sequence returns a mapping and shares the pooled backbone.
+        A species sequence returns a mapping and computes patch features once.
         """
         order = validate_species_order(species_order, self.num_species)
         selected = select_species(order, species)
@@ -200,7 +242,7 @@ class EmbeddingDistanceModel(AbstractDistanceModel):
 
     @abstractmethod
     def embedding(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Embedding grid for one species from pooled landscape features."""
+        """Embedding grid for one species from patch features."""
 
     def ecological_distances(
         self, latent: jax.Array, pairs: DistancePairs, species_index: int | jax.Array
@@ -289,7 +331,7 @@ def _query_pairs(
 def prepare_distance_context(
     model: AbstractDistanceModel, features: ArrayLike
 ) -> ResistanceSolverContext | None:
-    """Reusable resistance solver for the region's conductance graph."""
+    """Reusable resistance solver for the region's conductance grid graph."""
     if not isinstance(model, ConductanceModel):
         return None
     shape = jnp.asarray(features).shape
@@ -363,7 +405,7 @@ def distances_from_latent(
     species_index: int | jax.Array = 0,
     context: ResistanceSolverContext | None = None,
 ) -> jax.Array:
-    """Ecological distances from pooled landscape features for one species."""
+    """Ecological distances from patch features for one species."""
     nodes = pixel_to_patch_nodes(
         pixel_nodes,
         raster_shape=raster_shape,

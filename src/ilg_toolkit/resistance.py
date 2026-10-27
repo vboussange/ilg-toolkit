@@ -1,4 +1,4 @@
-"""Differentiable resistance calculation on conductance graphs using JAXScape."""
+"""Differentiable effective-resistance layer on conductance grid graphs using JAXScape."""
 
 from dataclasses import dataclass, field
 from numbers import Integral
@@ -42,8 +42,8 @@ def build_resistance_context(
 ) -> ResistanceSolverContext:
     """A reusable conjugate-gradient solver with optional algebraic multigrid preconditioning.
 
-    Preparation uses a uniform conductance graph of the supplied shape.
-    Resistance calculation uses the learned conductances and their gradients.
+    Preparation uses a uniform conductance grid graph of the supplied shape;
+    solves use the model's conductances and their gradients.
     """
     _require_x64()
     if len(graph_shape) != 2 or any(
@@ -53,7 +53,7 @@ def build_resistance_context(
         raise ValueError("graph_shape must contain two positive integer dimensions")
     shape = (int(graph_shape[0]), int(graph_shape[1]))
     if shape[0] * shape[1] < 2:
-        raise ValueError("Effective resistance requires at least two graph nodes")
+        raise ValueError("Effective resistance requires at least two graph vertices")
     config = config or ResistanceSolverConfig()
     if not config.use_amg:
         return ResistanceSolverContext(
@@ -76,17 +76,17 @@ def effective_resistance(
     context: ResistanceSolverContext | None = None,
     config: ResistanceSolverConfig | None = None,
 ) -> jax.Array:
-    """Effective resistance among sampling-unit nodes of a positive conductance grid.
+    """Effective resistance among sampling-unit vertices of a positive conductance grid.
 
-    Each edge in the four-neighbor grid averages its two nodes' conductances.
+    Each edge in the four-neighbor grid averages its two vertices' conductances.
     Calculations use float64 and return the surface's floating data type, with
-    zero resistance for coincident nodes.
+    zero resistance for coincident vertices.
     Invalid inputs or failed solves raise errors.
     """
     _require_x64()
     surface = jnp.asarray(conductance)
     if surface.ndim != 2 or surface.size < 2:
-        raise ValueError("conductance must be a 2D surface with at least two graph nodes")
+        raise ValueError("conductance must be a 2D surface with at least two graph vertices")
     if not jnp.issubdtype(surface.dtype, jnp.floating):
         raise TypeError("conductance must have a real floating dtype")
     surface = eqx.error_if(

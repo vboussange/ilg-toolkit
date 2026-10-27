@@ -74,10 +74,11 @@ class DirectCalibrationModule(AbstractCalibrationModule):
 
 @final
 class MLPECalibrationModule(AbstractCalibrationModule):
-    """Unpooled maximum-likelihood population effects (MLPE) genetic calibration.
+    """Group-specific maximum-likelihood population effects (MLPE) calibration.
 
-    ``regions`` maps normalized ``(region_name, species_index)`` identities to
-    fitted calibrations. Single-species models use species index zero.
+    Each region–species group keeps its own fitted calibration. ``regions`` maps
+    normalized ``(region_name, species_index)`` identities to fitted calibrations.
+    Single-species models use species index zero.
     """
 
     target: TargetSpec

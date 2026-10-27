@@ -11,17 +11,13 @@ nav = [
   {"Overview" = "index.md"},
   {"Examples" = [
     {"Quickstart" = "examples/quickstart.md"},
-    {"Isolation by distance" = "examples/ibd.md"},
+    {"Isolation-by-distance model" = "examples/ibd.md"},
     {"MLPE workflow" = "examples/mlpe_workflow.md"},
     {"Ensemble" = "examples/ensemble.md"},
     {"Multispecies (experimental)" = "examples/multispecies.md"},
   ]},
-  {"Guides" = [
-    {"Statistics" = "statistics.md"},
-    {"Custom distance models" = "models.md"},
-    {"Glossary" = "glossary.md"},
-  ]},
-  {"API" = [
+  {"Glossary" = "glossary.md"},
+  {"API reference" = [
     {"Inputs and outputs" = "api/data.md"},
     {"Distance models" = "api/models.md"},
     {"Training and calibration" = "api/training.md"},
@@ -29,7 +25,7 @@ nav = [
     {"Ensembles" = "api/ensemble.md"},
     {"Persistence" = "api/persistence.md"},
     {"Advanced MLPE" = "api/mlpe.md"},
-    {"Isolation by distance" = "api/ibd.md"},
+    {"Isolation-by-distance model" = "api/ibd.md"},
   ]},
 ]
 extra_javascript = ["javascripts/mathjax.js", "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"]

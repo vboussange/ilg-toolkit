@@ -5,31 +5,50 @@
 From the repository root with Python 3.12 or newer:
 
 ```bash
-uv sync --extra dev --extra docs --extra amg
+uv sync --extra dev --extra docs --extra amg --extra examples
 export JAX_PLATFORMS=cpu JAX_ENABLE_X64=true
 uv run --no-sync ruff format --check .
 uv run --no-sync ruff check .
 uv run --no-sync pyright
-uv run --no-sync pytest
+uv run --no-sync pytest -n 4
 uv run --no-sync pytest experiments/wishart/test_diagnostic.py
 uv run --no-sync python -m experiments.wishart
+uv run --no-sync python examples/quickstart.py
 uv run --no-sync python -m build
 ```
 
+Plain `pytest` runs serially, so a many-core workstation does not start one JAX
+process per core; pass `-n` to run tests in parallel with pytest-xdist. Generic
+behavior is tested with cheap analytic distance models, and ResNet9 and U-Net
+are each covered once at tiny width, so test time follows the number of
+behaviors rather than network size. Keep each parametrization on a distinct code
+path, since every compiled program costs compilation time.
+
 The **Run tests** workflow runs on pull requests and every push to main. It
-checks formatting, lint, types, the full CPU test suite including algebraic
-multigrid (AMG), the Wishart diagnostic, and package installation. Dependency
-bounds are maintained in `pyproject.toml`; locally generated `uv.lock` files are
-ignored.
+checks formatting, lint, and types, runs the full CPU test suite in parallel
+including algebraic multigrid (AMG), tests and runs the Wishart diagnostic, runs
+the examples, and checks package installation. Dependency bounds are maintained
+in `pyproject.toml`; locally generated `uv.lock` files are ignored.
 
 ## Documentation and examples
 
-The authoritative examples are the minimal `examples/quickstart.py` and the four
-unexecuted notebooks in `examples/`. General guides live in `docs/`, API directives
-in `docs/api/`, and the root `GLOSSARY.md` is the maintained domain glossary.
-README is copied unchanged to the documentation homepage during preparation;
-use absolute web links and image URLs in README so both renderings work. Agent
-instructions and contributor documentation remain outside the public site.
+The documentation consists of the overview generated from README, the
+executable examples, the glossary, and the API reference. The authoritative
+examples are `examples/quickstart.py` and the four unexecuted notebooks in
+`examples/`. API directives live in `docs/api/`, and the root `GLOSSARY.md` is
+the maintained domain glossary. Statistical definitions and extension guidance
+belong in docstrings, next to the code they describe. README is copied unchanged
+to the documentation homepage during preparation; use absolute web links and
+image URLs in README so both renderings work. Agent instructions and
+contributor documentation remain outside the public site.
+
+The quickstart trains on real data downloaded from the `example-data-v1`
+pre-release, which is never marked latest; `scripts/build_example_data.py`
+rebuilds that asset. Credit Cesar Australia (genetic data) and ESA WorldCover
+2021 (CC BY 4.0) wherever the example data appears. The README's quickstart
+code block must appear verbatim in `examples/quickstart.py`: documentation
+preparation fails otherwise, and regenerates the quickstart figure that README
+shows from the deployed site.
 
 ```bash
 uv run --no-sync python scripts/build_docs.py
@@ -37,15 +56,15 @@ uv run --no-sync zensical build --strict
 uv run --no-sync zensical serve
 ```
 
-Documentation preparation uses the installed toolkit and the invoking Python
-interpreter. The quickstart and each notebook run in separate processes and
+Documentation preparation uses the installed toolkit, with the docs and
+examples extras, and the invoking Python interpreter. The quickstart and each notebook run in separate processes and
 temporary working directories, on CPU with float64 enabled. Execution errors
 fail the build, including notebook cells tagged as expected errors. Commit
 notebook sources with empty outputs and execution counts. The `--timeout`
 option sets the script and per-cell execution limit in seconds (default 1200).
 
-`build/docs/` contains disposable executed Markdown, image assets, downloadable
-example sources, the homepage, and the glossary. `site/` contains the final
+`build/docs/` contains disposable executed Markdown, image assets including the
+quickstart figure, downloadable example sources, the homepage, and the glossary. `site/` contains the final
 website. Both directories are ignored. Rerun preparation after changing examples
 or documentation before serving or building.
 
@@ -71,9 +90,10 @@ reference. Review scientific meaning and parameter coverage alongside those
 automated style checks.
 
 Describe current behavior in clear US English, with one glossary term per
-concept. ILG Toolkit **provides utilities**; training estimates distance-model
-and statistical parameters; calibration fits a genetic relationship for a fixed
-distance model. Use **training** for the optimization workflow and retain
+concept, following the paper's terminology mapped in `GLOSSARY.md`. ILG Toolkit
+**provides utilities** and never learns: reserve **learned** for trained models'
+parameters and surfaces. Training estimates distance-model and statistical
+parameters; calibration fits a genetic relationship for a fixed distance model. Use **training** for the optimization workflow and retain
 statistical terms such as **fitted calibration** where they describe the
 operation. Write **region–species** with an en dash and expand abbreviations on
 first use in each module or page. Use implementation terminology when it helps

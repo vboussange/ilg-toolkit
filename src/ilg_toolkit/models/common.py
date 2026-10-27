@@ -19,7 +19,7 @@ class _PatchModel(Protocol):
 def encode_patches(
     model: _PatchModel, features: jax.Array, encode: Callable[[jax.Array], jax.Array]
 ) -> jax.Array:
-    """Pooled landscape features computed from raster patches."""
+    """Patch features computed from non-overlapping raster patches."""
     patches, shape = patchify(features, model.patch_size)
     batch_size = model.patch_microbatch_size
     if batch_size is None:
@@ -77,7 +77,7 @@ def pixel_to_patch_nodes(
     raster_shape: tuple[int, int],
     patch_size: int,
 ) -> jax.Array:
-    """Row-major patch nodes corresponding to row-major raster pixel indices."""
+    """Row-major patch vertices corresponding to row-major raster pixel indices."""
     height, width = raster_shape
     if height % patch_size or width % patch_size:
         raise ValueError("Raster dimensions must be divisible by patch_size")

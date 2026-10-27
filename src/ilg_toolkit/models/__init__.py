@@ -1,4 +1,4 @@
-"""Distance models with pooled backbones and species-specific ecological distances."""
+"""Distance models: patch encoders on conductance grid graphs and embedding-distance models."""
 
 from .base import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
 from .loglinear import LogLinearConductance, initialize_uniform_conductance

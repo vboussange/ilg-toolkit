@@ -174,8 +174,8 @@ class Ensemble:
     ) -> EnsemblePrediction | dict[str, EnsemblePrediction]:
         """Genetic predictions averaged in original target units over every member.
 
-        A species sequence returns a mapping and shares each member's pooled
-        backbone. See ``LandscapeGeneticsModel.predict`` for species selection.
+        A species sequence returns a mapping and computes each member's patch
+        features once. See ``LandscapeGeneticsModel.predict`` for species selection.
         """
         pairs = None if pairs is None else tuple(pairs)
         if isinstance(species, str) or species is None:

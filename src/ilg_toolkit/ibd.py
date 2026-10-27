@@ -1,4 +1,4 @@
-"""Isolation by distance (IBD) reference relating geographic distances and genetic dissimilarity."""
+"""Isolation-by-distance (IBD) model relating geographic distances and genetic dissimilarity."""
 
 from __future__ import annotations
 

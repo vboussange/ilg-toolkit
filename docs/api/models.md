@@ -8,6 +8,8 @@
 
 ::: ilg_toolkit.models.LogLinearConductance
 
+::: ilg_toolkit.models.initialize_uniform_conductance
+
 ::: ilg_toolkit.models.ResNet9Conductance
 
 ::: ilg_toolkit.models.UNetEmbeddingDistance

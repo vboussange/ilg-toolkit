@@ -1,4 +1,4 @@
-"""A residual-network conductance model with a pooled backbone over raster patches."""
+"""A ResNet9 patch encoder mapping raster patches to vertex conductances."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class ResidualBlock(eqx.Module):
 
 @final
 class ResNet9Conductance(ConductanceModel):
-    """A conductance model using a pooled residual-network backbone over raster patches.
+    """A ResNet9 patch encoder mapping each raster patch to one vertex conductance.
 
     Species-specific linear coefficients map each patch's features to positive
     conductance through softplus and ``min_conductance``.
@@ -50,23 +50,20 @@ class ResNet9Conductance(ConductanceModel):
         in_channels:
             Number of raster covariates in the retained feature order.
         num_species: Number of species-specific output rows; default 1. The
-            convolutional
-            backbone is pooled across all regions and species.
+            convolutional layers are shared by all regions and species.
         patch_size: Square patch side length, at least 4 (default 4). Raster dimensions
-            must
-            be divisible by it; output shape is ``(rows // patch_size, columns // patch_size)``.
-            Sampling units in the same patch share a graph node.
+            must be divisible by it; output shape is
+            ``(rows // patch_size, columns // patch_size)``. Sampling units in the
+            same patch share a vertex.
         channels: Widths of the three convolutional stages, default ``(64, 128, 256)``
             as in the paper. Each width must be a positive multiple of 8 because
             GroupNorm uses 8 groups; narrower widths suit small studies and CPU runs.
         min_conductance: Positive conductance floor added after softplus, default 1e-6.
         patch_microbatch_size: Maximum patches processed together; ``None`` processes
-            all patches.
-            Lower values trade throughput for peak activation memory without changing
-            the patch grid or the model's receptive field.
-        solver_config: Resistance tolerances, iteration limit, and optional algebraic
-            multigrid (AMG)
-            preconditioner.
+            all patches. Lower values trade throughput for peak activation memory
+            without changing the patch grid or the model's receptive field.
+        solver_config: Effective-resistance tolerances, iteration limit, and optional
+            algebraic multigrid (AMG) preconditioner.
         key: JAX random key for reproducible parameter initialization.
 
     Notes:
@@ -74,10 +71,10 @@ class ResNet9Conductance(ConductanceModel):
         uses float64, which must be enabled before constructing inputs. The network
         encodes each patch through two residual blocks and spatial pooling, followed
         by a species-specific linear map and softplus. It does not mix features across
-        neighboring patches; the resistance graph connects their conductances.
+        neighboring patches; the conductance grid graph connects their conductances.
 
         See the maximum-likelihood population effects (MLPE)
-        [workflow](../examples/mlpe_workflow.md) for pooled regional training,
+        [workflow](../examples/mlpe_workflow.md) for training across regions,
         solver choices, and practical patch/cropping guidance.
     """
 
@@ -150,7 +147,7 @@ class ResNet9Conductance(ConductanceModel):
         self.solver_config = solver_config
 
     def _encode_patch(self, patch: jax.Array) -> jax.Array:
-        """Pooled landscape features for one raster patch."""
+        """Patch features for one raster patch."""
         patch = jnp.asarray(patch, dtype=self.conv1.weight.dtype)
         values = jax.nn.relu(self.norm1(self.conv1(patch)))
         values = eqx.nn.MaxPool2d(2, stride=2)(values)
@@ -163,7 +160,7 @@ class ResNet9Conductance(ConductanceModel):
         return values
 
     def backbone(self, features: jax.Array) -> jax.Array:
-        """Pooled landscape features for each raster patch."""
+        """Patch features for each raster patch."""
         if features.ndim != 3 or features.shape[-1] != self.conv1.weight.shape[1]:
             raise ValueError(
                 f"Expected row, column, feature data with {self.conv1.weight.shape[1]} features"
@@ -171,7 +168,7 @@ class ResNet9Conductance(ConductanceModel):
         return encode_patches(self, features, self._encode_patch)
 
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Positive conductance surface from pooled landscape features."""
+        """Positive conductance surface from patch features."""
         assert self.output.bias is not None
         logits = latent @ self.output.weight[species_index] + self.output.bias[species_index]
         return jax.nn.softplus(logits) + self.min_conductance

@@ -70,11 +70,24 @@ def _context(region: RegionBatch, observations: PairwiseObservations) -> _LossCo
 @final
 @dataclass(frozen=True)
 class Log1pLoss(AbstractLoss):
-    """Mean squared difference of log1p ecological distances and log1p transformed targets.
+    r"""Log1p objective: mean squared difference of log1p ecological distances and targets.
 
-    The target must describe nonnegative dissimilarities. The fitted direct
-    calibration applies the target's inverse transformation to ecological distances.
-    This loss has no statistical parameters or standalone optimization budget.
+    For a region–species group with observed pairs $\mathcal O$, ecological
+    distances $s_{ij}$, and model-scale targets $t_{ij}=T(y_{ij})$ under the
+    target transform $T$,
+
+    $$L=\frac{1}{|\mathcal O|}\sum_{(i,j)\in\mathcal O}
+    \left[\log(1+s_{ij})-\log(1+t_{ij})\right]^2.$$
+
+    Training averages $L$ over regions within each species, then over species, so
+    regions with more pairs do not dominate. The log transforms reduce the leverage
+    of the largest genetic dissimilarities; the log1p comparison and the target
+    transform are separate choices. The target must describe nonnegative
+    dissimilarities.
+
+    The fitted direct calibration returns $T^{-1}(s)$, with no coefficients or
+    variance parameters, so this loss identifies an absolute connectivity scale.
+    It has no statistical parameters or standalone optimization budget.
 
     Examples:
         >>> config = TrainingConfig(loss=Log1pLoss(), steps=100)
@@ -132,13 +145,33 @@ class _MLPEState(eqx.Module):
 @final
 @dataclass(frozen=True)
 class MLPELoss(AbstractLoss):
-    """Marginal maximum-likelihood population effects (MLPE) per observed pair.
+    r"""Marginal maximum-likelihood population effects (MLPE) per observed pair.
 
-    Ecological distances are sample standardized and signed intercept/slope
-    coefficients are estimated by generalized least squares. Population and residual
-    variances are positive parameters estimated during training; ``jitter`` adds to
-    residual variance in the criterion and population-effect posterior. MLPE requires float64,
-    population sampling units, and dissimilarity targets.
+    MLPE accounts for dependence between pairwise genetic observations sharing a
+    population. With sample-standardized ecological distances
+    $x_{ij}=(s_{ij}-c)/a$, model-scale targets follow
+
+    $$t_{ij}=\alpha+\beta x_{ij}+b_i+b_j+\epsilon_{ij},\qquad
+    b_i\sim N(0,u),\quad\epsilon_{ij}\sim N(0,e+j).$$
+
+    The intercept $\alpha$ and slope $\beta$ are signed; $u$ and $e$ are positive
+    population and residual variances, and $j$ is the fixed ``jitter``. A pair has
+    variance $2u+e+j$, and distinct pairs sharing a population have covariance $u$.
+    With incidence matrix $Z$ and design $X=[\mathbf 1, x]$, the covariance is
+    $V=(e+j)I+uZZ^\top$. Generalized least squares profiles the coefficients, and
+    the loss is the marginal negative log likelihood per observed pair,
+
+    $$\ell=\frac{1}{2m}\left\{m\log(2\pi)+\log\det V+
+    (t-X\hat\theta)^\top V^{-1}(t-X\hat\theta)\right\},$$
+
+    without restricted-likelihood correction. Coefficients, variance components,
+    distance moments, and population-effect posteriors are estimated separately for
+    each region–species group (group-specific calibration), while distance-model
+    parameters are shared across groups. Standardization makes the loss invariant
+    to the scale of ecological distances, so MLPE does not identify an absolute
+    connectivity scale. MLPE requires float64, population sampling units, and
+    dissimilarity targets. See the [advanced MLPE API](mlpe.md) for
+    identifiability, precision, diagnostics, and the standalone array-distance fitter.
 
     Args:
         variance_floor:
@@ -155,8 +188,10 @@ class MLPELoss(AbstractLoss):
         ...                    loss=loss, max_iterations=2000)
 
         Built-in training validation uses training-fitted coefficients, distance moments,
-        and variances. Fresh calibration estimates the two variance components with
-        deterministic multistart optimization; zero training steps only initializes them.
+        and variances. ``train`` updates distance and variance parameters with a fixed
+        Adam budget, and zero training steps only initializes the variances. Fresh
+        calibration keeps the distance model fixed and estimates both variance
+        components with deterministic multistart optimization.
     """
 
     variance_floor: float = 1e-10

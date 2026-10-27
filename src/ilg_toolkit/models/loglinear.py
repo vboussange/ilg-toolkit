@@ -1,4 +1,4 @@
-"""Log-linear conductance from patch-averaged landscape covariates."""
+"""Log-linear patch encoder from patch-averaged landscape features."""
 
 import math
 from collections.abc import Sequence
@@ -35,36 +35,37 @@ _IMPROVEMENT_RTOL = 1e-9
 
 @final
 class LogLinearConductance(ConductanceModel):
-    """A conductance model with species-specific coefficients pooled across regions.
+    """A log-linear patch encoder with species-specific coefficients.
 
-    Patch-averaged covariates form a linear predictor for each species index.
-    Conductance is ``min_conductance + exp(predictor)``, capped at ``max_conductance``.
-    Coefficient columns follow the raster feature order; coefficients and intercepts start at zero.
+    Patch-averaged landscape features form a linear predictor for each species
+    index. Conductance is ``min_conductance + exp(predictor)``, capped at
+    ``max_conductance``. Coefficient columns follow the raster feature order;
+    coefficients and intercepts start at zero. ``initialize_uniform_conductance``
+    instead starts the intercepts at the best uniform conductance.
 
     Args:
         in_channels:
-            Number of raster covariates, in their retained feature order.
+            Number of landscape features, in their retained feature order.
         num_species: Number of species-specific coefficient rows; default 1.
         patch_size: Side length of square raster patches, default 32. Both raster
-            dimensions
-            must be divisible by it. Populations in the same patch share a graph node.
+            dimensions must be divisible by it. Sampling units in the same patch
+            share a vertex.
         patch_microbatch_size: Maximum patches encoded together; ``None`` encodes all
-            patches at once.
-            This controls peak encoder memory.
+            patches at once. This controls peak encoder memory.
         min_conductance: Positive floor, default 0.01, added to the exponentiated linear
             predictor.
         max_conductance: Positive cap, default 1000. Conductance is
             ``min(max_conductance, min_conductance + exp(features @ coefficients + intercept))``.
-        solver_config: Resistance tolerances and iteration limit; see
-            ``ResistanceSolverConfig``.
-            Enable JAX float64 before using conductance models.
+        solver_config: Effective-resistance tolerances and iteration limit; see
+            ``ResistanceSolverConfig``. Enable JAX float64 before using conductance
+            models.
 
     Notes:
         Patch microbatch size does not change graph resolution or ecological context.
-        Prepare covariate scaling and categorical reference levels before constructing
+        Prepare feature scaling and categorical reference levels before constructing
         a region batch. Use full-rank coding with the intercept (for example, k-1
-        indicators for k categories). Coefficients are pooled across a species' regions;
-        this model does not learn a cross-species neural backbone.
+        indicators for k categories). ``train`` estimates each species' coefficients
+        from all of its regions (complete pooling); species share no parameters.
 
         The intercept scales the exponential before the floor and cap, so those limits
         can alter relative conductances. Standardized maximum-likelihood population effects
@@ -124,13 +125,13 @@ class LogLinearConductance(ConductanceModel):
         self.intercepts = jnp.zeros(num_species)
 
     def backbone(self, features: jax.Array) -> jax.Array:
-        """Patch-averaged landscape covariates."""
+        """Patch-averaged landscape features."""
         if features.ndim != 3 or features.shape[-1] != self.in_channels:
             raise ValueError(f"Expected row, column, feature data with {self.in_channels} features")
         return encode_patches(self, features, partial(jnp.mean, axis=(1, 2)))
 
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Conductance surface for one species from patch-averaged covariates."""
+        """Conductance surface for one species from patch-averaged landscape features."""
         predictor = latent @ self.coefficients[species_index] + self.intercepts[species_index]
         ceiling = jnp.log(self.max_conductance - self.min_conductance)
         return jnp.clip(
