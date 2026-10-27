@@ -11,7 +11,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ._training_inputs import RegionSpeciesKey
+from ._training_utils import RegionSpeciesKey
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 
 if TYPE_CHECKING:

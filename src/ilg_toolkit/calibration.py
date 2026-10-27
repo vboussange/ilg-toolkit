@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING, final
 
 import equinox as eqx
 
-from ._training_inputs import RegionSpeciesKey
+from ._training_utils import RegionSpeciesKey
 from .data import PairwiseObservations, TargetSpec
 from .mlpe import RegionalMLPECalibration
 from .prediction import Prediction
 
 if TYPE_CHECKING:
-    from ._training_inputs import ObservationCollection, RegionCollection
+    from ._training_utils import ObservationCollection, RegionCollection
     from .losses import AbstractLoss
     from .model import LandscapeGeneticsModel
     from .models import AbstractDistanceModel
@@ -192,7 +192,7 @@ def calibrate(
         [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
         and the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md).
     """
-    from ._training_inputs import (
+    from ._training_utils import (
         _normalize_training_inputs,
         _prepare_region_species_inputs,
         _resolve_training_species_order,

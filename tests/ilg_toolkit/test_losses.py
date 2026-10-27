@@ -15,7 +15,7 @@ def test_direct_loss_trains_without_statistical_parameters(
         regions[0],
         observations[0],
         distance_model=model,
-        config=TrainingConfig(loss=Log1pLoss(), steps=2, jit=False),
+        config=TrainingConfig(loss=Log1pLoss(), steps=2),
     )
     assert state.loss_state is None
     assert state.history[-1].training_loss < state.history[0].training_loss

@@ -40,3 +40,9 @@ def test_fresh_fit_requires_declared_encoder_and_objective_while_resume_reuses_t
     )
     with pytest.raises(ValueError):
         train(region, observations, state=initial, distance_model=encoder)
+
+
+def test_training_configuration_holds_only_scientific_settings():
+    # Eager debugging uses jax.disable_jit() rather than a configuration flag.
+    with pytest.raises(TypeError):
+        TrainingConfig(loss=Log1pLoss(), jit=False)  # type: ignore[call-arg]

@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from ._training_inputs import (
+from ._training_utils import (
     ObservationCollection,
     RegionCollection,
     RegionSpeciesKey,
@@ -171,23 +171,18 @@ def _microbatch_objective(parameters, contributions, loss, context, key):
     )
 
 
-_microbatch_gradient = eqx.filter_grad(_microbatch_objective)
-_compiled_microbatch_gradient = eqx.filter_jit(_microbatch_gradient)
+_microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_objective))
 
 
+@eqx.filter_jit
 def _backbone(model, features, key):
     return with_dropout_mode(model, inference=key is None, key=key).backbone(features)
-
-
-_compiled_backbone = eqx.filter_jit(_backbone)
 
 
 def _regional_gradient(parameters, contributions, config, context, key):
     model, loss_state = parameters
     features = contributions[0].payload.features
-    backbone = _compiled_backbone if config.jit else _backbone
-    latent, backward = eqx.filter_vjp(lambda m: backbone(m, features, key), model)
-    differentiate = _compiled_microbatch_gradient if config.jit else _microbatch_gradient
+    latent, backward = eqx.filter_vjp(lambda m: _backbone(m, features, key), model)
     size = config.species_microbatch_size or len(contributions)
     accumulated = None
     for start in range(0, len(contributions), size):
@@ -202,7 +197,7 @@ def _regional_gradient(parameters, contributions, config, context, key):
             _NumericContribution(item.payload, item.species_index, item.loss_weight)
             for item in selected
         )
-        model_gradient, latent_gradient, selected_gradient = differentiate(
+        model_gradient, latent_gradient, selected_gradient = _microbatch_gradient(
             (model, latent, selected_states), numeric, config.loss, context, key
         )
         gradient = (model_gradient, latent_gradient, state_backward(selected_gradient)[0])
@@ -281,6 +276,7 @@ def _prepare_batches(
     return training, validation
 
 
+@eqx.filter_jit
 def _apply_gradient(
     parameters: Parameters,
     optimizer_state: optax.OptState,
@@ -295,9 +291,6 @@ def _apply_gradient(
     )
     parameters = eqx.apply_updates(parameters, updates)
     return parameters, optimizer_state
-
-
-_compiled_update = eqx.filter_jit(_apply_gradient)
 
 
 def _criterion(loss, distances, context, state, calibration):
@@ -321,11 +314,9 @@ def _evaluate_regions(
     previous_region, latent = None, None
     for batch in batches:
         if batch.region.name != previous_region:
-            backbone = _compiled_backbone if config.jit else _backbone
-            latent = backbone(parameters[0], batch.payload.features, None)
+            latent = _backbone(parameters[0], batch.payload.features, None)
             previous_region = batch.region.name
-        calculate = _compiled_distances if config.jit else _group_distances
-        distances = calculate(
+        distances = _compiled_distances(
             configured, latent, batch.payload, jnp.asarray(batch.species_index), batch.context
         )
         group_state = config.loss._group_state(parameters[1], batch.key)
@@ -334,7 +325,7 @@ def _evaluate_regions(
             raise ValueError(
                 "Validation requires a training calibration for the same region–species group"
             )
-        criterion = _compiled_criterion if config.jit and calibration is None else _criterion
+        criterion = _criterion if calibration is not None else _compiled_criterion
         value = float(
             criterion(config.loss, distances, batch.payload.context, group_state, calibration)
         )
@@ -503,7 +494,6 @@ def train(
         else optimizer.init(eqx.filter(parameters, eqx.is_inexact_array))
     )
 
-    apply_update = _compiled_update if config.jit else _apply_gradient
     regional_batches = tuple(
         tuple(b for b in training_batches if b.region.name == name)
         for name in dict.fromkeys(b.region.name for b in training_batches)
@@ -606,7 +596,7 @@ def train(
                     )
                 )
             assert accumulated is not None
-            parameters, optimizer_state = apply_update(
+            parameters, optimizer_state = _apply_gradient(
                 parameters,
                 optimizer_state,
                 accumulated,

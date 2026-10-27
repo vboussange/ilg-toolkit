@@ -16,7 +16,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._training_inputs import RegionSpeciesKey
+from ._training_utils import RegionSpeciesKey
 from .calibration import DirectCalibrationModule, MLPECalibrationModule
 from .config import ResistanceSolverConfig
 from .data import TargetSpec

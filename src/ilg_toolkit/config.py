@@ -66,7 +66,7 @@ class ResistanceSolverConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Optimization budget and numerical settings for a landscape genetics model.
+    """Optimization budget and scientific settings for training a landscape genetics model.
 
     Each Adam update samples up to ``region_batch_size`` regions and then
     ``species_batch_size`` species within each region; ``None`` uses all available.
@@ -85,7 +85,10 @@ class TrainingConfig:
         species_microbatch_size: Maximum species processed together before their
             gradients are combined; ``None`` processes all sampled species together.
         seed: Seed for training's random sampling.
-        jit: Compile numerical training calculations with JAX.
+
+    Notes:
+        Training always compiles its numerical calculations. Debug them eagerly
+        with ``jax.disable_jit()``.
     """
 
     loss: AbstractLoss
@@ -96,13 +99,10 @@ class TrainingConfig:
     species_batch_size: int | None = None
     species_microbatch_size: int | None = None
     seed: int = 0
-    jit: bool = True
 
     def __post_init__(self):
         if not isinstance(self.loss, AbstractLoss):
             raise ValueError("loss must be an AbstractLoss")
-        if not isinstance(self.jit, bool):
-            raise ValueError("jit must be a boolean")
         if (
             isinstance(self.seed, bool)
             or not isinstance(self.seed, int)

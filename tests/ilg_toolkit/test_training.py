@@ -51,10 +51,7 @@ def test_failed_solver_preserves_solver_failure(PointConductance):
             )
 
 
-@pytest.mark.parametrize("jit", [False, True])
-def test_nonfinite_training_is_reported_at_evaluation(
-    ScalarEmbedding, regions_and_observations, jit
-):
+def test_nonfinite_training_is_reported_at_evaluation(ScalarEmbedding, regions_and_observations):
     regions, observations = regions_and_observations()
     completed = []
     with pytest.raises(FloatingPointError):
@@ -62,30 +59,26 @@ def test_nonfinite_training_is_reported_at_evaluation(
             regions[0],
             observations[0],
             distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-            config=TrainingConfig(
-                loss=Log1pLoss(), steps=3, eval_every=2, learning_rate=1e200, jit=jit
-            ),
+            config=TrainingConfig(loss=Log1pLoss(), steps=3, eval_every=2, learning_rate=1e200),
             on_step=lambda state: completed.append(state.step),
         )
     assert completed == [0]
 
 
 @pytest.mark.parametrize(
-    ("jit", "num_species", "region_count", "region_batch_size", "species_batch_size"),
+    ("num_species", "region_count", "region_batch_size", "species_batch_size"),
     [
-        (False, 1, 1, None, None),
-        (True, 1, 1, None, None),
-        (True, 1, 2, None, None),
-        (True, 1, 2, 1, None),
-        (True, 2, 1, None, None),
-        (True, 2, 1, None, 1),
+        (1, 1, None, None),
+        (1, 2, None, None),
+        (1, 2, 1, None),
+        (2, 1, None, None),
+        (2, 1, None, 1),
     ],
 )
 def test_mlpe_updates_match_dense_reference(
     WeightedEmbedding,
     dense_profile,
     embedding_problem,
-    jit,
     region_count,
     num_species,
     region_batch_size,
@@ -202,7 +195,6 @@ def test_mlpe_updates_match_dense_reference(
         config=TrainingConfig(
             loss=MLPELoss(),
             steps=2,
-            jit=jit,
             learning_rate=0.02,
             region_batch_size=region_batch_size,
             species_batch_size=species_batch_size,
@@ -605,10 +597,10 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
         np.testing.assert_allclose(np.dot(probabilities, gradients), dense_gradient, rtol=1e-8)
 
 
-@pytest.mark.parametrize(("num_species", "jit"), [(1, True), (2, False), (2, True)])
+@pytest.mark.parametrize("num_species", [1, 2])
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
 def test_species_microbatches_preserve_updates_with_shared_parameters(
-    training_problem, SharedParameterEmbedding, dense_profile, num_species, jit, objective
+    training_problem, SharedParameterEmbedding, dense_profile, num_species, objective
 ):
     from dataclasses import replace
 
@@ -617,7 +609,7 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
     initial = np.array([0.6, 0.9])[:num_species]
     model = SharedParameterEmbedding(jnp.asarray(initial))
     config = TrainingConfig(
-        loss=Log1pLoss() if objective == "direct_log1p" else MLPELoss(), steps=2, jit=jit
+        loss=Log1pLoss() if objective == "direct_log1p" else MLPELoss(), steps=2
     )
     states = []
     reference = train(
@@ -681,9 +673,8 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
             species=species,
             config=replace(config, species_microbatch_size=size),
         )
-        if jit:
-            # Compatible species reuse evaluation and microbatch gradient programs.
-            assert 0 < len(traces) <= 1 + min(size, num_species)
+        # Compatible species reuse evaluation and microbatch gradient programs.
+        assert 0 < len(traces) <= 1 + min(size, num_species)
         for actual, expected in zip(
             jax.tree.leaves((result.latest_model.distance_model, result.optimizer_state)),
             jax.tree.leaves((reference.latest_model.distance_model, reference.optimizer_state)),
@@ -871,10 +862,9 @@ def test_validation_on_another_region_requires_declared_feature_meanings(
         )
 
 
-@pytest.mark.parametrize("jit", [False, True])
 @pytest.mark.parametrize("validation_used", [False, True])
 def test_evaluation_cadence_selects_model_and_reports_every_step(
-    ScalarEmbedding, regions_and_observations, jit, validation_used
+    ScalarEmbedding, regions_and_observations, validation_used
 ):
     regions, observed = regions_and_observations()
     region, observations = regions[0], observed[0]
@@ -892,7 +882,7 @@ def test_evaluation_cadence_selects_model_and_reports_every_step(
         region,
         observations,
         distance_model=model,
-        config=TrainingConfig(loss=Log1pLoss(), steps=5, eval_every=2, learning_rate=0.01, jit=jit),
+        config=TrainingConfig(loss=Log1pLoss(), steps=5, eval_every=2, learning_rate=0.01),
         validation=(validation_region, validation) if validation_used else None,
         on_step=callbacks.append,
     )
@@ -911,10 +901,9 @@ def test_evaluation_cadence_selects_model_and_reports_every_step(
         assert eqx.tree_equal(result.selected_model, result.latest_model)
 
 
-@pytest.mark.parametrize("jit", [False, True])
 @pytest.mark.parametrize("species_count", [1, 2])
 def test_calibration_fits_only_supplied_region_and_preserves_distances(
-    WeightedEmbedding, embedding_problem, dense_profile, jit, species_count
+    WeightedEmbedding, embedding_problem, dense_profile, species_count
 ):
     from dataclasses import replace
 
@@ -952,14 +941,14 @@ def test_calibration_fits_only_supplied_region_and_preserves_distances(
                 region,
                 training_observations,
                 distance_model=frozen,
-                config=TrainingConfig(loss=MLPELoss(), steps=0, jit=jit),
+                config=TrainingConfig(loss=MLPELoss(), steps=0),
             )
     initial = train(
         region,
         training_observations,
         distance_model=frozen,
         species=order,
-        config=TrainingConfig(loss=MLPELoss(), steps=0, jit=jit),
+        config=TrainingConfig(loss=MLPELoss(), steps=0),
     ).selected_model
     selected = transferred_observations.select_pairs(transferred_observations.observed_pairs[:-1])
     model = calibrate(

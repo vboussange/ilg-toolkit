@@ -216,14 +216,10 @@ class _PointConductance(ConductanceModel):
 @final
 class _CustomDistance(AbstractDistanceModel):
     scale: jax.Array
-    numpy_preprocessing: bool = eqx.field(static=True, default=False)
-
     num_species: int = eqx.field(static=True, default=1)
     patch_size: int = eqx.field(static=True, default=1)
 
     def backbone(self, features):
-        if self.numpy_preprocessing:
-            features = jnp.asarray(np.asarray(features))
         return features.reshape(-1) * self.scale
 
     def ecological_distances(self, latent, pairs, species_index):
