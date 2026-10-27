@@ -1,8 +1,8 @@
 """Scientific behavior of checkpoint."""
 
 import json
-from dataclasses import asdict, replace
-from typing import TypedDict, cast
+from dataclasses import asdict, dataclass, replace
+from typing import Any
 
 import coordax as cx
 import equinox as eqx
@@ -15,139 +15,149 @@ from ilg_toolkit import (
     Log1pLoss,
     MLPELoss,
     PairwiseObservations,
+    RegionBatch,
     TrainingConfig,
     load_checkpoint,
     save_checkpoint,
     train,
 )
-from ilg_toolkit._training_utils import (
-    ObservationCollection,
-    RegionCollection,
-)
+from ilg_toolkit.models import AbstractDistanceModel
+
+
+@dataclass(frozen=True)
+class _ResumeScenario:
+    """A training run whose interrupted continuation must equal the uninterrupted run."""
+
+    regions: tuple[RegionBatch, ...]
+    targets: tuple[Any, ...]
+    distance_model: AbstractDistanceModel
+    config: TrainingConfig
+    species: tuple[str, ...] | None = None
+    validation: tuple[tuple[RegionBatch, ...], tuple[Any, ...]] | None = None
+
+
+def _two_regions(
+    training_problem, family: str, num_species: int = 1
+) -> tuple[tuple[RegionBatch, ...], tuple[Any, ...], AbstractDistanceModel]:
+    """The problem's region and a renamed copy with targets scaled by 1.2."""
+    region, observations, model = training_problem(family, num_species=num_species)
+    other = replace(region, name="valley")
+    if isinstance(observations, PairwiseObservations):
+        other_observations = replace(observations, values=observations.values * 1.2)
+    else:
+        other_observations = tuple(
+            replace(observed, values=observed.values * 1.2) for observed in observations
+        )
+    return (region, other), (observations, other_observations), model
+
+
+_CONFIG = TrainingConfig(loss=MLPELoss(), steps=2, eval_every=2, seed=21, learning_rate=1e-4)
+
+
+def _conductance_region_batches(training_problem):
+    """Random region minibatches of a conductance model fitted with MLPE."""
+    regions, targets, model = _two_regions(training_problem, "conductance")
+    return _ResumeScenario(regions, targets, model, replace(_CONFIG, region_batch_size=1))
+
+
+def _dropout_validation(training_problem):
+    """Dropout keys and a completed budget, selected at step 0 by validation."""
+    regions, targets, model = _two_regions(training_problem, "dropout")
+    # Initial predictions as validation targets make step 0 the best validation step.
+    validation_targets = tuple(
+        PairwiseObservations.from_pairs(prediction.pairs, prediction.values, target=o.target)
+        for prediction, o in zip((model.predict(r) for r in regions), targets, strict=True)
+    )
+    validation_regions = tuple(replace(r, name=r.name + "-validation") for r in regions)
+    return _ResumeScenario(
+        regions,
+        targets,
+        model,
+        replace(_CONFIG, loss=Log1pLoss(), learning_rate=0.002),
+        validation=(validation_regions, validation_targets),
+    )
+
+
+def _species_microbatch_validation(training_problem):
+    """Species batches and microbatches of an embedding model with MLPE validation."""
+    regions, groups, model = _two_regions(training_problem, "embedding", num_species=2)
+    validation = tuple(group[0].select_pairs(group[0].observed_pairs[-1:]) for group in groups)
+    targets = tuple(tuple(o.select_pairs(o.observed_pairs[:-1]) for o in group) for group in groups)
+    config = replace(_CONFIG, region_batch_size=1, species_batch_size=1, species_microbatch_size=1)
+    return _ResumeScenario(
+        regions,
+        targets,
+        model,
+        config,
+        species=("species-1", "species-0"),
+        validation=(regions, validation),
+    )
 
 
 @pytest.mark.parametrize(
-    ("family", "objective", "selection", "num_species"),
-    [
-        (family, objective, "final", 1)
-        for family in ("embedding", "conductance", "unet", "resnet")
-        for objective in ("direct_log1p", "mlpe")
-    ]
-    + [("unet", objective, "validation", 1) for objective in ("direct_log1p", "mlpe")]
-    + [("embedding", objective, "final", 2) for objective in ("direct_log1p", "mlpe")]
-    + [("embedding", "mlpe", "validation", 2)],
+    "build",
+    [_conductance_region_batches, _dropout_validation, _species_microbatch_validation],
+    ids=["conductance-regions", "dropout-validation", "species-microbatches"],
 )
-def test_resume_equals_uninterrupted(
-    tmp_path,
-    training_problem,
-    checkpoint_problem,
-    checkpoint_model,
-    family,
-    objective,
-    selection,
-    num_species,
-):
-    region, observations, encoder = training_problem(family, num_species=num_species)
-    species = ("species-1", "species-0") if num_species > 1 else None
-    other = replace(region, name="valley")
-    other_observations = (
-        replace(observations, values=observations.values * 1.2)
-        if isinstance(observations, PairwiseObservations)
-        else tuple(replace(observed, values=observed.values * 1.2) for observed in observations)
-    )
-    regions, targets = (region, other), (observations, other_observations)
-    if family in ("unet", "resnet"):
-        regions, targets = (region,), (observations,)
-    config = TrainingConfig(
-        loss=Log1pLoss() if objective == "direct_log1p" else MLPELoss(),
-        steps=2,
-        eval_every=2,
-        seed=21,
-        learning_rate=1e-4,
-        region_batch_size=1 if family in ("embedding", "conductance") else None,
-        species_batch_size=1 if num_species > 1 else None,
-        species_microbatch_size=1 if num_species > 1 else None,
-    )
-    options = _ValidationOptions()
-    if selection == "validation" and num_species > 1:
-        group_targets = cast(tuple[tuple[PairwiseObservations, ...], ...], targets)
-        options = _ValidationOptions(
-            validation=(
-                regions,
-                tuple(
-                    groups[0].select_pairs(groups[0].observed_pairs[-1:])
-                    for groups in group_targets
-                ),
-            )
-        )
-        targets = tuple(
-            tuple(o.select_pairs(o.observed_pairs[:-1]) for o in groups) for groups in group_targets
-        )
-    elif selection == "validation":
-        problems = (checkpoint_problem(), checkpoint_problem("valley", seed=71))
-        regions = tuple(problem[0] for problem in problems)
-        targets = tuple(problem[1] for problem in problems)
-        encoder = checkpoint_model()
-        config = replace(config, learning_rate=0.002)
-        if objective == "mlpe":
-            options = _ValidationOptions(
-                validation=(regions, tuple(o.select_pairs(o.observed_pairs[-2:]) for o in targets))
-            )
-            targets = tuple(o.select_pairs(o.observed_pairs[:-2]) for o in targets)
-        else:
-            validation_regions = tuple(replace(r, name=r.name + "-validation") for r in regions)
-            predictions = tuple(encoder.predict(r) for r in regions)
-            validation_targets = tuple(
-                PairwiseObservations.from_pairs(
-                    prediction.pairs, prediction.values, target=o.target
-                )
-                for prediction, o in zip(predictions, targets, strict=True)
-            )
-            options = _ValidationOptions(validation=(validation_regions, validation_targets))
+def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
+    scenario = build(training_problem)
+    regions, targets, validation = scenario.regions, scenario.targets, scenario.validation
     states = []
     uninterrupted = train(
         regions,
         targets,
-        distance_model=encoder,
-        config=config,
-        species=species,
+        distance_model=scenario.distance_model,
+        config=scenario.config,
+        species=scenario.species,
+        validation=validation,
         on_step=states.append,
-        **options,
     )
     partial = states[1]
-    if selection == "validation":
+    if validation is not None:
         assert partial.selected_step == 0
         assert not eqx.tree_equal(partial.latest_model, partial.selected_model)
     path = tmp_path / "checkpoint.eqx"
     save_checkpoint(path, partial)
-    restored = load_checkpoint(path, distance_model=encoder)
+    restored = load_checkpoint(path, distance_model=scenario.distance_model)
     assert eqx.tree_equal(restored, partial)
     # Reversing region order also checks restoration of the random trajectory.
-    resumed = train(regions[::-1], targets[::-1], state=restored, **options)
+    resumed = train(regions[::-1], targets[::-1], state=restored, validation=validation)
     assert eqx.tree_equal(resumed, uninterrupted)
-    if selection == "validation" and objective == "mlpe" and num_species == 1:
+    for prepared in regions:
+        for name in scenario.species or (None,):
+            np.testing.assert_array_equal(
+                resumed.selected_model.predict(prepared, species=name).values,
+                uninterrupted.selected_model.predict(prepared, species=name).values,
+            )
+    if validation is not None and scenario.species is None:
+        # A completed budget returns the saved state without further updates.
         save_checkpoint(path, resumed)
-        completed = load_checkpoint(path, distance_model=encoder)
+        completed = load_checkpoint(path, distance_model=scenario.distance_model)
         callbacks = []
-        unchanged = train(regions, targets, state=completed, on_step=callbacks.append, **options)
+        unchanged = train(
+            regions, targets, state=completed, validation=validation, on_step=callbacks.append
+        )
         assert callbacks == []
         assert eqx.tree_equal(unchanged, resumed)
         assert resumed.selected_step == 0
         validation_loss = resumed.history[-1].validation_loss
         assert validation_loss is not None and validation_loss > resumed.selected_loss
-    for prepared in regions:
-        for name in species or (None,):
-            np.testing.assert_array_equal(
-                resumed.selected_model.predict(prepared, species=name).values,
-                uninterrupted.selected_model.predict(prepared, species=name).values,
-            )
-    if num_species > 1 and selection == "validation":
+    if validation is not None and scenario.species is not None:
         assert resumed.history[-1].validation_by_species is not None
         assert set(resumed.history[-1].validation_by_species) == {"species-0"}
 
 
-class _ValidationOptions(TypedDict, total=False):
-    validation: tuple[RegionCollection, ObservationCollection]
+@pytest.fixture(scope="module")
+def initial_state(training_problem):
+    """Embedding problem and its training state at step zero, shared by read-only checks."""
+    region, observations, distance_model = training_problem("embedding")
+    state = train(
+        region,
+        observations,
+        distance_model=distance_model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
+    )
+    return region, observations, distance_model, state
 
 
 def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(training_problem, tmp_path):
@@ -210,10 +220,9 @@ def test_interrupted_replacement_retains_previous_complete_generation(
     assert eqx.tree_equal(restored, completed[0])
 
 
-def test_disk_continuation_uses_caller_supplied_observations(training_problem, tmp_path):
-    region, observations, distance_model = training_problem("embedding")
+def test_disk_continuation_uses_caller_supplied_observations(initial_state, tmp_path):
+    region, observations, distance_model, original = initial_state
     config = TrainingConfig(loss=Log1pLoss(), steps=0)
-    original = train(region, observations, distance_model=distance_model, config=config)
     path = tmp_path / "continuation.eqx"
     save_checkpoint(path, original)
     restored = load_checkpoint(path, distance_model=distance_model)
@@ -242,18 +251,11 @@ def test_disk_continuation_uses_caller_supplied_observations(training_problem, t
 
 
 def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
-    training_problem, WeightedEmbedding, tmp_path
+    initial_state, WeightedEmbedding, tmp_path
 ):
     from ilg_toolkit import ArtifactError
 
-    region, observations, model = training_problem("embedding")
-    result = train(
-        region,
-        observations,
-        distance_model=model,
-        config=TrainingConfig(loss=Log1pLoss(), steps=0),
-    )
-
+    _, _, model, result = initial_state
     path = tmp_path / "incompatible.eqx"
     save_checkpoint(path, result)
     with pytest.raises(ArtifactError):
@@ -267,14 +269,8 @@ def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
 
 
 @pytest.mark.parametrize("boundary", ["save", "load", "resume"])
-def test_checkpoint_enforces_progress_bounds(training_problem, tmp_path, boundary):
-    region, observations, distance_model = training_problem("embedding")
-    state = train(
-        region,
-        observations,
-        distance_model=distance_model,
-        config=TrainingConfig(loss=Log1pLoss(), steps=0),
-    )
+def test_checkpoint_enforces_progress_bounds(initial_state, tmp_path, boundary):
+    region, observations, distance_model, state = initial_state
     path = tmp_path / "bounds.eqx"
     save_checkpoint(path, state)
     with path.open("rb") as stream:

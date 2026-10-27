@@ -11,15 +11,15 @@ from ilg_toolkit import (
 from ilg_toolkit.resistance import build_resistance_context, effective_resistance
 
 
-@pytest.mark.parametrize("use_amg", [False, True])
-def test_actual_resistance_and_gradients_match_independent_laplacian(dense_resistance, use_amg):
-    if use_amg:
-        pytest.importorskip("amjax")
-        pytest.importorskip("pyamg")
+def test_amg_resistance_and_gradients_match_independent_laplacian(dense_resistance):
+    # The default conjugate-gradient solver meets the same dense Laplacian reference
+    # through the public log-linear and conductance training tests.
+    pytest.importorskip("amjax")
+    pytest.importorskip("pyamg")
     with jax.enable_x64():
         surface = np.array([[1.0, 1.4], [0.8, 2.0]])
         nodes = np.array([3, 0, 1, 1])
-        context = build_resistance_context(surface.shape, ResistanceSolverConfig(use_amg=use_amg))
+        context = build_resistance_context(surface.shape, ResistanceSolverConfig(use_amg=True))
         actual = effective_resistance(surface, nodes, context=context)
         expected = dense_resistance(surface, nodes)
         np.testing.assert_allclose(actual, expected, atol=1e-8, rtol=1e-8)

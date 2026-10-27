@@ -1,8 +1,10 @@
 """Scientific behavior of models.loglinear."""
 
+import itertools
+from typing import Any, cast
+
 import coordax as cx
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -80,26 +82,40 @@ def test_invalid_model_configuration_is_rejected(settings):
 
 
 def test_training_gradients_and_predictions_match_dense_reference(dense_resistance):
-    means = np.array([[[-0.5, 0.4], [0.3, -0.2]], [[-0.1, 0.7], [0.6, -0.9]]])
-    regional_means = (means, means[::-1] + 0.2)
-    regions = tuple(
+    """Shared log-linear updates over two regions of different sizes match a dense Laplacian.
+
+    The regions have different patch grids and pair counts, so each keeps its own
+    resistance solver and the two regional losses still carry equal weight.
+    """
+    valley = np.array([[[-0.5, 0.4], [0.3, -0.2]], [[-0.1, 0.7], [0.6, -0.9]]])
+    ridge = np.array([[[0.1, -0.6], [0.8, 0.2], [-0.4, 0.5]]])
+    regional_means = (valley, ridge)
+    regional_ids = (("a", "b", "c", "d"), ("a", "b", "c"))
+    regions = (
         RegionBatch(
-            name,
-            cx.field(values.repeat(2, axis=0).repeat(2, axis=1), "row", "column", "feature"),
-            ("a", "b", "c", "d"),
+            "valley",
+            cx.field(valley.repeat(2, axis=0).repeat(2, axis=1), "row", "column", "feature"),
+            regional_ids[0],
             np.array([[0, 0], [0, 2], [2, 0], [2, 2]]),
             feature_names=("elevation", "habitat"),
-        )
-        for name, values in zip(("valley", "ridge"), regional_means, strict=True)
+        ),
+        RegionBatch(
+            "ridge",
+            cx.field(ridge.repeat(2, axis=0).repeat(2, axis=1), "row", "column", "feature"),
+            regional_ids[1],
+            np.array([[0, 0], [0, 2], [1, 5]]),
+            feature_names=("elevation", "habitat"),
+        ),
     )
-    pairs = (("a", "b"), ("a", "c"), ("a", "d"), ("b", "c"), ("b", "d"), ("c", "d"))
     observations = tuple(
         PairwiseObservations.from_pairs(
-            pairs,
+            tuple(itertools.combinations(ids, 2)),
             targets,
             target=TargetSpec("dissimilarity"),
         )
-        for targets in ([0.4, 0.9, 1.4, 0.6, 1.1, 0.7], [0.5, 0.8, 1.2, 0.7, 1.0, 0.9])
+        for ids, targets in zip(
+            regional_ids, ([0.4, 0.9, 1.4, 0.6, 1.1, 0.7], [0.5, 1.2, 0.8]), strict=True
+        )
     )
     model = LogLinearConductance(
         2, patch_size=2, patch_microbatch_size=3, solver_config=ResistanceSolverConfig(rtol=1e-10)
@@ -115,7 +131,8 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
 
     def reference_distances(parameters, values):
         surface = 0.01 + np.exp(values @ parameters[:2] + parameters[2])
-        return dense_resistance(surface, np.array([0, 1, 2, 3]))[np.triu_indices(4, 1)]
+        count = surface.size
+        return dense_resistance(surface, np.arange(count))[np.triu_indices(count, 1)]
 
     def reference_loss(parameters):
         return np.mean(
@@ -131,19 +148,6 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
             ]
         )
 
-    def public_loss(parameters):
-        distance_model = with_parameters(parameters)
-        return sum(
-            jnp.mean(
-                (
-                    jnp.log1p(distance_model.predict(region).values)
-                    - jnp.log1p(observed.observed_values)
-                )
-                ** 2
-            )
-            for region, observed in zip(regions, observations, strict=True)
-        ) / len(regions)
-
     def reference_gradient(parameters):
         delta = np.eye(3) * 1e-5
         return np.array(
@@ -153,12 +157,6 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
             ]
         )
 
-    np.testing.assert_allclose(
-        jax.grad(public_loss)(jnp.asarray(initial)),
-        reference_gradient(initial),
-        atol=1e-9,
-        rtol=1e-6,
-    )
     expected = initial.copy()
     first_moment, second_moment = np.zeros(3), np.zeros(3)
     for step in (1, 2):
@@ -170,12 +168,23 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
             * (first_moment / (1 - 0.9**step))
             / (np.sqrt(second_moment / (1 - 0.999**step)) + 1e-8)
         )
+    states = []
     state = train(
         regions,
         observations,
         distance_model=with_parameters(jnp.asarray(initial)),
         config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.02),
+        on_step=states.append,
     )
+    # Adam's first moment records 0.1 times the first applied gradient.
+    first_gradient = cast(Any, states[1].optimizer_state)[0].mu[0]
+    np.testing.assert_allclose(
+        np.r_[first_gradient.coefficients[0], first_gradient.intercepts] / 0.1,
+        reference_gradient(initial),
+        atol=1e-9,
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(state.history[0].training_loss, reference_loss(initial), atol=1e-10)
     np.testing.assert_allclose(
         state.history[-1].training_loss, reference_loss(expected), atol=1e-10
     )
@@ -250,13 +259,17 @@ def test_uniform_initialization_recovers_the_generating_conductance(dense_resist
 
 
 def test_uniform_initialization_minimizes_the_region_weighted_loss(dense_resistance):
-    regions = [
-        _uniform_problem(dense_resistance, 2.0, name="ridge", seed=5, noise=0.4)[0],
-        _uniform_problem(dense_resistance, 9.0, name="valley", seed=6, noise=0.4)[0],
-    ]
+    ridge, ridge_observations = _uniform_problem(
+        dense_resistance, 2.0, name="ridge", seed=5, noise=0.4
+    )
+    valley, valley_observations = _uniform_problem(
+        dense_resistance, 9.0, name="valley", seed=6, noise=0.4
+    )
+    regions = [ridge, valley]
+    # Unequal pair counts must not change the equal regional weighting.
     observations = [
-        _uniform_problem(dense_resistance, 2.0, name="ridge", seed=5, noise=0.4)[1],
-        _uniform_problem(dense_resistance, 9.0, name="valley", seed=6, noise=0.4)[1].select_pairs(
+        ridge_observations,
+        valley_observations.select_pairs(
             [("population-0", "population-1"), ("population-2", "population-4")]
         ),
     ]

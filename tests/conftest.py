@@ -1,7 +1,7 @@
 """Shared scientific data and numerical reference fixtures."""
 
 import itertools
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import final
@@ -28,18 +28,7 @@ from ilg_toolkit.models import (
     AbstractDistanceModel,
     ConductanceModel,
     EmbeddingDistanceModel,
-    ResNet9Conductance,
-    UNetEmbeddingDistance,
 )
-
-
-@pytest.fixture(scope="module", autouse=True)
-def release_neural_compilations(request) -> Iterator[None]:
-    """Compilation-cache cleanup after canonical neural-model checks."""
-    yield
-    if request.path.name in {"test_common.py", "test_checkpoint.py", "test_persistence.py"}:
-        jax.clear_caches()
-
 
 _R_DISTANCES = np.array(
     [
@@ -134,39 +123,6 @@ _R_BLUPS = np.array(
         -0.3828722482437748,
     ]
 )
-
-
-def _checkpoint_problem(name="alpine", seed=14):
-    rng = np.random.default_rng(seed)
-    features = rng.normal(size=(3, 3, 2)).astype(np.float32)
-    positions = np.array([[0, 0], [0, 2], [1, 0], [1, 1], [2, 0], [2, 2]])
-    ids = tuple(f"population-{i}" for i in range(len(positions)))
-    region = RegionBatch(
-        name,
-        cx.field(features, "row", "column", "feature"),
-        ids,
-        positions,
-        feature_names=("elevation", "canopy"),
-    )
-    pairs = [(ids[i], ids[j]) for i, j in zip(*np.triu_indices(len(ids), 1), strict=True)]
-    observations = PairwiseObservations.from_pairs(
-        pairs,
-        rng.uniform(0.2, 1.5, size=len(pairs)),
-        target=TargetSpec("synthetic divergence", units="index"),
-        sampling_unit_ids=ids,
-    )
-    return region, observations
-
-
-def _checkpoint_model(seed=8):
-    return UNetEmbeddingDistance(
-        2,
-        patch_size=1,
-        base_channels=2,
-        embedding_dim=2,
-        dropout=0.2,
-        key=jax.random.PRNGKey(seed),
-    )
 
 
 def _dense_resistance(surface, nodes):
@@ -585,46 +541,6 @@ def _calibration_problem(
     return region, observations, training, validation
 
 
-def _synthetic_problem(*, num_species=1):
-    features = np.arange(18, dtype=np.float32).reshape(3, 3, 2) / 18
-    region = RegionBatch(
-        name="arbitrary-catchment",
-        features=cx.field(features, "row", "column", "feature"),
-        sampling_unit_ids=("north", "east", "south", "west"),
-        grid_positions=np.array([[0, 0], [0, 2], [2, 0], [2, 2]]),
-        feature_names=("gradient", "texture"),
-    )
-    # Synthetic dissimilarity values in target units.
-    targets = np.array(
-        [[0, 0.2, 0.4, 0.6], [0.2, 0, 0.2, 0.4], [0.4, 0.2, 0, 0.2], [0.6, 0.4, 0.2, 0]]
-    )
-    observations = PairwiseObservations.from_matrix(
-        region.sampling_unit_ids, targets, target=TargetSpec("synthetic divergence", units="index")
-    )
-    model = UNetEmbeddingDistance(
-        2,
-        num_species=num_species,
-        patch_size=1,
-        base_channels=2,
-        embedding_dim=2,
-        dropout=0,
-        key=jax.random.key(3),
-    )
-    if num_species > 1:
-        region = replace(
-            region,
-            sampling_unit_ids=region.sampling_unit_ids * 2,
-            grid_positions=np.tile(region.grid_positions, (2, 1)),
-            sampling_unit_kinds=None,
-            species=("frog",) * 4 + ("newt",) * 4,
-        )
-        observations = tuple(
-            replace(observations, species=name, values=observations.values * (i + 1))
-            for i, name in enumerate(("frog", "newt"))
-        )
-    return region, observations, model
-
-
 def _dense_jax_profile(distances, targets, left, right, n_populations, raw_variances):
     """Dense Gaussian likelihood and gradient reference using automatic differentiation."""
     import jax
@@ -755,16 +671,6 @@ def _decimal_dense_profile_and_gradients(distances, targets, left, right, raw_va
         )
 
 
-@pytest.fixture(name="checkpoint_problem", scope="session")
-def checkpoint_problem_fixture():
-    return _checkpoint_problem
-
-
-@pytest.fixture(name="checkpoint_model", scope="session")
-def checkpoint_model_fixture():
-    return _checkpoint_model
-
-
 @pytest.fixture(name="dense_resistance", scope="session")
 def dense_resistance_fixture():
     return _dense_resistance
@@ -865,11 +771,6 @@ def calibration_problem_fixture():
     return _calibration_problem
 
 
-@pytest.fixture(name="synthetic_problem", scope="session")
-def synthetic_problem_fixture():
-    return _synthetic_problem
-
-
 @pytest.fixture(name="dense_jax_profile", scope="session")
 def dense_jax_profile_fixture():
     return _dense_jax_profile
@@ -899,18 +800,19 @@ def mlpe_reference():
 
 @pytest.fixture(scope="session")
 def training_problem():
-    """Build the same identifiable observations for each distance-model family."""
+    """Build the same identifiable observations for each analytic distance-model family.
+
+    Families are ``"embedding"``, ``"conductance"`` and the single-species
+    ``"dropout"`` embedding, whose backbone applies dropout during training.
+    """
 
     def build(family, *, name="alpine", num_species=1):
-        side = {"embedding": 2, "conductance": 2, "unet": 3, "resnet": 8}[family]
-        features = (
-            np.random.default_rng(14).uniform(0.8, 1.6, size=(side, side, 2)).astype(np.float32)
-        )
+        features = np.random.default_rng(14).uniform(0.8, 1.6, size=(2, 2, 2)).astype(np.float32)
         region = RegionBatch(
             name,
             cx.field(features, "row", "column", "feature"),
             ("south", "north", "west", "east"),
-            np.array([[0, 0], [0, side - 1], [side - 1, 0], [side - 1, side - 1]]),
+            np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
             feature_names=("elevation", "canopy"),
         )
         observations = PairwiseObservations.from_pairs(
@@ -918,32 +820,17 @@ def training_problem():
             [0.4, 0.7, 1.4, 0.6, 0.9, 0.8],
             target=TargetSpec("synthetic divergence", units="index"),
         )
-        if family == "unet":
-            model = UNetEmbeddingDistance(
-                2,
-                num_species=num_species,
-                patch_size=1,
-                base_channels=2,
-                embedding_dim=2,
-                dropout=0.2,
-                key=jax.random.key(8),
-            )
-        elif family == "resnet":
-            model = ResNet9Conductance(
-                2,
-                num_species=num_species,
-                patch_size=4,
-                patch_microbatch_size=3,
-                key=jax.random.key(6),
-            )
-        elif family == "embedding":
+        if family == "embedding":
             weights = jnp.zeros(2) if num_species == 1 else jnp.array([[0.0, 0.0], [0.2, -0.3]])
             model = _WeightedEmbedding(weights, num_species=num_species)
         elif family == "conductance":
             scales = jnp.array(0.0) if num_species == 1 else jnp.arange(num_species) * 0.2
             model = _PointConductance(scales, num_species=num_species)
+        elif family == "dropout" and num_species == 1:
+            # Strongly typed, so the step-0 model and its reloaded copy predict in one dtype.
+            model = _StochasticEmbedding(jnp.ones(()))
         else:
-            raise ValueError(f"Unknown test model family: {family}")
+            raise ValueError(f"Unknown test model family: {family} with {num_species} species")
         if num_species > 1:
             names = tuple(f"species-{index}" for index in range(num_species))
             region = replace(

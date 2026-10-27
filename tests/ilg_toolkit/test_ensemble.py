@@ -164,8 +164,7 @@ def test_feature_meanings_are_validated_for_every_ensemble_operation(known_ensem
         getattr(ensemble, method)(changed)
 
 
-@pytest.mark.parametrize("failure", ["shape", "nonfinite"])
-def test_surface_failures_identify_member_without_restricting_genetic_prediction(failure):
+def test_surface_failures_identify_member_without_restricting_genetic_prediction():
     import coordax as cx
     import equinox as eqx
 
@@ -183,18 +182,21 @@ def test_surface_failures_identify_member_without_restricting_genetic_prediction
         DirectCalibrationModule(TargetSpec("divergence")),
         1,
     )
-    distance_model = LogLinearConductance(1, patch_size=2 if failure == "shape" else 1)
-    if failure == "nonfinite":
-        distance_model = eqx.tree_at(
-            lambda model: model.intercepts, distance_model, jnp.asarray([float("nan")])
-        )
-    second = replace(first, distance_model=distance_model)
-    ensemble = Ensemble([first, second, first])
-    if failure == "shape":
-        result = ensemble.predict(region, pairs=[("east", "west")])
-        assert result.member_ids == (0, 1, 2)
-        np.testing.assert_array_equal(result.member_values[0], result.member_values[2])
-        assert np.isfinite(result.prediction.values).all()
-    with pytest.raises((ValueError, RuntimeError), match=f"(?s)member 1.*{failure}"):
-        ensemble.conductance_surfaces(region)
-    assert ensemble.members == (first, second, first)
+    # A coarser patch size changes only the surface shape; genetic predictions still align.
+    coarse = replace(first, distance_model=LogLinearConductance(1, patch_size=2))
+    ensemble = Ensemble([first, coarse, first])
+    result = ensemble.predict(region, pairs=[("east", "west")])
+    assert result.member_ids == (0, 1, 2)
+    np.testing.assert_array_equal(result.member_values[0], result.member_values[2])
+    assert np.isfinite(result.prediction.values).all()
+    nonfinite = replace(
+        first,
+        distance_model=eqx.tree_at(
+            lambda model: model.intercepts, first.distance_model, jnp.asarray([float("nan")])
+        ),
+    )
+    for second, failure in ((coarse, "shape"), (nonfinite, "nonfinite")):
+        ensemble = Ensemble([first, second, first])
+        with pytest.raises((ValueError, RuntimeError), match=f"(?s)member 1.*{failure}"):
+            ensemble.conductance_surfaces(region)
+        assert ensemble.members == (first, second, first)

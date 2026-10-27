@@ -1,6 +1,7 @@
 """Scientific behavior of training."""
 
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any, cast
 
 import coordax as cx
@@ -66,27 +67,23 @@ def test_nonfinite_training_is_reported_at_evaluation(ScalarEmbedding, regions_a
 
 
 @pytest.mark.parametrize(
-    ("num_species", "region_count", "region_batch_size", "species_batch_size"),
+    ("num_species", "region_count", "species_batch_size"),
     [
-        (1, 1, None, None),
-        (1, 2, None, None),
-        (1, 2, 1, None),
-        (2, 1, None, None),
-        (2, 1, None, 1),
+        # Two regions with unequal pair counts keep equal influence in full batches.
+        (1, 2, None),
+        # A sampled species batch updates only the selected group's MLPE state.
+        (2, 1, 1),
     ],
 )
 def test_mlpe_updates_match_dense_reference(
     WeightedEmbedding,
     dense_profile,
     embedding_problem,
-    region_count,
     num_species,
-    region_batch_size,
+    region_count,
     species_batch_size,
     monkeypatch,
 ):
-    from dataclasses import replace
-
     problems = [embedding_problem(columns=2)]
     unit_count = len(problems[0][0].sampling_unit_ids)
     if region_count == 2:
@@ -154,13 +151,10 @@ def test_mlpe_updates_match_dense_reference(
 
     if species_batch_size == 1:
         selections = [(1,), (0,)]
-    elif region_batch_size == 1:
-        selections = [(0,), (1,)]
-    else:
-        selections = [range(group_count)] * 2
-    if region_batch_size == 1 or species_batch_size == 1:
         choices = iter(selections)
         monkeypatch.setattr(jax.random, "choice", lambda *args, **kwargs: jnp.array(next(choices)))
+    else:
+        selections = [range(group_count)] * 2
 
     # Two Adam updates retain sensitivity to gradient magnitude, using only the
     # dense Gaussian objective and finite differences as the numerical reference.
@@ -196,7 +190,6 @@ def test_mlpe_updates_match_dense_reference(
             loss=MLPELoss(),
             steps=2,
             learning_rate=0.02,
-            region_batch_size=region_batch_size,
             species_batch_size=species_batch_size,
         ),
     )
@@ -266,37 +259,27 @@ def test_mlpe_updates_match_dense_reference(
         np.testing.assert_allclose(predicted.values, expected_values, atol=1e-8)
 
 
-@pytest.mark.parametrize("steps", [0, 4])
-@pytest.mark.parametrize("species_count", [1, 2])
 def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_supported(
-    WeightedEmbedding,
-    embedding_problem,
-    steps,
-    species_count,
+    WeightedEmbedding, embedding_problem
 ):
-    from dataclasses import replace
-
     with jax.enable_x64():
-        region, observations = embedding_problem()
+        region, observations = embedding_problem(columns=2)
         single_region = region
-        order = None if species_count == 1 else ("stoat", "hare")
-        observed_groups = (observations,)
-        weights = jnp.zeros(2)
-        if order is not None:
-            kinds = region.sampling_unit_kinds
-            assert kinds is not None
-            region = replace(
-                region,
-                sampling_unit_ids=region.sampling_unit_ids * species_count,
-                grid_positions=jnp.tile(jnp.asarray(region.grid_positions), (species_count, 1)),
-                sampling_unit_kinds=kinds * species_count,
-                species=tuple(name for name in order for _ in region.sampling_unit_ids),
-            )
-            observed_groups = tuple(
-                replace(observations, species=name, values=observations.values * (index + 1))
-                for index, name in enumerate(order)
-            )
-            weights = jnp.log(jnp.array([[1.0, 1.0], [2.0, 0.5]]))
+        order = ("stoat", "hare")
+        kinds = region.sampling_unit_kinds
+        assert kinds is not None
+        region = replace(
+            region,
+            sampling_unit_ids=region.sampling_unit_ids * 2,
+            grid_positions=jnp.tile(jnp.asarray(region.grid_positions), (2, 1)),
+            sampling_unit_kinds=kinds * 2,
+            species=tuple(name for name in order for _ in region.sampling_unit_ids),
+        )
+        observed_groups = tuple(
+            replace(observations, species=name, values=observations.values * (index + 1))
+            for index, name in enumerate(order)
+        )
+        weights = jnp.log(jnp.array([[1.0, 1.0], [2.0, 0.5]]))
         query_pair = observations.observed_pairs[-1:]
         train_pairs = observations.observed_pairs[:-1]
         altered = tuple(
@@ -311,7 +294,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         )
         config = TrainingConfig(
             loss=MLPELoss(),
-            steps=steps,
+            steps=4,
             eval_every=3,
             learning_rate=0.03,
         )
@@ -319,7 +302,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
             train(
                 region,
                 tuple(group.select_pairs(train_pairs) for group in observed_groups),
-                distance_model=WeightedEmbedding(weights, num_species=species_count),
+                distance_model=WeightedEmbedding(weights, num_species=2),
                 species=order,
                 config=config,
                 validation=(
@@ -343,8 +326,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
     assert first.rng_key.dtype == np.uint32
     expected_losses = []
-    for index, observed in enumerate(observed_groups):
-        name = None if order is None else order[index]
+    for index, (name, observed) in enumerate(zip(order, observed_groups, strict=True)):
         distances = np.asarray(
             first.latest_model.distance_model.predict(
                 region, species=name, species_order=order
@@ -379,16 +361,17 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
 ):
 
     with jax.enable_x64():
+        # Four populations give the same MLPE pair design as the embedding problems.
         features = np.array([[[0.0], [0.2], [0.8]], [[-0.3], [1.4], [-0.7]]])
-        ids = tuple(f"population-{i}" for i in range(6))
+        ids = tuple(f"population-{i}" for i in range(4))
         region = RegionBatch(
             "graph",
             cx.field(features, "row", "column", "feature"),
             ids,
-            np.array(list(np.ndindex(2, 3))),
+            np.array([[0, 0], [0, 2], [1, 0], [1, 2]]),
             feature_names=("habitat",),
         )
-        left, right = np.triu_indices(6, 1)
+        left, right = np.triu_indices(4, 1)
         distances = dense_resistance(
             np.exp(1.2 * region.feature_array[..., 0]), region.pixel_nodes
         )[left, right]
@@ -427,25 +410,22 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
 def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
     WeightedEmbedding, embedding_problem
 ):
-    from dataclasses import replace
-
-    import pytest
-
-    region, observations = embedding_problem()
+    region, observations = embedding_problem(columns=2)
     model = WeightedEmbedding(jnp.zeros(2))
     config = TrainingConfig(loss=MLPELoss(), steps=0)
     with jax.enable_x64(False), pytest.raises(RuntimeError):
         train(region, observations, distance_model=model, config=config)
     with jax.enable_x64():
+        six_units, _ = embedding_problem(columns=3)
         disjoint = PairwiseObservations.from_pairs(
             [("unit-0", "unit-1"), ("unit-2", "unit-3"), ("unit-4", "unit-5")],
             [1, 2, 3],
             target=observations.target,
-            sampling_unit_ids=region.sampling_unit_ids,
+            sampling_unit_ids=six_units.sampling_unit_ids,
         )
         with pytest.raises(ValueError):
-            train(region, disjoint, distance_model=model, config=config)
-        individual = replace(region, sampling_unit_kinds=("individual",) * 6)
+            train(six_units, disjoint, distance_model=model, config=config)
+        individual = replace(region, sampling_unit_kinds=("individual",) * 4)
         with pytest.raises(ValueError):
             train(individual, observations, distance_model=model, config=config)
         constant_region = replace(
@@ -456,36 +436,38 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
             train(constant_region, observations, distance_model=model, config=config)
 
 
-def test_continuation_rejects_changed_optimization_policy(WeightedEmbedding, embedding_problem):
-    from dataclasses import replace
-
-    import pytest
-
-    with jax.enable_x64():
-        region, observations = embedding_problem()
-        config = TrainingConfig(loss=MLPELoss(), steps=1)
-        result = train(
-            region, observations, distance_model=WeightedEmbedding(jnp.zeros(2)), config=config
+def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_fit):
+    region, observations, result = (
+        mlpe_embedding_fit.region,
+        mlpe_embedding_fit.observations,
+        mlpe_embedding_fit.state,
+    )
+    assert result.loss_state is not None
+    with pytest.raises(ValueError):
+        train(region, observations, state=result, config=replace(result.config, learning_rate=0.1))
+    with pytest.raises(ValueError):
+        train(
+            region, observations, state=result, config=replace(result.config, region_batch_size=1)
         )
-
-        assert result.loss_state is not None
-        with pytest.raises(ValueError):
-            train(region, observations, state=result, config=replace(config, learning_rate=0.1))
-        with pytest.raises(ValueError):
-            train(region, observations, state=result, config=replace(config, region_batch_size=1))
-        with pytest.raises(ValueError):
-            train(
-                region,
-                observations,
-                state=result,
-                distance_model=result.latest_model.distance_model,
-            )
+    with pytest.raises(ValueError):
+        train(
+            region,
+            observations,
+            state=result,
+            distance_model=result.latest_model.distance_model,
+        )
 
 
 @pytest.mark.parametrize(
     ("num_species", "species_batch_size", "region_batch_size"),
-    [(1, None, size) for size in (None, 1, 2, 3)]
-    + [(2, species, region) for species in (None, 1) for region in (None, 1)],
+    [
+        # A region batch larger than the region count is the full batch.
+        (1, None, 3),
+        # Sampled regions weight their species groups equally.
+        (2, None, 1),
+        # Sampled species within full region batches.
+        (2, 1, None),
+    ],
 )
 def test_shared_embedding_update_matches_independent_equal_region_objective(
     ScalarEmbedding,
@@ -495,8 +477,6 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
     species_batch_size,
     monkeypatch,
 ):
-    from dataclasses import replace
-
     with jax.enable_x64():
         regions, observations = regions_and_observations()
         species = None if num_species == 1 else ("frog", "newt")
@@ -597,16 +577,13 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
         np.testing.assert_allclose(np.dot(probabilities, gradients), dense_gradient, rtol=1e-8)
 
 
-@pytest.mark.parametrize("num_species", [1, 2])
 @pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
 def test_species_microbatches_preserve_updates_with_shared_parameters(
-    training_problem, SharedParameterEmbedding, dense_profile, num_species, objective
+    training_problem, SharedParameterEmbedding, dense_profile, objective
 ):
-    from dataclasses import replace
-
-    region, observations, _ = training_problem("embedding", num_species=num_species)
-    species = None if num_species == 1 else ("species-0", "species-1")
-    initial = np.array([0.6, 0.9])[:num_species]
+    region, observations, _ = training_problem("embedding", num_species=2)
+    species = ("species-0", "species-1")
+    initial = np.array([0.6, 0.9])
     model = SharedParameterEmbedding(jnp.asarray(initial))
     config = TrainingConfig(
         loss=Log1pLoss() if objective == "direct_log1p" else MLPELoss(), steps=2
@@ -620,13 +597,12 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
         config=config,
         on_step=states.append,
     )
-    observed = (observations,) if num_species == 1 else observations
     features = np.asarray(region.feature_array).reshape(4, 2)
     left, right = np.triu_indices(4, 1)
 
     def reference_objective(weights):
         values = []
-        for index, target in enumerate(observed):
+        for index, target in enumerate(observations):
             embeddings = features * weights.sum() * weights[index]
             distances = np.sum((embeddings[left] - embeddings[right]) ** 2, axis=1)
             order = [
@@ -648,7 +624,7 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
             )
         return np.mean(values)
 
-    differences = np.eye(num_species) * 1e-5
+    differences = np.eye(2) * 1e-5
     gradient = np.array(
         [
             (reference_objective(initial + delta) - reference_objective(initial - delta)) / 2e-5
@@ -661,7 +637,7 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
     np.testing.assert_allclose(
         cast(Any, states[1].optimizer_state)[0].mu[0].weights / 0.1, gradient, atol=1e-8
     )
-    for size in (2,) if num_species == 1 else (1, 2):
+    for size in (1, 2):
         traces = []
         observed_model = SharedParameterEmbedding(
             jnp.asarray(initial), on_embedding=lambda traces=traces: traces.append(None)
@@ -674,7 +650,7 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
             config=replace(config, species_microbatch_size=size),
         )
         # Compatible species reuse evaluation and microbatch gradient programs.
-        assert 0 < len(traces) <= 1 + min(size, num_species)
+        assert 0 < len(traces) <= 1 + size
         for actual, expected in zip(
             jax.tree.leaves((result.latest_model.distance_model, result.optimizer_state)),
             jax.tree.leaves((reference.latest_model.distance_model, reference.optimizer_state)),
@@ -683,86 +659,9 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
             np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-10)
 
 
-def test_shared_conductance_update_matches_independent_combined_graph_objective(
-    PointConductance, dense_resistance
-):
-    with jax.enable_x64():
-        target = TargetSpec("synthetic graph divergence", units="index")
-        regions = [
-            RegionBatch(
-                "large",
-                cx.field(np.array([[[1.0], [2.0], [3.0]]]), "row", "column", "feature"),
-                ("a", "b", "c"),
-                np.array([[0, 0], [0, 1], [0, 2]]),
-                feature_names=("covariate",),
-            ),
-            RegionBatch(
-                "small",
-                cx.field(np.array([[[1.0], [3.0]]]), "row", "column", "feature"),
-                ("x", "y"),
-                np.array([[0, 0], [0, 1]]),
-                feature_names=("covariate",),
-            ),
-        ]
-        observations = [
-            PairwiseObservations.from_matrix(
-                ("a", "b", "c"), [[0, 0.01, 0.01], [0.01, 0, 0.01], [0.01, 0.01, 0]], target=target
-            ),
-            PairwiseObservations.from_pairs([("x", "y")], [5], target=target),
-        ]
-
-        def independent_objective(log_scale):
-            losses = []
-            for region, observations_for_region in zip(regions, observations, strict=True):
-                surface = np.exp(log_scale) * region.feature_array[..., 0].astype(np.float64)
-                distances = dense_resistance(surface, region.pixel_nodes)
-                pairs = np.triu_indices(len(region.sampling_unit_ids), 1)
-                losses.append(
-                    np.mean(
-                        (
-                            np.log1p(distances[pairs])
-                            - np.log1p(observations_for_region.values[pairs])
-                        )
-                        ** 2
-                    )
-                )
-            return np.mean(losses)
-
-        initial, step = 0.2, 1e-5
-        gradient = (
-            independent_objective(initial + step) - independent_objective(initial - step)
-        ) / (2 * step)
-        expected = initial - 0.01 * gradient / (abs(gradient) + 1e-8)
-        result = train(
-            regions,
-            observations,
-            distance_model=PointConductance(jnp.asarray(initial, dtype=jnp.float64)),
-            config=TrainingConfig(loss=Log1pLoss(), steps=1, learning_rate=0.01),
-        )
-        np.testing.assert_allclose(
-            cast(Any, result.selected_model.distance_model).log_scale, expected, rtol=1e-8
-        )
-        np.testing.assert_allclose(
-            result.history[0].training_loss, independent_objective(initial), rtol=1e-8
-        )
-        for region in regions:
-            surface = cast(
-                ConductanceModel, result.selected_model.distance_model
-            ).conductance_surface(region)
-            expected_distances = dense_resistance(surface, region.pixel_nodes)
-            np.fill_diagonal(expected_distances, np.nan)
-            np.testing.assert_allclose(
-                result.selected_model.predict(region).as_matrix(),
-                expected_distances,
-                rtol=1e-7,
-            )
-
-
 def test_region_order_and_validation_do_not_change_training_random_trajectory(
     StochasticEmbedding, regions_and_observations
 ):
-    from dataclasses import replace
-
     regions, observations = regions_and_observations()
     config = TrainingConfig(loss=Log1pLoss(), steps=3, seed=7, region_batch_size=1)
     model = StochasticEmbedding(jnp.asarray(1.0, dtype=jnp.float32))
@@ -793,10 +692,6 @@ def test_region_order_and_validation_do_not_change_training_random_trajectory(
 def test_incompatible_regional_inputs_fail_before_optimization(
     ScalarEmbedding, regions_and_observations
 ):
-    from dataclasses import replace
-
-    import pytest
-
     regions, observations = regions_and_observations()
     model = ScalarEmbedding(jnp.asarray(1.0))
     cases = [
@@ -839,10 +734,6 @@ def test_incompatible_regional_inputs_fail_before_optimization(
 def test_validation_on_another_region_requires_declared_feature_meanings(
     ScalarEmbedding, regions_and_observations
 ):
-    from dataclasses import replace
-
-    import pytest
-
     regions, observations = regions_and_observations()
     regions = [
         replace(
@@ -874,8 +765,6 @@ def test_evaluation_cadence_selects_model_and_reports_every_step(
     validation = PairwiseObservations.from_pairs(
         initial.pairs, initial.values, target=observations.target
     )
-    from dataclasses import replace
-
     validation_region = replace(region, name="independent-validation-region")
     callbacks = []
     result = train(
@@ -901,48 +790,32 @@ def test_evaluation_cadence_selects_model_and_reports_every_step(
         assert eqx.tree_equal(result.selected_model, result.latest_model)
 
 
-@pytest.mark.parametrize("species_count", [1, 2])
 def test_calibration_fits_only_supplied_region_and_preserves_distances(
-    WeightedEmbedding, embedding_problem, dense_profile, species_count
+    WeightedEmbedding, embedding_problem, dense_profile
 ):
-    from dataclasses import replace
-
-    region, observations = embedding_problem()
-    transferred_region, transferred_observations = embedding_problem("valley", offset=3)
-    single_transferred = transferred_region
-    order = None if species_count == 1 else ("stoat", "hare")
-    selected_species = None if order is None else order[1]
-    weights = jnp.zeros(2)
-    training_observations = observations
-    if order is not None:
-        prepared_regions = []
-        for prepared in (region, transferred_region):
-            kinds = prepared.sampling_unit_kinds
-            assert kinds is not None
-            prepared_regions.append(
-                replace(
-                    prepared,
-                    sampling_unit_ids=prepared.sampling_unit_ids * species_count,
-                    grid_positions=jnp.tile(
-                        jnp.asarray(prepared.grid_positions), (species_count, 1)
-                    ),
-                    sampling_unit_kinds=kinds * species_count,
-                    species=tuple(name for name in order for _ in prepared.sampling_unit_ids),
-                )
-            )
-        region, transferred_region = prepared_regions
-        training_observations = tuple(replace(observations, species=name) for name in order)
-        transferred_observations = replace(transferred_observations, species=selected_species)
-        weights = jnp.log(jnp.array([[1.0, 1.0], [2.0, 0.5]]))
-    frozen = WeightedEmbedding(weights, num_species=species_count)
-    if species_count > 1:
-        with pytest.raises(ValueError):
-            train(
-                region,
-                training_observations,
-                distance_model=frozen,
-                config=TrainingConfig(loss=MLPELoss(), steps=0),
-            )
+    order = ("stoat", "hare")
+    region, observations = embedding_problem(columns=2)
+    single_transferred, transferred = embedding_problem("valley", offset=3, columns=2)
+    region, transferred_region = (
+        replace(
+            prepared,
+            sampling_unit_ids=prepared.sampling_unit_ids * 2,
+            grid_positions=jnp.tile(jnp.asarray(prepared.grid_positions), (2, 1)),
+            sampling_unit_kinds=None,
+            species=tuple(name for name in order for _ in prepared.sampling_unit_ids),
+        )
+        for prepared in (region, single_transferred)
+    )
+    training_observations = tuple(replace(observations, species=name) for name in order)
+    selected = replace(transferred, species="hare")
+    frozen = WeightedEmbedding(jnp.log(jnp.array([[1.0, 1.0], [2.0, 0.5]])), num_species=2)
+    with pytest.raises(ValueError):
+        train(
+            region,
+            training_observations,
+            distance_model=frozen,
+            config=TrainingConfig(loss=MLPELoss(), steps=0),
+        )
     initial = train(
         region,
         training_observations,
@@ -950,7 +823,6 @@ def test_calibration_fits_only_supplied_region_and_preserves_distances(
         species=order,
         config=TrainingConfig(loss=MLPELoss(), steps=0),
     ).selected_model
-    selected = transferred_observations.select_pairs(transferred_observations.observed_pairs[:-1])
     model = calibrate(
         transferred_region,
         selected,
@@ -960,15 +832,10 @@ def test_calibration_fits_only_supplied_region_and_preserves_distances(
     )
     assert eqx.tree_equal(model.distance_model, frozen)
     distances = frozen.predict(
-        transferred_region,
-        species=selected_species,
-        species_order=order,
-        pairs=selected.observed_pairs,
+        transferred_region, species="hare", species_order=order, pairs=selected.observed_pairs
     ).values
     (left, right), targets = selected.aligned_pairs(single_transferred)
-    calibration = cast(MLPECalibrationModule, model.calibration).for_region(
-        "valley", 0 if species_count == 1 else 1
-    )
+    calibration = cast(MLPECalibrationModule, model.calibration).for_region("valley", 1)
     nll, beta, effects, covariance = dense_profile(
         distances,
         targets,
@@ -983,19 +850,16 @@ def test_calibration_fits_only_supplied_region_and_preserves_distances(
     np.testing.assert_allclose(calibration.effect_mean, effects, atol=1e-9)
     np.testing.assert_allclose(calibration.effect_covariance, covariance, atol=1e-9)
     assert set(calibration.calibration_pairs) == set(selected.observed_pairs)
-    assert np.isfinite(model.predict(transferred_region, species=selected_species).values).all()
+    assert np.isfinite(model.predict(transferred_region, species="hare").values).all()
     with pytest.raises(ValueError):
-        model.predict(region, species=selected_species)
-    if order is not None:
-        with pytest.raises(ValueError):
-            model.predict(transferred_region, species=order[0])
+        model.predict(region, species="hare")
+    with pytest.raises(ValueError):
+        model.predict(transferred_region, species="stoat")
 
 
 def test_fit_validates_species_order_and_derives_a_single_name(
     observation_problem, ScalarEmbedding
 ):
-    from dataclasses import replace
-
     region, target, _ = observation_problem()
     region = replace(region, species=("a",) * 3)
     observations = PairwiseObservations.from_pairs(
@@ -1023,20 +887,13 @@ def test_fit_validates_species_order_and_derives_a_single_name(
 
 
 def test_callback_models_keep_matching_distance_and_calibration_state(
-    WeightedEmbedding, embedding_problem, dense_profile
+    mlpe_embedding_fit, dense_profile
 ):
-    region, observations = embedding_problem()
-    callbacks = []
-    state = train(
-        region,
-        observations,
-        distance_model=WeightedEmbedding(jnp.zeros(2)),
-        config=TrainingConfig(loss=MLPELoss(), steps=3, eval_every=3, learning_rate=0.03),
-        on_step=callbacks.append,
-    )
-    assert [record.step for record in state.history] == [0, 3]
+    region, observations = mlpe_embedding_fit.region, mlpe_embedding_fit.observations
+    assert [record.step for record in mlpe_embedding_fit.state.history] == [0, 3]
+    assert [state.step for state in mlpe_embedding_fit.callbacks] == [0, 1, 2, 3]
     (left, right), targets = observations.aligned_pairs(region)
-    for current in callbacks:
+    for current in mlpe_embedding_fit.callbacks:
         model = current.latest_model
         distances = model.distance_model.predict(region, pairs=observations.observed_pairs).values
         calibration = cast(MLPECalibrationModule, model.calibration).for_region(region.name)

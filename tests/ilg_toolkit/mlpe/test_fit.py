@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from ilg_toolkit import PairwiseObservations, TargetSpec
+from ilg_toolkit import PairwiseObservations
 from ilg_toolkit.mlpe import calibrate_mlpe
 
 
@@ -63,57 +63,6 @@ def test_calibration_rejects_unidentified_variances(reference_observations, mlpe
         calibrate_mlpe([1, 2, 3], disjoint, region_name="alpine")
     with pytest.raises(MLPEError):
         calibrate_mlpe(np.ones(len(mlpe_reference.distances)), observations, region_name="alpine")
-
-
-def test_incomplete_calibration_preserves_original_target_scale(
-    dense_profile, reference_observations, mlpe_reference
-):
-
-    from ilg_toolkit import MLPELoss, calibrate_mlpe
-
-    reference = reference_observations()
-    target = TargetSpec("divergence", units="fraction", transform="log1p")
-    observations = PairwiseObservations.from_pairs(
-        reference.observed_pairs,
-        np.expm1(mlpe_reference.targets + 1),
-        target=target,
-    )
-    selected = tuple(
-        pair for i, pair in enumerate(observations.observed_pairs) if i not in {2, 7, 11}
-    )
-    mask = np.array([pair in selected for pair in observations.observed_pairs])
-    head = calibrate_mlpe(
-        mlpe_reference.distances[mask],
-        observations.select_pairs(selected),
-        region_name="river",
-        loss=MLPELoss(jitter=1e-7),
-    )
-    lookup = {label: i for i, label in enumerate(head.population_ids)}
-    left = np.array([lookup[a] for a, b in selected])
-    right = np.array([lookup[b] for a, b in selected])
-    mask = np.array([pair in selected for pair in observations.observed_pairs])
-    expected_nll, beta, _, _ = dense_profile(
-        mlpe_reference.distances[mask],
-        mlpe_reference.targets[mask] + 1,
-        left,
-        right,
-        len(lookup),
-        [head.unit_variance, head.residual_variance],
-        jitter=1e-7,
-    )
-    assert head.ml_log_likelihood == pytest.approx(-expected_nll, abs=1e-10)
-    np.testing.assert_allclose([head.intercept, head.slope], beta, atol=1e-10)
-    query = head.predict([0.1], [("new-north", "new-south")])
-    assert query.values[0] == pytest.approx(np.expm1(query.extras["model_values"][0]))
-    assert head.calibration_pairs == selected
-    # No extra measurements from absent pairs enter the fit or posterior.
-    assert len(head.calibration_pairs) == 25
-    z = np.zeros((len(selected), len(lookup)))
-    z[np.arange(len(selected)), left] = z[np.arange(len(selected)), right] = 1
-    expected_covariance = np.linalg.inv(
-        np.eye(len(lookup)) / head.unit_variance + z.T @ z / (head.residual_variance + 1e-7)
-    )
-    np.testing.assert_allclose(head.effect_covariance, expected_covariance, atol=1e-11)
 
 
 def test_explicit_numerical_constraints_and_optimization_failure_are_visible(

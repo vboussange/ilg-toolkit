@@ -1,7 +1,6 @@
-"""Scientific behavior of models.resnet."""
+"""Scientific behavior of models.resnet, covered once at tiny width."""
 
 from dataclasses import replace
-from typing import cast
 
 import coordax as cx
 import equinox as eqx
@@ -17,103 +16,145 @@ from ilg_toolkit import (
     ResistanceSolverConfig,
     TargetSpec,
     TrainingConfig,
+    load_model,
+    save_model,
     train,
 )
-from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
+from ilg_toolkit.models import ResNet9Conductance
+
+_TINY = (8, 8, 8)
 
 
-@pytest.mark.parametrize("num_species", [1, 2])
-def test_resnet_fit_exposes_surface_and_label_free_target_predictions(
-    dense_resistance, num_species
-):
-    with jax.enable_x64():
-        features = np.random.default_rng(4).normal(size=(8, 8, 2)).astype(np.float32)
-        region = RegionBatch(
-            "small-valley",
-            cx.field(features, "row", "column", "feature"),
+def _region(shape=(8, 12, 3)):
+    features = np.random.default_rng(4).normal(size=shape).astype(np.float32)
+    return RegionBatch(
+        "small-valley",
+        cx.field(features, "row", "column", "feature"),
+        ("south", "north", "east"),
+        np.array([[0, 0], [0, shape[1] - 1], [shape[0] - 1, shape[1] - 1]]),
+        feature_names=tuple(f"feature-{index}" for index in range(shape[2])),
+    )
+
+
+def _gradient_vector(gradient):
+    leaves = jax.tree.leaves(eqx.filter(gradient, eqx.is_inexact_array))
+    return np.concatenate([np.asarray(leaf, dtype=np.float64).ravel() for leaf in leaves])
+
+
+def test_patch_microbatches_preserve_surfaces_predictions_and_gradients():
+    # Six patches in batches of four exercise a final batch smaller than four.
+    region = _region()
+    key = jax.random.key(19)
+    reference = ResNet9Conductance(3, patch_size=4, channels=_TINY, key=key)
+    microbatched = ResNet9Conductance(
+        3, patch_size=4, channels=_TINY, patch_microbatch_size=4, key=key
+    )
+
+    @eqx.filter_jit
+    @eqx.filter_value_and_grad(has_aux=True)
+    def objective(model):
+        predictions = model.predict(region).values
+        return jnp.sum(predictions**2), (predictions, model.conductance_surface(region))
+
+    (expected_value, (expected, expected_surface)), expected_gradient = objective(reference)
+    (actual_value, (actual, actual_surface)), actual_gradient = objective(microbatched)
+    assert expected_surface.shape == (2, 3)
+    assert np.all(np.isfinite(expected_surface) & (expected_surface > 0))
+    np.testing.assert_allclose(actual_surface, expected_surface, rtol=1e-6)
+    assert expected.shape == (3,)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6)
+    np.testing.assert_allclose(actual_value, expected_value, rtol=1e-6)
+    expected_gradient = _gradient_vector(expected_gradient)
+    actual_gradient = _gradient_vector(actual_gradient)
+    assert np.all(np.isfinite(expected_gradient)) and np.any(expected_gradient != 0)
+    # One scale for all leaves: parameters with vanishing gradients carry only roundoff.
+    scale = np.max(np.abs(expected_gradient))
+    np.testing.assert_allclose(actual_gradient / scale, expected_gradient / scale, atol=1e-5)
+
+
+def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_path):
+    region = _region((8, 8, 2))
+    species = ("frog", "newt")
+    region = replace(
+        region,
+        sampling_unit_ids=region.sampling_unit_ids * 2,
+        grid_positions=np.tile(region.grid_positions, (2, 1)),
+        sampling_unit_kinds=None,
+        species=("frog",) * 3 + ("newt",) * 3,
+    )
+    nodes = np.array([0, 1, 3])
+    target = TargetSpec("synthetic dissimilarity", units="index")
+    observations = tuple(
+        PairwiseObservations.from_matrix(
             ("south", "north", "east"),
-            np.array([[0, 0], [0, 7], [7, 7]]),
+            dense_resistance(np.full((2, 2), 2.0 * scale), nodes),
+            target=target,
+            species=name,
         )
-        observations = PairwiseObservations.from_matrix(
-            region.sampling_unit_ids,
-            dense_resistance(np.full((2, 2), 2.0), np.array([0, 1, 3])),
-            target=TargetSpec("synthetic dissimilarity", units="index"),
-        )
-        model = ResNet9Conductance(
-            in_channels=2,
-            num_species=num_species,
+        for scale, name in ((1, "frog"), (0.5, "newt"))
+    )
+
+    def model(seed, solver_config=None):
+        return ResNet9Conductance(
+            2,
+            num_species=2,
             patch_size=4,
+            channels=_TINY,
+            min_conductance=0.02,
             patch_microbatch_size=3,
-            solver_config=ResistanceSolverConfig(rtol=1e-8),
-            key=jax.random.key(6),
+            solver_config=solver_config,
+            key=jax.random.key(seed),
         )
-        species = None if num_species == 1 else ("frog", "newt")
-        if species is not None:
-            region = replace(
-                region,
-                sampling_unit_ids=region.sampling_unit_ids * 2,
-                grid_positions=np.tile(region.grid_positions, (2, 1)),
-                sampling_unit_kinds=None,
-                species=("frog",) * 3 + ("newt",) * 3,
-            )
-            observations = tuple(
-                replace(observations, species=name, values=observations.values * (i + 1))
-                for i, name in enumerate(species)
-            )
-        result = train(
-            region,
-            observations,
-            distance_model=model,
-            species=species,
-            config=TrainingConfig(
-                loss=Log1pLoss(),
-                steps=2,
-                learning_rate=0.001,
-            ),
-        )
-        assert result.history[-1].training_loss < result.history[0].training_loss
-        for name in (None,) if species is None else species:
-            surface = cast(
-                ConductanceModel, result.selected_model.distance_model
-            ).conductance_surface(region, species=name, species_order=species)
-            prediction = result.selected_model.predict(region, species=name)
-            assert surface.shape == (2, 2)
-            assert np.all(np.isfinite(surface) & (surface > 0))
-            expected = dense_resistance(surface, np.array([0, 1, 3]))
-            np.fill_diagonal(expected, np.nan)
-            np.testing.assert_allclose(prediction.as_matrix(), expected, atol=2e-6, rtol=2e-6)
-            np.testing.assert_allclose(
-                result.selected_model.distance_model.predict(
-                    region, species=name, species_order=species
-                ).as_matrix(),
-                prediction.as_matrix(),
-            )
 
-
-def test_narrow_resnet_widths_give_patch_surfaces_and_finite_gradients():
-    with jax.enable_x64():
-        features = np.random.default_rng(4).normal(size=(8, 12, 3)).astype(np.float32)
-        region = RegionBatch(
-            "narrow-valley",
-            cx.field(features, "row", "column", "feature"),
-            ("south", "north"),
-            np.array([[0, 0], [7, 11]]),
-        )
-        model = ResNet9Conductance(3, patch_size=4, channels=(8, 8, 8), key=jax.random.key(2))
-        surface = model.conductance_surface(region)
-        assert surface.shape == (2, 3)
+    result = train(
+        region,
+        observations,
+        distance_model=model(6, ResistanceSolverConfig(rtol=1e-9, atol=1e-10)),
+        species=species,
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.01),
+    )
+    assert np.isfinite(result.history[-1].training_loss)
+    assert result.history[-1].training_loss < result.history[0].training_loss
+    fitted = result.selected_model
+    distance_model = fitted.distance_model
+    assert isinstance(distance_model, ResNet9Conductance)
+    surfaces = distance_model.conductance_surface(region, species=species, species_order=species)
+    assert not np.allclose(surfaces["frog"], surfaces["newt"])
+    for name in species:
+        surface = np.asarray(surfaces[name])
+        assert surface.shape == (2, 2)
         assert np.all(np.isfinite(surface) & (surface > 0))
+        expected = dense_resistance(surface, nodes)
+        np.fill_diagonal(expected, np.nan)
+        prediction = fitted.predict(region, species=name).as_matrix()
+        np.testing.assert_allclose(prediction, expected, rtol=2e-6)
+        np.testing.assert_allclose(
+            distance_model.predict(region, species=name, species_order=species).as_matrix(),
+            prediction,
+        )
 
-        def total_resistance(model):
-            return jnp.sum(model.predict(region).values)
-
-        gradient = eqx.filter_grad(total_resistance)(model)
-        leaves = jax.tree.leaves(eqx.filter(gradient, eqx.is_inexact_array))
-        assert all(np.all(np.isfinite(leaf)) for leaf in leaves)
-        assert any(np.any(leaf != 0) for leaf in leaves)
+    path = tmp_path / "resnet.eqx"
+    save_model(path, fitted)
+    restored = load_model(path, distance_model=model(9))
+    restored_model = restored.distance_model
+    assert isinstance(restored_model, ResNet9Conductance)
+    restored_surfaces = restored_model.conductance_surface(
+        region, species=species, species_order=species
+    )
+    for name in species:
+        np.testing.assert_array_equal(restored_surfaces[name], surfaces[name])
+        np.testing.assert_array_equal(
+            restored.predict(region, species=name).values,
+            fitted.predict(region, species=name).values,
+        )
+    assert restored_model.solver_config == distance_model.solver_config
+    assert restored_model.solver_config != ResistanceSolverConfig()
+    assert restored_model.channels == _TINY
+    assert restored_model.patch_microbatch_size == 3
+    assert restored_model.min_conductance == 0.02
 
 
 @pytest.mark.parametrize("channels", [(8, 8), (8, 12, 16), (0, 8, 8), (8, 8, -8), (8.0, 8, 8)])
-def test_resnet_widths_must_be_three_positive_multiples_of_eight(channels):
+def test_widths_must_be_three_positive_multiples_of_eight(channels):
     with pytest.raises(ValueError):
         ResNet9Conductance(2, channels=channels, key=jax.random.key(0))

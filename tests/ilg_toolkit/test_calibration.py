@@ -13,6 +13,7 @@ from ilg_toolkit import (
     MLPECalibrationModule,
     MLPEError,
     MLPELoss,
+    PairwiseObservations,
     TargetSpec,
     TrainingConfig,
     calibrate,
@@ -22,12 +23,11 @@ from ilg_toolkit.mlpe import calibrate_mlpe
 
 
 def test_calibration_freezes_distance_model_and_matches_distance_vector_fit(
-    ScalarEmbedding, calibration_problem
+    ScalarEmbedding, four_population_calibration, mlpe_calibrated_model
 ):
-    region, observations, training, _ = calibration_problem()
-    observations = training
-    distance_model = ScalarEmbedding(jnp.asarray(0.7))
-    model = calibrate(region, observations, distance_model, loss=MLPELoss())
+    region, _, observations = four_population_calibration
+    distance_model = ScalarEmbedding(jnp.asarray(1.0))
+    model = mlpe_calibrated_model
     reference = calibrate_mlpe(
         distance_model.predict(region, pairs=observations.observed_pairs).values,
         observations,
@@ -65,8 +65,6 @@ def test_direct_calibration_preserves_target_transform_and_rejects_iteration_bud
     observation_problem,
 ):
     region, _, distance_model = observation_problem()
-    from ilg_toolkit import PairwiseObservations
-
     observations = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20")], [2.0], target=TargetSpec("divergence", transform="log1p")
     )
@@ -95,8 +93,6 @@ def test_transfer_calibration_preserves_original_species_parameter_order(trainin
 
 
 def test_single_species_calibration_infers_labels_from_the_region(observation_problem):
-    from ilg_toolkit import PairwiseObservations
-
     region, target, distance_model = observation_problem()
     region = replace(region, species=("frog",) * len(region.sampling_unit_ids))
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [2.0], target=target)
@@ -112,8 +108,6 @@ def test_single_species_calibration_infers_labels_from_the_region(observation_pr
 
 
 def test_multi_region_calibration_requires_shared_named_features(observation_problem):
-    from ilg_toolkit import PairwiseObservations
-
     region, target, distance_model = observation_problem()
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [2.0], target=target)
     other = replace(region, name="other")

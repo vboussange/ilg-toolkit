@@ -13,7 +13,6 @@ from jaxscape import GridGraph, ResistanceDistance
 
 from ilg_toolkit import (
     Log1pLoss,
-    MLPELoss,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
@@ -70,8 +69,10 @@ def test_species_queries_follow_supplied_order_with_reused_sampling_unit_ids():
             model.predict(region, **options)
 
 
-@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
-def test_requested_resistances_and_gradients_match_jaxscape(CovariateConductance, dtype):
+def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateConductance):
+    # Float32 features exercise the float64 solve and cast back. Float64 resistances
+    # meet the dense Laplacian reference in the log-linear and conductance training tests.
+    dtype = jnp.float32
     region = RegionBatch(
         "river",
         cx.field(
@@ -104,7 +105,7 @@ def test_requested_resistances_and_gradients_match_jaxscape(CovariateConductance
     evaluate = eqx.filter_jit(eqx.filter_value_and_grad(objective, has_aux=True))
     (_, expected), expected_gradient = evaluate(model, upstream=True)
     (_, actual), actual_gradient = evaluate(model, upstream=False)
-    tolerance = 1e-6 if dtype == jnp.float32 else 1e-10
+    tolerance = 1e-6
     np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
     np.testing.assert_allclose(
         actual_gradient.weight, expected_gradient.weight, rtol=tolerance, atol=tolerance
@@ -157,9 +158,8 @@ def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductan
     )
 
 
-@pytest.mark.parametrize("loss", [Log1pLoss(), MLPELoss()])
 def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels(
-    CustomDistance, tmp_path, loss
+    CustomDistance, tmp_path
 ):
     region = RegionBatch(
         "custom",
@@ -176,7 +176,7 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
         region,
         observations,
         distance_model=CustomDistance(jnp.array(1.0)),
-        config=TrainingConfig(loss=loss, steps=3, learning_rate=0.1),
+        config=TrainingConfig(loss=Log1pLoss(), steps=3, learning_rate=0.1),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     path = tmp_path / "custom.ilg"

@@ -18,6 +18,8 @@ from ilg_toolkit import (
     TargetSpec,
     TrainingConfig,
     calibrate,
+    load_model,
+    save_model,
     train,
 )
 from ilg_toolkit.models import LogLinearConductance
@@ -64,26 +66,19 @@ def test_genetic_queries_use_saved_species_order_and_original_scale(observation_
 
 
 def test_species_calibration_and_support_preserve_separate_population_effects(
-    ScalarEmbedding, calibration_problem
+    ScalarEmbedding, four_population_calibration, mlpe_calibrated_model
 ):
-    region, observations, training, _ = calibration_problem()
-    training = observations.select_pairs(
-        tuple(
-            pair
-            for pair in observations.observed_pairs
-            if set(pair).issubset(region.sampling_unit_ids[:4])
-        ),
-    )
+    region, observations, training = four_population_calibration
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     names = ("stoat", "hare")
-    references = tuple(
+    references = (
+        mlpe_calibrated_model,
         calibrate(
             region,
-            replace(training, values=training.values * factor),
-            ScalarEmbedding(jnp.asarray(factor)),
+            replace(training, values=training.values * 2.0),
+            ScalarEmbedding(jnp.asarray(2.0)),
             loss=MLPELoss(),
-        )
-        for factor in (1.0, 2.0)
+        ),
     )
     model = LandscapeGeneticsModel(
         ScalarEmbedding(jnp.array([1.0, 2.0]), num_species=2),
@@ -143,24 +138,12 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
 
 
 def test_model_conditions_real_ecological_distances_with_calibration_fixed(
-    ScalarEmbedding, calibration_problem, joint_gaussian_reference
+    ScalarEmbedding, four_population_calibration, mlpe_calibrated_model, joint_gaussian_reference
 ):
-    import itertools
-
-    import jax.numpy as jnp
-
-    from ilg_toolkit import (
-        Log1pLoss,
-        MLPELoss,
-        PairwiseObservations,
-        calibrate,
-    )
-
-    region, observations, _, _ = calibration_problem("conditioned-landscape")
-    calibration_pairs = tuple(itertools.combinations(region.sampling_unit_ids[:4], 2))
-    training = observations.select_pairs(calibration_pairs)
-    direct = calibrate(region, training, ScalarEmbedding(weight=jnp.asarray(1.0)), loss=Log1pLoss())
-    model = calibrate(region, training, direct.distance_model, loss=MLPELoss())
+    region, observations, training = four_population_calibration
+    calibration_pairs = training.observed_pairs
+    direct = calibrate(region, training, ScalarEmbedding(jnp.asarray(1.0)), loss=Log1pLoss())
+    model = mlpe_calibrated_model
     head = cast(MLPECalibrationModule, model.calibration).regions[(region.name, 0)]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict(region, pairs=pairs, known_effects=True)
@@ -256,16 +239,9 @@ def test_explicit_transform_returns_original_units_and_separate_ecological_dista
 
 
 def test_recalibrated_model_retains_target_scale_after_save_and_load(
-    ScalarEmbedding, calibration_problem, tmp_path
+    ScalarEmbedding, four_population_calibration, tmp_path
 ):
-    import pytest
-
-    from ilg_toolkit import (
-        load_model,
-        save_model,
-    )
-
-    region, observations, training, _ = calibration_problem()
+    region, observations, training = four_population_calibration
     target = replace(observations.target, transform="log1p")
     observations = replace(observations, values=jnp.expm1(observations.values), target=target)
     training = replace(training, values=jnp.expm1(training.values), target=target)
