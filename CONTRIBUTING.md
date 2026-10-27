@@ -45,10 +45,10 @@ contributor documentation remain outside the public site.
 The quickstart trains on real data downloaded from the `example-data-v1`
 pre-release, which is never marked latest; `uv run scripts/build_example_data.py`
 rebuilds that asset from its inline (PEP 723) dependencies. Credit Cesar Australia (genetic data) and ESA WorldCover
-2021 (CC BY 4.0) wherever the example data appears. The README's quickstart
-code block must appear verbatim in `examples/quickstart.py`: documentation
-preparation fails otherwise, and regenerates the quickstart figure that README
-shows from the deployed site.
+2021 (CC BY 4.0) wherever the example data appears. The Python code block in
+the README's Quickstart section must be nonempty and appear verbatim in
+`examples/quickstart.py`: documentation preparation fails otherwise, and
+regenerates the quickstart figure that README shows from the deployed site.
 
 ```bash
 uv run --no-sync python scripts/build_docs.py
@@ -58,7 +58,10 @@ uv run --no-sync zensical serve
 
 Documentation preparation uses the installed toolkit, with the docs and
 examples extras, and the invoking Python interpreter. The quickstart and each notebook run in separate processes and
-temporary working directories, on CPU with float64 enabled. Execution errors
+temporary working directories, on CPU with float64 enabled. The quickstart
+script executes from its source path and caches the example data next to it, so
+the first build downloads it into the gitignored `examples/data/` and later
+builds reuse it. Execution errors
 fail the build, including notebook cells tagged as expected errors. Commit
 notebook sources with empty outputs and execution counts. The `--timeout`
 option sets the script and per-cell execution limit in seconds (default 1200).

@@ -48,7 +48,7 @@ class ResNet9Conductance(ConductanceModel):
 
     Args:
         in_channels:
-            Number of raster covariates in the retained feature order.
+            Number of landscape features, in their retained feature order.
         num_species: Number of species-specific output rows; default 1. The
             convolutional layers are shared by all regions and species.
         patch_size: Square patch side length, at least 4 (default 4). Raster dimensions

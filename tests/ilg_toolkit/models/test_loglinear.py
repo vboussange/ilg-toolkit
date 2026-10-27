@@ -1,10 +1,10 @@
 """Scientific behavior of models.loglinear."""
 
 import itertools
-from typing import Any, cast
 
 import coordax as cx
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -148,6 +148,23 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
             ]
         )
 
+    def public_loss(parameters):
+        distance_model = with_parameters(parameters)
+        return jnp.mean(
+            jnp.stack(
+                [
+                    jnp.mean(
+                        (
+                            jnp.log1p(distance_model.predict(region).values)
+                            - jnp.log1p(observed.observed_values)
+                        )
+                        ** 2
+                    )
+                    for region, observed in zip(regions, observations, strict=True)
+                ]
+            )
+        )
+
     def reference_gradient(parameters):
         delta = np.eye(3) * 1e-5
         return np.array(
@@ -157,6 +174,12 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
             ]
         )
 
+    np.testing.assert_allclose(
+        jax.grad(public_loss)(jnp.asarray(initial)),
+        reference_gradient(initial),
+        atol=1e-9,
+        rtol=1e-6,
+    )
     expected = initial.copy()
     first_moment, second_moment = np.zeros(3), np.zeros(3)
     for step in (1, 2):
@@ -168,21 +191,11 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
             * (first_moment / (1 - 0.9**step))
             / (np.sqrt(second_moment / (1 - 0.999**step)) + 1e-8)
         )
-    states = []
     state = train(
         regions,
         observations,
         distance_model=with_parameters(jnp.asarray(initial)),
         config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.02),
-        on_step=states.append,
-    )
-    # Adam's first moment records 0.1 times the first applied gradient.
-    first_gradient = cast(Any, states[1].optimizer_state)[0].mu[0]
-    np.testing.assert_allclose(
-        np.r_[first_gradient.coefficients[0], first_gradient.intercepts] / 0.1,
-        reference_gradient(initial),
-        atol=1e-9,
-        rtol=1e-6,
     )
     np.testing.assert_allclose(state.history[0].training_loss, reference_loss(initial), atol=1e-10)
     np.testing.assert_allclose(

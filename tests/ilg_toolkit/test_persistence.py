@@ -80,12 +80,14 @@ def test_odds_target_model_reloads_and_predicts_in_original_units(
     region, observations, distance_model = training_problem("embedding")
     target = TargetSpec("Fst", units="proportion", transform="odds")
     observations = replace(observations, values=observations.values / 2, target=target)
-    model = train(
+    state = train(
         region,
         observations,
         distance_model=distance_model,
-        config=TrainingConfig(loss=Log1pLoss(), steps=0),
-    ).selected_model
+        config=TrainingConfig(loss=Log1pLoss(), steps=3, learning_rate=0.05),
+    )
+    assert state.history[-1].training_loss < state.history[0].training_loss
+    model = state.selected_model
     path = tmp_path / "odds.eqx"
     save_model(path, model)
     restored = load_model(path, distance_model=WeightedEmbedding(jnp.ones(2)))

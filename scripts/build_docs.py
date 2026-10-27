@@ -1,10 +1,13 @@
 """Execute authoritative examples and stage disposable Zensical inputs.
 
 Run with the installed package and the docs and examples extras. The quickstart
-and each notebook receive their own working directory, and notebooks a kernel
-from this Python interpreter; source files are never executed in place. The
-README's quickstart excerpt must appear verbatim in the quickstart script.
-Zensical then reads build/docs via zensical.toml.
+and each notebook receive their own temporary working directory, and notebooks a
+kernel from this Python interpreter. Notebooks execute from copies, while the
+quickstart script runs from its source path: it caches its downloaded example
+data next to itself, in the gitignored ``examples/data/`` for the authoritative
+script. The README's Quickstart section must contain a nonempty Python code
+block that appears verbatim in the quickstart script. Zensical then reads
+build/docs via zensical.toml.
 """
 
 import argparse
@@ -31,15 +34,21 @@ FIGURE = "quickstart.png"
 
 
 def _check_readme_excerpt(readme: Path, script: Path) -> None:
-    """Fail unless the README's quickstart code block appears verbatim in the script."""
-    match = re.search(
-        r"^## Quickstart\n.*?^```python\n(.*?)^```$",
+    """Fail unless the README's Quickstart code block is nonempty and verbatim in the script."""
+    section = re.search(
+        r"^## Quickstart\n(.*?)(?=^## |\Z)",
         readme.read_text(encoding="utf-8"),
         flags=re.DOTALL | re.MULTILINE,
     )
-    if match is None:
+    if section is None:
+        raise ValueError(f"No Quickstart section in {readme}")
+    block = re.search(r"^```python\n(.*?)^```$", section.group(1), flags=re.DOTALL | re.MULTILINE)
+    if block is None:
         raise ValueError(f"No Python code block in the Quickstart section of {readme}")
-    if match.group(1) not in script.read_text(encoding="utf-8"):
+    excerpt = block.group(1)
+    if not excerpt.strip():
+        raise ValueError(f"The Python code block in the Quickstart section of {readme} is empty")
+    if excerpt not in script.read_text(encoding="utf-8"):
         raise ValueError(f"The README quickstart excerpt is not verbatim in {script}")
 
 

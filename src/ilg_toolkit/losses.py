@@ -44,10 +44,13 @@ class AbstractLoss(ABC):
     def _group_state(self, state, identity: RegionSpeciesKey) -> Any: ...
 
     @abstractmethod
-    def _value(self, distances, context: _LossContext, state, fitted=None) -> jax.Array: ...
+    def _value(self, distances, context: _LossContext, state, fixed=None) -> jax.Array: ...
 
     @abstractmethod
     def _finalize(self, distances, context, state, *, region, observations, step) -> Any: ...
+
+    @abstractmethod
+    def _fixed_parameters(self, fitted) -> Any: ...
 
     @abstractmethod
     def _calibration(self, target: TargetSpec, fitted: Mapping) -> "AbstractCalibrationModule": ...
@@ -107,10 +110,13 @@ class Log1pLoss(AbstractLoss):
     def _group_state(self, state, identity):
         return None
 
-    def _value(self, distances, context, state, fitted=None):
+    def _value(self, distances, context, state, fixed=None):
         return jnp.mean(jnp.square(jnp.log1p(distances) - jnp.log1p(context.targets)))
 
     def _finalize(self, distances, context, state, *, region, observations, step):
+        return None
+
+    def _fixed_parameters(self, fitted):
         return None
 
     def _calibration(self, target, fitted):
@@ -140,6 +146,15 @@ class _MLPEGroupState(eqx.Module):
 @final
 class _MLPEState(eqx.Module):
     groups: dict[RegionSpeciesKey, _MLPEGroupState]
+
+
+@final
+class _MLPEFixedParameters(eqx.Module):
+    """Training-fitted coefficients and distance moments held fixed by validation."""
+
+    coefficients: jax.Array
+    distance_center: jax.Array
+    distance_scale: jax.Array
 
 
 @final
@@ -252,21 +267,21 @@ class MLPELoss(AbstractLoss):
             min_distance_scale=self.min_distance_scale,
         )
 
-    def _value(self, distances, context, state, fitted=None):
+    def _value(self, distances, context, state, fixed=None):
         from .mlpe.likelihood import mlpe_ml_negative_log_likelihood, profiled_mlpe_ml_fit
 
         distances = distances.astype(jnp.float64)
         options = self._options(context, state)
-        if fitted is None:
+        if fixed is None:
             value = profiled_mlpe_ml_fit(distances, context.targets, *context.pairs, **options)[0]
         else:
-            value = eqx.filter_jit(mlpe_ml_negative_log_likelihood)(
+            value = mlpe_ml_negative_log_likelihood(
                 distances,
                 context.targets,
                 *context.pairs,
-                fixed_effects=jnp.asarray((fitted.intercept, fitted.slope)),
-                distance_center=jnp.asarray(fitted.distance_center),
-                distance_scale=jnp.asarray(fitted.distance_scale),
+                fixed_effects=fixed.coefficients,
+                distance_center=fixed.distance_center,
+                distance_scale=fixed.distance_scale,
                 **options,
             )
         return value / len(distances)
@@ -291,6 +306,15 @@ class MLPELoss(AbstractLoss):
             optimizer_iterations=step,
             optimizer_message="Fixed-budget joint Adam; no variance convergence claim",
             converged=False,
+        )
+
+    def _fixed_parameters(self, fitted):
+        # Arrays rather than the calibration's Python floats, which compiled
+        # validation would treat as static and retrace at every evaluation.
+        return _MLPEFixedParameters(
+            jnp.asarray((fitted.intercept, fitted.slope)),
+            jnp.asarray(fitted.distance_center),
+            jnp.asarray(fitted.distance_scale),
         )
 
     def _calibration(self, target, fitted):

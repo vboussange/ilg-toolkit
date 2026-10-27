@@ -1,13 +1,46 @@
 """Region batches and labeled pairwise genetic observations."""
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import NamedTuple, cast
 
 import coordax as cx
 import jax
 import jax.numpy as jnp
 import numpy as np
 from numpy.typing import ArrayLike
+
+
+class _TargetTransform(NamedTuple):
+    """Maps between the original and model scales and the values each accepts."""
+
+    forward: Callable[[jax.Array], jax.Array]
+    inverse: Callable[[jax.Array], jax.Array]
+    # Accepted finite original-scale measurements and their description; None accepts all.
+    domain: tuple[Callable[[jax.Array], jax.Array], str] | None
+    # Whether the inverse rejects negative model-scale predictions.
+    nonnegative_predictions: bool
+
+
+def _nonnegative(values: jax.Array) -> jax.Array:
+    return values >= 0
+
+
+def _unit_interval(values: jax.Array) -> jax.Array:
+    return (values >= 0) & (values < 1)
+
+
+_TARGET_TRANSFORMS = {
+    "identity": _TargetTransform(lambda values: values, lambda values: values, None, False),
+    "log1p": _TargetTransform(jnp.log1p, jnp.expm1, (_nonnegative, "nonnegative values"), False),
+    "sqrt": _TargetTransform(jnp.sqrt, jnp.square, (_nonnegative, "nonnegative values"), True),
+    "odds": _TargetTransform(
+        lambda values: values / (1 - values),
+        lambda values: values / (1 + values),
+        (_unit_interval, "values in [0, 1)"),
+        True,
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -42,39 +75,31 @@ class TargetSpec:
             raise ValueError("Target name, units, kind and transform must be nonempty strings")
         if self.kind not in {"dissimilarity", "relatedness", "similarity"}:
             raise ValueError("Target kind must be dissimilarity, relatedness, or similarity")
-        if self.transform not in {"identity", "log1p", "sqrt", "odds"}:
-            raise ValueError("Target transform must be identity, log1p, sqrt, or odds")
+        if self.transform not in _TARGET_TRANSFORMS:
+            *names, last = _TARGET_TRANSFORMS
+            raise ValueError(f"Target transform must be {', '.join(names)}, or {last}")
 
     def forward(self, values) -> jax.Array:
         """Model-scale observations transformed from finite original-scale measurements."""
         values = jnp.asarray(values)
         if not bool(jnp.isfinite(values).all()):
             raise ValueError("Observed target values must be finite")
-        if self.transform != "identity" and (values < 0).any():
-            raise ValueError(f"Target transform {self.transform} requires nonnegative values")
-        if self.transform == "log1p":
-            return jnp.log1p(values)
-        if self.transform == "sqrt":
-            return jnp.sqrt(values)
-        if self.transform == "odds":
-            if (values >= 1).any():
-                raise ValueError("Target transform odds requires values in [0, 1)")
-            return values / (1 - values)
-        return values
+        transform = _TARGET_TRANSFORMS[self.transform]
+        if transform.domain is not None:
+            accepts, description = transform.domain
+            if not bool(accepts(values).all()):
+                raise ValueError(f"Target transform {self.transform} requires {description}")
+        return transform.forward(values)
 
     def inverse(self, values) -> jax.Array:
         """Genetic predictions in the original measurement units."""
         values = jnp.asarray(values)
-        if self.transform in {"sqrt", "odds"} and (values < 0).any():
+        transform = _TARGET_TRANSFORMS[self.transform]
+        if transform.nonnegative_predictions and (values < 0).any():
             raise ValueError(
                 f"{self.transform} inverse requires nonnegative transformed predictions"
             )
-        if self.transform == "log1p":
-            values = jnp.expm1(values)
-        elif self.transform == "sqrt":
-            values = jnp.square(values)
-        elif self.transform == "odds":
-            values = values / (1 + values)
+        values = transform.inverse(values)
         if not bool(jnp.isfinite(values).all()):
             raise FloatingPointError("Target inverse transformation produced nonfinite predictions")
         return values
@@ -365,3 +390,12 @@ class PairwiseObservations:
         if not len(pairs[0]):
             raise ValueError("Selected observations must contain at least one observed pair")
         return pairs, values[pairs]
+
+
+# Inputs accepted by training and calibration: one region batch, a sequence, or a
+# mapping keyed by region name, each with one or several species' observations.
+RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
+RegionObservations = PairwiseObservations | Sequence[PairwiseObservations]
+ObservationCollection = (
+    RegionObservations | Sequence[RegionObservations] | Mapping[str, RegionObservations]
+)

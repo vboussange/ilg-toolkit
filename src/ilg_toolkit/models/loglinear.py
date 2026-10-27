@@ -11,23 +11,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .._training_utils import (
-    ObservationCollection,
-    RegionCollection,
-    _normalize_training_inputs,
-    _prepare_region_species_inputs,
-    _resolve_training_species_order,
-    _validate_shared_training_contract,
-)
+from .._training_utils import _prepare_training_inputs
 from ..config import ResistanceSolverConfig, validate_patch_microbatch_size
-from ..data import RegionBatch
+from ..data import ObservationCollection, RegionBatch, RegionCollection
 from ..losses import AbstractLoss
 from ..resistance import effective_resistance
 from .base import ConductanceModel, prepare_distance_context
 from .common import encode_patches, pixel_to_patch_nodes
 
 # Log-spaced uniform conductances screened before golden-section refinement.
-_GRID_SIZE = 256
+_SEARCH_GRID_SIZE = 256
 _REFINEMENT_STEPS = 40
 # Relative loss improvement required to move a scale-invariant loss's intercept.
 _IMPROVEMENT_RTOL = 1e-9
@@ -200,14 +193,13 @@ def initialize_uniform_conductance(
         raise TypeError("initialize_uniform_conductance requires a LogLinearConductance")
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must be an AbstractLoss")
-    inputs = _normalize_training_inputs(region, observations)
-    first = _validate_shared_training_contract(inputs)
-    if first.region.feature_array.shape[-1] != model.in_channels:
+    prepared = _prepare_training_inputs(region, observations, species, model.num_species)
+    if prepared.inputs[0].region.feature_array.shape[-1] != model.in_channels:
         raise ValueError(f"Expected landscape features with {model.in_channels} channels")
-    order = _resolve_training_species_order(inputs, species, model.num_species)
-    groups = _prepare_region_species_inputs(inputs, order, model.num_species)
+    groups = prepared.training
+    regions = {item.region.name: item.region for item in prepared.inputs}
     unit_resistances = {
-        item.region.name: _unit_conductance_resistances(model, item.region) for item in inputs
+        name: _unit_conductance_resistances(model, batch) for name, batch in regions.items()
     }
     contexts = {
         group.key: loss._prepare(group.region, group.observations, training=True)
@@ -223,10 +215,10 @@ def initialize_uniform_conductance(
             continue
         distances = []
         for group in selected:
-            vertices, resistances = unit_resistances[group.region.name]
-            nodes = np.searchsorted(vertices, _patch_vertices(model, group.region))
+            matrix_rows, resistances = unit_resistances[group.region.name]
+            rows = np.asarray([matrix_rows[pixel] for pixel in group.region.pixel_nodes.tolist()])
             left, right = contexts[group.key].pairs
-            distances.append(resistances[nodes[np.asarray(left)], nodes[np.asarray(right)]])
+            distances.append(resistances[rows[np.asarray(left)], rows[np.asarray(right)]])
         current = jnp.log(model.min_conductance + jnp.exp(model.intercepts[index]))
         log_conductance = _best_log_conductance(
             loss,
@@ -247,25 +239,26 @@ def initialize_uniform_conductance(
     )
 
 
-def _patch_vertices(model: LogLinearConductance, region: RegionBatch) -> np.ndarray:
-    """Conductance grid graph vertices of a region's sampling units."""
-    rows, columns = region.feature_array.shape[:2]
-    return np.asarray(
-        pixel_to_patch_nodes(
-            region.pixel_nodes, raster_shape=(rows, columns), patch_size=model.patch_size
-        )
-    )
-
-
 def _unit_conductance_resistances(
     model: LogLinearConductance, region: RegionBatch
-) -> tuple[np.ndarray, jax.Array]:
-    """Sampling-unit vertices and their effective resistances at unit uniform conductance."""
+) -> tuple[dict[int, int], jax.Array]:
+    """Effective resistances among a region's sampling-unit vertices at unit uniform conductance.
+
+    Returns the resistance-matrix row of each sampling-unit pixel, shared by the
+    sampling units of every species, and the matrix in the model's parameter dtype.
+    """
     context = prepare_distance_context(model, region.feature_array)
     assert context is not None
-    vertices = np.unique(_patch_vertices(model, region))
-    surface = jnp.ones(context.graph_shape, dtype=jnp.float64)
-    return vertices, effective_resistance(surface, jnp.asarray(vertices), context=context)
+    height, width = region.feature_array.shape[:2]
+    pixels = np.asarray(region.pixel_nodes)
+    vertices = np.asarray(
+        pixel_to_patch_nodes(pixels, raster_shape=(height, width), patch_size=model.patch_size)
+    )
+    unique = np.unique(vertices)
+    rows = np.searchsorted(unique, vertices)
+    surface = jnp.ones(context.graph_shape, dtype=model.intercepts.dtype)
+    matrix_rows = dict(zip(pixels.tolist(), rows.tolist(), strict=True))
+    return matrix_rows, effective_resistance(surface, jnp.asarray(unique), context=context)
 
 
 def _species_loss(log_conductance, loss, distances, contexts, states, weights):
@@ -286,7 +279,7 @@ def _best_log_conductance(loss, distances, contexts, states, weights, bounds, cu
         return _species_loss(log_conductance, loss, distances, contexts, states, weights)
 
     lower, upper = bounds
-    grid = lower + (upper - lower) * jnp.arange(1, _GRID_SIZE + 1) / (_GRID_SIZE + 1)
+    grid = lower + (upper - lower) * jnp.arange(1, _SEARCH_GRID_SIZE + 1) / (_SEARCH_GRID_SIZE + 1)
     best = jnp.argmin(jax.vmap(value)(grid))
     edges = jnp.concatenate([lower[None], grid, upper[None]])
     ratio = (math.sqrt(5) - 1) / 2
@@ -302,6 +295,9 @@ def _best_log_conductance(loss, distances, contexts, states, weights, bounds, cu
     left, right = jax.lax.fori_loop(0, _REFINEMENT_STEPS, refine, (edges[best], edges[best + 2]))
     refined = (left + right) / 2
     current_value = value(current)
-    improves = value(refined) < current_value - _IMPROVEMENT_RTOL * jnp.abs(current_value)
+    # A nonfinite loss at the current intercept never blocks the refined optimum.
+    improves = ~jnp.isfinite(current_value) | (
+        value(refined) < current_value - _IMPROVEMENT_RTOL * jnp.abs(current_value)
+    )
     inside = (current > lower) & (current < upper)
     return jnp.where(improves | ~inside, refined, current)

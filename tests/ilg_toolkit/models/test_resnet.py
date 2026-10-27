@@ -5,7 +5,6 @@ from dataclasses import replace
 import coordax as cx
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -23,6 +22,8 @@ from ilg_toolkit import (
 from ilg_toolkit.models import ResNet9Conductance
 
 _TINY = (8, 8, 8)
+# ResNet9Conductance(3) parameter count, recorded before channel widths became configurable.
+_DEFAULT_PARAMETER_COUNT = 741_761
 
 
 def _region(shape=(8, 12, 3)):
@@ -36,40 +37,26 @@ def _region(shape=(8, 12, 3)):
     )
 
 
-def _gradient_vector(gradient):
-    leaves = jax.tree.leaves(eqx.filter(gradient, eqx.is_inexact_array))
-    return np.concatenate([np.asarray(leaf, dtype=np.float64).ravel() for leaf in leaves])
+def test_default_widths_keep_the_paper_architecture_and_parameter_count():
+    # Shapes only: the default-width network is neither initialized nor compiled.
+    model = eqx.filter_eval_shape(ResNet9Conductance, 3, key=jax.random.key(0))
+    leaves = [leaf for leaf in jax.tree.leaves(model) if isinstance(leaf, jax.ShapeDtypeStruct)]
+    assert model.channels == (64, 128, 256)
+    assert sum(leaf.size for leaf in leaves) == _DEFAULT_PARAMETER_COUNT
 
 
-def test_patch_microbatches_preserve_surfaces_predictions_and_gradients():
+def test_patch_microbatches_preserve_surfaces_predictions_and_gradients(
+    assert_patch_microbatches_match,
+):
     # Six patches in batches of four exercise a final batch smaller than four.
-    region = _region()
     key = jax.random.key(19)
-    reference = ResNet9Conductance(3, patch_size=4, channels=_TINY, key=key)
-    microbatched = ResNet9Conductance(
-        3, patch_size=4, channels=_TINY, patch_microbatch_size=4, key=key
+    surface = assert_patch_microbatches_match(
+        ResNet9Conductance(3, patch_size=4, channels=_TINY, key=key),
+        ResNet9Conductance(3, patch_size=4, channels=_TINY, patch_microbatch_size=4, key=key),
+        _region(),
+        rtol=1e-6,
     )
-
-    @eqx.filter_jit
-    @eqx.filter_value_and_grad(has_aux=True)
-    def objective(model):
-        predictions = model.predict(region).values
-        return jnp.sum(predictions**2), (predictions, model.conductance_surface(region))
-
-    (expected_value, (expected, expected_surface)), expected_gradient = objective(reference)
-    (actual_value, (actual, actual_surface)), actual_gradient = objective(microbatched)
-    assert expected_surface.shape == (2, 3)
-    assert np.all(np.isfinite(expected_surface) & (expected_surface > 0))
-    np.testing.assert_allclose(actual_surface, expected_surface, rtol=1e-6)
-    assert expected.shape == (3,)
-    np.testing.assert_allclose(actual, expected, rtol=1e-6)
-    np.testing.assert_allclose(actual_value, expected_value, rtol=1e-6)
-    expected_gradient = _gradient_vector(expected_gradient)
-    actual_gradient = _gradient_vector(actual_gradient)
-    assert np.all(np.isfinite(expected_gradient)) and np.any(expected_gradient != 0)
-    # One scale for all leaves: parameters with vanishing gradients carry only roundoff.
-    scale = np.max(np.abs(expected_gradient))
-    np.testing.assert_allclose(actual_gradient / scale, expected_gradient / scale, atol=1e-5)
+    assert surface is not None and surface.shape == (2, 3)
 
 
 def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_path):

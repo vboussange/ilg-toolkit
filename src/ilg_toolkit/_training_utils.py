@@ -4,17 +4,10 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
-from .data import PairwiseObservations, RegionBatch
+from .data import ObservationCollection, PairwiseObservations, RegionBatch, RegionCollection
 
 # Region name and index in the retained full species parameter order.
 type RegionSpeciesKey = tuple[str, int]
-
-
-RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
-RegionObservations = PairwiseObservations | Sequence[PairwiseObservations]
-ObservationCollection = (
-    RegionObservations | Sequence[RegionObservations] | Mapping[str, RegionObservations]
-)
 
 
 class _RegionWithGeneticObservations(NamedTuple):
@@ -96,9 +89,7 @@ def _normalize_training_inputs(
     return tuple(sorted(inputs, key=lambda item: item.region.name))
 
 
-def _validate_shared_training_contract(
-    inputs: Sequence[_RegionWithGeneticObservations],
-) -> _RegionWithGeneticObservations:
+def _validate_shared_training_contract(inputs: Sequence[_RegionWithGeneticObservations]) -> None:
     """Common target semantics and feature meanings for training or calibration inputs."""
     first = inputs[0]
     if len({item.region.name for item in inputs}) > 1 and first.region.feature_names is None:
@@ -110,7 +101,6 @@ def _validate_shared_training_contract(
             raise ValueError("Regional feature channels must match")
         if region.feature_names != first.region.feature_names:
             raise ValueError("Regional feature contracts must match meanings and order")
-    return first
 
 
 def _resolve_training_species_order(
@@ -166,4 +156,38 @@ def _prepare_region_species_inputs(
     return tuple(
         group._replace(loss_weight=1 / (len(coverage) * coverage[group.species_index]))
         for group in sorted(groups, key=lambda group: (group.region.name, group.species_index))
+    )
+
+
+class _PreparedTrainingInputs(NamedTuple):
+    """Aligned inputs, retained species order, and weighted region–species groups."""
+
+    inputs: tuple[_RegionWithGeneticObservations, ...]
+    species: tuple[str, ...] | None
+    training: tuple[_RegionSpeciesTrainingInput, ...]
+    validation: tuple[_RegionSpeciesTrainingInput, ...]
+
+
+def _prepare_training_inputs(
+    region: RegionCollection,
+    observations: ObservationCollection,
+    species: Sequence[str] | None,
+    num_species: int,
+    *,
+    validation: tuple[RegionCollection, ObservationCollection] | None = None,
+) -> _PreparedTrainingInputs:
+    """Region–species groups sharing one target, feature contract, and species order.
+
+    Validation inputs must share the contract of the training inputs, from which
+    alone a single-species order is inferred.
+    """
+    inputs = _normalize_training_inputs(region, observations)
+    validation_inputs = () if validation is None else _normalize_training_inputs(*validation)
+    _validate_shared_training_contract((*inputs, *validation_inputs))
+    order = _resolve_training_species_order(inputs, species, num_species)
+    return _PreparedTrainingInputs(
+        inputs,
+        order,
+        _prepare_region_species_inputs(inputs, order, num_species),
+        _prepare_region_species_inputs(validation_inputs, order, num_species),
     )

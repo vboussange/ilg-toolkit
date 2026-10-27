@@ -1,9 +1,7 @@
 """Scientific behavior of models.unet, covered once at tiny width."""
 
 import coordax as cx
-import equinox as eqx
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -42,12 +40,7 @@ def _unet(
     )
 
 
-def _gradient_vector(gradient):
-    leaves = jax.tree.leaves(eqx.filter(gradient, eqx.is_inexact_array))
-    return np.concatenate([np.asarray(leaf, dtype=np.float64).ravel() for leaf in leaves])
-
-
-def test_patch_microbatches_preserve_predictions_and_gradients():
+def test_patch_microbatches_preserve_predictions_and_gradients(assert_patch_microbatches_match):
     # Six patches in batches of four exercise a final batch smaller than four.
     features = np.random.default_rng(8).normal(size=(4, 6, 2)).astype(np.float32)
     region = RegionBatch(
@@ -56,27 +49,9 @@ def test_patch_microbatches_preserve_predictions_and_gradients():
         ("a", "b", "c"),
         np.array([[0, 0], [0, 5], [3, 5]]),
     )
-    reference = _unet(19, patch_size=2)
-    microbatched = _unet(19, patch_size=2, patch_microbatch_size=4)
-
-    @eqx.filter_jit
-    @eqx.filter_value_and_grad(has_aux=True)
-    def objective(model):
-        predictions = model.predict(region).values
-        return jnp.sum(predictions**2), predictions
-
-    (expected_value, expected), expected_gradient = objective(reference)
-    (actual_value, actual), actual_gradient = objective(microbatched)
-    assert expected.shape == (3,)
-    assert np.all(np.isfinite(expected) & (expected > 0))
-    np.testing.assert_allclose(actual, expected, rtol=1e-5)
-    np.testing.assert_allclose(actual_value, expected_value, rtol=1e-5)
-    expected_gradient = _gradient_vector(expected_gradient)
-    actual_gradient = _gradient_vector(actual_gradient)
-    assert np.all(np.isfinite(expected_gradient)) and np.any(expected_gradient != 0)
-    # One scale for all leaves: parameters with vanishing gradients carry only roundoff.
-    scale = np.max(np.abs(expected_gradient))
-    np.testing.assert_allclose(actual_gradient / scale, expected_gradient / scale, atol=1e-5)
+    assert_patch_microbatches_match(
+        _unet(19, patch_size=2), _unet(19, patch_size=2, patch_microbatch_size=4), region, rtol=1e-5
+    )
 
 
 def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_path):

@@ -14,17 +14,12 @@ import numpy as np
 import optax
 
 from ._training_utils import (
-    ObservationCollection,
-    RegionCollection,
     RegionSpeciesKey,
-    _normalize_training_inputs,
-    _prepare_region_species_inputs,
+    _prepare_training_inputs,
     _RegionSpeciesTrainingInput,
-    _resolve_training_species_order,
-    _validate_shared_training_contract,
 )
 from .config import TrainingConfig
-from .data import PairwiseObservations, RegionBatch
+from .data import ObservationCollection, PairwiseObservations, RegionBatch, RegionCollection
 from .losses import _LossContext
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
@@ -129,6 +124,7 @@ def _prepared(region, observations, loss, *, training):
     )
 
 
+@eqx.filter_jit
 def _group_distances(model, latent, payload, species_index, context):
     return distances_from_latent(
         model,
@@ -139,9 +135,6 @@ def _group_distances(model, latent, payload, species_index, context):
         species_index=species_index,
         context=context,
     )
-
-
-_compiled_distances = eqx.filter_jit(_group_distances)
 
 
 class _Contribution(NamedTuple):
@@ -293,11 +286,9 @@ def _apply_gradient(
     return parameters, optimizer_state
 
 
-def _criterion(loss, distances, context, state, calibration):
-    return loss._value(distances, context, state, calibration)
-
-
-_compiled_criterion = eqx.filter_jit(_criterion)
+@eqx.filter_jit
+def _criterion(loss, distances, context, state, fixed):
+    return loss._value(distances, context, state, fixed)
 
 
 def _evaluate_regions(
@@ -316,7 +307,7 @@ def _evaluate_regions(
         if batch.region.name != previous_region:
             latent = _backbone(parameters[0], batch.payload.features, None)
             previous_region = batch.region.name
-        distances = _compiled_distances(
+        distances = _group_distances(
             configured, latent, batch.payload, jnp.asarray(batch.species_index), batch.context
         )
         group_state = config.loss._group_state(parameters[1], batch.key)
@@ -325,10 +316,8 @@ def _evaluate_regions(
             raise ValueError(
                 "Validation requires a training calibration for the same region–species group"
             )
-        criterion = _criterion if calibration is not None else _compiled_criterion
-        value = float(
-            criterion(config.loss, distances, batch.payload.context, group_state, calibration)
-        )
+        fixed = None if calibration is None else config.loss._fixed_parameters(calibration)
+        value = float(_criterion(config.loss, distances, batch.payload.context, group_state, fixed))
         if not np.isfinite(value):
             raise FloatingPointError(
                 f"{batch.region.name}, species {batch.species_index}: nonfinite loss at step {step}"
@@ -451,35 +440,25 @@ def train(
             raise ValueError(
                 "Continuation requires identical configuration except an increased step budget"
             )
-    training_inputs = _normalize_training_inputs(region, observations)
     if validation is not None and (not isinstance(validation, tuple) or len(validation) != 2):
         raise ValueError("validation must be a (regions, observations) tuple")
-    validation_inputs = (
-        () if validation is None else _normalize_training_inputs(validation[0], validation[1])
+    prepared = _prepare_training_inputs(
+        region, observations, species, distance_model.num_species, validation=validation
     )
-    first_region, first_observations = _validate_shared_training_contract(
-        (*training_inputs, *validation_inputs)
-    )
-    species = _resolve_training_species_order(training_inputs, species, distance_model.num_species)
+    first_region, first_observations = prepared.inputs[0]
+    species = prepared.species
     prototype = LandscapeGeneticsModel(
         distance_model,
         config.loss._calibration(first_observations.target, {}),
         first_region.feature_array.shape[-1],
         feature_names=first_region.feature_names,
-        species=None if species is None else tuple(species),
-    )
-    species = prototype.species
-    indexed_training = _prepare_region_species_inputs(
-        training_inputs, species, distance_model.num_species
-    )
-    indexed_validation = _prepare_region_species_inputs(
-        validation_inputs, species, distance_model.num_species
+        species=species,
     )
     random_key = (
         jax.random.split(jax.random.PRNGKey(config.seed))[1] if state is None else state.rng_key
     )
     training_batches, validation_batches = _prepare_batches(
-        indexed_training, indexed_validation, distance_model, config
+        prepared.training, prepared.validation, distance_model, config
     )
 
     loss_state = (

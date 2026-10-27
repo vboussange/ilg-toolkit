@@ -7,12 +7,11 @@ from typing import TYPE_CHECKING, final
 import equinox as eqx
 
 from ._training_utils import RegionSpeciesKey
-from .data import PairwiseObservations, TargetSpec
+from .data import ObservationCollection, PairwiseObservations, RegionCollection, TargetSpec
 from .mlpe import RegionalMLPECalibration
 from .prediction import Prediction
 
 if TYPE_CHECKING:
-    from ._training_utils import ObservationCollection, RegionCollection
     from .losses import AbstractLoss
     from .model import LandscapeGeneticsModel
     from .models import AbstractDistanceModel
@@ -141,8 +140,8 @@ class MLPECalibrationModule(AbstractCalibrationModule):
 
 
 def calibrate(
-    region: "RegionCollection",
-    observations: "ObservationCollection",
+    region: RegionCollection,
+    observations: ObservationCollection,
     distance_model: "AbstractDistanceModel",
     *,
     loss: "AbstractLoss",
@@ -193,12 +192,7 @@ def calibrate(
         [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
         and the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md).
     """
-    from ._training_utils import (
-        _normalize_training_inputs,
-        _prepare_region_species_inputs,
-        _resolve_training_species_order,
-        _validate_shared_training_contract,
-    )
+    from ._training_utils import _prepare_training_inputs
     from .losses import AbstractLoss
     from .model import LandscapeGeneticsModel
     from .models import AbstractDistanceModel
@@ -212,10 +206,8 @@ def calibrate(
         raise TypeError("distance_model must implement AbstractDistanceModel")
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
-    inputs = _normalize_training_inputs(region, observations)
-    first = _validate_shared_training_contract(inputs)
-    order = _resolve_training_species_order(inputs, species, distance_model.num_species)
-    groups = _prepare_region_species_inputs(inputs, order, distance_model.num_species)
+    prepared = _prepare_training_inputs(region, observations, species, distance_model.num_species)
+    first, order, groups = prepared.inputs[0], prepared.species, prepared.training
     target = first.observations.target
     feature_count, feature_names = first.region.feature_array.shape[-1], first.region.feature_names
     for group in groups:
