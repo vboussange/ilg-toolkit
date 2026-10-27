@@ -5,64 +5,87 @@
 [![Run tests](https://github.com/vboussange/ilg-toolkit/actions/workflows/run_tests.yml/badge.svg)](https://github.com/vboussange/ilg-toolkit/actions/workflows/run_tests.yml)
 [![Documentation](https://github.com/vboussange/ilg-toolkit/actions/workflows/docs.yml/badge.svg)](https://github.com/vboussange/ilg-toolkit/actions/workflows/docs.yml)
 
-ILG Toolkit provides routines for estimating relationships between landscape
-features and pairwise genetic observations among populations or individuals.
-A distance model maps landscape features to ecological distances; genetic
-calibration relates those distances to the observed genetic measurements.
+Inverse landscape genetics (ILG) infers how landscapes shape movement from
+geolocated genetic data. ILG Toolkit provides utilities to train a patch encoder
+end-to-end through a differentiable effective-resistance layer: the encoder maps
+patches of landscape features to the vertex conductances of a conductance grid
+graph, whose effective resistances between sampling units predict their pairwise
+genetic dissimilarity.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/assets/ilg-overview.webp" width="420" alt="Landscape features become conductance, effective resistance, and genetic predictions.">
 </p>
 
-- Differentiable effective resistance and embedding distance models.
-- Joint training of distance-model parameters and statistical parameters, with
+- Log-linear and ResNet9 patch encoders, and a U-Net embedding-distance model.
+- GPU-ready effective resistance with gradients, optionally preconditioned by
+  algebraic multigrid.
+- Training under complete pooling across regions, with a log1p objective or
   maximum-likelihood population effects (MLPE) for population dependence.
 - Genetic calibration, conditional prediction, and ensembles on the target's
-  original scale.
-- Parameters pooled across regions, with experimental multispecies support.
+  original scale, with experimental multispecies support.
 
 ## Installation
 
-Requires Python 3.12 or newer. Install the development version with:
+Requires Python 3.12 or newer. Add the development version and the quickstart's
+dependencies to a [uv](https://docs.astral.sh/uv/) project with:
 
 ```bash
-pip install git+https://github.com/vboussange/ilg-toolkit.git
+uv add "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit"
 ```
 
-Optional extras include `amg` for resistance preconditioning, `geo` for geospatial
-input preparation, and `gpu` for CUDA-enabled JAX on Linux x86-64.
+The `examples` extra installs rioxarray and Matplotlib for the examples. Other
+extras are `amg` for algebraic-multigrid preconditioning and `gpu` for
+CUDA-enabled JAX on Linux x86-64.
 
-## Documentation
+## Quickstart
 
-See the [documentation](https://vboussange.github.io/ilg-toolkit/) for examples,
-statistical guidance, and the API reference.
+The [quickstart](https://vboussange.github.io/ilg-toolkit/examples/quickstart/)
+trains a log-linear patch encoder on pairwise Fst between 12 Mountain
+Pygmy-possum sampling units in the Victorian Alps, kindly provided by
+[Cesar Australia](https://cesaraustralia.com), using ESA WorldCover 2021 land
+cover (CC BY 4.0). It finishes in about a minute on a CPU.
 
-## Quick example
+<p align="center">
+  <img src="https://vboussange.github.io/ilg-toolkit/examples/quickstart.png" width="720" alt="Land cover and sampling units next to the trained log10 resistance surface.">
+</p>
 
-Given a prepared landscape `region` and pairwise genetic `observations`, train
-a conductance model and request genetic predictions:
+After turning land-cover fractions into landscape `features` and sampling-unit
+coordinates into `grid_positions`, the script trains the patch encoder from the
+best uniform conductance and reads its resistance surface:
 
 ```python
-import jax
-
-from ilg_toolkit import Log1pLoss, TrainingConfig, train
-from ilg_toolkit.models import ResNet9Conductance
-
-jax.config.update("jax_enable_x64", True)  # Before constructing inputs.
-distance_model = ResNet9Conductance(in_channels=2, patch_size=4, key=jax.random.key(6))
+region = RegionBatch(
+    name="victorian-alps",
+    features=cx.from_xarray(features),
+    sampling_unit_ids=tuple(sites.index),
+    grid_positions=grid_positions,
+)
+observations = PairwiseObservations.from_matrix(
+    tuple(fst.index),
+    fst.to_numpy(),
+    target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
+)
+loss = Log1pLoss()
+distance_model = initialize_uniform_conductance(
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE), region, observations, loss
+)
 state = train(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(loss=Log1pLoss(), steps=4, learning_rate=0.001),
+    config=TrainingConfig(loss=loss, steps=100, learning_rate=0.1),
 )
-prediction = state.selected_model.predict(region)
+conductance = state.selected_model.distance_model.conductance_surface(region)
+resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 ```
 
-The [quickstart](https://vboussange.github.io/ilg-toolkit/examples/quickstart/)
-provides the complete runnable script, including synthetic inputs. Interpret
-estimated landscape relationships alongside ecological knowledge and a stated
-evaluation design.
+Swap in `ResNet9Conductance` as a deep patch encoder to learn conductance from
+raw patches of landscape features.
+
+## Documentation
+
+See the [documentation](https://vboussange.github.io/ilg-toolkit/) for the
+examples, the glossary, and the API reference.
 
 ## Contributing
 

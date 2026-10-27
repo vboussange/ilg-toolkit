@@ -22,7 +22,8 @@ dependencies = [
 
 [project.optional-dependencies]
 amg = ["jaxscape[amjax]==0.0.11"]
-geo = ["geopandas>=1.1.1,<2", "rasterio>=1.4,<2"]
+# Data loading and plotting used by the examples.
+examples = ["matplotlib>=3.10,<4", "rioxarray>=0.19,<1"]
 gpu = ["jax[cuda]>=0.10.0,<0.11; platform_system == 'Linux' and platform_machine == 'x86_64'"]
 docs = [
   "ipykernel>=7.4,<8",

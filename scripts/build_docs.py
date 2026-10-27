@@ -1,13 +1,16 @@
 """Execute authoritative examples and stage disposable Zensical inputs.
 
-Run with the installed package and docs extra. Each notebook receives its own
-working directory and a kernel from this Python interpreter; source files are
-never executed in place. Zensical then reads build/docs via zensical.toml.
+Run with the installed package and the docs and examples extras. The quickstart
+and each notebook receive their own working directory, and notebooks a kernel
+from this Python interpreter; source files are never executed in place. The
+README's quickstart excerpt must appear verbatim in the quickstart script.
+Zensical then reads build/docs via zensical.toml.
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +27,20 @@ from nbconvert.writers import FilesWriter
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOKS = ("ibd", "mlpe_workflow", "ensemble", "multispecies")
+FIGURE = "quickstart.png"
+
+
+def _check_readme_excerpt(readme: Path, script: Path) -> None:
+    """Fail unless the README's quickstart code block appears verbatim in the script."""
+    match = re.search(
+        r"^## Quickstart\n.*?^```python\n(.*?)^```$",
+        readme.read_text(encoding="utf-8"),
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    if match is None:
+        raise ValueError(f"No Python code block in the Quickstart section of {readme}")
+    if match.group(1) not in script.read_text(encoding="utf-8"):
+        raise ValueError(f"The README quickstart excerpt is not verbatim in {script}")
 
 
 def _render_quickstart(
@@ -52,14 +69,20 @@ def _render_quickstart(
         )
     except subprocess.CalledProcessError as error:
         raise RuntimeError(f"Quickstart execution failed:\n{error.stdout}") from error
+    figure = work / FIGURE
+    if not figure.is_file():
+        raise RuntimeError(f"Quickstart did not write {FIGURE}")
     body = (
         "# Quickstart\n\n"
         f"[Download the Python script]({source.name})\n\n"
+        f"![Land cover and sampling units next to the trained log10 resistance surface]"
+        f"({FIGURE})\n\n"
         f"```python\n{source.read_text(encoding='utf-8').rstrip()}\n```\n\n"
         f"## Output\n\n```text\n{result.stdout.rstrip()}\n```\n"
     )
     (output_dir / "quickstart.md").write_text(body, encoding="utf-8")
     shutil.copyfile(source, output_dir / source.name)
+    shutil.copyfile(figure, output_dir / FIGURE)
     print(f"Rendered {source.name} in {time.monotonic() - started:.1f}s", flush=True)
 
 
@@ -75,6 +98,7 @@ def prepare(example_dir: Path, output_dir: Path, *, timeout: int) -> None:
     quickstart = example_dir / "quickstart.py"
     if not quickstart.is_file():
         raise ValueError(f"Quickstart script not found: {quickstart}")
+    _check_readme_excerpt(ROOT / "README.md", quickstart)
     sources = sorted(example_dir.glob("*.ipynb"))
     if not sources:
         raise ValueError(f"No notebooks found in {example_dir}")

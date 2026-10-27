@@ -12,3 +12,5 @@ benchmarks/results/
 site/
 .cache/
 uv.lock
+examples/data/
+quickstart.png
