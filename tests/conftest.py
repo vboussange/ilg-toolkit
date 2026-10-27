@@ -827,8 +827,7 @@ def training_problem():
             scales = jnp.array(0.0) if num_species == 1 else jnp.arange(num_species) * 0.2
             model = _PointConductance(scales, num_species=num_species)
         elif family == "dropout" and num_species == 1:
-            # Strongly typed, so the step-0 model and its reloaded copy predict in one dtype.
-            model = _StochasticEmbedding(jnp.ones(()))
+            model = _StochasticEmbedding(jnp.asarray(1.0))
         else:
             raise ValueError(f"Unknown test model family: {family} with {num_species} species")
         if num_species > 1:

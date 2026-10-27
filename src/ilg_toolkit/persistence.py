@@ -32,15 +32,21 @@ class ArtifactError(ValueError):
 
 def _write_native(path, tree, *, kind, metadata):
     """Atomic storage of metadata and model arrays, retaining the previous file if writing fails."""
+    arrays = [
+        (index, leaf)
+        for index, leaf in enumerate(jax.tree.leaves(tree))
+        if isinstance(leaf, jax.Array)
+    ]
     header = {
         "format": "ilg-toolkit-equinox",
         "kind": kind,
         "requires_x64": any(
-            isinstance(value, jax.Array)
-            and np.dtype(value.dtype)
+            np.dtype(leaf.dtype)
             in (np.dtype("float64"), np.dtype("complex128"), np.dtype("int64"), np.dtype("uint64"))
-            for value in jax.tree.leaves(tree)
+            for _, leaf in arrays
         ),
+        # NumPy storage drops JAX weak types, which change dtype promotion.
+        "weak_leaves": [index for index, leaf in arrays if leaf.weak_type],
         "metadata": metadata,
     }
     destination = Path(path)
@@ -60,8 +66,29 @@ def _write_native(path, tree, *, kind, metadata):
             Path(temporary).unlink(missing_ok=True)
 
 
+def _read_native(stream, template, weak_leaves):
+    """Saved leaves loaded into a template, with the weak types recorded when saving."""
+    leaves, structure = jax.tree.flatten(eqx.tree_deserialise_leaves(stream, template))
+    for index in weak_leaves:
+        if not 0 <= index < len(leaves) or not isinstance(leaves[index], jax.Array):
+            raise ArtifactError(f"Recorded weakly typed leaf {index} is not a saved JAX array")
+        leaves[index] = _weakly_typed(leaves[index])
+    return jax.tree.unflatten(structure, leaves)
+
+
+def _weakly_typed(leaf):
+    # Only Python scalars create weak types publicly: write the values into
+    # weakly typed zeros of the same kind, whose dtype follows the current precision.
+    zeros = jax.lax.full(leaf.shape, leaf.dtype.type(0).item())
+    if not zeros.weak_type or zeros.dtype != leaf.dtype:
+        raise ArtifactError(
+            f"Cannot restore a weakly typed {leaf.dtype} leaf under the current JAX precision"
+        )
+    return zeros.at[...].set(leaf)
+
+
 def _read_header(stream, *, kind):
-    """File format and precision requirements used before loading model values."""
+    """Metadata and weakly typed leaves, after checking format and precision requirements."""
     try:
         header = json.loads(stream.readline())
     except (ValueError, UnicodeError) as error:
@@ -74,7 +101,10 @@ def _read_header(stream, *, kind):
         raise ArtifactError("Missing saved-model or checkpoint precision requirement")
     if header["requires_x64"] and not jax.config.read("jax_enable_x64"):
         raise ArtifactError("Saved JAX leaves require JAX_ENABLE_X64=true before loading")
-    return header["metadata"]
+    weak_leaves = header.get("weak_leaves")
+    if not isinstance(weak_leaves, list) or any(type(index) is not int for index in weak_leaves):
+        raise ArtifactError("Missing or invalid saved-model or checkpoint weak-type record")
+    return header["metadata"], weak_leaves
 
 
 def _model_metadata(model):
@@ -248,9 +278,9 @@ def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGenet
     """
     try:
         with Path(path).open("rb") as stream:
-            metadata = _read_header(stream, kind="model")
+            metadata, weak_leaves = _read_header(stream, kind="model")
             template = _model_template(metadata, distance_model)
-            return eqx.tree_deserialise_leaves(stream, template)
+            return _read_native(stream, template, weak_leaves)
     except (KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:
         if isinstance(error, ArtifactError):
             raise

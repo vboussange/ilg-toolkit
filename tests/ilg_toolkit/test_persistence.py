@@ -1,5 +1,6 @@
 """Scientific behavior of persistence."""
 
+import json
 from dataclasses import replace
 from typing import cast
 
@@ -72,6 +73,66 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, loss, num_spec
                     load = load_model if kind == "model" else load_checkpoint
                     load(path, distance_model=narrow)
                 assert not jax.config.read("jax_enable_x64")
+
+
+# NumPy storage drops weak types, and eqx.tree_equal ignores them.
+def test_saved_weak_types_are_restored_whatever_the_template(
+    tmp_path, training_problem, ScalarEmbedding
+):
+    with jax.enable_x64():
+        region, observations, _ = training_problem("embedding")
+        # The initial parameter is weakly typed; after one Adam step only its
+        # first moment still is.
+        initial, trained = (
+            train(
+                region,
+                observations,
+                distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+                config=TrainingConfig(loss=Log1pLoss(), steps=steps),
+            )
+            for steps in (0, 1)
+        )
+        template = ScalarEmbedding(jnp.zeros(()))
+        assert not template.weight.weak_type
+        save_model(tmp_path / "model.eqx", initial.selected_model)
+        save_checkpoint(tmp_path / "checkpoint.eqx", trained)
+        model = load_model(tmp_path / "model.eqx", distance_model=template)
+        restored = load_checkpoint(tmp_path / "checkpoint.eqx", distance_model=template)
+
+        def weak_types(tree):
+            return [leaf.weak_type for leaf in jax.tree.leaves(eqx.filter(tree, eqx.is_array))]
+
+        assert weak_types(model) == weak_types(initial.selected_model) == [True]
+        assert 0 < sum(weak_types(trained)) < len(weak_types(trained))
+        assert weak_types(restored) == weak_types(trained)
+        # A weakly typed float64 parameter keeps float32 features in float32.
+        predictions = initial.selected_model.predict(region).values
+        assert predictions.dtype == jnp.float32
+        np.testing.assert_array_equal(model.predict(region).values, predictions)
+        assert model.predict(region).values.dtype == jnp.float32
+
+        lines = (tmp_path / "model.eqx").read_bytes().split(b"\n", 1)
+        for record in (None, [1]):
+            header = json.loads(lines[0])
+            header.pop("weak_leaves") if record is None else header.update(weak_leaves=record)
+            corrupt = tmp_path / "corrupt.eqx"
+            corrupt.write_bytes(json.dumps(header).encode() + b"\n" + lines[1])
+            with pytest.raises(ArtifactError, match="weak"):
+                load_model(corrupt, distance_model=template)
+
+        # Python scalars give float32 weak types only while float64 is disabled.
+        with jax.enable_x64(False):
+            narrow = eqx.tree_at(
+                lambda model: model.distance_model.weight,
+                initial.selected_model,
+                jnp.asarray(1.0),
+            )
+            save_model(tmp_path / "narrow.eqx", narrow)
+        with pytest.raises(ArtifactError, match="current JAX precision"):
+            load_model(
+                tmp_path / "narrow.eqx",
+                distance_model=ScalarEmbedding(jnp.zeros((), jnp.float32)),
+            )
 
 
 def test_odds_target_model_reloads_and_predicts_in_original_units(

@@ -15,6 +15,7 @@ from .persistence import (
     _model_metadata,
     _model_template,
     _read_header,
+    _read_native,
     _write_native,
 )
 from .training import StepRecord, TrainingState, _validate_state
@@ -99,7 +100,7 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
     """
     try:
         with Path(path).open("rb") as stream:
-            metadata = _read_header(stream, kind="training_checkpoint")
+            metadata, weak_leaves = _read_header(stream, kind="training_checkpoint")
             options = dict(metadata["config"])
             options["loss"] = _loss_from_metadata(options["loss"])
             config = TrainingConfig(**options)
@@ -125,7 +126,7 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
                 training_groups=tuple(tuple(group) for group in metadata["training_groups"]),
                 validation_groups=tuple(tuple(group) for group in metadata["validation_groups"]),
             )
-            state = eqx.tree_deserialise_leaves(stream, template)
+            state = _read_native(stream, template, weak_leaves)
             _validate_state(state)
             return state
     except (KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:
