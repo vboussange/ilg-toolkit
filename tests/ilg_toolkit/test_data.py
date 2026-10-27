@@ -341,6 +341,23 @@ def test_sqrt_transform_has_an_explicit_nonnegative_codomain_and_preserves_measu
     assert observations.observed_values[0] == 0.123456789012345
 
 
+def test_odds_transform_linearizes_bounded_dissimilarities_and_round_trips():
+    target = TargetSpec("Fst", units="proportion", transform="odds")
+    values = np.array([0.0, 0.05, 0.2, 0.5, 0.9])
+    model_scale = target.forward(values)
+    np.testing.assert_allclose(model_scale, values / (1 - values))
+    np.testing.assert_allclose(target.inverse(model_scale), values)
+    observations = PairwiseObservations.from_pairs([("a", "b")], [0.123456789012345], target=target)
+    assert observations.observed_values[0] == 0.123456789012345
+
+
+@pytest.mark.parametrize("invalid", [-0.01, 1.0, 1.5, np.nan, np.inf])
+def test_odds_transform_rejects_values_outside_the_unit_interval(invalid):
+    target = TargetSpec("Fst", units="proportion", transform="odds")
+    with pytest.raises(ValueError):
+        target.forward([0.1, invalid])
+
+
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_select_pairs_preserves_metadata_precision_and_deterministic_alignment(dtype):
     target = TargetSpec("divergence", units="index", transform="log1p")

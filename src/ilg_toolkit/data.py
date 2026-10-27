@@ -14,8 +14,17 @@ from numpy.typing import ArrayLike
 class TargetSpec:
     """Meaning, original units, and model-scale transform of pairwise genetic observations.
 
-    ``transform`` maps measurements from the original scale to the model scale
-    using identity, log1p, or square root, and genetic predictions apply its inverse.
+    ``transform`` maps measurements from the original scale to the model scale,
+    and genetic predictions apply its inverse:
+
+    - ``"identity"``: ``x``.
+    - ``"log1p"``: ``log(1 + x)``, for nonnegative values.
+    - ``"sqrt"``: ``sqrt(x)``, for nonnegative values.
+    - ``"odds"``: ``x / (1 - x)``, for values in [0, 1), with inverse ``y / (1 + y)``.
+      It linearizes dissimilarities bounded by one; Rousset's linearized Fst,
+      ``Fst / (1 - Fst)``, is one example. Negative estimates are rejected rather
+      than clipped, so clean them before constructing observations.
+
     The direct objective compares ecological distances and model-scale targets
     using log1p.
     """
@@ -33,8 +42,8 @@ class TargetSpec:
             raise ValueError("Target name, units, kind and transform must be nonempty strings")
         if self.kind not in {"dissimilarity", "relatedness", "similarity"}:
             raise ValueError("Target kind must be dissimilarity, relatedness, or similarity")
-        if self.transform not in {"identity", "log1p", "sqrt"}:
-            raise ValueError("Target transform must be identity, log1p, or sqrt")
+        if self.transform not in {"identity", "log1p", "sqrt", "odds"}:
+            raise ValueError("Target transform must be identity, log1p, sqrt, or odds")
 
     def forward(self, values) -> jax.Array:
         """Model-scale observations transformed from finite original-scale measurements."""
@@ -47,17 +56,25 @@ class TargetSpec:
             return jnp.log1p(values)
         if self.transform == "sqrt":
             return jnp.sqrt(values)
+        if self.transform == "odds":
+            if (values >= 1).any():
+                raise ValueError("Target transform odds requires values in [0, 1)")
+            return values / (1 - values)
         return values
 
     def inverse(self, values) -> jax.Array:
         """Genetic predictions in the original measurement units."""
         values = jnp.asarray(values)
-        if self.transform == "sqrt" and (values < 0).any():
-            raise ValueError("sqrt inverse requires nonnegative transformed predictions")
+        if self.transform in {"sqrt", "odds"} and (values < 0).any():
+            raise ValueError(
+                f"{self.transform} inverse requires nonnegative transformed predictions"
+            )
         if self.transform == "log1p":
             values = jnp.expm1(values)
         elif self.transform == "sqrt":
             values = jnp.square(values)
+        elif self.transform == "odds":
+            values = values / (1 + values)
         if not bool(jnp.isfinite(values).all()):
             raise FloatingPointError("Target inverse transformation produced nonfinite predictions")
         return values

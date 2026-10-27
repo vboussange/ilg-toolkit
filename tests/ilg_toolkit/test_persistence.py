@@ -73,6 +73,29 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, loss, num_spec
                 assert not jax.config.read("jax_enable_x64")
 
 
+def test_odds_target_model_reloads_and_predicts_in_original_units(
+    training_problem, WeightedEmbedding, tmp_path
+):
+    region, observations, distance_model = training_problem("embedding")
+    target = TargetSpec("Fst", units="proportion", transform="odds")
+    observations = replace(observations, values=observations.values / 2, target=target)
+    model = train(
+        region,
+        observations,
+        distance_model=distance_model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
+    ).selected_model
+    path = tmp_path / "odds.eqx"
+    save_model(path, model)
+    restored = load_model(path, distance_model=WeightedEmbedding(jnp.ones(2)))
+    distances = np.asarray(model.distance_model.predict(region).values)
+    prediction = restored.predict(region)
+    assert restored.target == target
+    np.testing.assert_array_equal(prediction.values, model.predict(region).values)
+    np.testing.assert_allclose(prediction.values, distances / (1 + distances))
+    assert np.all((np.asarray(prediction.values) >= 0) & (np.asarray(prediction.values) < 1))
+
+
 def test_direct_model_reload_uses_caller_encoder_and_preserves_predictions(
     training_problem, checkpoint_model, tmp_path
 ):
