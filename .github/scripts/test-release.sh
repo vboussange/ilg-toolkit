@@ -32,4 +32,4 @@ assert installed.is_relative_to(environment), 'The package must come from the ar
 assert not installed.is_relative_to(checkout), 'The package must not come from the checkout'
 print(f"Testing installed {project['name']} {project['version']} from {installed}")
 PY
-uv run --no-sync pytest
+uv run --no-sync pytest -n auto

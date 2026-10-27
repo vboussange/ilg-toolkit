@@ -36,12 +36,15 @@ jobs:
       - name: Check types
         run: uv run --no-sync pyright
       - name: Run the full CPU test suite
-        run: uv run --no-sync pytest
+        run: uv run --no-sync pytest -n auto
       - name: Test experimental Wishart statistics
-        run: uv run --no-sync pytest experiments/wishart/test_diagnostic.py
-      - name: Run research reference
         run: |
+          uv run --no-sync pytest experiments/wishart/test_diagnostic.py
           uv run --no-sync python -m experiments.wishart
+      - name: Run examples
+        run: |
+          uv sync --extra dev --extra amg --extra examples
+          uv run --no-sync python examples/quickstart.py
       - name: Build source distribution and wheel
         run: uv run --no-sync python -m build
       - name: Verify installed wheel outside the source tree
