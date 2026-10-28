@@ -264,7 +264,9 @@ def test_recalibrated_model_retains_target_scale_after_save_and_load(
 
 def test_prediction_rejects_stateful_layers(BatchNormConductance, observation_problem):
     region, target, _ = observation_problem()
-    model = LandscapeGeneticsModel(BatchNormConductance(), DirectCalibrationModule(target), 2)
+    model = LandscapeGeneticsModel(
+        BatchNormConductance(), DirectCalibrationModule(target), region.feature_names
+    )
     with pytest.raises(TypeError, match="stateful layers"):
         model.predict(region)
 
