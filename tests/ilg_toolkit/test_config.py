@@ -1,5 +1,7 @@
 """Tests of training configurations and the inputs training requires."""
 
+from typing import Any
+
 import numpy as np
 import optax
 import pytest
@@ -68,3 +70,20 @@ def test_gradient_tolerance_is_optional_finite_and_nonnegative():
     for invalid in (-1e-3, float("nan"), float("inf"), True, "1e-3"):
         with pytest.raises(ValueError, match="gradient_tolerance"):
             TrainingConfig(loss=Log1pLoss(), gradient_tolerance=invalid)  # type: ignore[arg-type]
+
+
+def test_integer_settings_accept_numpy_integers():
+    options: dict[str, Any] = dict(steps=np.int64(5), seed=np.uint32(7), eval_every=np.int32(2))
+    config = TrainingConfig(loss=Log1pLoss(), **options)
+    assert (config.steps, config.seed, config.eval_every) == (5, 7, 2)
+    assert all(type(value) is int for value in (config.steps, config.seed, config.eval_every))
+    invalid: tuple[tuple[str, Any], ...] = (
+        ("steps", -1),
+        ("steps", True),
+        ("seed", 2**32),
+        ("seed", 1.0),
+    )
+    for name, value in invalid:
+        options = {name: value}
+        with pytest.raises(ValueError, match=name):
+            TrainingConfig(loss=Log1pLoss(), **options)

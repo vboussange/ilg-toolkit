@@ -1,7 +1,7 @@
 """Training of distance models and statistical parameters across regions and species."""
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast, final, NamedTuple
 
@@ -127,14 +127,25 @@ def _validate_state(state: TrainingState) -> None:
         raise ValueError("Training convergence must be recorded as a boolean")
 
 
-def _optimizer_state_signature(optimizer_state: optax.OptState) -> list[list]:
-    """Returns the path, shape and dtype of every optimizer-state leaf."""
-    return [
-        [jax.tree_util.keystr(path), list(leaf.shape), str(leaf.dtype)]
-        if hasattr(leaf, "dtype")
-        else [jax.tree_util.keystr(path), type(leaf).__name__]
-        for path, leaf in jax.tree_util.tree_leaves_with_path(optimizer_state)
-    ]
+def _node_types(structure: Any) -> str:
+    """Returns the node type names of a tree structure, with ``*`` for each leaf."""
+    node = structure.node_data()
+    if node is None:
+        return "*"
+    return f"{node[0].__name__}({','.join(map(_node_types, structure.children()))})"
+
+
+def _optimizer_state_signature(optimizer_state: optax.OptState) -> dict[str, Any]:
+    """Returns the node types of an optimizer state and the path, shape and dtype of its leaves."""
+    return {
+        "nodes": _node_types(jax.tree.structure(optimizer_state)),
+        "leaves": [
+            [jax.tree_util.keystr(path), list(leaf.shape), str(leaf.dtype)]
+            if hasattr(leaf, "dtype")
+            else [jax.tree_util.keystr(path), type(leaf).__name__]
+            for path, leaf in jax.tree_util.tree_leaves_with_path(optimizer_state)
+        ],
+    }
 
 
 def _same_optimizer_state_structure(first: optax.OptState, second: optax.OptState) -> bool:
@@ -142,6 +153,45 @@ def _same_optimizer_state_structure(first: optax.OptState, second: optax.OptStat
     if jax.tree.structure(first) != jax.tree.structure(second):
         return False
     return _optimizer_state_signature(first) == _optimizer_state_signature(second)
+
+
+def _match_update_weak_types(
+    optimizer: optax.GradientTransformation,
+    optimizer_state: optax.OptState,
+    trainable: _Parameters,
+) -> optax.OptState:
+    """Returns the optimizer state with the weak types that one update gives its leaves.
+
+    Optimizers such as ``optax.lbfgs()`` initialize weakly typed scalars that their
+    update returns strongly typed; matching them lets every update share one
+    compiled program.
+    """
+
+    def update(state: optax.OptState) -> optax.OptState:
+        value = jnp.zeros((), jnp.float64)
+        return optax.with_extra_args_support(optimizer).update(
+            cast(optax.Updates, trainable),
+            state,
+            cast(optax.Params, trainable),
+            value=value,
+            grad=trainable,
+            value_fn=lambda _: value,
+        )[1]
+
+    updated = eqx.filter_eval_shape(update, optimizer_state)
+
+    def match(leaf: Any, shape: Any) -> Any:
+        if (
+            isinstance(leaf, jax.Array)
+            and isinstance(shape, jax.ShapeDtypeStruct)
+            and leaf.weak_type
+            and not shape.weak_type
+            and leaf.dtype == shape.dtype
+        ):
+            return jax.lax.convert_element_type(leaf, leaf.dtype)
+        return leaf
+
+    return jax.tree.map(match, optimizer_state, updated)
 
 
 class _TrainingPayload(NamedTuple):
@@ -152,6 +202,7 @@ class _TrainingPayload(NamedTuple):
     context: _LossContext
 
 
+@final
 @dataclass(frozen=True)
 class _RegionSpeciesTrainingBatch:
     """One region–species group's inputs, loss weight and distance context."""
@@ -162,7 +213,7 @@ class _RegionSpeciesTrainingBatch:
     species_index: int
     key: _RegionSpeciesKey
     loss_weight: float
-    context: _ResistanceSolverContext | None = None
+    context: _ResistanceSolverContext | None
 
 
 def _prepared(region, observations, loss, *, training):
@@ -599,8 +650,6 @@ def train(
     if on_step is not None and not callable(on_step):
         raise ValueError("on_step must be callable or None")
     if state is not None:
-        from dataclasses import replace
-
         if (
             replace(config, steps=state.config.steps) != state.config
             or config.steps < state.config.steps
@@ -645,6 +694,7 @@ def train(
                 "Continuation requires an optimizer whose state has the saved structure"
             )
         optimizer_state = state.optimizer_state
+    optimizer_state = _match_update_weak_types(config.optimizer, optimizer_state, trainable)
 
     regional_batches = tuple(
         tuple(b for b in training_batches if b.region.name == name)

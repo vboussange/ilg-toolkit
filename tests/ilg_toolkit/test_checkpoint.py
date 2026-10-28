@@ -363,7 +363,8 @@ def test_checkpoints_reject_an_optimizer_with_a_different_state(initial_state, t
     _, _, distance_model, state = initial_state
     path = tmp_path / "adam.eqx"
     save_checkpoint(path, state)
-    for optimizer in (optax.sgd(0.1), optax.lbfgs()):
+    # AdaBelief and AdamW keep Adam's leaf paths, shapes and dtypes in other state types.
+    for optimizer in (optax.sgd(0.1), optax.lbfgs(), optax.adabelief(0.1), optax.adamw(0.1)):
         with pytest.raises(ArtifactError, match="optimizer"):
             load_checkpoint(path, distance_model=distance_model, optimizer=optimizer)
     restored = load_checkpoint(path, distance_model=distance_model, optimizer=optax.adam(0.1))

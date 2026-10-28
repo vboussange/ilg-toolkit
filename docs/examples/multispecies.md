@@ -281,7 +281,7 @@ plt.show()
 
 `save_model` writes the distance model with its species names and the calibration head to
 one file. `load_model` restores them into a template with the same architecture and
-species count, replacing the template's parameter values. The reloaded model equals the
+species, replacing the template's parameter values. The reloaded model equals the
 trained model, and its predictions match to the relative tolerance of the
 effective-resistance solver, 1e-6.
 

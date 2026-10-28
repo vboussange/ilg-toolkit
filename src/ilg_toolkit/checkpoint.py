@@ -42,8 +42,9 @@ def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
 
     Raises:
         ArtifactError: If ``state`` is not a training state.
-        ValueError: If the state's steps or history are inconsistent, or its loss is
-            not [`Log1pLoss`][ilg_toolkit.Log1pLoss] or [`MLPELoss`][ilg_toolkit.MLPELoss].
+        ValueError: If the state's steps, history or convergence are inconsistent,
+            or its loss is not [`Log1pLoss`][ilg_toolkit.Log1pLoss] or
+            [`MLPELoss`][ilg_toolkit.MLPELoss].
 
     Examples:
         >>> save_checkpoint("training.eqx", state)
@@ -85,9 +86,9 @@ def load_checkpoint(
 
     The distance-model template supplies the distance model's class, static
     settings, array shapes and dtypes: build it with the original constructor
-    settings (patch size, patch microbatch size, dropout, species count and
-    activation functions). The optimizer rebuilds the optimizer-state template,
-    whose leaf paths, shapes and dtypes match the saved optimizer state, and becomes
+    settings (patch size, patch microbatch size, dropout, species and activation
+    functions). The optimizer rebuilds the optimizer-state template, whose state
+    types, leaf paths, shapes and dtypes match the saved optimizer state, and becomes
     the optimizer of the restored training configuration. Continuing with the
     original inputs, validation arguments, library versions, device and execution
     settings reproduces the uninterrupted run; continuation accepts a larger step
@@ -124,8 +125,9 @@ def load_checkpoint(
             if _optimizer_state_signature(optimizer_state) != metadata["optimizer_state"]:
                 raise ArtifactError(
                     "The supplied optimizer's state does not match the checkpoint's optimizer "
-                    "state (leaf paths, shapes and dtypes); supply an optimizer with the same "
-                    "state structure, such as the optimizer the checkpoint was trained with"
+                    "state (state types, leaf paths, shapes and dtypes); supply an optimizer "
+                    "with the same state structure, such as the optimizer the checkpoint was "
+                    "trained with"
                 )
             history = tuple(StepRecord(**record) for record in metadata["history"])
             if not 1 <= len(history) <= config.steps + 1:

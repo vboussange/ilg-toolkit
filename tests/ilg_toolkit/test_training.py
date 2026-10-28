@@ -1029,6 +1029,27 @@ def _scalar_region_losses(weight):
     ]
 
 
+@pytest.mark.parametrize("optimizer", [optax.adam(0.1), optax.lbfgs()], ids=["adam", "lbfgs"])
+def test_initial_optimizer_state_has_the_leaf_types_of_updated_states(
+    ScalarEmbedding, regions_and_observations, optimizer
+):
+    regions, observations = regions_and_observations()
+    config = TrainingConfig(loss=Log1pLoss(), steps=1, optimizer=optimizer)
+    states = []
+    train(
+        regions,
+        observations,
+        distance_model=ScalarEmbedding(jnp.asarray(1.0, dtype=jnp.float64)),
+        config=config,
+        on_step=states.append,
+    )
+    initial, updated = (
+        [(leaf.dtype, leaf.weak_type) for leaf in jax.tree.leaves(state.optimizer_state)]
+        for state in states
+    )
+    assert initial == updated
+
+
 def test_adam_with_learning_rate_1e_3_is_the_default_optimizer(
     ScalarEmbedding, regions_and_observations
 ):
