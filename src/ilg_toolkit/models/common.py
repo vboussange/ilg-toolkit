@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from typing import Protocol
 
@@ -31,28 +32,52 @@ def encode_patches(
     return values.reshape(*shape, -1)
 
 
-def with_dropout_mode[Model](model: Model, *, inference: bool, key: jax.Array | None) -> Model:
-    """Distance model with dropout set for training or prediction."""
+def _is_stateful(value: object) -> bool:
+    return isinstance(value, eqx.nn.StateIndex)
 
-    def is_dropout(value):
-        return isinstance(value, eqx.nn.Dropout)
 
-    layers = jax.tree.leaves(model, is_leaf=is_dropout)
-    count = sum(is_dropout(layer) for layer in layers)
-    if count:
-        if not inference and key is None:
-            raise ValueError("Training with dropout requires a random key")
-        keys = iter([None] * count if key is None else jax.random.split(key, count))
-        model = jax.tree.map(
-            lambda layer: (
-                eqx.Partial(layer, inference=inference, key=next(keys))
-                if is_dropout(layer)
-                else layer
-            ),
-            model,
-            is_leaf=is_dropout,
+def _reject_stateful_layers(model: object) -> None:
+    """Raises a ``TypeError`` when the distance model holds Equinox state indices."""
+    if any(_is_stateful(leaf) for leaf in jax.tree.leaves(model, is_leaf=_is_stateful)):
+        raise TypeError(
+            "Distance models with stateful layers (Equinox state indices, such as "
+            "eqx.nn.BatchNorm) are not supported; use stateless layers such as eqx.nn.GroupNorm"
         )
-    return model
+
+
+def _inference_model[Model](model: Model) -> Model:
+    """Stateless distance model with every ``inference`` flag set for frozen evaluation."""
+    _reject_stateful_layers(model)
+    return eqx.nn.inference_mode(model, value=True)
+
+
+def _takes_key(value: object) -> bool:
+    if not isinstance(value, eqx.Module) or not hasattr(value, "inference"):
+        return False
+    call = getattr(type(value), "__call__", None)
+    return call is not None and "key" in inspect.signature(call).parameters
+
+
+def _training_model[Model](model: Model, key: jax.Array) -> Model:
+    """Distance model in training mode, with random keys bound to its stochastic layers.
+
+    Every ``inference`` flag is cleared. Each inference-dependent layer whose call
+    accepts a ``key`` receives its own split of ``key``, in tree order.
+    """
+    model = eqx.nn.inference_mode(model, value=False)
+
+    def is_layer(value: object) -> bool:
+        return value is not model and _takes_key(value)
+
+    count = sum(map(is_layer, jax.tree.leaves(model, is_leaf=is_layer)))
+    if not count:
+        return model
+    keys = iter(jax.random.split(key, count))
+    return jax.tree.map(
+        lambda layer: eqx.Partial(layer, key=next(keys)) if is_layer(layer) else layer,
+        model,
+        is_leaf=is_layer,
+    )
 
 
 def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
