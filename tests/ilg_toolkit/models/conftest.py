@@ -27,7 +27,11 @@ def _assert_patch_microbatches_match(
     @eqx.filter_value_and_grad(has_aux=True)
     def objective(model):
         predictions = model.predict(region).values
-        surface = model.conductance_surface(region) if isinstance(model, ConductanceModel) else None
+        surface = (
+            jnp.asarray(model.conductance_surface(region).data)
+            if isinstance(model, ConductanceModel)
+            else None
+        )
         return jnp.sum(predictions**2), (predictions, surface)
 
     (expected_value, (expected, expected_surface)), expected_gradient = objective(reference)

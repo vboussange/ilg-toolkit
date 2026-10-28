@@ -292,7 +292,8 @@ def fit_calibration_head(
     Raises:
         TypeError: The distance model, or the loss, has an unsupported type, or the
             distance model has stateful layers.
-        ValueError: Invalid regions or observations, an iteration budget for
+        ValueError: Invalid regions or observations, rasters that are not
+            multiples of the distance model's patch size, an iteration budget for
             direct calibration, or individual-based regions for MLPE.
         MLPEError: An MLPE calibration cannot be fitted.
 
@@ -318,7 +319,11 @@ def fit_calibration_head(
     from ._training_utils import _prepare_training_inputs
     from .losses import AbstractLoss
     from .models import AbstractDistanceModel
-    from .models.base import prepare_distance_context, query_distances_from_latent
+    from .models.base import (
+        _check_regions,
+        prepare_distance_context,
+        query_distances_from_latent,
+    )
     from .models.common import _inference_model
 
     _require_float64()
@@ -328,6 +333,7 @@ def fit_calibration_head(
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
     prepared = _prepare_training_inputs(region, observations, distance_model.species)
+    _check_regions(distance_model, prepared.regions)
     groups = prepared.training
     for group in groups:
         loss._prepare(group.region, group.observations, training=True)

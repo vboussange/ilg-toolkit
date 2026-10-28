@@ -145,7 +145,7 @@ def test_members_are_averaged_on_the_genetic_scale_not_through_their_surfaces(Po
     models = [LandscapeGeneticsModel(model, calibration, ("cover",)) for model in distance_models]
     result = Ensemble(models).predict(region)
     # Member surfaces come from each member's own distance model.
-    surfaces = [model.conductance_surface(region) for model in distance_models]
+    surfaces = [model.conductance_surface(region).data for model in distance_models]
     averaged_surface_model = LandscapeGeneticsModel(
         PointConductance(jnp.log(jnp.mean(jnp.stack(surfaces)[:, 0, 0]))), calibration, ("cover",)
     )

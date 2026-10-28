@@ -296,3 +296,14 @@ def test_mlpe_calibration_head_rejects_individual_based_regions(
         fit_calibration_head(
             individuals, observations, ScalarEmbedding(jnp.asarray(1.0)), loss=MLPELoss()
         )
+
+
+def test_calibration_checks_the_patch_grid(patch_check_problem):
+    problem = patch_check_problem
+    misaligned, shared = problem.misaligned, problem.shared
+    with problem.trim_required():
+        fit_calibration_head(
+            misaligned, problem.observations(misaligned), problem.model, loss=Log1pLoss()
+        )
+    with problem.shared_vertices_warned():
+        fit_calibration_head(shared, problem.observations(shared), problem.model, loss=Log1pLoss())

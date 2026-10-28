@@ -113,7 +113,9 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     fitted = result.selected_model
     distance_model = fitted.distance_model
     assert isinstance(distance_model, ResNet9Conductance)
-    surfaces = {name: distance_model.conductance_surface(region, name) for name in species}
+    surfaces = {
+        name: np.asarray(distance_model.conductance_surface(region, name).data) for name in species
+    }
     assert not np.allclose(surfaces["frog"], surfaces["newt"])
     for name in species:
         surface = np.asarray(surfaces[name])
@@ -133,7 +135,9 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     restored = load_model(path, distance_model=model(9))
     restored_model = restored.distance_model
     assert isinstance(restored_model, ResNet9Conductance)
-    restored_surfaces = {name: restored_model.conductance_surface(region, name) for name in species}
+    restored_surfaces = {
+        name: restored_model.conductance_surface(region, name).data for name in species
+    }
     for name in species:
         np.testing.assert_array_equal(restored_surfaces[name], surfaces[name])
         np.testing.assert_array_equal(

@@ -311,3 +311,14 @@ def test_prediction_requires_float64(observation_problem, float64_required):
     )
     with float64_required():
         model.predict(region)
+
+
+def test_prediction_checks_the_patch_grid(patch_check_problem):
+    problem = patch_check_problem
+    model = LandscapeGeneticsModel(
+        problem.model, DirectCalibrationHead(problem.target), ("elevation",)
+    )
+    with problem.trim_required():
+        model.predict(problem.misaligned)
+    with problem.shared_vertices_warned():
+        model.predict(problem.shared)

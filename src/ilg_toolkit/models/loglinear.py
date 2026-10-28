@@ -17,7 +17,13 @@ from ..config import ResistanceSolverConfig
 from ..data import ObservationCollection, RegionBatch, RegionCollection
 from ..losses import AbstractLoss
 from ..resistance import effective_resistance
-from .base import _model_species, _species_names, ConductanceModel, prepare_distance_context
+from .base import (
+    _check_regions,
+    _model_species,
+    _species_names,
+    ConductanceModel,
+    prepare_distance_context,
+)
 from .common import encode_patches, pixel_to_patch_nodes
 
 
@@ -192,6 +198,7 @@ def initialize_uniform_conductance(
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must be an AbstractLoss")
     prepared = _prepare_training_inputs(region, observations, model.species)
+    _check_regions(model, prepared.regions)
     if prepared.inputs[0].region.feature_array.shape[-1] != model.in_channels:
         raise ValueError(f"Expected landscape features with {model.in_channels} channels")
     groups = prepared.training
