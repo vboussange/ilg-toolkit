@@ -11,6 +11,7 @@ dev = [
 ]
 docs = [
   "ipykernel==7.4.0",
+  "jupyter-client==8.10.0",
   "mkdocstrings==1.0.8",
   "mkdocstrings-python==2.0.10",
   "nbconvert==7.17.2",

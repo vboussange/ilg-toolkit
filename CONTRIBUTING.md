@@ -39,11 +39,11 @@ Finally, open a pull request on GitHub!
 Make your changes. You can then build the documentation by doing
 
 ```bash
-uv run --extra examples python scripts/build_docs.py
 uv run zensical serve
 ```
 
 You can then see your local copy of the documentation by navigating to `localhost:8000` in a web browser.
+The site renders the committed example results; see [Running the examples](#running-the-examples).
 
 ---
 
@@ -66,6 +66,31 @@ Ruff checks the Google convention, and mkdocstrings renders it in the API
 reference. Review scientific meaning and parameter coverage alongside those
 automated style checks. The Prose section of `AGENTS.md` sets the wording rules
 for docstrings, including the required `Args:` sections.
+
+---
+
+### Running the examples
+
+CI never runs the examples: the documentation and GitHub show the executed notebooks
+and example pages committed in the repository. After changing an example, or any API
+an example calls, run the examples again from the repository root:
+
+```bash
+uv run --extra examples python scripts/run_examples.py             # Every example.
+uv run --extra examples python scripts/run_examples.py quickstart  # Only the named examples.
+```
+
+The script runs each example in this environment with float64 enabled. It writes each
+executed notebook back into `examples/`, and each example's Markdown page and figures
+into `docs/examples/`. It fails when the Python code block in the README's Quickstart
+section is not verbatim in `examples/quickstart.py`.
+
+Run the examples on an NVIDIA GPU: install JAX with CUDA support into the project
+environment with `uv pip install "jax[cuda12]==<locked jax version>"`, and select the GPU
+with `CUDA_VISIBLE_DEVICES`. On an NVIDIA RTX 3090, all examples run in about four minutes.
+
+Commit the regenerated notebooks, pages and figures together with the change that
+caused them.
 
 ---
 
