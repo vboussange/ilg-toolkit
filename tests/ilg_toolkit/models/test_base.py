@@ -196,8 +196,12 @@ def test_single_species_queries_return_one_prediction(PointConductance):
     np.testing.assert_array_equal(
         named.conductance_surface(region).data, named.conductance_surface(region, "frog").data
     )
-    for query in ({}, {"toad": None}, 3):
-        with pytest.raises(ValueError):
+    for query, message in (
+        ({}, "at least one species"),
+        ({"toad": None}, "Unknown species"),
+        (3, "sequence of sampling-unit pairs"),
+    ):
+        with pytest.raises(ValueError, match=message):
             named.predict(region, query)  # pyright: ignore[reportArgumentType]
 
 
