@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TypeVar, final, overload
+from typing import final, overload, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -11,6 +11,7 @@ from .data import RegionBatch
 from .model import LandscapeGeneticsModel
 from .models import ConductanceModel
 from .prediction import Prediction
+
 
 _Result = TypeVar("_Result")
 

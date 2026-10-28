@@ -17,6 +17,7 @@ from jax.scipy.linalg import cho_solve
 
 from .covariance import population_covariance_factor
 
+
 DEFAULT_VARIANCE_FLOOR = 1e-10
 DEFAULT_MIN_DISTANCE_SCALE = 1e-12
 

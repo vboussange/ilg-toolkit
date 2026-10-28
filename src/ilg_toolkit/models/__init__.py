@@ -1,9 +1,10 @@
 """Distance models: patch encoders on conductance grid graphs and embedding-distance models."""
 
 from .base import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
-from .loglinear import LogLinearConductance, initialize_uniform_conductance
+from .loglinear import initialize_uniform_conductance, LogLinearConductance
 from .resnet import ResNet9Conductance
 from .unet import UNetEmbeddingDistance
+
 
 __all__ = [
     "AbstractDistanceModel",

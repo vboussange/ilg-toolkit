@@ -21,8 +21,8 @@ establish them for real genetic observations.
 From the repository root:
 
 ```bash
-JAX_ENABLE_X64=true uv run --no-sync pytest experiments/wishart/test_diagnostic.py
-JAX_ENABLE_X64=true uv run --no-sync python -m experiments.wishart
+JAX_ENABLE_X64=true uv run pytest experiments/wishart/test_diagnostic.py
+JAX_ENABLE_X64=true uv run python -m experiments.wishart
 ```
 
 The second command demonstrates known-parameter diagnostics through a real

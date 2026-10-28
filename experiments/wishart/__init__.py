@@ -1,13 +1,14 @@
 """Explicitly experimental diagnostic references, separate from stable fitting."""
 
 from .diagnostic import (
-    GaussianMarkerDistances,
-    HeldoutWishartScore,
-    WishartDiagnostic,
     diagnose_wishart,
+    GaussianMarkerDistances,
     heldout_log_likelihood,
+    HeldoutWishartScore,
     wishart_log_likelihood,
+    WishartDiagnostic,
 )
+
 
 __all__ = [
     "GaussianMarkerDistances",

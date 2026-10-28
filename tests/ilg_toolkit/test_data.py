@@ -7,8 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
-from ilg_toolkit import Log1pLoss, PairwiseObservations, TargetSpec, TrainingConfig, train
+from ilg_toolkit import Log1pLoss, PairwiseObservations, TargetSpec, train, TrainingConfig
 
 
 def test_species_observations_align_repeated_ids_without_cross_species_pairs(observation_problem):

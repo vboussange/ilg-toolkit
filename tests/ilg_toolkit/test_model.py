@@ -7,20 +7,19 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
+    calibrate,
     DirectCalibrationModule,
     LandscapeGeneticsModel,
+    load_model,
     Log1pLoss,
     MLPECalibrationModule,
     MLPELoss,
     PairwiseObservations,
-    TargetSpec,
-    TrainingConfig,
-    calibrate,
-    load_model,
     save_model,
+    TargetSpec,
     train,
+    TrainingConfig,
 )
 from ilg_toolkit.models import LogLinearConductance
 

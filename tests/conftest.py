@@ -12,7 +12,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
     DirectCalibrationModule,
     Ensemble,
@@ -29,6 +28,10 @@ from ilg_toolkit.models import (
     ConductanceModel,
     EmbeddingDistanceModel,
 )
+
+
+# The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
+jax.config.update("jax_enable_x64", True)
 
 _R_DISTANCES = np.array(
     [

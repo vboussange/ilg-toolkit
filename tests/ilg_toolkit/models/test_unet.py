@@ -4,17 +4,16 @@ import coordax as cx
 import jax
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
     ArtifactError,
+    load_model,
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
-    TargetSpec,
-    TrainingConfig,
-    load_model,
     save_model,
+    TargetSpec,
     train,
+    TrainingConfig,
 )
 from ilg_toolkit.models import UNetEmbeddingDistance
 

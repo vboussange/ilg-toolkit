@@ -37,8 +37,8 @@ dependencies to a [uv](https://docs.astral.sh/uv/) project with:
 uv add "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit"
 ```
 
-The `examples` extra installs rioxarray and Matplotlib for the examples, and the
-`amg` extra installs algebraic-multigrid preconditioning.
+The `examples` extra installs rioxarray, pandas and Matplotlib for the examples,
+and the `amg` extra installs algebraic-multigrid preconditioning.
 
 ILG Toolkit runs on the device JAX selects. To run it on an NVIDIA GPU, install
 JAX with CUDA support:

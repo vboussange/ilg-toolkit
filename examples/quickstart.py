@@ -19,18 +19,18 @@ import numpy as np
 import pandas as pd
 import rioxarray
 import xarray as xr
-from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch
-
 from ilg_toolkit import (
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
-    TrainingConfig,
     train,
+    TrainingConfig,
 )
-from ilg_toolkit.models import LogLinearConductance, initialize_uniform_conductance
+from ilg_toolkit.models import initialize_uniform_conductance, LogLinearConductance
+from matplotlib.colors import ListedColormap
+from matplotlib.patches import Patch
+
 
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)

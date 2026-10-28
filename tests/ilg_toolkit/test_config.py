@@ -2,8 +2,7 @@
 
 import numpy as np
 import pytest
-
-from ilg_toolkit import Log1pLoss, PairwiseObservations, TrainingConfig, train
+from ilg_toolkit import Log1pLoss, PairwiseObservations, train, TrainingConfig
 
 
 @pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "2"])

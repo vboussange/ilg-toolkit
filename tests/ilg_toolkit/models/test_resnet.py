@@ -7,19 +7,19 @@ import equinox as eqx
 import jax
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
+    load_model,
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
-    TargetSpec,
-    TrainingConfig,
-    load_model,
     save_model,
+    TargetSpec,
     train,
+    TrainingConfig,
 )
 from ilg_toolkit.models import ResNet9Conductance
+
 
 _TINY = (8, 8, 8)
 # ResNet9Conductance(3) parameter count, recorded before channel widths became configurable.

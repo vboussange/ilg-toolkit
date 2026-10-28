@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from numbers import Integral, Real
 
 import numpy as np
-
 from ilg_toolkit.config import ResistanceSolverConfig
 from ilg_toolkit.data import RegionBatch
 from ilg_toolkit.models import ConductanceModel

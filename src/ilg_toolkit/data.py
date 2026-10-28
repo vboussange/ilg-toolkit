@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import NamedTuple, cast
+from typing import cast, NamedTuple
 
 import coordax as cx
 import jax

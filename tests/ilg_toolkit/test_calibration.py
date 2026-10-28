@@ -7,17 +7,16 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
+    calibrate,
     Log1pLoss,
     MLPECalibrationModule,
     MLPEError,
     MLPELoss,
     PairwiseObservations,
     TargetSpec,
-    TrainingConfig,
-    calibrate,
     train,
+    TrainingConfig,
 )
 from ilg_toolkit.mlpe import calibrate_mlpe
 

@@ -9,19 +9,18 @@ import jax.numpy as jnp
 import lineax as lx
 import numpy as np
 import pytest
-from jaxscape import GridGraph, ResistanceDistance
-
 from ilg_toolkit import (
+    load_model,
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
-    TargetSpec,
-    TrainingConfig,
-    load_model,
     save_model,
+    TargetSpec,
     train,
+    TrainingConfig,
 )
 from ilg_toolkit.models import ConductanceModel, LogLinearConductance
+from jaxscape import GridGraph, ResistanceDistance
 
 
 def test_species_queries_follow_supplied_order_with_reused_sampling_unit_ids():

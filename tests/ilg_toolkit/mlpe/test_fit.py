@@ -4,7 +4,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-
 from ilg_toolkit import PairwiseObservations
 from ilg_toolkit.mlpe import calibrate_mlpe
 

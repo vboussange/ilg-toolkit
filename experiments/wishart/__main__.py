@@ -3,12 +3,11 @@
 import coordax as cx
 import jax
 import numpy as np
-from scipy.linalg import helmert
-
 from ilg_toolkit.data import RegionBatch
 from ilg_toolkit.models import ResNet9Conductance
+from scipy.linalg import helmert
 
-from .diagnostic import GaussianMarkerDistances, diagnose_wishart
+from .diagnostic import diagnose_wishart, GaussianMarkerDistances
 
 
 def main():

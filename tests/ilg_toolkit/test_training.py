@@ -10,8 +10,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
+    calibrate,
     Log1pLoss,
     MLPECalibrationModule,
     MLPELoss,
@@ -19,9 +19,8 @@ from ilg_toolkit import (
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
-    TrainingConfig,
-    calibrate,
     train,
+    TrainingConfig,
 )
 from ilg_toolkit.models import ConductanceModel
 

@@ -3,7 +3,6 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, Prediction, TargetSpec
 
 

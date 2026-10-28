@@ -28,6 +28,7 @@ from nbconvert import MarkdownExporter
 from nbconvert.preprocessors import ExecutePreprocessor
 from nbconvert.writers import FilesWriter
 
+
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOKS = ("ibd", "mlpe_workflow", "ensemble", "multispecies")
 FIGURE = "quickstart.png"

@@ -7,7 +7,6 @@ import pytest
 def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian():
     import jax
     import jax.numpy as jnp
-
     from ilg_toolkit.mlpe import mlpe_effect_posterior, mlpe_ml_negative_log_likelihood
 
     distances = np.array([0.2, 1.1, -0.3, 2.0])

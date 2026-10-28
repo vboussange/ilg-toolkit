@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit.mlpe import (
     finalize_mlpe_fit,
     mlpe_ml_negative_log_likelihood,

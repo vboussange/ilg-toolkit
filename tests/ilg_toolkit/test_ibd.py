@@ -3,7 +3,6 @@
 import jax
 import numpy as np
 import pytest
-
 from ilg_toolkit import IBDModel, TargetSpec
 
 

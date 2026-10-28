@@ -8,7 +8,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
     Log1pLoss,
     MLPELoss,
@@ -16,10 +15,10 @@ from ilg_toolkit import (
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
-    TrainingConfig,
     train,
+    TrainingConfig,
 )
-from ilg_toolkit.models import LogLinearConductance, initialize_uniform_conductance
+from ilg_toolkit.models import initialize_uniform_conductance, LogLinearConductance
 
 
 @pytest.mark.parametrize("patch_microbatch_size", [None, 3])

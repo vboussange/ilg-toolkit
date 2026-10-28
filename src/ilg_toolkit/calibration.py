@@ -2,7 +2,7 @@
 
 from abc import abstractmethod
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, final
+from typing import final, TYPE_CHECKING
 
 import equinox as eqx
 
@@ -10,6 +10,7 @@ from ._training_utils import RegionSpeciesKey
 from .data import ObservationCollection, PairwiseObservations, RegionCollection, TargetSpec
 from .mlpe import RegionalMLPECalibration
 from .prediction import Prediction
+
 
 if TYPE_CHECKING:
     from .losses import AbstractLoss

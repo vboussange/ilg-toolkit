@@ -2,21 +2,22 @@
 
 from .calibration import (
     AbstractCalibrationModule,
+    calibrate,
     DirectCalibrationModule,
     MLPECalibrationModule,
-    calibrate,
 )
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
 from .data import PairwiseObservations, RegionBatch, TargetSpec
-from .ensemble import Ensemble, EnsemblePrediction, EnsembleSurface, aggregate_predictions
+from .ensemble import aggregate_predictions, Ensemble, EnsemblePrediction, EnsembleSurface
 from .ibd import IBDModel
 from .losses import AbstractLoss, Log1pLoss, MLPELoss
-from .mlpe import MLPEError, RegionalMLPECalibration, calibrate_mlpe
+from .mlpe import calibrate_mlpe, MLPEError, RegionalMLPECalibration
 from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
 from .prediction import Prediction
-from .training import StepRecord, TrainingState, train
+from .training import StepRecord, train, TrainingState
+
 
 __all__ = [
     "AbstractCalibrationModule",
