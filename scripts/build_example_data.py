@@ -7,13 +7,13 @@
 #   "rioxarray>=0.19,<1",
 # ]
 # ///
-"""Rebuild the quickstart's example-data release asset from JAXScape's v0.0.6 data.zip.
+"""Rebuilds the quickstart's example-data release asset from JAXScape's v0.0.6 data.zip.
 
 The asset holds Mountain Pygmy-possum (Burramys parvus) pairwise Fst between 12
 sampling units, kindly provided by Cesar Australia, and ESA WorldCover 2021 land
-cover (CC BY 4.0). The script declares its own dependencies inline (PEP 723),
-so it needs no project extra. Run it once, check the output by hand, and attach
-it to the ``example-data-v1`` pre-release:
+cover (CC BY 4.0). The script declares its own dependencies inline (PEP 723).
+Run it once, check the output by hand, and attach it to the ``example-data-v1``
+pre-release:
 
     uv run scripts/build_example_data.py
 
@@ -21,7 +21,7 @@ The archive contains, under ``mountain-pygmy-possum/``:
 
 - ``landcover.tif``: uint8 ESA WorldCover classes in EPSG:7855 at the native
   8.36 m resolution, deflate-compressed;
-- ``sites.csv``: site name, then x and y in the raster's CRS;
+- ``sites.csv``: site name, then x and y in the raster's coordinate reference system;
 - ``fst.csv``: the site-labeled 12x12 pairwise Fst matrix;
 - ``README.md``: provenance and attribution.
 """
@@ -64,7 +64,7 @@ from https://github.com/vboussange/jaxscape/releases/download/v0.0.6/data.zip.
 
 
 def read_sites(path: Path) -> pd.DataFrame:
-    """Site names with longitude and latitude, in the GeoPackage's site order."""
+    """Returns site names with longitude and latitude, in the GeoPackage's site order."""
     with sqlite3.connect(path) as connection:
         ((srs,),) = connection.execute(
             "SELECT srs_id FROM gpkg_geometry_columns WHERE table_name = 'site_metadata'"
@@ -78,7 +78,7 @@ def read_sites(path: Path) -> pd.DataFrame:
 
 
 def build(source_dir: Path, output: Path) -> None:
-    """Write the release asset from the extracted JAXScape ``data/cesar`` directory."""
+    """Writes the release asset from the extracted JAXScape ``data/cesar`` directory."""
     with rioxarray.open_rasterio(source_dir / "landcover_7855.tif") as source:
         landcover = source.load()
     if landcover.rio.crs.to_epsg() != 7855:
@@ -124,7 +124,7 @@ def build(source_dir: Path, output: Path) -> None:
 
 
 def main() -> None:
-    """Download the JAXScape source archive and build the release asset."""
+    """Downloads the JAXScape source archive and builds the release asset."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "build" / f"{NAME}.zip")
     options = parser.parse_args()

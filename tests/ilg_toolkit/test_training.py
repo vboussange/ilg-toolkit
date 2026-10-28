@@ -247,7 +247,7 @@ def test_mlpe_updates_match_dense_reference(
     )
     assert result.history[-1].training_loss < result.history[0].training_loss
     assert result.step == result.selected_step == 2
-    calibration = cast(MLPECalibrationHead, result.selected_model.calibration_head)
+    calibration_head = cast(MLPECalibrationHead, result.selected_model.calibration_head)
     for index, (region, observed) in enumerate(problems):
         embedding = np.asarray(region.feature_array).reshape(unit_count, 2) * np.exp(
             expected[2 * groups_species[index] : 2 * groups_species[index] + 2]
@@ -270,11 +270,11 @@ def test_mlpe_updates_match_dense_reference(
             np.logaddexp(0, expected[parameter_count + 2 * index : parameter_count + 2 * index + 2])
             + 1e-10
         )
-        head = calibration.for_region(
+        calibration = calibration_head.for_region(
             region.name, None if species is None else species[groups_species[index]]
         )
         np.testing.assert_allclose(
-            [head.unit_variance, head.residual_variance],
+            [calibration.unit_variance, calibration.residual_variance],
             variances,
             rtol=1e-8,
             atol=1e-10,
@@ -288,15 +288,21 @@ def test_mlpe_updates_match_dense_reference(
             unit_count,
             variances,
         )
-        np.testing.assert_allclose([head.intercept, head.slope], beta, rtol=1e-8, atol=1e-10)
-        np.testing.assert_allclose(head.effect_mean, effect_mean, atol=1e-9)
-        np.testing.assert_allclose(head.effect_covariance, effect_covariance, atol=1e-10)
-        np.testing.assert_allclose(-head.ml_log_likelihood, nll, atol=1e-8)
-        assert head.slope < 0
+        np.testing.assert_allclose(
+            [calibration.intercept, calibration.slope], beta, rtol=1e-8, atol=1e-10
+        )
+        np.testing.assert_allclose(calibration.effect_mean, effect_mean, atol=1e-9)
+        np.testing.assert_allclose(calibration.effect_covariance, effect_covariance, atol=1e-10)
+        np.testing.assert_allclose(-calibration.ml_log_likelihood, nll, atol=1e-8)
+        assert calibration.slope < 0
         assert not np.allclose(variances, variances_by_group[index])
         observed_distances = distances[left, right]
-        np.testing.assert_allclose(head.distance_center, observed_distances.mean(), atol=1e-12)
-        np.testing.assert_allclose(head.distance_scale, observed_distances.std(ddof=1), atol=1e-12)
+        np.testing.assert_allclose(
+            calibration.distance_center, observed_distances.mean(), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            calibration.distance_scale, observed_distances.std(ddof=1), atol=1e-12
+        )
         expected_values = beta[0] + beta[1] * (
             observed_distances - observed_distances.mean()
         ) / observed_distances.std(ddof=1)
@@ -379,21 +385,25 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         distances = np.asarray(
             first.latest_model.distance_model.predict(region, {name: None})[name].as_matrix()
         )
-        head = cast(MLPECalibrationHead, first.latest_model.calibration_head).for_region(
+        calibration = cast(MLPECalibrationHead, first.latest_model.calibration_head).for_region(
             region.name, name
         )
-        assert set(head.calibration_pairs) == set(train_pairs)
+        assert set(calibration.calibration_pairs) == set(train_pairs)
         (left, right), _ = observed.select_pairs(train_pairs).aligned_pairs(single_region)
-        np.testing.assert_allclose(head.distance_center, distances[left, right].mean(), atol=1e-12)
         np.testing.assert_allclose(
-            head.distance_scale, distances[left, right].std(ddof=1), atol=1e-12
+            calibration.distance_center, distances[left, right].mean(), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            calibration.distance_scale, distances[left, right].std(ddof=1), atol=1e-12
         )
         (left, right), values = observed.select_pairs(query_pair).aligned_pairs(single_region)
         expected_mean = (
-            head.intercept
-            + head.slope * (distances[left, right] - head.distance_center) / head.distance_scale
+            calibration.intercept
+            + calibration.slope
+            * (distances[left, right] - calibration.distance_center)
+            / calibration.distance_scale
         )
-        variance = 2 * head.unit_variance + head.residual_variance
+        variance = 2 * calibration.unit_variance + calibration.residual_variance
         expected_losses.append(
             0.5 * (np.log(2 * np.pi * variance) + (values[0] - expected_mean[0]) ** 2 / variance)
         )

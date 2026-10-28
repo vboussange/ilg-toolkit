@@ -333,8 +333,8 @@ class MLPELoss(AbstractLoss):
         )
 
     def _fixed_parameters(self, fitted):
-        # Arrays keep compiled validation from retracing when the values change;
-        # the calibration stores Python floats, which compilation treats as static.
+        # JAX arrays are traced by compiled validation; the calibration's Python floats
+        # would be static.
         return _MLPEFixedParameters(
             jnp.asarray((fitted.intercept, fitted.slope)),
             jnp.asarray(fitted.distance_center),

@@ -137,7 +137,7 @@ def _condition_on_support(
     distances, pairs, canonical = _query(support_distances, support_observations.observed_pairs)
     calibration_pairs = tuple((min(pair), max(pair)) for pair in calibration.calibration_pairs)
     if set(canonical) & set(calibration_pairs):
-        raise MLPEError("Support reuses a calibration pair; targets cannot be conditioned on twice")
+        raise MLPEError("Support pairs must be disjoint from the calibration pairs")
     labels, mean, covariance = _extend(
         calibration,
         calibration.population_ids,

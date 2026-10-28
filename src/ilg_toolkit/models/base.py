@@ -266,7 +266,7 @@ class ConductanceModel(AbstractDistanceModel):
 
         Examples:
             Write a learned surface as a GeoTIFF with rioxarray, reattaching the
-            coordinate reference system of the raster the features came from::
+            coordinate reference system of the raster the features came from:
 
                 surface = distance_model.conductance_surface(region).to_xarray()
                 surface = surface.rename(row="y", column="x").rio.write_crs(raster.rio.crs)

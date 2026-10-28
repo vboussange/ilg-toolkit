@@ -47,15 +47,17 @@ KERNEL = "python3"
 
 
 def check_readme_excerpt(readme: Path, script: Path) -> None:
-    """Raises unless the README's Quickstart code block appears verbatim in the script.
+    """Raises unless every README Quickstart code block appears verbatim in the script.
+
+    Each block matches whole lines of the script.
 
     Args:
-        readme: The README whose `## Quickstart` section holds one fenced Python block.
-        script: The quickstart script the block is excerpted from.
+        readme: The README whose `## Quickstart` section holds fenced Python blocks.
+        script: The quickstart script the blocks are excerpted from.
 
     Raises:
-        ValueError: If the section or its Python block is missing or empty, or the block
-            is not a verbatim substring of the script.
+        ValueError: If the section or its Python blocks are missing or empty, or a block
+            does not appear verbatim, as whole lines, in the script.
     """
     section = re.search(
         r"^## Quickstart\n(.*?)(?=^## |\Z)",
@@ -64,14 +66,18 @@ def check_readme_excerpt(readme: Path, script: Path) -> None:
     )
     if section is None:
         raise ValueError(f"{readme.name} has no '## Quickstart' section.")
-    block = re.search(r"^```python\n(.*?)^```$", section.group(1), flags=re.DOTALL | re.MULTILINE)
-    if block is None or not block.group(1).strip():
-        raise ValueError(f"The Quickstart section of {readme.name} has no Python code block.")
-    if block.group(1) not in script.read_text(encoding="utf-8"):
+    blocks = re.findall(r"^```python\n(.*?)^```$", section.group(1), flags=re.DOTALL | re.MULTILINE)
+    if not blocks or not all(block.strip() for block in blocks):
         raise ValueError(
-            f"The Python code block in the Quickstart section of {readme.name} does not appear "
-            f"verbatim in {script.relative_to(ROOT)}."
+            f"The Quickstart section of {readme.name} has an empty or no Python block."
         )
+    lines = "\n" + script.read_text(encoding="utf-8")
+    for block in blocks:
+        if "\n" + block not in lines:
+            raise ValueError(
+                f"A Python code block in the Quickstart section of {readme.name} does not "
+                f"appear verbatim, as whole lines, in {script.relative_to(ROOT)}."
+            )
 
 
 def find_examples(names: list[str]) -> list[Path]:

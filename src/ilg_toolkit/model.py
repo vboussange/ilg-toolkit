@@ -21,13 +21,14 @@ from .prediction import Prediction
 
 
 @final
-class LandscapeGeneticsModel(eqx.Module):
+class LandscapeGeneticsModel[DistanceModel: AbstractDistanceModel](eqx.Module):
     """Landscape genetics model: a distance model composed with a calibration head.
 
     The distance model maps landscape features to ecological distances, and the
     calibration head maps ecological distances to genetic predictions on the
     original scale. Species names come from the distance model, and the target
-    contract from the calibration head.
+    contract from the calibration head. The class is generic in its distance model
+    type, so ``model.distance_model`` keeps the type of the distance model it holds.
 
     Args:
         distance_model: Distance model giving ecological distances.
@@ -43,7 +44,7 @@ class LandscapeGeneticsModel(eqx.Module):
             calibration head holds species that the distance model lacks.
     """
 
-    distance_model: AbstractDistanceModel
+    distance_model: DistanceModel
     calibration_head: AbstractCalibrationHead
     feature_names: tuple[str, ...]
 
@@ -162,7 +163,7 @@ class LandscapeGeneticsModel(eqx.Module):
 
         Examples:
             Prepare one landscape with six located populations and fit an MLPE
-            calibration head from measurements among its first four populations::
+            calibration head from measurements among its first four populations:
 
                 import coordax as cx
                 import jax
@@ -193,7 +194,7 @@ class LandscapeGeneticsModel(eqx.Module):
                 query_pairs = [("p4", "p2"), ("p5", "p3")]
 
             Marginal predictions use the fitted intercept, slope and distance
-            standardization, with population effects averaged out::
+            standardization, with population effects averaged out:
 
                 marginal = model.predict(region, query_pairs)
                 marginal.values                 # Genetic means in original units.
@@ -203,7 +204,7 @@ class LandscapeGeneticsModel(eqx.Module):
             Saved-effect predictions add the posterior population effects estimated
             from the calibration observations. Populations without calibration
             observations keep a zero prior mean and the prior population variance;
-            query pairs may overlap calibration pairs::
+            query pairs may overlap calibration pairs:
 
                 saved = model.predict(region, query_pairs, known_effects=True)
                 saved.extras["effect_variance"] # Variance of the summed population effects.
@@ -212,7 +213,7 @@ class LandscapeGeneticsModel(eqx.Module):
             Support observations update the saved posterior for this call, including
             populations without calibration observations. The distance model,
             coefficients, distance standardization and variance components stay
-            fixed::
+            fixed:
 
                 support = PairwiseObservations.from_pairs(
                     [("p4", "p0"), ("p4", "p1")], [2.7, 2.2], target=model.target,

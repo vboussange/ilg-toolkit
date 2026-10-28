@@ -181,7 +181,9 @@ def _calibration_template(metadata) -> MLPECalibration:
     )
 
 
-def _model_template(metadata, distance_model):
+def _model_template[DistanceModel: AbstractDistanceModel](
+    metadata, distance_model: DistanceModel
+) -> LandscapeGeneticsModel[DistanceModel]:
     """Returns a landscape genetics model template from saved metadata and a distance model."""
     target = TargetSpec(**metadata["target"])
     species = None if metadata["species"] is None else tuple(metadata["species"])
@@ -227,11 +229,12 @@ def save_model(path: str | os.PathLike[str], model: LandscapeGeneticsModel) -> N
     """Saves a landscape genetics model to an Equinox file atomically.
 
     The file holds a JSON metadata header followed by the model's arrays: distance
-    model parameters, the direct or MLPE calibration head with its target contract,
-    species, feature names, and the region, species and calibration pairs of each
-    MLPE calibration. The write goes to a temporary file that atomically replaces
-    the destination, so a failed write keeps the previous file. Custom distance
-    models are saved the same way. Each ensemble member is saved separately;
+    model parameters, the direct or maximum-likelihood population effects (MLPE)
+    calibration head with its target contract, species, feature names, and the
+    region, species and calibration pairs of each MLPE calibration. The write goes
+    to a temporary file that atomically replaces the destination, so a failed write
+    keeps the previous file. Custom distance models are saved the same way. Each
+    ensemble member is saved separately;
     [`save_checkpoint`][ilg_toolkit.save_checkpoint] also saves the optimizer and
     random state for continuing training.
 
@@ -256,9 +259,9 @@ def save_model(path: str | os.PathLike[str], model: LandscapeGeneticsModel) -> N
     _write_native(path, model, kind="model", metadata=_model_metadata(model))
 
 
-def load_model(
-    path: str | os.PathLike[str], *, distance_model: AbstractDistanceModel
-) -> LandscapeGeneticsModel:
+def load_model[DistanceModel: AbstractDistanceModel](
+    path: str | os.PathLike[str], *, distance_model: DistanceModel
+) -> LandscapeGeneticsModel[DistanceModel]:
     """Loads a saved landscape genetics model into a distance-model template.
 
     The template supplies the distance model's class, static settings, array shapes

@@ -76,12 +76,12 @@ def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
     _write_native(path, state, kind="training_checkpoint", metadata=metadata)
 
 
-def load_checkpoint(
+def load_checkpoint[DistanceModel: AbstractDistanceModel](
     path: str | os.PathLike[str],
     *,
-    distance_model: AbstractDistanceModel,
+    distance_model: DistanceModel,
     optimizer: optax.GradientTransformation,
-) -> TrainingState:
+) -> TrainingState[DistanceModel]:
     """Loads a training state from a checkpoint file.
 
     The distance-model template supplies the distance model's class, static

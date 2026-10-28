@@ -65,12 +65,14 @@ class StepRecord(eqx.Module):
 
 
 @final
-class TrainingState(eqx.Module):
+class TrainingState[DistanceModel: AbstractDistanceModel](eqx.Module):
     """Training state: progress, optimizer and random state, and the latest and selected models.
 
     [`train`][ilg_toolkit.train] returns a training state and continues from one.
     Continuation takes unchanged inputs and settings, apart from a larger step
-    budget and an optimizer whose state keeps the saved structure.
+    budget and an optimizer whose state keeps the saved structure. The class is
+    generic in its distance model type, like
+    [`LandscapeGeneticsModel`][ilg_toolkit.LandscapeGeneticsModel].
 
     Attributes:
         loss_state: Statistical parameter state after the latest update.
@@ -95,8 +97,8 @@ class TrainingState(eqx.Module):
     rng_key: jax.Array
     config: TrainingConfig
     history: tuple[StepRecord, ...]
-    latest_model: LandscapeGeneticsModel
-    selected_model: LandscapeGeneticsModel
+    latest_model: LandscapeGeneticsModel[DistanceModel]
+    selected_model: LandscapeGeneticsModel[DistanceModel]
     selected_step: int
     step: int
     converged: bool
@@ -242,7 +244,8 @@ def _group_distances(model, latent, payload, species_index, context):
 class _Contribution(NamedTuple):
     """One region–species group's arrays entering a compiled gradient.
 
-    The group's region name stays outside, so groups share compiled programs.
+    The group's region name stays outside these arrays; groups whose arrays share
+    shapes share compiled programs.
     """
 
     payload: _TrainingPayload
@@ -319,10 +322,10 @@ def _when(condition: jax.Array, value: Callable[[], jax.Array]) -> jax.Array:
 class _TrainingObjective(eqx.Module):
     """One update's training objective as a function of the parameters.
 
-    It evaluates the same regions, species and random keys as the update's gradient,
-    so line searches see one deterministic objective within an update. Every training
-    group is present, so the structure, and the compiled update, stay fixed across
-    updates; groups not sampled for the update carry zero weight and are skipped.
+    It evaluates the same regions, species and random keys as the update's gradient:
+    one deterministic objective within an update. It holds every training group and
+    skips the groups not sampled for the update, which carry zero weight; its
+    structure and the compiled update stay fixed across updates.
     """
 
     regions: tuple[tuple[_Contribution, ...], ...]
@@ -440,9 +443,9 @@ def _apply_update(
 ) -> tuple[_Parameters, optax.OptState]:
     """Applies one optimizer update, passing the objective's value, gradient and function.
 
-    The gradient comes from the memory-saving regional and microbatch programs. The
-    value comes from the objective itself, so it agrees exactly with line-search
-    evaluations; optimizers that ignore it leave it to dead-code elimination.
+    The gradient comes from the regional and microbatch programs, and the value from
+    the objective that line searches evaluate. XLA removes the value when the
+    optimizer ignores it.
     """
     trainable, fixed = eqx.partition(parameters, eqx.is_inexact_array)
 
@@ -542,13 +545,13 @@ def _evaluate_regions(
     )
 
 
-def train(
+def train[DistanceModel: AbstractDistanceModel](
     region: RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch],
     observations: PairwiseObservations
     | Sequence[PairwiseObservations | Sequence[PairwiseObservations]]
     | Mapping[str, PairwiseObservations | Sequence[PairwiseObservations]],
     *,
-    distance_model: AbstractDistanceModel | None = None,
+    distance_model: DistanceModel | None = None,
     config: TrainingConfig | None = None,
     validation: tuple[
         RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch],
@@ -557,9 +560,9 @@ def train(
         | Mapping[str, PairwiseObservations | Sequence[PairwiseObservations]],
     ]
     | None = None,
-    state: TrainingState | None = None,
-    on_step: Callable[[TrainingState], None] | None = None,
-) -> TrainingState:
+    state: TrainingState[DistanceModel] | None = None,
+    on_step: Callable[[TrainingState[DistanceModel]], None] | None = None,
+) -> TrainingState[DistanceModel]:
     """Trains a distance model and its statistical parameters jointly across regions.
 
     Training averages the losses of region–species groups over regions within each
@@ -712,7 +715,7 @@ def train(
     ):
         raise ValueError("Continuation requires unchanged training and validation groups")
 
-    def make_model(calibrations) -> LandscapeGeneticsModel:
+    def make_model(calibrations) -> LandscapeGeneticsModel[DistanceModel]:
         head = config.loss._calibration_head(
             first_observations.target, calibrations, parameters[0].species
         )

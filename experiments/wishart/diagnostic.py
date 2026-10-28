@@ -9,19 +9,9 @@ from dataclasses import dataclass
 from numbers import Integral, Real
 
 import numpy as np
-from ilg_toolkit.data import RegionBatch
+from ilg_toolkit import RegionBatch
 from ilg_toolkit.models import ConductanceModel
-
-
-def _helmert(populations):
-    """Returns the row-orthonormal Helmert contrasts of a number of populations."""
-    basis = np.zeros((populations - 1, populations), dtype=np.float64)
-    for row in range(populations - 1):
-        count = row + 1
-        denominator = math.sqrt(count * (count + 1))
-        basis[row, :count] = 1 / denominator
-        basis[row, count] = -count / denominator
-    return basis
+from scipy.linalg import helmert
 
 
 def _positive_definite(matrix, name, *, shape=None):
@@ -109,7 +99,7 @@ class GaussianMarkerDistances:
             or np.any(np.diag(distances) != 0)
         ):
             raise ValueError("Squared distances must be nonnegative, symmetric, with zero diagonal")
-        basis = _helmert(len(labels))
+        basis = helmert(len(labels))
         centered = -0.5 * basis @ distances @ basis.T
         _positive_definite(centered, "Centered empirical covariance")
         distances.setflags(write=False)
@@ -119,7 +109,7 @@ class GaussianMarkerDistances:
     @property
     def contrast_basis(self):
         """The row-orthonormal Helmert population contrasts, in sampling-unit order."""
-        return _helmert(len(self.sampling_unit_ids))
+        return helmert(len(self.sampling_unit_ids))
 
     @property
     def centered_scatter(self):

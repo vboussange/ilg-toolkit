@@ -214,7 +214,7 @@ class RegionBatch:
             invalid.
 
     Examples:
-        A synthetic landscape with two named features::
+        A synthetic landscape with two named features:
 
             names = cx.LabeledAxis("feature", np.array(["elevation", "canopy"]))
             features = cx.field(values, "row", "column", names)

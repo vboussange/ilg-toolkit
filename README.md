@@ -56,12 +56,16 @@ The [quickstart](https://vboussange.github.io/ilg-toolkit/examples/quickstart/)
 trains a log-linear patch encoder on pairwise Fst between 12 Mountain
 Pygmy-possum sampling units in the Victorian Alps, kindly provided by
 [Cesar Australia](https://cesaraustralia.com), and ESA WorldCover 2021 land
-cover (CC BY 4.0). Run it with uv and the `examples` extra:
+cover (CC BY 4.0). Run it on an NVIDIA GPU with uv, the `examples` extra and
+JAX with CUDA support:
 
 ```bash
 curl -O https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/examples/quickstart.py
-uv run --with "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit" python quickstart.py
+uv run --with "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit" \
+  --with "jax[cuda12]" python quickstart.py
 ```
+
+Without an NVIDIA GPU, omit `--with "jax[cuda12]"` to run it on the CPU.
 
 The script reads the land-cover GeoTIFF with rioxarray, turns it into land-cover
 fractions, places the sampling units by their coordinates, and trains the patch
@@ -110,7 +114,7 @@ examples, the glossary, and the API reference.
 ## Contributing
 
 See [CONTRIBUTING.md](https://github.com/vboussange/ilg-toolkit/blob/main/CONTRIBUTING.md)
-for development checks, documentation conventions, and releases.
+for development checks and documentation conventions.
 
 ## Interpreting results
 

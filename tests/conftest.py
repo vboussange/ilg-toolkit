@@ -342,17 +342,20 @@ def _calibrated():
 
 
 def _joint_gaussian_reference(
-    head, observed_pairs, observed_distances, targets, query_pairs, distances
+    calibration, observed_pairs, observed_distances, targets, query_pairs, distances
 ):
     """Returns Gaussian conditional means and variances from the joint observation covariance."""
     all_pairs = tuple(observed_pairs) + tuple(query_pairs)
     labels = sorted({label for pair in all_pairs for label in pair})
     incidence = np.array([[float(label in pair) for label in labels] for pair in all_pairs])
-    covariance = head.unit_variance * incidence @ incidence.T
-    covariance += (head.residual_variance + head.loss.jitter) * np.eye(len(all_pairs))
+    covariance = calibration.unit_variance * incidence @ incidence.T
+    covariance += (calibration.residual_variance + calibration.loss.jitter) * np.eye(len(all_pairs))
     all_distances = np.r_[observed_distances, distances]
     fixed = (
-        head.intercept + head.slope * (all_distances - head.distance_center) / head.distance_scale
+        calibration.intercept
+        + calibration.slope
+        * (all_distances - calibration.distance_center)
+        / calibration.distance_scale
     )
     n = len(observed_pairs)
     cross = covariance[n:, :n]

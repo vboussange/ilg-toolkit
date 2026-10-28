@@ -69,7 +69,7 @@ class Ensemble:
             that is not a landscape genetics model, or holds incompatible models.
 
     Examples:
-        Combine the selected models of two training runs::
+        Combine the selected models of two training runs:
 
             ensemble = Ensemble([first_state.selected_model, second_state.selected_model])
             result = ensemble.predict(region, [("north", "south")])
@@ -79,7 +79,7 @@ class Ensemble:
 
         Each member applies its inverse target transform before averaging, so means
         and member predictions are on the original scale. Conductance surfaces come
-        from the members::
+        from the members:
 
             surfaces = [
                 member.distance_model.conductance_surface(region)

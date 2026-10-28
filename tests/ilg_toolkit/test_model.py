@@ -171,7 +171,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     region, observations, training = four_population_calibration
     calibration_pairs = training.observed_pairs
     model = mlpe_calibrated_model
-    head = cast(MLPECalibrationHead, model.calibration_head).for_region(region.name)
+    calibration = cast(MLPECalibrationHead, model.calibration_head).for_region(region.name)
     direct = replace(model, calibration_head=DirectCalibrationHead(observations.target))
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict(region, pairs, known_effects=True)
@@ -182,7 +182,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
         return np.array([distances[lookup[a], lookup[b]] for a, b in selected])
 
     expected_mean, expected_variance = joint_gaussian_reference(
-        head,
+        calibration,
         calibration_pairs,
         selected_distances(calibration_pairs),
         observations.aligned_values(region)[
@@ -200,7 +200,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     )
     result = model.predict(region, pairs, support=support)
     expected_mean, expected_variance = joint_gaussian_reference(
-        head,
+        calibration,
         calibration_pairs + support.observed_pairs,
         np.r_[selected_distances(calibration_pairs), selected_distances(support.observed_pairs)],
         np.r_[
@@ -217,7 +217,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     np.testing.assert_allclose(result.as_matrix()[[4, 5], [2, 3]], expected_mean, atol=1e-10)
     np.testing.assert_allclose(
         result.as_matrix("effect_variance")[[4, 5], [2, 3]],
-        expected_variance - head.residual_variance - head.loss.jitter,
+        expected_variance - calibration.residual_variance - calibration.loss.jitter,
         atol=1e-10,
     )
     reused = PairwiseObservations.from_pairs(

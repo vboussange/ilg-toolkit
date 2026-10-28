@@ -139,7 +139,9 @@ class DirectCalibrationHead(AbstractCalibrationHead):
 
 @final
 class MLPECalibrationHead(AbstractCalibrationHead):
-    """Calibration head holding one MLPE calibration per region–species group.
+    """Calibration head holding maximum-likelihood population effects (MLPE) calibrations.
+
+    The calibration head holds one MLPE calibration per region–species group.
 
     Training and [`fit_calibration_head`][ilg_toolkit.fit_calibration_head] with
     [`MLPELoss`][ilg_toolkit.MLPELoss] produce this calibration head. Each
@@ -159,7 +161,7 @@ class MLPECalibrationHead(AbstractCalibrationHead):
             are mixed.
 
     Examples:
-        Inspect the calibration of one region–species group::
+        Inspect the calibration of one region–species group:
 
             head = fit_calibration_head(region, observations, distance_model,
                                         loss=MLPELoss())
@@ -332,7 +334,7 @@ def fit_calibration_head(
 
     Examples:
         Train a patch encoder, then refit its calibration head on the training
-        region without further distance-model updates::
+        region without further distance-model updates:
 
             loss = MLPELoss(jitter=0.0)
             state = train(region, observations, distance_model=distance_model,
