@@ -13,10 +13,11 @@ import jax.numpy as jnp
 from numpy.typing import ArrayLike
 
 from ..config import ResistanceSolverConfig
-from ..data import RegionBatch, _validate_pairs
+from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
-from ..resistance import ResistanceSolverContext, build_resistance_context, effective_resistance
+from ..resistance import build_resistance_context, effective_resistance, ResistanceSolverContext
 from .common import pixel_to_patch_nodes, with_dropout_mode
+
 
 # Sampling-unit vertices, followed by pairs indexing those sampling units.
 type DistancePairs = tuple[jax.Array, tuple[jax.Array, jax.Array]]

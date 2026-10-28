@@ -9,8 +9,7 @@ from types import SimpleNamespace
 
 import jax.numpy as jnp
 import pytest
-
-from ilg_toolkit import MLPELoss, TrainingConfig, calibrate, train
+from ilg_toolkit import calibrate, MLPELoss, train, TrainingConfig
 
 
 @pytest.fixture(scope="session")

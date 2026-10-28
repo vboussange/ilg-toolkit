@@ -10,24 +10,23 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
     ArtifactError,
     DirectCalibrationModule,
     LandscapeGeneticsModel,
+    load_checkpoint,
+    load_model,
     Log1pLoss,
     MLPECalibrationModule,
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
-    TargetSpec,
-    TrainingConfig,
-    load_checkpoint,
-    load_model,
     save_checkpoint,
     save_model,
+    TargetSpec,
     train,
+    TrainingConfig,
 )
 from ilg_toolkit.models import ConductanceModel
 

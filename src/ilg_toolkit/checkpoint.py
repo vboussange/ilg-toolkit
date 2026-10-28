@@ -11,14 +11,14 @@ from .config import TrainingConfig
 from .losses import _loss_from_metadata, _loss_metadata
 from .models import AbstractDistanceModel
 from .persistence import (
-    ArtifactError,
     _model_metadata,
     _model_template,
     _read_header,
     _read_native,
     _write_native,
+    ArtifactError,
 )
-from .training import StepRecord, TrainingState, _validate_state
+from .training import _validate_state, StepRecord, TrainingState
 
 
 def save_checkpoint(path, state: TrainingState) -> None:

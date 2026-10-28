@@ -2,8 +2,7 @@
 
 import jax.numpy as jnp
 import numpy as np
-
-from ilg_toolkit import Log1pLoss, TrainingConfig, train
+from ilg_toolkit import Log1pLoss, train, TrainingConfig
 
 
 def test_direct_loss_trains_without_statistical_parameters(

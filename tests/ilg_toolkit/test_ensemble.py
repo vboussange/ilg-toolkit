@@ -6,7 +6,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import Ensemble
 
 
@@ -68,7 +67,7 @@ def test_members_apply_target_inverse_before_averaging(known_ensemble, FeatureEm
 
 
 def test_original_scale_aggregation_preserves_inverse_transform_and_large_values():
-    from ilg_toolkit import Prediction, aggregate_predictions
+    from ilg_toolkit import aggregate_predictions, Prediction
 
     with jax.enable_x64():
         for levels, expected_mean, expected_spread in [
@@ -89,7 +88,7 @@ def test_original_scale_aggregation_preserves_inverse_transform_and_large_values
 
 
 def test_incompatible_members_and_misaligned_predictions_report_position(known_ensemble):
-    from ilg_toolkit import DirectCalibrationModule, TargetSpec, aggregate_predictions
+    from ilg_toolkit import aggregate_predictions, DirectCalibrationModule, TargetSpec
 
     region, ensemble, _ = known_ensemble()
     first = ensemble.members[0]
@@ -126,7 +125,6 @@ def test_prediction_failure_identifies_position_without_dropping_member(
 
 def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(PointConductance):
     import coordax as cx
-
     from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, RegionBatch, TargetSpec
 
     with jax.enable_x64():
@@ -167,7 +165,6 @@ def test_feature_meanings_are_validated_for_every_ensemble_operation(known_ensem
 def test_surface_failures_identify_member_without_restricting_genetic_prediction():
     import coordax as cx
     import equinox as eqx
-
     from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, RegionBatch, TargetSpec
     from ilg_toolkit.models import LogLinearConductance
 

@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from numbers import Real
-from typing import TYPE_CHECKING, Any, final
+from typing import Any, final, TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -13,6 +13,7 @@ import jax.numpy as jnp
 
 from ._training_utils import RegionSpeciesKey
 from .data import PairwiseObservations, RegionBatch, TargetSpec
+
 
 if TYPE_CHECKING:
     from .calibration import AbstractCalibrationModule

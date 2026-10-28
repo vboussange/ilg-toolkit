@@ -10,16 +10,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
+    load_checkpoint,
     Log1pLoss,
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
-    TrainingConfig,
-    load_checkpoint,
     save_checkpoint,
     train,
+    TrainingConfig,
 )
 from ilg_toolkit.models import AbstractDistanceModel
 

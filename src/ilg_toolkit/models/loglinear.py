@@ -19,6 +19,7 @@ from ..resistance import effective_resistance
 from .base import ConductanceModel, prepare_distance_context
 from .common import encode_patches, pixel_to_patch_nodes
 
+
 # Log-spaced uniform conductances screened before golden-section refinement.
 _SEARCH_GRID_SIZE = 256
 _REFINEMENT_STEPS = 40

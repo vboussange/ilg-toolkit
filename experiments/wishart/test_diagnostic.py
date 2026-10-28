@@ -8,17 +8,17 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from ilg_toolkit import PairwiseObservations, RegionBatch, ResistanceSolverConfig, TargetSpec
+from ilg_toolkit.models import ConductanceModel
 from scipy.linalg import helmert
 from scipy.stats import matrix_normal, wishart
 
 from experiments.wishart import (
-    GaussianMarkerDistances,
     diagnose_wishart,
+    GaussianMarkerDistances,
     heldout_log_likelihood,
     wishart_log_likelihood,
 )
-from ilg_toolkit import PairwiseObservations, RegionBatch, ResistanceSolverConfig, TargetSpec
-from ilg_toolkit.models import ConductanceModel
 
 
 def gaussian_example(populations=4, markers=11):

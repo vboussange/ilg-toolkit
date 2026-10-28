@@ -12,7 +12,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
     DirectCalibrationModule,
     Ensemble,
@@ -29,6 +28,7 @@ from ilg_toolkit.models import (
     ConductanceModel,
     EmbeddingDistanceModel,
 )
+
 
 _R_DISTANCES = np.array(
     [

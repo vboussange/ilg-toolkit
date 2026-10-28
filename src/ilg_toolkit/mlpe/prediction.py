@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
 
-from ..data import PairwiseObservations, _validate_pairs
+from ..data import _validate_pairs, PairwiseObservations
 from ..prediction import Prediction
 from .fit import MLPEError, RegionalMLPECalibration
 

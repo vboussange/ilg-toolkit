@@ -5,7 +5,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import RegionBatch
 from ilg_toolkit.models import AbstractDistanceModel, ConductanceModel
 

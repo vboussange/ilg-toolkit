@@ -5,7 +5,7 @@ Maximum-likelihood population effects (MLPE) calibration is fitted with the dist
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, NamedTuple, cast, final
+from typing import Any, cast, final, NamedTuple
 
 import equinox as eqx
 import jax
@@ -14,9 +14,9 @@ import numpy as np
 import optax
 
 from ._training_utils import (
-    RegionSpeciesKey,
     _prepare_training_inputs,
     _RegionSpeciesTrainingInput,
+    RegionSpeciesKey,
 )
 from .config import TrainingConfig
 from .data import ObservationCollection, PairwiseObservations, RegionBatch, RegionCollection
@@ -26,6 +26,7 @@ from .models import AbstractDistanceModel
 from .models.base import distances_from_latent, prepare_distance_context
 from .models.common import with_dropout_mode
 from .resistance import ResistanceSolverContext
+
 
 Parameters = tuple[AbstractDistanceModel, Any]
 

@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from jax import Array
 from jax.scipy.linalg import cho_solve
 
+
 # The maximum number of observed pairs per sampling unit bounds
 # eps*cond(I + u/d Z.T Z), including incomplete and bipartite pair sets.
 # Calculations outside this precision bound return nonfinite results.

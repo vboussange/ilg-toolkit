@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 from .data import ObservationCollection, PairwiseObservations, RegionBatch, RegionCollection
 
+
 # Region name and index in the retained full species parameter order.
 type RegionSpeciesKey = tuple[str, int]
 

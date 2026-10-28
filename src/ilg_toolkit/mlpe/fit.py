@@ -2,7 +2,7 @@
 
 import math
 from functools import partial
-from typing import TYPE_CHECKING, final
+from typing import final, TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -12,7 +12,8 @@ from scipy.optimize import minimize
 
 from ..data import PairwiseObservations, TargetSpec
 from ..prediction import Prediction
-from .likelihood import MLPEFit, finalize_mlpe_fit, profiled_mlpe_ml_fit
+from .likelihood import finalize_mlpe_fit, MLPEFit, profiled_mlpe_ml_fit
+
 
 if TYPE_CHECKING:
     from ..losses import MLPELoss

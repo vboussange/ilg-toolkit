@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-
 from ilg_toolkit import MLPEError, PairwiseObservations, TargetSpec
 from ilg_toolkit.mlpe import calibrate_mlpe
 
