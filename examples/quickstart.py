@@ -1,4 +1,4 @@
-"""A Mountain Pygmy-possum resistance surface trained on land cover and genetic data.
+"""A Mountain Pygmy-possum resistance surface learned from land cover and genetic data.
 
 Pairwise Fst between 12 Mountain Pygmy-possum (Burramys parvus) sampling units in
 the Victorian Alps, kindly provided by Cesar Australia, is related to ESA WorldCover
@@ -16,7 +16,6 @@ import coordax as cx
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
-import optax
 import pandas as pd
 import rioxarray
 import xarray as xr
@@ -77,20 +76,12 @@ fractions = fractions.isel(
     x=slice(fractions.sizes["x"] // PATCH_SIZE * PATCH_SIZE),
 )
 features = fractions.rename(y="row", x="column").transpose("row", "column", "feature")
-# Each sampling unit sits at its nearest coarse cell.
-grid_positions = np.stack(
-    [
-        fractions.indexes["y"].get_indexer(sites["y"], method="nearest"),
-        fractions.indexes["x"].get_indexer(sites["x"], method="nearest"),
-    ],
-    axis=1,
-)
 
-region = RegionBatch(
-    name="victorian-alps",
-    features=cx.from_xarray(features),
+region = RegionBatch.from_points(
+    "victorian-alps",
+    cx.from_xarray(features),
     sampling_unit_ids=tuple(sites.index),
-    grid_positions=grid_positions,
+    coordinates=sites[["x", "y"]].to_numpy(),
 )
 observations = PairwiseObservations(
     tuple(fst.index),
@@ -105,16 +96,11 @@ state = train(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(loss=loss, steps=100, optimizer=optax.adam(0.1)),
+    config=TrainingConfig(loss=loss, steps=2000, eval_every=100),
 )
 conductance = state.selected_model.distance_model.conductance_surface(region)
 resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 
-rows, columns = conductance.shape
-print(f"Conductance grid graph: {rows}x{columns} vertices")
-print(
-    f"Best uniform conductance: {float(distance_model.conductance_surface(region).data[0, 0]):.4g}"
-)
 print(
     f"Log1p loss: {state.history[0].training_loss:.5f} at step 0, "
     f"{state.selected_loss:.5f} at step {state.selected_step}"
@@ -130,25 +116,15 @@ for pair, predicted, observed in list(
 )[:3]:
     print(f"Fst {pair[0]} - {pair[1]}: predicted {predicted:.3f}, observed {observed:.3f}")
 
-# Land cover and sampling units next to the trained resistance surface, in km.
-cell = COARSENING * abs(landcover.rio.resolution()[0])
-x, y = fractions["x"].to_numpy(), fractions["y"].to_numpy()
-extent = np.array([x[0] - cell / 2, x[-1] + cell / 2, y[-1] - cell / 2, y[0] + cell / 2]) / 1e3
-classes = np.zeros(landcover.shape, dtype=np.uint8)
+# Land cover and sampling units next to the learned resistance surface.
+classes = xr.zeros_like(landcover, dtype=np.uint8)
 for index, codes in enumerate(FEATURE_CLASSES.values(), start=1):
-    classes[landcover.isin(codes).to_numpy()] = index
+    classes = classes.where(~landcover.isin(codes), index)
 colors = ["#006400", "#ffff4c", "#0064c8", "#b4b4b4"]
 figure, (cover, surface) = plt.subplots(
     1, 2, figsize=(10, 6.4), sharex=True, sharey=True, layout="constrained"
 )
-cover.imshow(
-    classes,
-    cmap=ListedColormap(colors),
-    vmin=-0.5,
-    vmax=3.5,
-    extent=np.array(landcover.rio.bounds())[[0, 2, 1, 3]] / 1e3,
-    interpolation="nearest",
-)
+classes.plot.imshow(ax=cover, cmap=ListedColormap(colors), vmin=-0.5, vmax=3.5, add_colorbar=False)
 cover.legend(
     handles=[
         Patch(color=color, label=label)
@@ -157,14 +133,21 @@ cover.legend(
     loc="upper left",
     fontsize=8,
 )
-cover.set(title="ESA WorldCover 2021 land cover", xlabel="Easting (km)", ylabel="Northing (km)")
-image = surface.imshow(np.log10(np.asarray(resistance.data)), cmap="magma", extent=extent)
-figure.colorbar(image, ax=surface, shrink=0.8, label="log$_{10}$ local resistance Q = 1/C")
-surface.set(title="Trained resistance surface", xlabel="Easting (km)")
+cover.set(title="ESA WorldCover 2021 land cover", ylabel="Northing (km)")
+image = np.log10(resistance.to_xarray()).plot.imshow(
+    ax=surface,
+    x="column",
+    y="row",
+    cmap="magma",
+    cbar_kwargs={"shrink": 0.8, "label": "log$_{10}$ local resistance Q = 1/C"},
+)
+surface.set(title="Learned resistance surface", ylabel="")
+surface.axis(image.get_extent())
 for axis in (cover, surface):
-    axis.scatter(sites["x"] / 1e3, sites["y"] / 1e3, s=30, c="white", edgecolors="black")
-    axis.set_xlim(extent[:2])
-    axis.set_ylim(extent[2:])
+    axis.scatter(sites["x"], sites["y"], s=30, c="white", edgecolors="black")
+    axis.set(xlabel="Easting (km)", aspect="equal")
+    axis.xaxis.set_major_formatter(lambda value, _: f"{value / 1e3:.0f}")
+    axis.yaxis.set_major_formatter(lambda value, _: f"{value / 1e3:.0f}")
 figure.supxlabel(
     "Mountain Pygmy-possum sampling units (white). Genetic data: Cesar Australia. "
     "Land cover: ESA WorldCover 2021 (CC BY 4.0).",

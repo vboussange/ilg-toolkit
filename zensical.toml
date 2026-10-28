@@ -28,7 +28,6 @@ nav = [
     {"Ensembles" = "api/ensemble.md"},
     {"Persistence" = "api/persistence.md"},
     {"MLPE calibrations" = "api/mlpe.md"},
-    {"Isolation-by-distance model" = "api/ibd.md"},
   ]},
 ]
 extra_javascript = ["javascripts/mathjax.js", "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"]
