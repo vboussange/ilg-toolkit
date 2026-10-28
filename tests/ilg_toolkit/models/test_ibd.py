@@ -1,4 +1,4 @@
-"""Scientific behavior of models.ibd."""
+"""Tests of the isolation-by-distance (IBD) model."""
 
 import itertools
 import math
@@ -31,9 +31,9 @@ from jaxscape import EuclideanDistance, GridGraph
 
 
 _DIVERGENCE = TargetSpec("divergence", units="index")
-# Slope and intercept that the removed SciPy routine (L-BFGS-B with non-negative
-# bounds on the mean regional log1p squared loss) fitted to ``_reference_problem``,
-# given the vertex distances of its sampling units at patch_size=2.
+# Slope and intercept estimated by SciPy's L-BFGS-B, with non-negative bounds on the
+# mean region log1p squared loss, for ``_reference_problem`` from the vertex distances
+# of its sampling units at patch_size=2.
 _SCIPY_SLOPE = 0.10436956986904002
 _SCIPY_INTERCEPT = 0.032285430139206664
 
@@ -67,7 +67,7 @@ def _vertex_distances(region, patch_size, pairs=None):
     return np.array([np.hypot(*(vertices[a] - vertices[b])) for a, b in (pairs or _pairs(region))])
 
 
-def _fitted(state) -> IBDModel:
+def _selected_ibd_model(state) -> IBDModel:
     model = state.selected_model.distance_model
     assert isinstance(model, IBDModel)
     return model
@@ -84,7 +84,7 @@ def _lbfgs(steps=200, loss=None):
 
 
 def _reference_problem():
-    """Two regions with unequal pair counts and targets that no affine map fits exactly."""
+    """Returns two regions with unequal pair counts and targets that no affine map fits exactly."""
     alpine = _region("alpine", (8, 8), [[0, 0], [1, 5], [4, 1], [7, 7], [5, 4]])
     coastal = _region("coastal", (6, 10), [[0, 0], [1, 9], [5, 2]], seed=1)
     alpine_targets = [0.21, 0.27, 0.43, 0.30, 0.18, 0.36, 0.22, 0.38, 0.26, 0.12]
@@ -95,9 +95,9 @@ def _reference_problem():
     ]
 
 
-def test_lbfgs_training_reproduces_the_scipy_reference_fit():
+def test_lbfgs_training_reproduces_the_scipy_reference():
     regions, observations = _reference_problem()
-    # The removed SciPy routine received these vertex distances.
+    # The SciPy reference used these vertex distances.
     np.testing.assert_allclose(
         _vertex_distances(regions[0], 2),
         [2, 2, math.sqrt(18), math.sqrt(8), math.sqrt(8), math.sqrt(10), 2, math.sqrt(10), 2]
@@ -107,14 +107,14 @@ def test_lbfgs_training_reproduces_the_scipy_reference_fit():
 
     state = train(regions, observations, distance_model=IBDModel(patch_size=2), config=_lbfgs())
 
-    model = _fitted(state)
+    model = _selected_ibd_model(state)
     assert state.converged
     np.testing.assert_allclose(model.slopes, [_SCIPY_SLOPE], rtol=1e-7)
     np.testing.assert_allclose(model.intercepts, [_SCIPY_INTERCEPT], rtol=1e-7)
 
 
 def test_regions_have_equal_weight_despite_unequal_pair_counts():
-    # Units on a line give distances 1, 3, 6, 2, 5 and 3. "large" repeats the line
+    # Sampling units on a line give distances 1, 3, 6, 2, 5 and 3. "large" repeats the line
     # in ten rows and observes pairs within rows only. At each distance the
     # regional targets plus one differ by a factor of four; their geometric mean
     # is 2 * distance + 4, so the log1p squared loss has optimum 2 * distance + 3
@@ -137,7 +137,7 @@ def test_regions_have_equal_weight_despite_unequal_pair_counts():
         [small, large], observations, distance_model=IBDModel(patch_size=1), config=_lbfgs()
     )
 
-    model = _fitted(state)
+    model = _selected_ibd_model(state)
     np.testing.assert_allclose(model.slopes, [2.0], rtol=1e-9)
     np.testing.assert_allclose(model.intercepts, [3.0], rtol=1e-9)
     assert state.history[-1].training_loss == pytest.approx(math.log(2.0) ** 2, abs=1e-12)
@@ -151,7 +151,7 @@ def test_affine_targets_are_recovered_through_softplus():
 
     state = train(regions, observations, distance_model=IBDModel(patch_size=2), config=_lbfgs())
 
-    model = _fitted(state)
+    model = _selected_ibd_model(state)
     np.testing.assert_allclose(model.slopes, [0.7], rtol=1e-9)
     np.testing.assert_allclose(model.intercepts, [0.2], rtol=1e-9)
 
@@ -177,7 +177,7 @@ def test_softplus_approaches_optima_on_the_zero_bounds(targets, slope, intercept
         config=_lbfgs(steps=500),
     )
 
-    model = _fitted(state)
+    model = _selected_ibd_model(state)
     np.testing.assert_allclose(model.slopes, [slope], atol=1e-5)
     np.testing.assert_allclose(model.intercepts, [intercept], atol=1e-5)
 
@@ -228,7 +228,7 @@ def test_patch_size_sets_the_vertex_spacing_and_the_slope_absorbs_it():
     # Each cell becomes a 2 x 2 block: at patch_size=2 the vertices are the original
     # cells, and at patch_size=1 every vertex distance doubles.
     coarse, fine = (
-        _fitted(
+        _selected_ibd_model(
             train(
                 doubled,
                 observations,
@@ -248,7 +248,7 @@ def test_patch_size_sets_the_vertex_spacing_and_the_slope_absorbs_it():
 
 
 def test_each_species_has_its_own_slope_and_intercept():
-    # Units of each species reuse labels; one frog and one newt share a vertex.
+    # Sampling units of each species reuse labels; one frog and one newt share a vertex.
     frog = _region("marsh", (8, 8), [[0, 0], [1, 5], [4, 1], [7, 7]])
     newt = _region("marsh", (8, 8), [[0, 1], [3, 6], [6, 2]])
     region = RegionBatch(
@@ -274,11 +274,11 @@ def test_each_species_has_its_own_slope_and_intercept():
 
     state = train(region, observations, distance_model=model, config=_lbfgs())
 
-    fitted = _fitted(state)
-    assert fitted.species == ("frog", "newt")
-    np.testing.assert_allclose(fitted.slopes, [0.7, 0.3], rtol=1e-9)
-    np.testing.assert_allclose(fitted.intercepts, [0.2, 0.05], rtol=1e-9)
-    predictions = fitted.predict(region, {"newt": newt_pairs, "frog": None})
+    trained = _selected_ibd_model(state)
+    assert trained.species == ("frog", "newt")
+    np.testing.assert_allclose(trained.slopes, [0.7, 0.3], rtol=1e-9)
+    np.testing.assert_allclose(trained.intercepts, [0.2, 0.05], rtol=1e-9)
+    predictions = trained.predict(region, {"newt": newt_pairs, "frog": None})
     assert list(predictions) == ["newt", "frog"]
     np.testing.assert_allclose(
         predictions["newt"].values, 0.3 * _vertex_distances(newt, 2) + 0.05, rtol=1e-6
@@ -338,8 +338,8 @@ def test_odds_targets_round_trip_through_training_and_prediction():
     model = state.selected_model
     assert model.target == target
     assert isinstance(model.calibration_head, DirectCalibrationHead)
-    np.testing.assert_allclose(_fitted(state).slopes, [0.7], rtol=1e-9)
-    np.testing.assert_allclose(_fitted(state).intercepts, [0.2], rtol=1e-9)
+    np.testing.assert_allclose(_selected_ibd_model(state).slopes, [0.7], rtol=1e-9)
+    np.testing.assert_allclose(_selected_ibd_model(state).intercepts, [0.2], rtol=1e-9)
     for region, expected_fst, expected_odds in zip(regions, fst, odds, strict=True):
         prediction = model.predict(region)
         np.testing.assert_allclose(prediction.values, expected_fst, rtol=1e-6)

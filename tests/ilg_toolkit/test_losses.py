@@ -1,4 +1,4 @@
-"""Loss settings, whole-group training behavior and the calibration heads losses produce."""
+"""Tests of the log1p and maximum-likelihood population effects (MLPE) losses."""
 
 import jax.numpy as jnp
 import numpy as np

@@ -1,4 +1,4 @@
-"""Calibration heads and their fitting for frozen distance models."""
+"""Tests of calibration heads and their fitting for frozen distance models."""
 
 from dataclasses import replace
 
@@ -98,32 +98,32 @@ def test_calibration_fitting_leaves_the_distance_model_unchanged(
 def test_mlpe_calibration_head_looks_up_groups_by_region_and_species(
     training_problem, ScalarEmbedding, four_population_calibration, mlpe_calibrated_head
 ):
-    region, observations, distance_model = training_problem("embedding", num_species=2)
+    region, observations, distance_model = training_problem("embedding", species=("frog", "newt"))
     head = fit_calibration_head(region, observations, distance_model, loss=MLPELoss())
     assert isinstance(head, MLPECalibrationHead)
-    assert set(head.calibrations) == {(region.name, "species-0"), (region.name, "species-1")}
-    first = head.for_region(region.name, "species-0")
-    second = head.for_region(region.name, "species-1")
-    assert first is head.calibrations[(region.name, "species-0")]
-    assert second is head.calibrations[(region.name, "species-1")]
+    assert set(head.calibrations) == {(region.name, "frog"), (region.name, "newt")}
+    first = head.for_region(region.name, "frog")
+    second = head.for_region(region.name, "newt")
+    assert first is head.calibrations[(region.name, "frog")]
+    assert second is head.calibrations[(region.name, "newt")]
     assert second.intercept != pytest.approx(first.intercept)
     with pytest.raises(ValueError, match="species"):
         head.for_region(region.name)
     with pytest.raises(ValueError, match="fit_calibration_head"):
-        head.for_region(region.name, "species-2")
+        head.for_region(region.name, "toad")
     with pytest.raises(ValueError, match="fit_calibration_head"):
-        head.for_region("elsewhere", "species-0")
+        head.for_region("elsewhere", "frog")
 
     model = LandscapeGeneticsModel(distance_model, head, region.feature_names)
-    distances = distance_model.predict(region, {"species-1": None})["species-1"].values
+    distances = distance_model.predict(region, {"newt": None})["newt"].values
     np.testing.assert_allclose(
-        model.predict(region, {"species-1": None})["species-1"].extras["model_values"],
+        model.predict(region, {"newt": None})["newt"].extras["model_values"],
         second.intercept
         + second.slope * (distances - second.distance_center) / second.distance_scale,
         rtol=1e-12,
     )
 
-    # A single-species head needs no species name, whether or not the species is named.
+    # A single-species MLPE calibration head needs no species name, named or unnamed.
     region, _, observations = four_population_calibration
     frog = fit_calibration_head(
         region, observations, ScalarEmbedding(jnp.asarray(1.0), species=("frog",)), loss=MLPELoss()
@@ -197,13 +197,13 @@ def test_direct_calibration_head_predicts_in_unsampled_regions(
 
 
 def test_calibration_reads_species_from_the_distance_model(training_problem):
-    region, observations, distance_model = training_problem("embedding", num_species=2)
+    region, observations, distance_model = training_problem("embedding", species=("frog", "newt"))
     head = fit_calibration_head(region, observations, distance_model, loss=MLPELoss())
     model = LandscapeGeneticsModel(distance_model, head, region.feature_names)
-    predictions = model.predict(region, {"species-0": None, "species-1": None})
+    predictions = model.predict(region, {"frog": None, "newt": None})
     assert [prediction.species for prediction in predictions.values()] == [
-        "species-0",
-        "species-1",
+        "frog",
+        "newt",
     ]
     unnamed = type(distance_model)(distance_model.log_weights)
     with pytest.raises(ValueError, match="distance model with species"):

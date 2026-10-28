@@ -1,4 +1,4 @@
-"""Scientific behavior of model."""
+"""Tests of landscape genetics models: species queries, original scale and conditioning."""
 
 from dataclasses import replace
 from typing import cast
@@ -260,7 +260,7 @@ def test_explicit_transform_returns_original_units_and_separate_ecological_dista
     )
 
 
-def test_recalibrated_model_retains_target_scale_after_save_and_load(
+def test_mlpe_calibration_head_retains_target_scale_after_save_and_load(
     ScalarEmbedding, four_population_calibration, tmp_path
 ):
     region, observations, training = four_population_calibration

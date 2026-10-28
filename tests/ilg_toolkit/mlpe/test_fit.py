@@ -1,4 +1,4 @@
-"""MLPE calibrations fitted by calibration heads, against the frozen R reference."""
+"""Tests of maximum-likelihood population effects (MLPE) calibrations against R references."""
 
 from dataclasses import replace
 from typing import Any

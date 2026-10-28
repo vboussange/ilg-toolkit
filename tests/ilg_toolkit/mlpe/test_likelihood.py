@@ -1,9 +1,4 @@
-"""Private MLPE likelihood kernels against dense references.
-
-No public interface exposes the kernels' gradients and nonfinite diagnostics, so
-these tests call them directly; fitted calibrations are tested through
-``fit_calibration_head`` and training.
-"""
+"""Tests of the private maximum-likelihood population effects (MLPE) likelihood kernels."""
 
 import jax
 import jax.numpy as jnp
@@ -59,14 +54,14 @@ def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance
 
 
 def test_unsupported_precision_and_singular_distances_have_explicit_nonfinite_diagnostics():
-    # Low-level numerical kernels preserve their documented nonfinite-result
-    # diagnostic contract; the public calibration/head boundaries reject it.
+    # The likelihood kernels return nonfinite values as diagnostics; calibration and
+    # training reject them.
     left, right = np.triu_indices(4, 1)
     distances = np.arange(6, dtype=np.float32)
     with jax.enable_x64(False):
         raw = jnp.asarray(np.log(np.expm1(np.array([1.0, 1e-8]) - 1e-10)), dtype=jnp.float32)
 
-        def objective(s):
+        def profiled(s):
             return _profiled_mlpe_ml_fit(
                 s,
                 jnp.asarray(distances),
@@ -78,7 +73,7 @@ def test_unsupported_precision_and_singular_distances_have_explicit_nonfinite_di
                 **_SETTINGS,
             )
 
-        compiled, compiled_beta = jax.jit(objective)(jnp.asarray(distances))
+        compiled, compiled_beta = jax.jit(profiled)(jnp.asarray(distances))
     assert not np.isfinite(compiled)
     assert not np.isfinite(compiled_beta).any()
     with jax.enable_x64():

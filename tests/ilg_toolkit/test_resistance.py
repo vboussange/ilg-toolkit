@@ -1,4 +1,4 @@
-"""Scientific behavior of resistance."""
+"""Tests of the effective-resistance layer and resistance solver settings."""
 
 import jax
 import jax.numpy as jnp
@@ -11,7 +11,7 @@ from ilg_toolkit.resistance import _effective_resistance
 
 
 def _context(shape, config=None):
-    """Resistance solver for a conductance grid graph of the given shape."""
+    """Returns the effective-resistance context of a conductance grid graph of a shape."""
     model = LogLinearConductance(1, patch_size=1, solver_config=config)
     context = _prepare_distance_context(model, jnp.zeros((*shape, 1)))
     assert context is not None
@@ -19,8 +19,6 @@ def _context(shape, config=None):
 
 
 def test_amg_resistance_and_gradients_match_independent_laplacian(dense_resistance):
-    # The default conjugate-gradient solver meets the same dense Laplacian reference
-    # through the public log-linear and conductance training tests.
     pytest.importorskip("amjax")
     pytest.importorskip("pyamg")
     with jax.enable_x64():

@@ -1,7 +1,7 @@
-"""Session-scoped fitted states shared by the public training and calibration tests.
+"""Fixtures of session-scoped training states and calibration heads shared across tests.
 
-Each fixture fits once per test process. Fitted models are immutable Equinox
-modules, so tests read them without copying.
+Each fixture is built once per test process. Tests read its immutable Equinox
+modules without copying.
 """
 
 import itertools
@@ -21,11 +21,12 @@ from ilg_toolkit import (
 
 @pytest.fixture(scope="session")
 def four_population_calibration(calibration_problem):
-    """Six-population region whose MLPE calibration pairs join its first four populations.
+    """Returns a six-population region, its observations, and MLPE calibration pairs.
 
-    The last two populations stay unseen, so predictions for them use the
-    population-effect prior. All MLPE calibrations of this problem share one
-    pair count and population count, so they reuse compiled programs.
+    The calibration pairs join the region's first four populations.
+    Predictions for the last two populations use the population-effect prior.
+    All MLPE calibrations of this problem share one pair count and population
+    count and reuse compiled programs.
     """
     region, observations, _, _ = calibration_problem()
     pairs = tuple(itertools.combinations(region.sampling_unit_ids[:4], 2))
@@ -34,7 +35,7 @@ def four_population_calibration(calibration_problem):
 
 @pytest.fixture(scope="session")
 def mlpe_calibrated_head(four_population_calibration, ScalarEmbedding):
-    """MLPE calibration head of a frozen unit-weight embedding on the four-population pairs."""
+    """Returns the MLPE calibration head of a frozen unit-weight embedding on four populations."""
     region, _, training = four_population_calibration
     return fit_calibration_head(
         region, training, ScalarEmbedding(jnp.asarray(1.0)), loss=MLPELoss()
@@ -43,7 +44,7 @@ def mlpe_calibrated_head(four_population_calibration, ScalarEmbedding):
 
 @pytest.fixture(scope="session")
 def mlpe_calibrated_model(four_population_calibration, mlpe_calibrated_head, ScalarEmbedding):
-    """The frozen unit-weight embedding composed with its MLPE calibration head."""
+    """Returns the frozen unit-weight embedding composed with its MLPE calibration head."""
     region, _, _ = four_population_calibration
     return LandscapeGeneticsModel(
         ScalarEmbedding(jnp.asarray(1.0)), mlpe_calibrated_head, region.feature_names
@@ -51,8 +52,8 @@ def mlpe_calibrated_model(four_population_calibration, mlpe_calibrated_head, Sca
 
 
 @pytest.fixture(scope="session")
-def mlpe_embedding_fit(WeightedEmbedding, embedding_problem):
-    """Three-step joint MLPE fit of a weighted embedding, with every callback state."""
+def mlpe_embedding_training(WeightedEmbedding, embedding_problem):
+    """Returns a three-step MLPE training state of a weighted embedding and every callback state."""
     region, observations = embedding_problem(columns=2)
     callbacks = []
     state = train(

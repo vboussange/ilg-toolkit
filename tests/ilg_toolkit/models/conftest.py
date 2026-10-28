@@ -1,4 +1,4 @@
-"""Shared checks for neural distance models covered at tiny width."""
+"""Fixtures of patch-microbatch checks for the ResNet9 and U-Net distance models."""
 
 import equinox as eqx
 import jax
@@ -21,11 +21,11 @@ def _assert_patch_microbatches_match(
     *,
     rtol: float,
 ) -> jax.Array | None:
-    """Assert equal predictions, gradients, and any conductance surface; return that surface."""
+    """Asserts equal predictions, gradients and any conductance surface, and returns the surface."""
 
     @eqx.filter_jit
     @eqx.filter_value_and_grad(has_aux=True)
-    def objective(model):
+    def squared_prediction_sum(model):
         predictions = model.predict(region).values
         surface = (
             jnp.asarray(model.conductance_surface(region).data)
@@ -34,8 +34,10 @@ def _assert_patch_microbatches_match(
         )
         return jnp.sum(predictions**2), (predictions, surface)
 
-    (expected_value, (expected, expected_surface)), expected_gradient = objective(reference)
-    (actual_value, (actual, actual_surface)), actual_gradient = objective(microbatched)
+    (expected_value, (expected, expected_surface)), expected_gradient = squared_prediction_sum(
+        reference
+    )
+    (actual_value, (actual, actual_surface)), actual_gradient = squared_prediction_sum(microbatched)
     assert expected.shape == (len(region.sampling_unit_ids),)
     assert np.all(np.isfinite(expected) & (expected > 0))
     np.testing.assert_allclose(actual, expected, rtol=rtol)

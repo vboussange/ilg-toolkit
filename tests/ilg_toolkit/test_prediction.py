@@ -1,4 +1,4 @@
-"""Scientific behavior of prediction."""
+"""Tests of genetic predictions: pair values, extras and prediction matrices."""
 
 import jax.numpy as jnp
 import numpy as np

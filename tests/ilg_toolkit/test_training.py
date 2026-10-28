@@ -1,4 +1,4 @@
-"""Scientific behavior of training."""
+"""Tests of training: dense-reference updates, batching, model selection and continuation."""
 
 from collections.abc import Sequence
 from dataclasses import replace
@@ -33,14 +33,14 @@ def _single_species_prediction(
     name: str | None,
     pairs: Sequence[tuple[str, str]] | None = None,
 ) -> Prediction:
-    """A named species' prediction, or the prediction of an unnamed single-species model."""
+    """Returns a named species' prediction, or that of an unnamed single-species model."""
     if name is None:
         return model.predict(region, pairs)
     return model.predict(region, {name: pairs})[name]
 
 
 class _Jitter(eqx.Module):
-    """Inference-dependent layer, other than dropout, that rescales by random noise."""
+    """An inference-dependent layer, other than dropout, that rescales by random noise."""
 
     inference: bool = False
 
@@ -118,19 +118,19 @@ def test_nonfinite_training_is_reported_at_evaluation(ScalarEmbedding, regions_a
 
 
 @pytest.mark.parametrize(
-    ("num_species", "region_count", "species_batch_size"),
+    ("species", "region_count", "species_batch_size"),
     [
         # Two regions with unequal pair counts keep equal influence in full batches.
-        (1, 2, None),
+        (None, 2, None),
         # A sampled species batch updates only the selected group's MLPE state.
-        (2, 1, 1),
+        (("newt", "frog"), 1, 1),
     ],
 )
 def test_mlpe_updates_match_dense_reference(
     WeightedEmbedding,
     dense_profile,
     embedding_problem,
-    num_species,
+    species,
     region_count,
     species_batch_size,
     monkeypatch,
@@ -139,7 +139,7 @@ def test_mlpe_updates_match_dense_reference(
     unit_count = len(problems[0][0].sampling_unit_ids)
     if region_count == 2:
         region, observed = embedding_problem("valley", offset=3, seed=71, columns=2)
-        # Unequal observation counts must still give each region equal influence.
+        # The valley region keeps five pairs and receives equal influence.
         sparse = PairwiseObservations.from_pairs(
             observed.observed_pairs[:5],
             observed.observed_values[:5],
@@ -147,12 +147,11 @@ def test_mlpe_updates_match_dense_reference(
             sampling_unit_ids=region.sampling_unit_ids,
         )
         problems.append((region, sparse))
-    species = None if num_species == 1 else ("newt", "frog")
-    if num_species > 1:
+    if species is not None:
         region, observed = problems[0]
         problems.append((region, replace(observed, values=observed.values * 1.3)))
     group_count = len(problems)
-    groups_species = [0] * region_count if num_species == 1 else [0, 1]
+    groups_species = [0] * region_count if species is None else [0, 1]
     regions = tuple(problem[0] for problem in problems)
     observations = tuple(problem[1] for problem in problems)
     if species is not None:
@@ -170,7 +169,7 @@ def test_mlpe_updates_match_dense_reference(
                 for name, observed in zip(species, observations, strict=True)
             ),
         )
-    parameter_count = 2 * num_species
+    parameter_count = 2 * (1 if species is None else len(species))
     variances_by_group = [
         np.var(np.asarray(observed.observed_values), ddof=1) * np.array([0.25, 0.5])
         for _, observed in problems
@@ -178,7 +177,7 @@ def test_mlpe_updates_match_dense_reference(
     raw = np.concatenate([np.log(np.expm1(values - 1e-10)) for values in variances_by_group])
     initial = np.concatenate((np.zeros(parameter_count), raw))
 
-    def objective(parameters, indices: Sequence[int] | None = None):
+    def reference_loss(parameters, indices: Sequence[int] | None = None):
         losses = []
         for index in range(group_count) if indices is None else indices:
             region, observed = problems[index]
@@ -206,8 +205,8 @@ def test_mlpe_updates_match_dense_reference(
     else:
         selections = [range(group_count)] * 2
 
-    # Two Adam updates retain sensitivity to gradient magnitude, using only the
-    # dense Gaussian objective and finite differences as the numerical reference.
+    # The reference applies two Adam updates to finite-difference gradients of the
+    # dense Gaussian loss.
     expected = initial.copy()
     first_moment, second_moment = np.zeros_like(initial), np.zeros_like(initial)
     for step in (1, 2):
@@ -215,8 +214,8 @@ def test_mlpe_updates_match_dense_reference(
         gradient = np.array(
             [
                 (
-                    objective(expected + offset, selections[step - 1])
-                    - objective(expected - offset, selections[step - 1])
+                    reference_loss(expected + offset, selections[step - 1])
+                    - reference_loss(expected - offset, selections[step - 1])
                 )
                 / 2e-5
                 for offset in delta
@@ -233,7 +232,7 @@ def test_mlpe_updates_match_dense_reference(
         regions,
         observations,
         distance_model=WeightedEmbedding(
-            jnp.zeros(2) if num_species == 1 else jnp.zeros((2, 2)), species=species
+            jnp.zeros(2) if species is None else jnp.zeros((2, 2)), species=species
         ),
         config=TrainingConfig(
             loss=MLPELoss(),
@@ -242,8 +241,10 @@ def test_mlpe_updates_match_dense_reference(
             species_batch_size=species_batch_size,
         ),
     )
-    np.testing.assert_allclose(result.history[0].training_loss, objective(initial), atol=1e-12)
-    np.testing.assert_allclose(result.history[-1].training_loss, objective(expected), atol=1e-8)
+    np.testing.assert_allclose(result.history[0].training_loss, reference_loss(initial), atol=1e-12)
+    np.testing.assert_allclose(
+        result.history[-1].training_loss, reference_loss(expected), atol=1e-8
+    )
     assert result.history[-1].training_loss < result.history[0].training_loss
     assert result.step == result.selected_step == 2
     calibration = cast(MLPECalibrationHead, result.selected_model.calibration_head)
@@ -317,16 +318,16 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     with jax.enable_x64():
         region, observations = embedding_problem(columns=2)
         single_region = region
-        order = ("stoat", "hare")
+        species = ("stoat", "hare")
         region = replace(
             region,
             sampling_unit_ids=region.sampling_unit_ids * 2,
             grid_positions=jnp.tile(jnp.asarray(region.grid_positions), (2, 1)),
-            species=tuple(name for name in order for _ in region.sampling_unit_ids),
+            species=tuple(name for name in species for _ in region.sampling_unit_ids),
         )
         observed_groups = tuple(
             replace(observations, species=name, values=observations.values * (index + 1))
-            for index, name in enumerate(order)
+            for index, name in enumerate(species)
         )
         weights = jnp.log(jnp.array([[1.0, 1.0], [2.0, 0.5]]))
         query_pair = observations.observed_pairs[-1:]
@@ -351,7 +352,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
             train(
                 region,
                 tuple(group.select_pairs(train_pairs) for group in observed_groups),
-                distance_model=WeightedEmbedding(weights, species=order),
+                distance_model=WeightedEmbedding(weights, species=species),
                 config=config,
                 validation=(
                     region,
@@ -374,7 +375,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
     assert jnp.issubdtype(first.rng_key.dtype, jax.dtypes.prng_key)
     expected_losses = []
-    for index, (name, observed) in enumerate(zip(order, observed_groups, strict=True)):
+    for index, (name, observed) in enumerate(zip(species, observed_groups, strict=True)):
         distances = np.asarray(
             first.latest_model.distance_model.predict(region, {name: None})[name].as_matrix()
         )
@@ -402,8 +403,8 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     )
 
 
-def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
-    CovariateConductance, dense_resistance
+def test_mlpe_conductance_training_improves_through_effective_resistance_layer(
+    FeatureConductance, dense_resistance
 ):
 
     with jax.enable_x64():
@@ -431,7 +432,7 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
         result = train(
             region,
             observations,
-            distance_model=CovariateConductance(jnp.asarray(0.1)),
+            distance_model=FeatureConductance(jnp.asarray(0.1)),
             config=TrainingConfig(
                 loss=MLPELoss(),
                 steps=20,
@@ -483,11 +484,11 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
             train(constant_region, observations, distance_model=model, config=config)
 
 
-def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_fit):
+def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_training):
     region, observations, result = (
-        mlpe_embedding_fit.region,
-        mlpe_embedding_fit.observations,
-        mlpe_embedding_fit.state,
+        mlpe_embedding_training.region,
+        mlpe_embedding_training.observations,
+        mlpe_embedding_training.state,
     )
     assert result.loss_state is not None
     # The optimizer may change while its state keeps the saved structure.
@@ -519,27 +520,26 @@ def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_fit):
 
 
 @pytest.mark.parametrize(
-    ("num_species", "species_batch_size", "region_batch_size"),
+    ("species", "species_batch_size", "region_batch_size"),
     [
         # A region batch larger than the region count is the full batch.
-        (1, None, 3),
+        (None, None, 3),
         # Sampled regions weight their species groups equally.
-        (2, None, 1),
+        (("frog", "newt"), None, 1),
         # Sampled species within full region batches.
-        (2, 1, None),
+        (("frog", "newt"), 1, None),
     ],
 )
-def test_shared_embedding_update_matches_independent_equal_region_objective(
+def test_shared_embedding_update_matches_independent_equal_region_loss(
     ScalarEmbedding,
     regions_and_observations,
     region_batch_size,
-    num_species,
+    species,
     species_batch_size,
     monkeypatch,
 ):
     with jax.enable_x64():
         regions, observations = regions_and_observations()
-        species = None if num_species == 1 else ("frog", "newt")
         if species is not None:
             # Frog occurs in both regions; newt only in the short region.
             regions = [
@@ -560,14 +560,14 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
             ]
         initial = 1.0
 
-        def independent_objective(weight, indices: Sequence[int] = (0, 1), short_species=None):
+        def independent_loss(weight, indices: Sequence[int] = (0, 1), short_species=None):
             predictions = [np.array([4]) * weight**2, np.array([1, 4, 1]) * weight**2]
             targets = [np.array([15]), np.array([0.1, 0.1, 0.1])]
             losses = [
                 np.mean((np.log1p(p) - np.log1p(t)) ** 2)
                 for p, t in zip(predictions, targets, strict=True)
             ]
-            if num_species == 2:
+            if species is not None:
                 newt = (np.log1p(4 * weight**2) - np.log1p(3)) ** 2
                 short = losses[0] / 2 + newt
                 if short_species is not None:
@@ -576,9 +576,9 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
             return np.mean([losses[i] for i in indices])
 
         step = 1e-5
-        dense_gradient = (
-            independent_objective(initial + step) - independent_objective(initial - step)
-        ) / (2 * step)
+        dense_gradient = (independent_loss(initial + step) - independent_loss(initial - step)) / (
+            2 * step
+        )
         gradients = []
         region_selections = [(0,), (1,)] if region_batch_size == 1 else [(0, 1)]
         selections = [
@@ -597,8 +597,8 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
                 jax.random, "choice", lambda *a, draws=draws, **kw: jnp.array(next(draws))
             )
             gradient = (
-                independent_objective(initial + step, selected, short_species)
-                - independent_objective(initial - step, selected, short_species)
+                independent_loss(initial + step, selected, short_species)
+                - independent_loss(initial - step, selected, short_species)
             ) / (2 * step)
             expected = initial - 0.01 * gradient / (abs(gradient) + 1e-8)
             result = train(
@@ -623,7 +623,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
                 cast(Any, result.selected_model.distance_model).weight, expected, rtol=1e-8
             )
             np.testing.assert_allclose(
-                result.history[0].training_loss, independent_objective(initial), rtol=1e-8
+                result.history[0].training_loss, independent_loss(initial), rtol=1e-8
             )
             assert set(result.history[0].training_by_region) == {"short", "wide"}
             for region in regions:
@@ -635,16 +635,16 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
         np.testing.assert_allclose(np.dot(probabilities, gradients), dense_gradient, rtol=1e-8)
 
 
-@pytest.mark.parametrize("objective", ["direct_log1p", "mlpe"])
+@pytest.mark.parametrize("loss_kind", ["direct_log1p", "mlpe"])
 def test_species_microbatches_preserve_updates_with_shared_parameters(
-    training_problem, SharedParameterEmbedding, dense_profile, objective
+    training_problem, SharedParameterEmbedding, dense_profile, loss_kind
 ):
-    region, observations, _ = training_problem("embedding", num_species=2)
-    species = ("species-0", "species-1")
+    species = ("frog", "newt")
+    region, observations, _ = training_problem("embedding", species=species)
     initial = np.array([0.6, 0.9])
     model = SharedParameterEmbedding(jnp.asarray(initial), species)
     config = TrainingConfig(
-        loss=Log1pLoss() if objective == "direct_log1p" else MLPELoss(), steps=2
+        loss=Log1pLoss() if loss_kind == "direct_log1p" else MLPELoss(), steps=2
     )
     states = []
     reference = train(
@@ -657,7 +657,7 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
     features = np.asarray(region.feature_array).reshape(4, 2)
     left, right = np.triu_indices(4, 1)
 
-    def reference_objective(weights):
+    def reference_loss(weights):
         values = []
         for index, target in enumerate(observations):
             embeddings = features * weights.sum() * weights[index]
@@ -668,7 +668,7 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
             targets = np.asarray(target.values)[np.ix_(order, order)][left, right]
             values.append(
                 np.mean((np.log1p(distances) - np.log1p(targets)) ** 2)
-                if objective == "direct_log1p"
+                if loss_kind == "direct_log1p"
                 else dense_profile(
                     distances,
                     targets,
@@ -684,12 +684,12 @@ def test_species_microbatches_preserve_updates_with_shared_parameters(
     differences = np.eye(2) * 1e-5
     gradient = np.array(
         [
-            (reference_objective(initial + delta) - reference_objective(initial - delta)) / 2e-5
+            (reference_loss(initial + delta) - reference_loss(initial - delta)) / 2e-5
             for delta in differences
         ]
     )
     np.testing.assert_allclose(
-        states[0].history[0].training_loss, reference_objective(initial), atol=1e-9
+        states[0].history[0].training_loss, reference_loss(initial), atol=1e-9
     )
     np.testing.assert_allclose(
         cast(Any, states[1].optimizer_state)[0].mu[0].weights / 0.1, gradient, atol=1e-8
@@ -805,7 +805,7 @@ def test_evaluation_cadence_selects_model_and_reports_every_step(
     regions, observed = regions_and_observations()
     region, observations = regions[0], observed[0]
     model = ScalarEmbedding(jnp.asarray(1.0))
-    # This deliberately prefers the initial model while training targets differ.
+    # Validation observations equal the initial predictions; training targets differ.
     initial = model.predict(region)
     validation = PairwiseObservations.from_pairs(
         initial.pairs, initial.values, target=observations.target
@@ -838,10 +838,10 @@ def test_evaluation_cadence_selects_model_and_reports_every_step(
 def test_training_reads_species_names_from_the_distance_model(
     training_problem, observation_problem, ScalarEmbedding
 ):
-    region, observations, distance_model = training_problem("embedding", num_species=2)
+    names = ("frog", "newt")
+    region, observations, distance_model = training_problem("embedding", species=names)
     config = TrainingConfig(loss=Log1pLoss(), steps=1)
     result = train(region, observations, distance_model=distance_model, config=config)
-    names = ("species-0", "species-1")
     assert result.selected_model.species == result.latest_model.species == names
     assert set(cast(dict, result.history[0].training_by_species)) == set(names)
     continued = train(region, observations, state=result, config=replace(config, steps=2))
@@ -851,7 +851,7 @@ def test_training_reads_species_names_from_the_distance_model(
     with pytest.raises(ValueError, match="species"):
         train(
             region,
-            (observations[0], replace(observations[1], species="species-2")),
+            (observations[0], replace(observations[1], species="toad")),
             distance_model=distance_model,
             config=config,
         )
@@ -887,13 +887,13 @@ def test_training_reads_species_names_from_the_distance_model(
 
 
 def test_callback_models_keep_matching_distance_and_calibration_state(
-    mlpe_embedding_fit, dense_profile
+    mlpe_embedding_training, dense_profile
 ):
-    region, observations = mlpe_embedding_fit.region, mlpe_embedding_fit.observations
-    assert [record.step for record in mlpe_embedding_fit.state.history] == [0, 3]
-    assert [state.step for state in mlpe_embedding_fit.callbacks] == [0, 1, 2, 3]
+    region, observations = mlpe_embedding_training.region, mlpe_embedding_training.observations
+    assert [record.step for record in mlpe_embedding_training.state.history] == [0, 3]
+    assert [state.step for state in mlpe_embedding_training.callbacks] == [0, 1, 2, 3]
     (left, right), targets = observations.aligned_pairs(region)
-    for current in mlpe_embedding_fit.callbacks:
+    for current in mlpe_embedding_training.callbacks:
         model = current.latest_model
         distances = model.distance_model.predict(region, observations.observed_pairs).values
         calibration = cast(MLPECalibrationHead, model.calibration_head).for_region(region.name)
@@ -955,7 +955,7 @@ def test_training_requires_float64(observation_problem, float64_required):
 
 
 def _scalar_region_losses(weight):
-    """Log1p criteria of the short and wide regions for a scalar embedding weight."""
+    """Returns the log1p losses of the short and wide regions for a scalar embedding weight."""
     predictions = [np.array([4]) * weight**2, np.array([1, 4, 1]) * weight**2]
     targets = [np.array([15]), np.array([0.1, 0.1, 0.1])]
     return [
@@ -963,7 +963,7 @@ def _scalar_region_losses(weight):
     ]
 
 
-def test_adam_with_learning_rate_1e_3_remains_the_default_optimizer(
+def test_adam_with_learning_rate_1e_3_is_the_default_optimizer(
     ScalarEmbedding, regions_and_observations
 ):
     regions, observations = regions_and_observations()
@@ -999,13 +999,13 @@ def test_lbfgs_trains_until_the_gradient_tolerance(ScalarEmbedding, regions_and_
     assert result.history[-1].step == result.selected_step == result.step
     weight = float(cast(Any, result.selected_model.distance_model).weight)
 
-    def objective(value):
+    def mean_loss(value):
         return np.mean(_scalar_region_losses(value))
 
     np.testing.assert_allclose(
-        (objective(weight + 1e-6) - objective(weight - 1e-6)) / 2e-6, 0, atol=1e-7
+        (mean_loss(weight + 1e-6) - mean_loss(weight - 1e-6)) / 2e-6, 0, atol=1e-7
     )
-    np.testing.assert_allclose(result.history[-1].training_loss, objective(weight), rtol=1e-12)
+    np.testing.assert_allclose(result.history[-1].training_loss, mean_loss(weight), rtol=1e-12)
     # Line searches are deterministic: the same configuration reproduces the run.
     repeated = train(
         regions,
@@ -1051,8 +1051,8 @@ def test_line_searches_evaluate_the_regions_sampled_for_the_update(
         ),
     )
     weight = float(cast(Any, result.latest_model.distance_model).weight)
-    # The line search's accepted objective value at the updated weight covers the one
-    # sampled region, reweighted to the full objective's scale.
+    # The line search's accepted loss value at the updated weight covers the one
+    # sampled region, reweighted to the scale of the full training loss.
     value = float(cast(Any, optax.tree.get(result.optimizer_state, "value")))
     losses = _scalar_region_losses(weight)
     assert min(abs(value - loss) for loss in losses) < 1e-12
