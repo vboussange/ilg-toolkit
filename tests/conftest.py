@@ -30,6 +30,9 @@ from ilg_toolkit.models import (
 )
 
 
+# The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
+jax.config.update("jax_enable_x64", True)
+
 _R_DISTANCES = np.array(
     [
         -1.0847845325555074,
