@@ -33,7 +33,7 @@ def test_failed_solver_preserves_solver_failure(PointConductance):
             ("first", "last"),
             np.array([[0, 0], [2, 3]]),
         )
-        observations = PairwiseObservations.from_matrix(
+        observations = PairwiseObservations(
             region.sampling_unit_ids, [[0, 1], [1, 0]], target=TargetSpec("dissimilarity")
         )
         with pytest.raises(RuntimeError):

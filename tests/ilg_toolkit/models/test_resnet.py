@@ -72,7 +72,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     nodes = np.array([0, 1, 3])
     target = TargetSpec("synthetic dissimilarity", units="index")
     observations = tuple(
-        PairwiseObservations.from_matrix(
+        PairwiseObservations(
             ("south", "north", "east"),
             dense_resistance(np.full((2, 2), 2.0 * scale), nodes),
             target=target,

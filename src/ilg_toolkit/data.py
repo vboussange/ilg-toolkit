@@ -228,8 +228,8 @@ def _validate_pairs(pairs) -> tuple[tuple[str, str], ...]:
 class PairwiseObservations:
     """Labeled pairwise genetic observations with not-a-number (NaN) entries for absent pairs.
 
-    Use ``from_pairs`` for incomplete observations or ``from_matrix`` for a
-    labeled symmetric matrix.
+    Construct from a labeled symmetric matrix, or use ``from_pairs`` for
+    labeled pairs and their measurements.
     Floating input precision is retained; array-like conversion uses the current
     JAX precision, so enable float64 before creating precise measurements.
     """
@@ -264,14 +264,6 @@ class PairwiseObservations:
         object.__setattr__(self, "values", values)
 
     @classmethod
-    def from_matrix(cls, sampling_unit_ids, values, *, target, species=None):
-        """Pairwise genetic observations from a labeled matrix for one species.
-
-        Symmetric off-diagonal NaNs identify absent observations.
-        """
-        return cls(tuple(sampling_unit_ids), values, target, species)
-
-    @classmethod
     def from_pairs(cls, pairs, values, *, target, sampling_unit_ids=None, species=None):
         """Pairwise genetic observations from labeled pairs and finite measurements.
 
@@ -281,20 +273,17 @@ class PairwiseObservations:
         """
         pairs = _validate_pairs(pairs)
         values = jnp.asarray(values)
-        if not pairs or values.shape != (len(pairs),) or not jnp.isfinite(values).all():
+        if values.shape != (len(pairs),) or not jnp.isfinite(values).all():
             raise ValueError("Observed pairs must be nonempty and have one finite value each")
-        if any(
-            len(pair) != 2 or any(not isinstance(x, str) or not x for x in pair) for pair in pairs
-        ):
-            raise ValueError("Each pair must contain two nonempty sampling-unit labels")
         ids = (
             tuple(sampling_unit_ids)
             if sampling_unit_ids is not None
             else tuple(sorted({endpoint for pair in pairs for endpoint in pair}))
         )
-        if any(not isinstance(x, str) or not x for x in ids) or len(set(ids)) != len(ids):
-            raise ValueError("Observation identifiers must be unique nonempty labels")
         lookup = {label: index for index, label in enumerate(ids)}
+        if any(endpoint not in lookup for pair in pairs for endpoint in pair):
+            raise ValueError("An observed sampling unit is absent from sampling_unit_ids")
+        left, right = (jnp.asarray([lookup[pair[end]] for pair in pairs]) for end in (0, 1))
         dtype = (
             values.dtype
             if jnp.issubdtype(values.dtype, jnp.inexact)
@@ -302,18 +291,7 @@ class PairwiseObservations:
         )
         matrix = jnp.full((len(ids), len(ids)), jnp.nan, dtype=dtype)
         matrix = matrix.at[jnp.diag_indices(len(ids))].set(0)
-        seen = set()
-        for pair, value in zip(pairs, values, strict=True):
-            if pair[0] == pair[1]:
-                raise ValueError("Observed pairs must have distinct sampling units")
-            if any(endpoint not in lookup for endpoint in pair):
-                raise ValueError("An observed sampling unit is absent from sampling_unit_ids")
-            canonical = tuple(sorted(pair))
-            if canonical in seen:
-                raise ValueError("Observed pairs must be unique, including reversed pairs")
-            seen.add(canonical)
-            left, right = (lookup[endpoint] for endpoint in pair)
-            matrix = matrix.at[left, right].set(value).at[right, left].set(value)
+        matrix = matrix.at[left, right].set(values).at[right, left].set(values)
         return cls(ids, matrix, target, species)
 
     @property

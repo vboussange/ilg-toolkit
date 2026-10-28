@@ -96,7 +96,7 @@ region = RegionBatch(
     sampling_unit_ids=tuple(sites.index),
     grid_positions=grid_positions,
 )
-observations = PairwiseObservations.from_matrix(
+observations = PairwiseObservations(
     tuple(fst.index),
     fst.to_numpy(),
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),

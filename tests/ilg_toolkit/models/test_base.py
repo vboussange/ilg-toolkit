@@ -166,7 +166,7 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
         ("west", "middle", "east"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
-    observations = PairwiseObservations.from_matrix(
+    observations = PairwiseObservations(
         region.sampling_unit_ids,
         [[0, 4, 36], [4, 0, 16], [36, 16, 0]],
         target=TargetSpec("divergence"),

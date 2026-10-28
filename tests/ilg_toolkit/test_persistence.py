@@ -189,7 +189,7 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
 
     region, observations = persistence_problem()
     other = replace(region, name="second-calibration")
-    other_observations = PairwiseObservations.from_matrix(
+    other_observations = PairwiseObservations(
         observations.sampling_unit_ids, observations.values * 2.0, target=observations.target
     )
     labels = set(region.sampling_unit_ids[:4])

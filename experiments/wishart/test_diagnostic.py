@@ -277,7 +277,7 @@ def test_holdout_rejects_unknown_anchors_empty_partitions_and_target_fitted_para
 
 def test_generic_genetic_targets_are_not_silently_promoted_to_marker_observations():
     labels, _, distances, _ = gaussian_example()
-    generic = PairwiseObservations.from_matrix(labels, distances, target=TargetSpec("FST"))
+    generic = PairwiseObservations(labels, distances, target=TargetSpec("FST"))
     with pytest.raises(TypeError, match="GaussianMarkerDistances"):
         wishart_log_likelihood(cast(GaussianMarkerDistances, generic), np.eye(len(labels) - 1))
 

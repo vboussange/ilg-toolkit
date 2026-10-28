@@ -69,7 +69,7 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
     )
     target = TargetSpec("synthetic divergence", units="index")
     observations = tuple(
-        PairwiseObservations.from_matrix(ids, targets * scale, target=target, species=name)
+        PairwiseObservations(ids, targets * scale, target=target, species=name)
         for scale, name in ((1, "frog"), (2, "newt"))
     )
     order = ("frog", "newt")
