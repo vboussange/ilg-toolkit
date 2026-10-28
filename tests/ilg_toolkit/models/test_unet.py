@@ -93,14 +93,14 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
     assert result.history[-1].training_loss < result.history[0].training_loss * 0.75
     fitted = result.selected_model
     for name in order:
-        prediction = fitted.predict(region, species=name)
+        prediction = fitted.predict(region, {name: None})[name]
         matrix = prediction.as_matrix()
         assert matrix.shape == (4, 4)
         assert np.all(np.isfinite(prediction.values))
         np.testing.assert_allclose(matrix, matrix.T, atol=1e-6)
         assert np.isnan(np.diag(matrix)).all()
         np.testing.assert_allclose(
-            fitted.distance_model.predict(region, species=name).as_matrix(),
+            fitted.distance_model.predict(region, {name: None})[name].as_matrix(),
             matrix,
         )
 
@@ -110,8 +110,8 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
     assert isinstance(restored.distance_model, UNetEmbeddingDistance)
     for name in order:
         np.testing.assert_array_equal(
-            restored.predict(region, species=name).values,
-            fitted.predict(region, species=name).values,
+            restored.predict(region, {name: None})[name].values,
+            fitted.predict(region, {name: None})[name].values,
         )
     with pytest.raises(ArtifactError):
         load_model(path, distance_model=_unet(7, species=order, dropout=0, embedding_dim=3))

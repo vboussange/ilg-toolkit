@@ -255,7 +255,7 @@ def save_model(path, model: LandscapeGeneticsModel) -> None:
     Examples:
         >>> save_model("analysis.eqx", state.selected_model)
         >>> restored = load_model("analysis.eqx", distance_model=matching_template)
-        >>> prediction = restored.predict(region, pairs=query_pairs)
+        >>> prediction = restored.predict(region, query_pairs)
 
         The [multispecies workflow](../examples/multispecies.md) constructs a
         matching template for model loading; the

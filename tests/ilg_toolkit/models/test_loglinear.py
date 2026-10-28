@@ -344,9 +344,8 @@ def test_uniform_initialization_sets_one_intercept_per_species(dense_resistance)
         (frog, newt),
         Log1pLoss(),
     )
-    surfaces = model.conductance_surface(region, species=("newt", "frog"))
-    np.testing.assert_allclose(surfaces["frog"], 0.5, rtol=1e-6)
-    np.testing.assert_allclose(surfaces["newt"], 3.0, rtol=1e-6)
+    np.testing.assert_allclose(model.conductance_surface(region, "frog"), 0.5, rtol=1e-6)
+    np.testing.assert_allclose(model.conductance_surface(region, "newt"), 3.0, rtol=1e-6)
 
 
 def test_standardized_mlpe_does_not_move_the_uniform_conductance(dense_resistance):

@@ -42,12 +42,17 @@ def test_genetic_queries_use_distance_model_species_and_original_scale(observati
         grid_positions=jnp.concatenate((region.grid_positions, region.grid_positions)),
         species=("hare",) * 3 + ("stoat",) * 3,
     )
-    results = model.predict(region, species=("hare", "stoat"))
-    np.testing.assert_allclose(results["hare"].values, np.expm1([1, 2, 1]), rtol=1e-6)
-    np.testing.assert_allclose(results["stoat"].values, np.expm1([0.5, 1, 0.5]), rtol=1e-6)
-    np.testing.assert_array_equal(
-        model.predict(region, species="hare").values, results["hare"].values
+    results = model.predict(region, {"hare": None, "stoat": [("unit/99", "unit/7")]})
+    assert tuple(results) == ("hare", "stoat")
+    assert results["hare"].pairs == (
+        ("unit/7", "unit/20"),
+        ("unit/7", "unit/99"),
+        ("unit/20", "unit/99"),
     )
+    assert results["stoat"].pairs == (("unit/99", "unit/7"),)
+    np.testing.assert_allclose(results["hare"].values, np.expm1([1, 2, 1]), rtol=1e-6)
+    np.testing.assert_allclose(results["stoat"].values, np.expm1([1]), rtol=1e-6)
+    assert results["stoat"].species == "stoat"
     partial = replace(
         region,
         sampling_unit_ids=region.sampling_unit_ids[:3],
@@ -55,10 +60,36 @@ def test_genetic_queries_use_distance_model_species_and_original_scale(observati
         species=("hare",) * 3,
     )
     np.testing.assert_array_equal(
-        model.predict(partial, species="hare").values, results["hare"].values
+        model.predict(partial, {"hare": None})["hare"].values, results["hare"].values
     )
-    with pytest.raises(ValueError):
-        model.predict(region)
+    for query in (None, [("unit/7", "unit/20")], {"missing": None}, {}):
+        with pytest.raises(ValueError):
+            model.predict(region, query)
+
+
+def test_single_species_genetic_queries_return_one_prediction(observation_problem):
+    region, target, distance_model = observation_problem()
+    model = LandscapeGeneticsModel(
+        distance_model, DirectCalibrationModule(target), region.feature_names
+    )
+    every_pair = model.predict(region)
+    assert every_pair.pairs == (
+        ("unit/7", "unit/20"),
+        ("unit/7", "unit/99"),
+        ("unit/20", "unit/99"),
+    )
+    selected = model.predict(region, [("unit/99", "unit/7")])
+    assert selected.pairs == (("unit/99", "unit/7"),)
+    np.testing.assert_array_equal(selected.values, every_pair.values[1:2])
+    with pytest.raises(ValueError, match="species"):
+        model.predict(region, {"frog": None})
+    named = replace(
+        model, distance_model=type(distance_model)(distance_model.weight, species=("frog",))
+    )
+    by_species = named.predict(region, {"frog": [("unit/99", "unit/7")]})
+    assert tuple(by_species) == ("frog",)
+    np.testing.assert_array_equal(by_species["frog"].values, selected.values)
+    assert named.predict(region, [("unit/99", "unit/7")]).species == "frog"
 
 
 def test_species_calibration_and_support_preserve_separate_population_effects(
@@ -107,15 +138,14 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
     for mode in ("marginal", "known_effects", "support"):
         results = model.predict(
             combined,
-            species=tuple(reversed(names)),
-            pairs=pairs,
+            {name: pairs for name in reversed(names)},
             known_effects=mode == "known_effects",
             support=tuple(reversed(support)) if mode == "support" else None,
         )
         for index, name in enumerate(names):
             expected = references[index].predict(
                 region,
-                pairs=pairs,
+                pairs,
                 known_effects=mode == "known_effects",
                 support=replace(support[index], species=None) if mode == "support" else None,
             )
@@ -123,9 +153,9 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
             for extra, values in expected.extras.items():
                 np.testing.assert_allclose(results[name].extras[extra], values, atol=1e-10)
     with pytest.raises(ValueError):
-        model.predict(combined, species="hare", pairs=pairs, support=support[0])
+        model.predict(combined, {"hare": pairs}, support=support[0])
     with pytest.raises(ValueError):
-        model.predict(combined, species=names, pairs=pairs, support=(support[0], support[0]))
+        model.predict(combined, {name: pairs for name in names}, support=(support[0], support[0]))
 
 
 def test_model_conditions_real_ecological_distances_with_calibration_fixed(
@@ -137,7 +167,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     model = mlpe_calibrated_model
     head = cast(MLPECalibrationModule, model.calibration).regions[(region.name, 0)]
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
-    known = model.predict(region, pairs=pairs, known_effects=True)
+    known = model.predict(region, pairs, known_effects=True)
     distances = model.distance_model.predict(region).as_matrix()
     lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
 
@@ -161,7 +191,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
         [2.0, 2.5],
         target=head.target,
     )
-    result = model.predict(region, pairs=pairs, support=support)
+    result = model.predict(region, pairs, support=support)
     expected_mean, expected_variance = joint_gaussian_reference(
         head,
         calibration_pairs + support.observed_pairs,
@@ -188,23 +218,23 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
         [tuple(reversed(calibration_pairs[0]))], [1.0], target=head.target
     )
     with pytest.raises(ValueError):
-        model.predict(region, pairs=pairs, support=reused)
+        model.predict(region, pairs, support=reused)
     with pytest.raises(ValueError):
         model.predict(
             region,
-            pairs=[(support.observed_pairs[0][1], support.observed_pairs[0][0])],
+            [(support.observed_pairs[0][1], support.observed_pairs[0][0])],
             support=support,
         )
     with pytest.raises(ValueError):
         model.predict(region, support=support)
     with pytest.raises(ValueError):
-        model.predict(region, pairs=pairs, known_effects=True, support=support)
+        model.predict(region, pairs, known_effects=True, support=support)
     with pytest.raises(ValueError):
-        direct.predict(region, pairs=pairs, support=support)
+        direct.predict(region, pairs, support=support)
     with pytest.raises(ValueError):
-        direct.predict(region, pairs=pairs, known_effects=True)
+        direct.predict(region, pairs, known_effects=True)
     with pytest.raises(ValueError):
-        model.predict(region, pairs=[("missing-location", "population-0")], known_effects=True)
+        model.predict(region, [("missing-location", "population-0")], known_effects=True)
 
 
 def test_explicit_transform_returns_original_units_and_separate_ecological_distances(

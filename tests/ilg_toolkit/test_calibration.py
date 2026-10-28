@@ -29,7 +29,7 @@ def test_calibration_freezes_distance_model_and_matches_distance_vector_fit(
     distance_model = ScalarEmbedding(jnp.asarray(1.0))
     model = mlpe_calibrated_model
     reference = calibrate_mlpe(
-        distance_model.predict(region, pairs=observations.observed_pairs).values,
+        distance_model.predict(region, observations.observed_pairs).values,
         observations,
         region_name=region.name,
         loss=MLPELoss(),
@@ -86,7 +86,7 @@ def test_calibration_reads_species_from_the_distance_model(training_problem):
         (region.name, 1),
     }
     assert eqx.tree_equal(model.distance_model, distance_model)
-    predictions = model.predict(region, species=("species-0", "species-1"))
+    predictions = model.predict(region, {"species-0": None, "species-1": None})
     assert [prediction.species for prediction in predictions.values()] == [
         "species-0",
         "species-1",

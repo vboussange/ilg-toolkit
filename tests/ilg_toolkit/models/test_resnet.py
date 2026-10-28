@@ -112,7 +112,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     fitted = result.selected_model
     distance_model = fitted.distance_model
     assert isinstance(distance_model, ResNet9Conductance)
-    surfaces = distance_model.conductance_surface(region, species=species)
+    surfaces = {name: distance_model.conductance_surface(region, name) for name in species}
     assert not np.allclose(surfaces["frog"], surfaces["newt"])
     for name in species:
         surface = np.asarray(surfaces[name])
@@ -120,10 +120,10 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
         assert np.all(np.isfinite(surface) & (surface > 0))
         expected = dense_resistance(surface, nodes)
         np.fill_diagonal(expected, np.nan)
-        prediction = fitted.predict(region, species=name).as_matrix()
+        prediction = fitted.predict(region, {name: None})[name].as_matrix()
         np.testing.assert_allclose(prediction, expected, rtol=2e-6)
         np.testing.assert_allclose(
-            distance_model.predict(region, species=name).as_matrix(),
+            distance_model.predict(region, {name: None})[name].as_matrix(),
             prediction,
         )
 
@@ -132,12 +132,12 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     restored = load_model(path, distance_model=model(9))
     restored_model = restored.distance_model
     assert isinstance(restored_model, ResNet9Conductance)
-    restored_surfaces = restored_model.conductance_surface(region, species=species)
+    restored_surfaces = {name: restored_model.conductance_surface(region, name) for name in species}
     for name in species:
         np.testing.assert_array_equal(restored_surfaces[name], surfaces[name])
         np.testing.assert_array_equal(
-            restored.predict(region, species=name).values,
-            fitted.predict(region, species=name).values,
+            restored.predict(region, {name: None})[name].values,
+            fitted.predict(region, {name: None})[name].values,
         )
     assert restored_model.solver_config == distance_model.solver_config
     assert restored_model.solver_config != ResistanceSolverConfig()
