@@ -10,7 +10,13 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 import optax
 import pytest
-from ilg_toolkit import calibrate, MLPELoss, train, TrainingConfig
+from ilg_toolkit import (
+    fit_calibration_head,
+    LandscapeGeneticsModel,
+    MLPELoss,
+    train,
+    TrainingConfig,
+)
 
 
 @pytest.fixture(scope="session")
@@ -27,10 +33,21 @@ def four_population_calibration(calibration_problem):
 
 
 @pytest.fixture(scope="session")
-def mlpe_calibrated_model(four_population_calibration, ScalarEmbedding):
-    """MLPE calibration of a frozen unit-weight embedding on the four-population pairs."""
+def mlpe_calibrated_head(four_population_calibration, ScalarEmbedding):
+    """MLPE calibration head of a frozen unit-weight embedding on the four-population pairs."""
     region, _, training = four_population_calibration
-    return calibrate(region, training, ScalarEmbedding(jnp.asarray(1.0)), loss=MLPELoss())
+    return fit_calibration_head(
+        region, training, ScalarEmbedding(jnp.asarray(1.0)), loss=MLPELoss()
+    )
+
+
+@pytest.fixture(scope="session")
+def mlpe_calibrated_model(four_population_calibration, mlpe_calibrated_head, ScalarEmbedding):
+    """The frozen unit-weight embedding composed with its MLPE calibration head."""
+    region, _, _ = four_population_calibration
+    return LandscapeGeneticsModel(
+        ScalarEmbedding(jnp.asarray(1.0)), mlpe_calibrated_head, region.feature_names
+    )
 
 
 @pytest.fixture(scope="session")

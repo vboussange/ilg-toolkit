@@ -1,13 +1,13 @@
-"""Scientific behavior of mlpe.covariance."""
+"""Private population-covariance likelihood kernel against a joint Gaussian reference."""
 
 import numpy as np
 import pytest
 
 
-def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian():
+def test_fixed_coefficient_likelihood_matches_direct_joint_gaussian():
     import jax
     import jax.numpy as jnp
-    from ilg_toolkit.mlpe import mlpe_effect_posterior, mlpe_ml_negative_log_likelihood
+    from ilg_toolkit.mlpe.likelihood import _mlpe_ml_negative_log_likelihood
 
     distances = np.array([0.2, 1.1, -0.3, 2.0])
     y = np.array([0.5, 0.1, 0.9, 0.3])
@@ -19,13 +19,11 @@ def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian()
     x = np.column_stack((np.ones(4), (distances - distances.mean()) / distances.std(ddof=1)))
     residual = y - x @ beta
     v = variances[0] * (z @ z.T) + (variances[1] + 1e-7) * np.eye(4)
-    expected_mean = variances[0] * z.T @ np.linalg.solve(v, residual)
-    expected_covariance = variances[0] * np.eye(4) - variances[0] ** 2 * z.T @ np.linalg.solve(v, z)
     expected_nll = 0.5 * (
         4 * np.log(2 * np.pi) + np.linalg.slogdet(v)[1] + residual @ np.linalg.solve(v, residual)
     )
     with jax.enable_x64():
-        mean, covariance, factor = mlpe_effect_posterior(
+        nll = _mlpe_ml_negative_log_likelihood(
             distances,
             y,
             left,
@@ -39,22 +37,4 @@ def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian()
             variance_floor=1e-10,
             min_distance_scale=1e-12,
         )
-        nll = mlpe_ml_negative_log_likelihood(
-            distances,
-            y,
-            left,
-            right,
-            n_populations=4,
-            fixed_effects=jnp.asarray(beta),
-            raw_variances=jnp.asarray(raw),
-            distance_center=distances.mean(),
-            distance_scale=distances.std(ddof=1),
-            jitter=1e-7,
-            variance_floor=1e-10,
-            min_distance_scale=1e-12,
-        )
-        mean, covariance, factor = map(np.asarray, (mean, covariance, factor))
-    np.testing.assert_allclose(mean, expected_mean, atol=1e-12)
-    np.testing.assert_allclose(covariance, expected_covariance, atol=1e-12)
-    np.testing.assert_allclose(factor @ factor.T @ covariance, np.eye(4), atol=1e-12)
     assert nll == pytest.approx(expected_nll, abs=1e-12)

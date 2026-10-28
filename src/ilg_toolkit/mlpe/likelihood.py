@@ -14,10 +14,10 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
 
-from .covariance import population_covariance_factor
+from .covariance import _population_covariance_factor
 
 
-class MLPEFit(NamedTuple):
+class _MLPEFit(NamedTuple):
     """MLPE calibration coefficients, likelihood, and population effects at supplied variances."""
 
     nll: jax.Array
@@ -25,10 +25,10 @@ class MLPEFit(NamedTuple):
     distance_center: jax.Array
     distance_scale: jax.Array
     variances: jax.Array
-    posterior: tuple[jax.Array, jax.Array, jax.Array]
+    posterior: tuple[jax.Array, jax.Array]
 
 
-def sample_standardize_distances(distances, *, center=None, scale=None):
+def _sample_standardize_distances(distances, *, center=None, scale=None):
     """Standardized ecological distances with their mean and sample standard deviation."""
     distances = jnp.asarray(distances)
     count = distances.size
@@ -42,7 +42,7 @@ def sample_standardize_distances(distances, *, center=None, scale=None):
     return differences / scale, center, scale
 
 
-def decode_mlpe_variances(raw_variances, *, variance_floor):
+def _decode_mlpe_variances(raw_variances, *, variance_floor):
     """Population and residual variance parameters obtained through softplus."""
     positive = jax.nn.softplus(jnp.asarray(raw_variances)) + variance_floor
     return positive[0], positive[1]
@@ -77,12 +77,12 @@ def _components(
         raise ValueError(
             "MLPE requires aligned one-dimensional distances, targets and sampling units"
         )
-    standardized, center, scale = sample_standardize_distances(
+    standardized, center, scale = _sample_standardize_distances(
         distances, center=distance_center, scale=distance_scale
     )
     design = jnp.stack([jnp.ones_like(standardized), standardized], axis=1)
-    unit, residual = decode_mlpe_variances(raw_variances, variance_floor=variance_floor)
-    system = population_covariance_factor(
+    unit, residual = _decode_mlpe_variances(raw_variances, variance_floor=variance_floor)
+    system = _population_covariance_factor(
         left,
         right,
         n_populations=n_populations,
@@ -128,15 +128,13 @@ def _posterior(system, effects, valid):
     covariance = system.unit * cho_solve(
         (system.factor, True), jnp.eye(len(system.factor), dtype=system.factor.dtype)
     )
-    factor = system.factor / jnp.sqrt(system.unit)
     return (
         jnp.where(valid, effects, jnp.nan),
         jnp.where(valid, (covariance + covariance.T) / 2, jnp.nan),
-        jnp.where(valid, factor, jnp.nan),
     )
 
 
-def profiled_mlpe_ml_fit(
+def _profiled_mlpe_ml_fit(
     distances,
     targets,
     left,
@@ -172,7 +170,7 @@ def profiled_mlpe_ml_fit(
     return jnp.where(valid, nll, jnp.nan), jnp.where(valid, beta, jnp.nan)
 
 
-def finalize_mlpe_fit(
+def _finalize_mlpe_fit(
     distances,
     targets,
     left,
@@ -185,12 +183,12 @@ def finalize_mlpe_fit(
     min_distance_scale,
     variance_floor,
     jitter,
-) -> MLPEFit:
+) -> _MLPEFit:
     """MLPE coefficients, likelihood, and population effects at supplied variances.
 
     The population system is factored once and reused for all fitted quantities.
     Distance moments use the supplied observations or the supplied training moments.
-    ``profiled_mlpe_ml_fit`` provides the likelihood and coefficients for gradient optimization.
+    ``_profiled_mlpe_ml_fit`` provides the likelihood and coefficients for gradient optimization.
     """
     targets, design, system, valid, center, scale = _components(
         distances,
@@ -206,13 +204,13 @@ def finalize_mlpe_fit(
         jitter=jitter,
     )
     nll, beta, effects, valid = _profile(targets, design, system, valid)
-    return MLPEFit(
+    return _MLPEFit(
         jnp.where(valid, nll, jnp.nan),
         jnp.where(valid, beta, jnp.nan),
         center,
         scale,
         jnp.stack(
-            decode_mlpe_variances(
+            _decode_mlpe_variances(
                 jnp.asarray(raw_variances, dtype=system.unit.dtype), variance_floor=variance_floor
             )
         ),
@@ -220,7 +218,7 @@ def finalize_mlpe_fit(
     )
 
 
-def mlpe_ml_negative_log_likelihood(
+def _mlpe_ml_negative_log_likelihood(
     distances,
     targets,
     left,
@@ -253,41 +251,3 @@ def mlpe_ml_negative_log_likelihood(
     remaining, effects = system.residual_components(residual[:, None])
     nll = _nll(system, remaining, effects)
     return jnp.where(valid & jnp.isfinite(nll), nll, jnp.nan)
-
-
-def mlpe_effect_posterior(
-    distances,
-    targets,
-    left,
-    right,
-    *,
-    n_populations,
-    fixed_effects,
-    raw_variances,
-    distance_center,
-    distance_scale,
-    min_distance_scale,
-    variance_floor,
-    jitter,
-):
-    """Population-effect mean, covariance, and precision factor at current parameters.
-
-    The distance model and variance parameters remain fixed.
-    The calculation uses the likelihood's population system and numerical settings.
-    """
-    targets, design, system, valid, _, _ = _components(
-        distances,
-        targets,
-        left,
-        right,
-        n_populations=n_populations,
-        raw_variances=raw_variances,
-        distance_center=distance_center,
-        distance_scale=distance_scale,
-        min_distance_scale=min_distance_scale,
-        variance_floor=variance_floor,
-        jitter=jitter,
-    )
-    residual = targets - design @ jnp.asarray(fixed_effects)
-    _, effects = system.residual_components(residual[:, None])
-    return _posterior(system, effects[:, 0], valid)

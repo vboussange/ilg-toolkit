@@ -1,4 +1,4 @@
-"""Landscape genetics models combining ecological distances and genetic calibration."""
+"""Landscape genetics models composing a distance model and a calibration head."""
 
 from collections.abc import Mapping, Sequence
 from typing import final, overload
@@ -7,7 +7,7 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from ._checks import _require_float64
-from .calibration import AbstractCalibrationModule
+from .calibration import AbstractCalibrationHead
 from .data import _feature_names, PairwiseObservations, RegionBatch, TargetSpec
 from .models import AbstractDistanceModel
 from .models.base import (
@@ -22,22 +22,30 @@ from .prediction import Prediction
 
 @final
 class LandscapeGeneticsModel(eqx.Module):
-    """A distance model composed with fitted genetic calibration.
+    """A distance model composed with a calibration head.
 
-    Species names come from the distance model. ``feature_names`` are the training
-    regions' feature names, which query regions must match in meaning and order. The
-    calibration owns target semantics and statistical prediction behavior.
+    The distance model maps landscape features to ecological distances, and the
+    calibration head maps ecological distances to genetic predictions on the
+    original scale. Species names come from the distance model, and the target
+    contract from the calibration head. ``feature_names`` are the training regions'
+    feature names, which query regions must match in meaning and order.
+
+    Args:
+        distance_model: Distance model giving ecological distances.
+        calibration_head: Calibration head from training or
+            [`fit_calibration_head`][ilg_toolkit.fit_calibration_head].
+        feature_names: Feature names of the training regions.
     """
 
     distance_model: AbstractDistanceModel
-    calibration: AbstractCalibrationModule
+    calibration_head: AbstractCalibrationHead
     feature_names: tuple[str, ...]
 
     def __post_init__(self):
         if not isinstance(self.distance_model, AbstractDistanceModel):
             raise TypeError("distance_model must implement AbstractDistanceModel")
-        if not isinstance(self.calibration, AbstractCalibrationModule):
-            raise TypeError("calibration must implement AbstractCalibrationModule")
+        if not isinstance(self.calibration_head, AbstractCalibrationHead):
+            raise TypeError("calibration_head must implement AbstractCalibrationHead")
         self.feature_names = _feature_names(self.feature_names)
 
     @property
@@ -47,8 +55,8 @@ class LandscapeGeneticsModel(eqx.Module):
 
     @property
     def target(self) -> TargetSpec:
-        """The target contract owned by the calibration module."""
-        return self.calibration.target
+        """The target contract owned by the calibration head."""
+        return self.calibration_head.target
 
     def _validate_region(self, region: RegionBatch):
         if region.feature_names != self.feature_names:
@@ -94,8 +102,8 @@ class LandscapeGeneticsModel(eqx.Module):
         of predictions by species in query order. A single-species model also
         accepts a sequence of pairs, or ``None`` for every distinct pair, and
         returns one ``Prediction``. Requested pairs retain their order and
-        orientation. The distance model computes ecological distances, and fitted calibration
-        converts these into genetic predictions. Maximum-likelihood population effects
+        orientation. The distance model computes ecological distances, and the calibration
+        head converts these into genetic predictions. Maximum-likelihood population effects
         (MLPE) defaults to marginal means;
         ``known_effects=True`` and ``support=...`` condition population effects.
 
@@ -124,8 +132,8 @@ class LandscapeGeneticsModel(eqx.Module):
                 receives a sequence of pairs or ``None``.
 
         Examples:
-            Prepare one landscape containing six located populations and fit MLPE
-            calibration from measurements among its first four populations::
+            Prepare one landscape containing six located populations and fit an MLPE
+            calibration head from measurements among its first four populations::
 
                 import coordax as cx
                 import jax
@@ -134,7 +142,8 @@ class LandscapeGeneticsModel(eqx.Module):
 
                 jax.config.update("jax_enable_x64", True)
                 from ilg_toolkit import (
-                    MLPELoss, PairwiseObservations, RegionBatch, TargetSpec, calibrate,
+                    LandscapeGeneticsModel, MLPELoss, PairwiseObservations, RegionBatch,
+                    TargetSpec, fit_calibration_head,
                 )
                 from ilg_toolkit.models import LogLinearConductance
 
@@ -148,8 +157,10 @@ class LandscapeGeneticsModel(eqx.Module):
                     [1.2, 1.6, 2.9, 1.7, 2.0, 1.3],
                     target=TargetSpec("genetic divergence", units="index"),
                 )
-                model = calibrate(region, observations,
-                                  LogLinearConductance(1, patch_size=1), loss=MLPELoss())
+                distance_model = LogLinearConductance(1, patch_size=1)
+                head = fit_calibration_head(region, observations, distance_model,
+                                            loss=MLPELoss())
+                model = LandscapeGeneticsModel(distance_model, head, region.feature_names)
                 query_pairs = [("p4", "p2"), ("p5", "p3")]
 
             Marginal predictions use only fitted intercept, slope, and distance
@@ -195,9 +206,10 @@ class LandscapeGeneticsModel(eqx.Module):
             units, with pairs disjoint from both calibration and query pairs, including
             reversals. Shared population identities are allowed. Querying every pair
             with support requests all pairs and consequently creates invalid overlap.
-            Passing both ``known_effects=True`` and support is invalid; direct
-            calibration supports neither conditional mode. Every MLPE mode requires
-            existing calibration for the query region/species and population units.
+            Passing both ``known_effects=True`` and support is invalid; a direct
+            calibration head supports neither conditional mode, but predicts in any
+            region. An MLPE calibration head requires an MLPE calibration for the
+            query region and species, and population sampling units.
 
             See the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md)
             for training, calibration, and evaluation, and the
@@ -220,11 +232,11 @@ class LandscapeGeneticsModel(eqx.Module):
             query_count = len(labels) - (
                 0 if observations is None else len(observations.observed_pairs)
             )
-            result = self.calibration.predict(
+            result = self.calibration_head.predict(
                 distances[:query_count],
                 labels[:query_count],
                 region_name=region.name,
-                species_index=request.index,
+                species=request.name,
                 individual_based=prepared.individual_based,
                 known_effects=known_effects,
                 support=observations,

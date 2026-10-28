@@ -8,12 +8,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from ilg_toolkit import (
-    calibrate,
-    DirectCalibrationModule,
+    DirectCalibrationHead,
+    fit_calibration_head,
     LandscapeGeneticsModel,
     load_model,
     Log1pLoss,
-    MLPECalibrationModule,
+    MLPECalibrationHead,
     MLPELoss,
     PairwiseObservations,
     save_model,
@@ -32,7 +32,7 @@ def test_genetic_queries_use_distance_model_species_and_original_scale(observati
     )
     model = LandscapeGeneticsModel(
         distance_model,
-        DirectCalibrationModule(TargetSpec("divergence", transform="log1p")),
+        DirectCalibrationHead(TargetSpec("divergence", transform="log1p")),
         region.feature_names,
     )
     assert model.species == ("stoat", "hare")
@@ -70,7 +70,7 @@ def test_genetic_queries_use_distance_model_species_and_original_scale(observati
 def test_single_species_genetic_queries_return_one_prediction(observation_problem):
     region, target, distance_model = observation_problem()
     model = LandscapeGeneticsModel(
-        distance_model, DirectCalibrationModule(target), region.feature_names
+        distance_model, DirectCalibrationHead(target), region.feature_names
     )
     every_pair = model.predict(region)
     assert every_pair.pairs == (
@@ -98,24 +98,26 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
     region, observations, training = four_population_calibration
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     names = ("stoat", "hare")
+    doubled = ScalarEmbedding(jnp.asarray(2.0))
     references = (
         mlpe_calibrated_model,
-        calibrate(
-            region,
-            replace(training, values=training.values * 2.0),
-            ScalarEmbedding(jnp.asarray(2.0)),
-            loss=MLPELoss(),
+        LandscapeGeneticsModel(
+            doubled,
+            fit_calibration_head(
+                region, replace(training, values=training.values * 2.0), doubled, loss=MLPELoss()
+            ),
+            region.feature_names,
         ),
     )
     model = LandscapeGeneticsModel(
         ScalarEmbedding(jnp.array([1.0, 2.0]), species=names),
-        MLPECalibrationModule(
+        MLPECalibrationHead(
             observations.target,
             {
-                (region.name, index): cast(MLPECalibrationModule, reference.calibration).for_region(
-                    region.name
-                )
-                for index, reference in enumerate(references)
+                (region.name, name): cast(
+                    MLPECalibrationHead, reference.calibration_head
+                ).for_region(region.name)
+                for name, reference in zip(names, references, strict=True)
             },
         ),
         region.feature_names,
@@ -163,9 +165,9 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
 ):
     region, observations, training = four_population_calibration
     calibration_pairs = training.observed_pairs
-    direct = calibrate(region, training, ScalarEmbedding(jnp.asarray(1.0)), loss=Log1pLoss())
     model = mlpe_calibrated_model
-    head = cast(MLPECalibrationModule, model.calibration).regions[(region.name, 0)]
+    head = cast(MLPECalibrationHead, model.calibration_head).for_region(region.name)
+    direct = replace(model, calibration_head=DirectCalibrationHead(observations.target))
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict(region, pairs, known_effects=True)
     distances = model.distance_model.predict(region).as_matrix()
@@ -189,7 +191,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     support = PairwiseObservations.from_pairs(
         [("population-4", "population-0"), ("population-4", "population-1")],
         [2.0, 2.5],
-        target=head.target,
+        target=model.target,
     )
     result = model.predict(region, pairs, support=support)
     expected_mean, expected_variance = joint_gaussian_reference(
@@ -213,9 +215,8 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
         expected_variance - head.residual_variance - head.loss.jitter,
         atol=1e-10,
     )
-    assert eqx.tree_equal(model.distance_model, direct.distance_model)
     reused = PairwiseObservations.from_pairs(
-        [tuple(reversed(calibration_pairs[0]))], [1.0], target=head.target
+        [tuple(reversed(calibration_pairs[0]))], [1.0], target=model.target
     )
     with pytest.raises(ValueError):
         model.predict(region, pairs, support=reused)
@@ -272,12 +273,13 @@ def test_recalibrated_model_retains_target_scale_after_save_and_load(
         distance_model=ScalarEmbedding(jnp.asarray(1.0)),
         config=TrainingConfig(loss=Log1pLoss(), steps=0),
     )
-    assert state.selected_model.target is state.selected_model.calibration.target
-    converted = calibrate(
-        region,
-        training,
+    assert state.selected_model.target is state.selected_model.calibration_head.target
+    converted = LandscapeGeneticsModel(
         state.selected_model.distance_model,
-        loss=MLPELoss(),
+        fit_calibration_head(
+            region, training, state.selected_model.distance_model, loss=MLPELoss()
+        ),
+        region.feature_names,
     )
     assert eqx.tree_equal(converted.distance_model, state.selected_model.distance_model)
     unseen = replace(region, name="unseen")
@@ -288,13 +290,15 @@ def test_recalibrated_model_retains_target_scale_after_save_and_load(
     save_model(path, converted)
     restored = load_model(path, distance_model=ScalarEmbedding(jnp.asarray(0.0)))
     assert restored.target == observations.target
+    # A fitted (converged) MLPE calibration head round-trips with its optimizer diagnostics.
+    assert eqx.tree_equal(restored.calibration_head, converted.calibration_head)
     np.testing.assert_array_equal(restored.predict(region).values, converted.predict(region).values)
 
 
 def test_prediction_rejects_stateful_layers(BatchNormConductance, observation_problem):
     region, target, _ = observation_problem()
     model = LandscapeGeneticsModel(
-        BatchNormConductance(), DirectCalibrationModule(target), region.feature_names
+        BatchNormConductance(), DirectCalibrationHead(target), region.feature_names
     )
     with pytest.raises(TypeError, match="stateful layers"):
         model.predict(region)
@@ -303,7 +307,7 @@ def test_prediction_rejects_stateful_layers(BatchNormConductance, observation_pr
 def test_prediction_requires_float64(observation_problem, float64_required):
     region, target, distance_model = observation_problem()
     model = LandscapeGeneticsModel(
-        distance_model, DirectCalibrationModule(target), region.feature_names
+        distance_model, DirectCalibrationHead(target), region.feature_names
     )
     with float64_required():
         model.predict(region)
@@ -312,7 +316,7 @@ def test_prediction_requires_float64(observation_problem, float64_required):
 def test_prediction_checks_the_patch_grid(patch_check_problem):
     problem = patch_check_problem
     model = LandscapeGeneticsModel(
-        problem.model, DirectCalibrationModule(problem.target), ("elevation",)
+        problem.model, DirectCalibrationHead(problem.target), ("elevation",)
     )
     with problem.trim_required():
         model.predict(problem.misaligned)

@@ -1,6 +1,6 @@
 """Landscape genetics models saved as Equinox files with prediction metadata.
 
-Calibration is direct or maximum-likelihood population effects (MLPE).
+Calibration heads are direct or maximum-likelihood population effects (MLPE).
 """
 
 import json
@@ -9,19 +9,17 @@ import tempfile
 from copy import copy
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
 from ._checks import _require_float64
-from ._training_utils import RegionSpeciesKey
-from .calibration import DirectCalibrationModule, MLPECalibrationModule
+from .calibration import DirectCalibrationHead, MLPECalibrationHead
 from .config import ResistanceSolverConfig
 from .data import TargetSpec
 from .losses import MLPELoss
-from .mlpe import RegionalMLPECalibration
+from .mlpe import MLPECalibration
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel, ConductanceModel
 from .models.base import _model_species, _species_names
@@ -121,26 +119,27 @@ def _read_header(stream, *, kind):
 
 
 def _model_metadata(model):
-    """Target, feature, and fitted calibration metadata for a saved model."""
-    if isinstance(model.calibration, DirectCalibrationModule):
-        calibration = {"kind": "direct"}
-    elif isinstance(model.calibration, MLPECalibrationModule):
-        calibration = {
+    """Target, feature, species and calibration-head metadata for a saved model."""
+    head = model.calibration_head
+    if isinstance(head, DirectCalibrationHead):
+        calibration_head = {"kind": "direct"}
+    elif isinstance(head, MLPECalibrationHead):
+        calibration_head = {
             "kind": "mlpe",
-            "regions": _encode_groups(
+            "groups": [
                 {
-                    name: {
-                        "population_ids": value.population_ids,
-                        "calibration_pairs": value.calibration_pairs,
-                        "loss": asdict(value.loss),
-                        "optimizer_message": value.optimizer_message,
-                    }
-                    for name, value in model.calibration.regions.items()
+                    "region": region,
+                    "species": species,
+                    "population_ids": calibration.population_ids,
+                    "calibration_pairs": calibration.calibration_pairs,
+                    "loss": asdict(calibration.loss),
+                    "optimizer_message": calibration.optimizer_message,
                 }
-            ),
+                for (region, species), calibration in head.calibrations.items()
+            ],
         }
     else:
-        raise ArtifactError("Saving a model requires a direct or MLPE calibration module")
+        raise ArtifactError("Saving a model requires a direct or MLPE calibration head")
     return {
         "target": asdict(model.target),
         "feature_names": model.feature_names,
@@ -150,28 +149,16 @@ def _model_metadata(model):
             else None
         ),
         "species": model.species,
-        "calibration": calibration,
+        "calibration_head": calibration_head,
     }
 
 
-def _encode_groups(values):
-    return [
-        {"region": region, "species_index": index, "value": value}
-        for (region, index), value in values.items()
-    ]
-
-
-def _decode_groups(values) -> dict[RegionSpeciesKey, Any]:
-    return {(item["region"], item["species_index"]): item["value"] for item in values}
-
-
-def _head_template(name, metadata, target):
+def _calibration_template(metadata) -> MLPECalibration:
+    """An MLPE calibration with the saved identities and settings and placeholder values."""
     loss = MLPELoss(**metadata["loss"])
     population_ids = tuple(metadata["population_ids"])
     count = len(population_ids)
-    return RegionalMLPECalibration(
-        region_name=name[0],
-        target=target,
+    return MLPECalibration(
         population_ids=population_ids,
         distance_center=0.0,
         distance_scale=max(1.0, 2 * loss.min_distance_scale),
@@ -181,7 +168,6 @@ def _head_template(name, metadata, target):
         residual_variance=loss.variance_floor,
         effect_mean=jnp.zeros(count, dtype=jnp.float64),
         effect_covariance=jnp.eye(count, dtype=jnp.float64),
-        effect_precision_cholesky=jnp.eye(count, dtype=jnp.float64),
         calibration_pairs=tuple(tuple(pair) for pair in metadata["calibration_pairs"]),
         ml_log_likelihood=0.0,
         loss=loss,
@@ -212,22 +198,22 @@ def _model_template(metadata, distance_model):
         )
     elif solver_settings is not None:
         raise ArtifactError("Saved conductance model requires a conductance template")
-    saved_calibration = metadata["calibration"]
-    if saved_calibration["kind"] == "direct":
-        calibration = DirectCalibrationModule(target)
-    elif saved_calibration["kind"] == "mlpe":
-        calibration = MLPECalibrationModule(
+    saved_head = metadata["calibration_head"]
+    if saved_head["kind"] == "direct":
+        head = DirectCalibrationHead(target)
+    elif saved_head["kind"] == "mlpe":
+        head = MLPECalibrationHead(
             target,
             {
-                name: _head_template(name, regional, target)
-                for name, regional in _decode_groups(saved_calibration["regions"]).items()
+                (group["region"], group["species"]): _calibration_template(group)
+                for group in saved_head["groups"]
             },
         )
     else:
-        raise ArtifactError("Unsupported calibration module in the saved model")
+        raise ArtifactError("Unsupported calibration head in the saved model")
     return LandscapeGeneticsModel(
         distance_model,
-        calibration,
+        head,
         tuple(metadata["feature_names"]),
     )
 
@@ -235,10 +221,11 @@ def _model_template(metadata, distance_model):
 def save_model(path, model: LandscapeGeneticsModel) -> None:
     """Save a fitted model and its prediction contract atomically.
 
-    The Equinox file retains distance parameters, direct or MLPE calibration,
-    target semantics, species, feature names, and MLPE calibration-pair
-    identities. Compatible custom distance models use the same template protocol.
-    Files contain a small JSON metadata header followed by serialized array values.
+    The Equinox file retains distance parameters, the direct or MLPE calibration
+    head with its target contract, species, feature names, and the region, species
+    and calibration-pair identities of each MLPE calibration. Compatible custom
+    distance models use the same template protocol. Files contain a small JSON
+    metadata header followed by serialized array values.
 
     The destination parent directory must exist. Writing and flushing a temporary
     file precedes atomic replacement; a failed write preserves the previous file.
@@ -286,7 +273,7 @@ def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGenet
             array shapes, and dtypes.
 
     Returns:
-        The saved model with its genetic calibration and prediction contract.
+        The saved model with its calibration head and prediction contract.
 
     Raises:
         ArtifactError: The artifact or supplied template is incompatible.

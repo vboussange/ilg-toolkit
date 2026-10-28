@@ -68,7 +68,7 @@ def test_species_queries_average_each_species_and_keep_member_predictions(known_
 
 
 def test_members_apply_target_inverse_before_averaging(known_ensemble, FeatureEmbedding):
-    from ilg_toolkit import DirectCalibrationModule, TargetSpec
+    from ilg_toolkit import DirectCalibrationHead, TargetSpec
 
     region, ensemble, _ = known_ensemble()
     target = TargetSpec("divergence", units="index", transform="log1p")
@@ -76,7 +76,7 @@ def test_members_apply_target_inverse_before_averaging(known_ensemble, FeatureEm
         replace(
             ensemble.members[0],
             distance_model=FeatureEmbedding(jnp.sqrt(jnp.log(value))),
-            calibration=DirectCalibrationModule(target),
+            calibration_head=DirectCalibrationHead(target),
         )
         for value in (2.0, 10.0)
     ]
@@ -95,12 +95,12 @@ def test_averaging_large_member_predictions_does_not_overflow(known_ensemble, Fe
 
 
 def test_incompatible_members_report_position(known_ensemble):
-    from ilg_toolkit import DirectCalibrationModule, TargetSpec
+    from ilg_toolkit import DirectCalibrationHead, TargetSpec
 
     region, ensemble, _ = known_ensemble()
     first = ensemble.members[0]
     for changed in (
-        replace(first, calibration=DirectCalibrationModule(TargetSpec("another target"))),
+        replace(first, calibration_head=DirectCalibrationHead(TargetSpec("another target"))),
         replace(first, feature_names=("changed",)),
         replace(
             first, distance_model=type(first.distance_model)(jnp.asarray(1.0), species=("frog",))
@@ -130,7 +130,7 @@ def test_prediction_failure_identifies_position_without_dropping_member(
 
 
 def test_members_are_averaged_on_the_genetic_scale_not_through_their_surfaces(PointConductance):
-    from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, RegionBatch, TargetSpec
+    from ilg_toolkit import DirectCalibrationHead, LandscapeGeneticsModel, RegionBatch, TargetSpec
 
     region = RegionBatch(
         "graph",
@@ -140,7 +140,7 @@ def test_members_are_averaged_on_the_genetic_scale_not_through_their_surfaces(Po
         ("a", "b", "c", "d"),
         np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
     )
-    calibration = DirectCalibrationModule(TargetSpec("divergence"))
+    calibration = DirectCalibrationHead(TargetSpec("divergence"))
     distance_models = [PointConductance(jnp.log(jnp.asarray(level))) for level in (4.0, 1.0)]
     models = [LandscapeGeneticsModel(model, calibration, ("cover",)) for model in distance_models]
     result = Ensemble(models).predict(region)
@@ -164,7 +164,7 @@ def test_feature_meanings_are_validated_for_every_member(known_ensemble):
 
 
 def test_members_with_different_patch_sizes_align_genetic_predictions():
-    from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, RegionBatch, TargetSpec
+    from ilg_toolkit import DirectCalibrationHead, LandscapeGeneticsModel, RegionBatch, TargetSpec
     from ilg_toolkit.models import LogLinearConductance
 
     region = RegionBatch(
@@ -177,7 +177,7 @@ def test_members_with_different_patch_sizes_align_genetic_predictions():
     )
     first = LandscapeGeneticsModel(
         LogLinearConductance(1, patch_size=1),
-        DirectCalibrationModule(TargetSpec("divergence")),
+        DirectCalibrationHead(TargetSpec("divergence")),
         ("cover",),
     )
     # A coarser patch size changes only the surface shape; genetic predictions still align.

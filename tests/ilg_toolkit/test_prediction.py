@@ -3,7 +3,7 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, Prediction, TargetSpec
+from ilg_toolkit import DirectCalibrationHead, LandscapeGeneticsModel, Prediction, TargetSpec
 
 
 def test_pair_values_and_extras_have_the_same_sparse_matrix_representation():
@@ -47,7 +47,7 @@ def test_selected_and_complete_predictions_share_pair_contract_and_matrix_order(
 ):
     region, target, distance_model = observation_problem()
     model = LandscapeGeneticsModel(
-        distance_model, DirectCalibrationModule(target), region.feature_names
+        distance_model, DirectCalibrationHead(target), region.feature_names
     )
     selected = model.predict(region, [("unit/99", "unit/7")])
     assert selected.region_name == region.name
@@ -63,7 +63,7 @@ def test_selected_and_complete_predictions_share_pair_contract_and_matrix_order(
     np.testing.assert_allclose(complete.values, [0.49, 1.96, 0.49])
     relatedness = LandscapeGeneticsModel(
         distance_model,
-        DirectCalibrationModule(TargetSpec("relatedness", kind="relatedness")),
+        DirectCalibrationHead(TargetSpec("relatedness", kind="relatedness")),
         region.feature_names,
     ).predict(region, [("unit/99", "unit/7")])
     np.testing.assert_allclose(relatedness.as_matrix(), selected.as_matrix())

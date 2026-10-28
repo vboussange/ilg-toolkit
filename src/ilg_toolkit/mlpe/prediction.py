@@ -4,9 +4,9 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
 
-from ..data import _validate_pairs, PairwiseObservations
+from ..data import _validate_pairs, PairwiseObservations, TargetSpec
 from ..prediction import Prediction
-from .fit import MLPEError, RegionalMLPECalibration
+from .fit import MLPECalibration, MLPEError
 
 
 def _query(distances, pairs):
@@ -21,13 +21,13 @@ def _query(distances, pairs):
     return distances, pairs, canonical
 
 
-def _extend(head, population_ids, mean, covariance, pairs):
+def _extend(calibration, population_ids, mean, covariance, pairs):
     extras = tuple(
         dict.fromkeys(label for pair in pairs for label in pair if label not in population_ids)
     )
     n = len(population_ids)
     extended_mean = jnp.zeros(n + len(extras), dtype=jnp.float64).at[:n].set(mean)
-    extended_covariance = jnp.eye(n + len(extras), dtype=jnp.float64) * head.unit_variance
+    extended_covariance = jnp.eye(n + len(extras), dtype=jnp.float64) * calibration.unit_variance
     extended_covariance = extended_covariance.at[:n, :n].set(covariance)
     return population_ids + extras, extended_mean, extended_covariance
 
@@ -48,20 +48,23 @@ def _effect_prediction(mean, covariance, left, right):
 
 
 def _predict_mlpe(
-    calibration: RegionalMLPECalibration,
+    calibration: MLPECalibration,
     distances,
     pairs,
     *,
+    target: TargetSpec,
+    region_name: str,
     known_effects: bool = False,
     support: PairwiseObservations | None = None,
     support_distances=None,
 ) -> Prediction:
     """Genetic predictions from a fitted MLPE calibration and ecological distances.
 
-    Conditional modes add ``model_variance`` and ``effect_variance`` to the
-    ``model_values`` extra, all on the model scale. Support distances align with
-    the support observations, whose pairs are disjoint from calibration and
-    query pairs. Residual variance and jitter remain on the calibration.
+    ``target`` is the calibration head's target contract. Conditional modes add
+    ``model_variance`` and ``effect_variance`` to the ``model_values`` extra, all
+    on the model scale. Support distances align with the support observations,
+    whose target must be ``target`` and whose pairs are disjoint from calibration
+    and query pairs. Residual variance and jitter remain on the calibration.
     """
     if known_effects and support is not None:
         raise MLPEError("known_effects and support are mutually exclusive")
@@ -81,6 +84,8 @@ def _predict_mlpe(
                 raise MLPEError(
                     "Support/query overlap: an unordered support pair cannot be a query"
                 )
+            if support.target != target:
+                raise MLPEError("Support target metadata must match calibration")
             population_ids, mean, covariance = _condition_on_support(
                 calibration, support_distances, support
             )
@@ -98,9 +103,9 @@ def _predict_mlpe(
         extras.update(model_variance=variance, effect_variance=effect_variance)
     extras["model_values"] = model_values
     return Prediction(
-        calibration.target.inverse(model_values),
+        target.inverse(model_values),
         pairs,
-        calibration.region_name,
+        region_name,
         tuple(dict.fromkeys(label for pair in pairs for label in pair)),
         extras=extras,
     )
@@ -120,30 +125,29 @@ def _condition_posterior(mean, covariance, residual, left, right, noise):
 
 
 def _condition_on_support(
-    head: RegionalMLPECalibration,
+    calibration: MLPECalibration,
     support_distances,
     support_observations: PairwiseObservations,
 ) -> tuple[tuple[str, ...], jax.Array, jax.Array]:
     """Population effects conditioned on support observations with calibration fixed."""
-    if support_observations.target != head.target:
-        raise MLPEError("Support target metadata must match calibration")
     distances, pairs, canonical = _query(support_distances, support_observations.observed_pairs)
-    calibration_pairs = tuple((min(pair), max(pair)) for pair in head.calibration_pairs)
+    calibration_pairs = tuple((min(pair), max(pair)) for pair in calibration.calibration_pairs)
     if set(canonical) & set(calibration_pairs):
         raise MLPEError("Support reuses a calibration pair; targets cannot be conditioned on twice")
     labels, mean, covariance = _extend(
-        head,
-        head.population_ids,
-        head.effect_mean,
-        head.effect_covariance,
+        calibration,
+        calibration.population_ids,
+        calibration.effect_mean,
+        calibration.effect_covariance,
         pairs,
     )
     left, right = _endpoints(pairs, labels)
     residual = support_observations.target.forward(support_observations.observed_values)
     residual -= (
-        head.intercept + head.slope * (distances - head.distance_center) / head.distance_scale
+        calibration.intercept
+        + calibration.slope * (distances - calibration.distance_center) / calibration.distance_scale
     )
-    d = head.residual_variance + head.loss.jitter
+    d = calibration.residual_variance + calibration.loss.jitter
     updated_mean, updated_covariance = _condition_posterior(
         mean, covariance, residual, left, right, d
     )

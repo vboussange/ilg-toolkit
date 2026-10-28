@@ -10,17 +10,17 @@ from jax.scipy.linalg import cho_solve
 # The maximum number of observed pairs per sampling unit bounds
 # eps*cond(I + u/d Z.T Z), including incomplete and bipartite pair sets.
 # Calculations outside this precision bound return nonfinite results.
-MAX_ROUNDOFF_BOUND = 0.01
+_MAX_ROUNDOFF_BOUND = 0.01
 
 
-def endpoint_sums(values, left, right, n_populations):
+def _endpoint_sums(values, left, right, n_populations):
     """Sums of pairwise values for each sampling unit."""
     values = jnp.asarray(values)
     result = jnp.zeros((n_populations, values.shape[1]), dtype=values.dtype)
     return result.at[left].add(values).at[right].add(values)
 
 
-class PopulationCovarianceFactor(NamedTuple):
+class _PopulationCovarianceFactor(NamedTuple):
     """Factor of I + (u/d) Z.T Z and the observed sampling-unit indices.
 
     For V = d I + u Z Z.T, the determinant lemma gives
@@ -43,7 +43,7 @@ class PopulationCovarianceFactor(NamedTuple):
 
     def residual_components(self, values):
         """Positive representation for B.T V^-1 C; stable against subtraction."""
-        sums = endpoint_sums(values, self.left, self.right, len(self.factor))
+        sums = _endpoint_sums(values, self.left, self.right, len(self.factor))
         effects = (self.unit / self.residual) * cho_solve((self.factor, True), sums)
         remaining = values - effects[self.left] - effects[self.right]
         return remaining, effects
@@ -55,7 +55,7 @@ class PopulationCovarianceFactor(NamedTuple):
         return inner, remaining, effects
 
 
-def population_covariance_factor(left, right, *, n_populations, unit, residual, dtype):
+def _population_covariance_factor(left, right, *, n_populations, unit, residual, dtype):
     """Population covariance factor for observed unordered pairs.
 
     ``residual`` includes the configured jitter.
@@ -86,9 +86,9 @@ def population_covariance_factor(left, right, *, n_populations, unit, residual, 
         & (unit > 0)
         & jnp.isfinite(residual)
         & (residual > 0)
-        & (roundoff_bound <= MAX_ROUNDOFF_BOUND)
+        & (roundoff_bound <= _MAX_ROUNDOFF_BOUND)
     )
-    return PopulationCovarianceFactor(
+    return _PopulationCovarianceFactor(
         left,
         right,
         factor,

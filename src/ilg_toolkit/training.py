@@ -519,8 +519,8 @@ def train(
         True
 
         Zero steps initializes statistical parameters and fits the coefficients at those
-        parameters; use ``calibrate`` to optimize calibration on a frozen distance
-        model. Built-in validation uses training-fitted coefficients and distance moments.
+        parameters; use ``fit_calibration_head`` to optimize calibration on a frozen
+        distance model. Built-in validation uses training-fitted coefficients and distance moments.
     """
     _require_float64()
     if state is not None and not isinstance(state, TrainingState):
@@ -561,7 +561,7 @@ def train(
     first_region, first_observations = prepared.inputs[0]
     prototype = LandscapeGeneticsModel(
         distance_model,
-        config.loss._calibration(first_observations.target, {}),
+        config.loss._calibration_head(first_observations.target, {}, distance_model.species),
         first_region.feature_names,
     )
     random_key = (
@@ -607,9 +607,11 @@ def train(
         raise ValueError("Continuation requires unchanged training and validation groups")
 
     def make_model(calibrations) -> LandscapeGeneticsModel:
-        calibration = config.loss._calibration(first_observations.target, calibrations)
+        head = config.loss._calibration_head(
+            first_observations.target, calibrations, parameters[0].species
+        )
         return eqx.tree_at(
-            lambda m: (m.distance_model, m.calibration), prototype, (parameters[0], calibration)
+            lambda m: (m.distance_model, m.calibration_head), prototype, (parameters[0], head)
         )
 
     history = list(state.history) if state is not None else []
