@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+import coordax as cx
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -129,23 +130,24 @@ def test_prediction_failure_identifies_position_without_dropping_member(
 
 
 def test_members_are_averaged_on_the_genetic_scale_not_through_their_surfaces(PointConductance):
-    import coordax as cx
     from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, RegionBatch, TargetSpec
 
     region = RegionBatch(
         "graph",
-        cx.field(np.ones((1, 4, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 4, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["cover"]))
+        ),
         ("a", "b", "c", "d"),
         np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
     )
     calibration = DirectCalibrationModule(TargetSpec("divergence"))
     distance_models = [PointConductance(jnp.log(jnp.asarray(level))) for level in (4.0, 1.0)]
-    models = [LandscapeGeneticsModel(model, calibration, 1) for model in distance_models]
+    models = [LandscapeGeneticsModel(model, calibration, ("cover",)) for model in distance_models]
     result = Ensemble(models).predict(region)
     # Member surfaces come from each member's own distance model.
     surfaces = [model.conductance_surface(region) for model in distance_models]
     averaged_surface_model = LandscapeGeneticsModel(
-        PointConductance(jnp.log(jnp.mean(jnp.stack(surfaces)[:, 0, 0]))), calibration, 1
+        PointConductance(jnp.log(jnp.mean(jnp.stack(surfaces)[:, 0, 0]))), calibration, ("cover",)
     )
     np.testing.assert_allclose(result.mean.as_matrix()[0, 1], 0.625, atol=1e-7)
     np.testing.assert_allclose(
@@ -155,26 +157,28 @@ def test_members_are_averaged_on_the_genetic_scale_not_through_their_surfaces(Po
 
 def test_feature_meanings_are_validated_for_every_member(known_ensemble):
     region, ensemble, _ = known_ensemble()
-    changed = replace(region, feature_names=("different meaning",))
+    meaning = cx.LabeledAxis("feature", np.array(["different meaning"]))
+    changed = replace(region, features=cx.field(region.feature_array, "row", "column", meaning))
     with pytest.raises(RuntimeError, match="member 0.*feature"):
         ensemble.predict(changed)
 
 
 def test_members_with_different_patch_sizes_align_genetic_predictions():
-    import coordax as cx
     from ilg_toolkit import DirectCalibrationModule, LandscapeGeneticsModel, RegionBatch, TargetSpec
     from ilg_toolkit.models import LogLinearConductance
 
     region = RegionBatch(
         "grid",
-        cx.field(np.ones((4, 4, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((4, 4, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["cover"]))
+        ),
         ("west", "east"),
         [[0, 0], [3, 3]],
     )
     first = LandscapeGeneticsModel(
         LogLinearConductance(1, patch_size=1),
         DirectCalibrationModule(TargetSpec("divergence")),
-        1,
+        ("cover",),
     )
     # A coarser patch size changes only the surface shape; genetic predictions still align.
     coarse = replace(first, distance_model=LogLinearConductance(1, patch_size=2))

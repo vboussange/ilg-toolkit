@@ -105,38 +105,98 @@ class TargetSpec:
         return values
 
 
+def _feature_names(names) -> tuple[str, ...]:
+    """Unique nonempty feature names, in channel order."""
+    names = tuple(names)
+    if (
+        not names
+        or any(not isinstance(name, str) or not name for name in names)
+        or len(set(names)) != len(names)
+    ):
+        raise ValueError("Feature names must be unique nonempty strings, one per channel")
+    return names
+
+
+def _cell_indices(axis: cx.Coordinate | None, dimension: str, values: np.ndarray) -> np.ndarray:
+    """Index of the raster cell containing each coordinate value, or -1 outside the raster.
+
+    Cell edges lie halfway between neighboring cell centers, and the outer edges half a
+    cell beyond the first and last centers. Like GDAL, a shared edge belongs to the cell
+    with the larger index, and the outer edges belong to the raster.
+    """
+    if not isinstance(axis, cx.LabeledAxis) or not np.issubdtype(axis.ticks.dtype, np.number):
+        raise ValueError(
+            f"Building from points requires numeric {dimension} coordinates, "
+            "such as those cx.from_xarray keeps"
+        )
+    centers = axis.ticks.astype(np.float64)
+    steps = np.diff(centers)
+    if (
+        centers.size < 2
+        or not np.isfinite(centers).all()
+        or not ((steps > 0).all() or (steps < 0).all())
+    ):
+        raise ValueError(
+            f"{dimension} coordinates must be finite and strictly monotonic over at least two cells"
+        )
+    # Orient coordinates along increasing index so that edges increase.
+    direction = np.sign(steps[0])
+    centers, values = direction * centers, direction * values
+    edges = np.concatenate(
+        (
+            [1.5 * centers[0] - 0.5 * centers[1]],
+            (centers[1:] + centers[:-1]) / 2,
+            [1.5 * centers[-1] - 0.5 * centers[-2]],
+        )
+    )
+    indices = np.minimum(np.searchsorted(edges, values, side="right") - 1, centers.size - 1)
+    return np.where((values >= edges[0]) & (values <= edges[-1]), indices, -1)
+
+
 @dataclass(frozen=True)
 class RegionBatch:
     """Prepared landscape features and sampling-unit locations for one region.
 
+    Features are a coordax field with ``row``, ``column`` and ``feature``
+    dimensions. A ``cx.LabeledAxis`` on the feature dimension names each channel,
+    and row and column coordinates, such as those from ``cx.from_xarray``, are
+    kept. ``grid_positions`` gives each sampling unit's integer (row, column)
+    raster cell, which suits synthetic landscapes; use
+    [`from_points`][ilg_toolkit.RegionBatch.from_points] to snap projected
+    coordinates to cells instead.
+
     Optional species labels distinguish sampling units whose identifiers repeat
-    across species. Features use named row, column, and feature dimensions.
+    across species. ``individual_based`` marks regions whose sampling units are
+    individuals rather than populations; MLPE losses and calibration reject them.
+
+    Examples:
+        A synthetic landscape with two named features::
+
+            names = cx.LabeledAxis("feature", np.array(["elevation", "canopy"]))
+            features = cx.field(values, "row", "column", names)
+            region = RegionBatch("valley", features, ("a", "b"), [[0, 0], [3, 4]])
     """
 
     name: str
     features: cx.Field
     sampling_unit_ids: tuple[str, ...]
     grid_positions: ArrayLike
-    feature_names: tuple[str, ...] | None = None
-    sampling_unit_kinds: tuple[str, ...] | None = None
     species: tuple[str, ...] | None = None
+    individual_based: bool = False
 
     def __post_init__(self):
-        names = None if self.feature_names is None else tuple(self.feature_names)
         if not isinstance(self.features, cx.Field):
             raise TypeError("features must be a coordax.Field with named row, column, feature axes")
         if self.features.ndim != 3 or set(self.features.dims) != {"row", "column", "feature"}:
             raise ValueError("Labeled features require named axes row, column, feature")
         field = self.features.order_as("row", "column", "feature")
-        axes = dict(field.axes)
-        coordinate = field.axes.get("feature")
-        if isinstance(coordinate, cx.LabeledAxis):
-            labels = tuple(coordinate.ticks.tolist())
-            if any(not isinstance(label, str) or not label for label in labels):
-                raise ValueError("feature coordinates require nonempty string labels")
-            if names is not None and names != labels:
-                raise ValueError("Feature coordinates must match feature_names meanings and order")
-            names = labels
+        axis = field.axes.get("feature")
+        if not isinstance(axis, cx.LabeledAxis):
+            raise ValueError(
+                "features require a labeled feature axis naming each channel, "
+                'such as cx.LabeledAxis("feature", names)'
+            )
+        _feature_names(axis.ticks.tolist())
         features = jnp.asarray(field.data)
         ids = tuple(self.sampling_unit_ids)
         species = None if self.species is None else tuple(self.species)
@@ -163,33 +223,80 @@ class RegionBatch:
             )
         if (positions < 0).any() or (positions >= jnp.asarray(features.shape[:2])).any():
             raise ValueError("grid_positions fall outside the raster")
-        if names is not None and (
-            len(names) != features.shape[-1]
-            or any(not isinstance(name, str) or not name for name in names)
-            or len(set(names)) != len(names)
-        ):
-            raise ValueError("feature_names must uniquely declare each channel's meaning and order")
-        kinds = (
-            ("population",) * len(ids)
-            if self.sampling_unit_kinds is None
-            else tuple(self.sampling_unit_kinds)
-        )
-        if len(kinds) != len(ids) or any(
-            kind not in {"population", "individual"} for kind in kinds
-        ):
-            raise ValueError(
-                "sampling_unit_kinds must declare population or individual for each label"
-            )
-        object.__setattr__(self, "feature_names", names)
-        object.__setattr__(self, "sampling_unit_kinds", kinds)
-        if names is not None:
-            axes["feature"] = cx.LabeledAxis("feature", np.asarray(names))
+        if not isinstance(self.individual_based, bool):
+            raise TypeError("individual_based must be a bool")
         object.__setattr__(
-            self, "features", cx.Field(features, dims=("row", "column", "feature"), axes=axes)
+            self,
+            "features",
+            cx.Field(features, dims=("row", "column", "feature"), axes=dict(field.axes)),
         )
         object.__setattr__(self, "sampling_unit_ids", ids)
         object.__setattr__(self, "species", species)
         object.__setattr__(self, "grid_positions", positions.astype(jnp.int32))
+
+    @classmethod
+    def from_points(
+        cls,
+        name: str,
+        features: cx.Field,
+        sampling_unit_ids: Sequence[str],
+        coordinates: ArrayLike,
+        *,
+        species: Sequence[str] | None = None,
+        individual_based: bool = False,
+    ) -> "RegionBatch":
+        """Region batch locating each sampling unit in the raster cell containing it.
+
+        Cell edges lie halfway between the row and column coordinates of
+        neighboring cells, so coordinates must be cell centers, as
+        ``cx.from_xarray`` keeps them from rioxarray rasters. Rows may follow
+        decreasing y, as in most GeoTIFFs. A point on an edge shared by two cells
+        belongs to the cell with the larger row or column index, as in GDAL.
+
+        Args:
+            name: Region name.
+            features: Features with labeled row, column and feature axes, for instance
+                ``cx.from_xarray(raster.rename(y="row", x="column", band="feature"))``.
+            sampling_unit_ids: Unique sampling-unit labels, aligned with ``coordinates``.
+            coordinates: Projected ``(x, y)`` coordinates of each sampling unit, in the
+                raster's coordinate reference system.
+            species: Species of each sampling unit, or ``None`` for one unnamed species.
+            individual_based: Whether the sampling units are individuals.
+
+        Raises:
+            ValueError: If the features lack numeric row and column coordinates, or a
+                point lies outside the raster extent; the message names those sampling units.
+        """
+        if not isinstance(features, cx.Field):
+            raise TypeError("features must be a coordax.Field with named row, column, feature axes")
+        ids = tuple(sampling_unit_ids)
+        points = np.asarray(coordinates, dtype=np.float64)
+        if points.shape != (len(ids), 2) or not np.isfinite(points).all():
+            raise ValueError(
+                "coordinates must be a finite (sampling units, 2) array of projected x, y"
+            )
+        rows = _cell_indices(features.axes.get("row"), "row", points[:, 1])
+        columns = _cell_indices(features.axes.get("column"), "column", points[:, 0])
+        outside = np.flatnonzero((rows < 0) | (columns < 0))
+        if outside.size:
+            raise ValueError(
+                "Sampling units lie outside the raster extent: "
+                + ", ".join(ids[index] for index in outside)
+            )
+        return cls(
+            name,
+            features,
+            ids,
+            np.stack((rows, columns), axis=1),
+            species=None if species is None else tuple(species),
+            individual_based=individual_based,
+        )
+
+    @property
+    def feature_names(self) -> tuple[str, ...]:
+        """Feature names in channel order, read from the labeled feature axis."""
+        axis = cast(cx.LabeledAxis, self.features.axes["feature"])
+        return tuple(axis.ticks.tolist())
 
     @property
     def feature_array(self) -> jax.Array:

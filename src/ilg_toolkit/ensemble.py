@@ -86,7 +86,6 @@ class Ensemble:
         for index, member in enumerate(members[1:], start=1):
             if (
                 member.target != first.target
-                or member.feature_count != first.feature_count
                 or member.feature_names != first.feature_names
                 or member.species != first.species
             ):

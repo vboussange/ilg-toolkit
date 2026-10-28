@@ -93,15 +93,11 @@ def _normalize_training_inputs(
 def _validate_shared_training_contract(inputs: Sequence[_RegionWithGeneticObservations]) -> None:
     """Common target semantics and feature meanings for training or calibration inputs."""
     first = inputs[0]
-    if len({item.region.name for item in inputs}) > 1 and first.region.feature_names is None:
-        raise ValueError("Multi-region training requires feature_names meanings and order")
     for region, observations in inputs:
         if observations.target != first.observations.target:
             raise ValueError("Regional observations must share one target contract and scale")
-        if region.feature_array.shape[-1] != first.region.feature_array.shape[-1]:
-            raise ValueError("Regional feature channels must match")
         if region.feature_names != first.region.feature_names:
-            raise ValueError("Regional feature contracts must match meanings and order")
+            raise ValueError("Regional feature names must match in meaning and order")
 
 
 def _prepare_region_species_inputs(

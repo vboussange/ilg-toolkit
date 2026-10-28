@@ -143,7 +143,6 @@ def _model_metadata(model):
         raise ArtifactError("Saving a model requires a direct or MLPE calibration module")
     return {
         "target": asdict(model.target),
-        "feature_count": model.feature_count,
         "feature_names": model.feature_names,
         "distance_solver": (
             asdict(model.distance_model.solver_config)
@@ -229,10 +228,7 @@ def _model_template(metadata, distance_model):
     return LandscapeGeneticsModel(
         distance_model,
         calibration,
-        metadata["feature_count"],
-        feature_names=(
-            None if metadata["feature_names"] is None else tuple(metadata["feature_names"])
-        ),
+        tuple(metadata["feature_names"]),
     )
 
 
@@ -240,7 +236,7 @@ def save_model(path, model: LandscapeGeneticsModel) -> None:
     """Save a fitted model and its prediction contract atomically.
 
     The Equinox file retains distance parameters, direct or MLPE calibration,
-    target semantics, species, feature count/names, and MLPE calibration-pair
+    target semantics, species, feature names, and MLPE calibration-pair
     identities. Compatible custom distance models use the same template protocol.
     Files contain a small JSON metadata header followed by serialized array values.
 

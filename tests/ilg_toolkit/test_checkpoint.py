@@ -240,7 +240,7 @@ def test_disk_continuation_uses_caller_supplied_observations(initial_state, tmp_
             np.concatenate([region.feature_array, region.feature_array + 0.1], axis=0),
             "row",
             "column",
-            "feature",
+            region.features.axes["feature"],
         ),
         sampling_unit_ids=region.sampling_unit_ids[::-1],
     )

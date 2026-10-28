@@ -52,7 +52,9 @@ def test_patch_microbatches_preserve_predictions_and_gradients(assert_patch_micr
     features = np.random.default_rng(8).normal(size=(4, 6, 2)).astype(np.float32)
     region = RegionBatch(
         "valley",
-        cx.field(features, "row", "column", "feature"),
+        cx.field(
+            features, "row", "column", cx.LabeledAxis("feature", np.array(["elevation", "canopy"]))
+        ),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 5], [3, 5]]),
     )
@@ -69,10 +71,11 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
     ids = ("north", "east", "south", "west")
     region = RegionBatch(
         "arbitrary-catchment",
-        cx.field(features, "row", "column", "feature"),
+        cx.field(
+            features, "row", "column", cx.LabeledAxis("feature", np.array(("gradient", "texture")))
+        ),
         ids * 2,
         np.tile([[0, 0], [0, 2], [2, 0], [2, 2]], (2, 1)),
-        feature_names=("gradient", "texture"),
         species=("frog",) * 4 + ("newt",) * 4,
     )
     target = TargetSpec("synthetic divergence", units="index")

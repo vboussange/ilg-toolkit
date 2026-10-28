@@ -26,7 +26,9 @@ from jaxscape import GridGraph, ResistanceDistance
 def test_distance_models_carry_unique_species_names(PointConductance):
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
@@ -47,7 +49,9 @@ def test_distance_models_carry_unique_species_names(PointConductance):
 def test_species_queries_follow_the_model_species_with_reused_sampling_unit_ids():
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "c", "a", "b"),
         np.array([[0, 0], [0, 2], [0, 1], [0, 0], [0, 1]]),
         species=("hare", "hare", "hare", "stoat", "stoat"),
@@ -86,7 +90,9 @@ def test_species_queries_follow_the_model_species_with_reused_sampling_unit_ids(
 def test_single_species_queries_return_one_prediction(PointConductance):
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
@@ -127,7 +133,7 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateCon
             jnp.array([[[0.3], [0.8], [0.2]], [[0.5], [0.1], [0.7]]], dtype=dtype),
             "row",
             "column",
-            "feature",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
         ),
         ("a", "b", "c", "d", "e"),
         np.array([[1, 2], [0, 0], [0, 2], [0, 2], [1, 0]]),
@@ -187,7 +193,9 @@ def test_prediction_and_conductance_surfaces_reject_stateful_layers(
 def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductance):
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
@@ -220,7 +228,12 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
 ):
     region = RegionBatch(
         "custom",
-        cx.field(np.array([[[0.0], [1.0], [3.0]]]), "row", "column", "feature"),
+        cx.field(
+            np.array([[[0.0], [1.0], [3.0]]]),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
+        ),
         ("west", "middle", "east"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )

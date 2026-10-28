@@ -73,7 +73,12 @@ def test_failed_solver_preserves_solver_failure(PointConductance):
     with jax.enable_x64():
         region = RegionBatch(
             "bad-solve",
-            cx.field(np.linspace(0.1, 2, 12).reshape(3, 4, 1), "row", "column", "feature"),
+            cx.field(
+                np.linspace(0.1, 2, 12).reshape(3, 4, 1),
+                "row",
+                "column",
+                cx.LabeledAxis("feature", np.array(["elevation"])),
+            ),
             ("first", "last"),
             np.array([[0, 0], [2, 3]]),
         )
@@ -153,7 +158,6 @@ def test_mlpe_updates_match_dense_reference(
                 regions[0],
                 sampling_unit_ids=regions[0].sampling_unit_ids * 2,
                 grid_positions=np.tile(regions[0].grid_positions, (2, 1)),
-                sampling_unit_kinds=None,
                 species=(species[0],) * unit_count + (species[1],) * unit_count,
             ),
         )
@@ -309,13 +313,10 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         region, observations = embedding_problem(columns=2)
         single_region = region
         order = ("stoat", "hare")
-        kinds = region.sampling_unit_kinds
-        assert kinds is not None
         region = replace(
             region,
             sampling_unit_ids=region.sampling_unit_ids * 2,
             grid_positions=jnp.tile(jnp.asarray(region.grid_positions), (2, 1)),
-            sampling_unit_kinds=kinds * 2,
             species=tuple(name for name in order for _ in region.sampling_unit_ids),
         )
         observed_groups = tuple(
@@ -406,10 +407,9 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
         ids = tuple(f"population-{i}" for i in range(4))
         region = RegionBatch(
             "graph",
-            cx.field(features, "row", "column", "feature"),
+            cx.field(features, "row", "column", cx.LabeledAxis("feature", np.array(("habitat",)))),
             ids,
             np.array([[0, 0], [0, 2], [1, 0], [1, 2]]),
-            feature_names=("habitat",),
         )
         left, right = np.triu_indices(4, 1)
         distances = dense_resistance(
@@ -463,12 +463,14 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
         )
         with pytest.raises(ValueError):
             train(six_units, disjoint, distance_model=model, config=config)
-        individual = replace(region, sampling_unit_kinds=("individual",) * 4)
-        with pytest.raises(ValueError):
-            train(individual, observations, distance_model=model, config=config)
         constant_region = replace(
             region,
-            features=cx.field(np.ones_like(region.feature_array), "row", "column", "feature"),
+            features=cx.field(
+                np.ones_like(region.feature_array),
+                "row",
+                "column",
+                region.features.axes["feature"],
+            ),
         )
         with pytest.raises(FloatingPointError):
             train(constant_region, observations, distance_model=model, config=config)
@@ -526,7 +528,6 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
                     regions[1],
                     sampling_unit_ids=regions[1].sampling_unit_ids * 2,
                     grid_positions=np.tile(regions[1].grid_positions, (2, 1)),
-                    sampling_unit_kinds=None,
                     species=("frog", "frog", "newt", "newt"),
                 ),
             ]
@@ -733,22 +734,15 @@ def test_incompatible_regional_inputs_fail_before_optimization(
         ([regions[0], regions[0]], observations),
         (
             [
-                replace(
-                    region,
-                    features=cx.field(region.feature_array, "row", "column", "feature"),
-                    feature_names=None,
-                )
-                for region in regions
-            ],
-            observations,
-        ),
-        (
-            [
                 regions[0],
                 replace(
                     regions[1],
-                    features=cx.field(regions[1].feature_array, "row", "column", "feature"),
-                    feature_names=("canopy",),
+                    features=cx.field(
+                        regions[1].feature_array,
+                        "row",
+                        "column",
+                        cx.LabeledAxis("feature", np.array(["canopy"])),
+                    ),
                 ),
             ],
             observations,
@@ -766,19 +760,15 @@ def test_incompatible_regional_inputs_fail_before_optimization(
             )
 
 
-def test_validation_on_another_region_requires_declared_feature_meanings(
+def test_validation_on_another_region_requires_matching_feature_names(
     ScalarEmbedding, regions_and_observations
 ):
     regions, observations = regions_and_observations()
-    regions = [
-        replace(
-            region,
-            features=cx.field(region.feature_array, "row", "column", "feature"),
-            feature_names=None,
-        )
-        for region in regions
-    ]
-    with pytest.raises(ValueError):
+    canopy = cx.LabeledAxis("feature", np.array(["canopy"]))
+    regions[1] = replace(
+        regions[1], features=cx.field(regions[1].feature_array, "row", "column", canopy)
+    )
+    with pytest.raises(ValueError, match="feature"):
         train(
             regions[0],
             observations[0],
