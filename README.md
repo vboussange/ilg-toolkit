@@ -33,9 +33,8 @@ dependencies to a [uv](https://docs.astral.sh/uv/) project with:
 uv add "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit"
 ```
 
-The `examples` extra installs rioxarray and Matplotlib for the examples. Other
-extras are `amg` for algebraic-multigrid preconditioning and `gpu` for
-CUDA-enabled JAX on Linux x86-64.
+The `examples` extra installs rioxarray, pandas and Matplotlib for the examples.
+The `amg` extra adds algebraic-multigrid preconditioning.
 
 ## Quickstart
 
