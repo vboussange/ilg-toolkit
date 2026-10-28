@@ -1,56 +1,35 @@
 name: Release
 
 on:
-  workflow_run:
-    workflows: [Run tests]
-    types: [completed]
-    branches: [main]
-
-permissions:
-  contents: read
-
-concurrency:
-  group: release
-  cancel-in-progress: false
+  push:
+    branches:
+      - main
 
 jobs:
-  release:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
     permissions:
       contents: write
     env:
-      JAX_PLATFORMS: cpu
-      JAX_ENABLE_X64: "true"
+      PYPI_TOKEN: ${{ secrets.pypi_token }}
     steps:
-      - name: Check publication credentials
-        id: publication
-        env:
-          PYPI_TOKEN: ${{ secrets.pypi_token }}
-        run: |
-          if [ -n "$PYPI_TOKEN" ]; then
-            echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo '::notice::Publication skipped: configure pypi_token after the first manual PyPI release.'
-          fi
-      - uses: actions/checkout@v7
-        if: steps.publication.outputs.enabled == 'true'
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
-      - name: Test distributions and publish a new version
-        if: steps.publication.outputs.enabled == 'true'
+      # The first PyPI upload is manual; publication starts once `pypi_token` exists.
+      - name: Skip publication without a PyPI token
+        if: env.PYPI_TOKEN == ''
+        run: echo "::notice::Publication skipped until the pypi_token secret exists."
+
+      - name: Release
+        if: env.PYPI_TOKEN != ''
         uses: patrick-kidger/action_update_python_project@v8
         with:
-          python-version: "3.12"
-          checkout: "false"
-          test-script: bash '${{ github.workspace }}/.github/scripts/test-release.sh'
-          pypi-token: ${{ secrets.pypi_token }}
-          github-user: vboussange
-          github-token: ${{ github.token }}
+            python-version: "3.12"
+            # Uninstall and reinstall pytest to work around the fact that it doesn't get put into `bin` otherwise.
+            test-script: |
+                cp -r ${{ github.workspace }}/tests ./tests
+                cp ${{ github.workspace }}/pyproject.toml ./pyproject.toml
+                uv pip uninstall pytest
+                uv sync --no-install-project --inexact
+                uv run --no-sync pytest -n auto
+            pypi-token: ${{ secrets.pypi_token }}
+            github-user: vboussange
+            github-token: ${{ github.token }}
