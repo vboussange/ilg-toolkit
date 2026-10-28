@@ -24,6 +24,7 @@ from .losses import MLPELoss
 from .mlpe import RegionalMLPECalibration
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel, ConductanceModel
+from .models.base import _model_species, _species_names
 
 
 class ArtifactError(ValueError):
@@ -193,6 +194,15 @@ def _head_template(name, metadata, target):
 
 def _model_template(metadata, distance_model):
     target = TargetSpec(**metadata["target"])
+    species = None if metadata["species"] is None else tuple(metadata["species"])
+    if len(_model_species(distance_model)) != (1 if species is None else len(species)):
+        raise ArtifactError(
+            f"Saved model has species {species!r}; the distance_model template has "
+            f"species {distance_model.species!r}"
+        )
+    if distance_model.species != species:
+        distance_model = copy(distance_model)
+        object.__setattr__(distance_model, "species", _species_names(species))
     solver_settings = metadata["distance_solver"]
     if isinstance(distance_model, ConductanceModel):
         if solver_settings is None:
@@ -223,7 +233,6 @@ def _model_template(metadata, distance_model):
         feature_names=(
             None if metadata["feature_names"] is None else tuple(metadata["feature_names"])
         ),
-        species=None if metadata["species"] is None else tuple(metadata["species"]),
     )
 
 
@@ -231,7 +240,7 @@ def save_model(path, model: LandscapeGeneticsModel) -> None:
     """Save a fitted model and its prediction contract atomically.
 
     The Equinox file retains distance parameters, direct or MLPE calibration,
-    target semantics, species order, feature count/names, and MLPE calibration-pair
+    target semantics, species, feature count/names, and MLPE calibration-pair
     identities. Compatible custom distance models use the same template protocol.
     Files contain a small JSON metadata header followed by serialized array values.
 
@@ -267,8 +276,8 @@ def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGenet
     The template supplies the model class, static settings, and compatible
     numerical shapes and dtypes. Match patch size, patch microbatch size, dropout,
     species count, and custom activation functions. Initial parameter values may
-    differ. Saved parameters and conductance solver settings replace the template's
-    values; solver preparation is rebuilt for each region.
+    differ. Saved parameters, species names and conductance solver settings replace
+    the template's values; solver preparation is rebuilt for each region.
 
     Equinox checks array structure, shapes, and dtypes; incompatible
     artifacts or templates raise ``ArtifactError``. Static settings supplied by

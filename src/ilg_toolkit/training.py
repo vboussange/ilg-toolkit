@@ -24,7 +24,7 @@ from .data import ObservationCollection, PairwiseObservations, RegionBatch, Regi
 from .losses import _LossContext
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
-from .models.base import distances_from_latent, prepare_distance_context
+from .models.base import _model_species, distances_from_latent, prepare_distance_context
 from .models.common import with_dropout_mode
 from .resistance import ResistanceSolverContext
 
@@ -292,7 +292,6 @@ def _evaluate_regions(
     config: TrainingConfig,
     step: int,
     calibrations: Mapping | None = None,
-    species: tuple[str, ...] | None = None,
 ) -> tuple[float, dict[str, float], dict, dict[str, float] | None]:
     """Regional criteria and calibration from matching distance and statistical parameters."""
     values, fitted = {}, {}
@@ -331,9 +330,10 @@ def _evaluate_regions(
         name: float(np.mean([values[b.key] for b in batches if b.region.name == name]))
         for name in dict.fromkeys(b.region.name for b in batches)
     }
+    species = parameters[0].species
     by_species = (
         None
-        if parameters[0].num_species == 1 or species is None
+        if species is None or len(species) == 1
         else {
             species[index]: float(
                 np.mean([values[b.key] for b in batches if b.species_index == index])
@@ -355,7 +355,6 @@ def train(
     *,
     distance_model: AbstractDistanceModel | None = None,
     config: TrainingConfig | None = None,
-    species: Sequence[str] | None = None,
     validation: tuple[RegionCollection, ObservationCollection] | None = None,
     state: TrainingState | None = None,
     on_step: Callable[[TrainingState], None] | None = None,
@@ -374,11 +373,10 @@ def train(
         region: One region batch, a sequence, or a mapping keyed by region name.
         observations: Genetic observations aligned with the supplied regions; each
             region may supply observations for several species.
-        distance_model: Initial distance model for a new training run; omit for continuation.
+        distance_model: Initial distance model for a new training run, carrying the
+            species names; omit for continuation.
         config: Loss and training settings. For continuation, only the total step
             budget may increase; omitted settings use the saved configuration.
-        species: Species names in distance-model parameter order. Required for
-            multispecies models; a single species can be inferred from the inputs.
         validation: Regions and disjoint observations used to select the model by
             validation loss, using calibration estimated from training observations.
         state: Saved training state to continue with unchanged inputs and settings.
@@ -401,10 +399,6 @@ def train(
         model. Built-in validation uses training-fitted coefficients and distance moments.
     """
     _require_float64()
-    if species is not None and (
-        isinstance(species, (str, bytes)) or not isinstance(species, Sequence)
-    ):
-        raise ValueError("Species order must be a sequence of names")
     if state is not None and not isinstance(state, TrainingState):
         raise ValueError("state must be a TrainingState returned by train")
     if state is not None and distance_model is not None:
@@ -420,9 +414,6 @@ def train(
         _validate_state(state)
         distance_model = state.latest_model.distance_model
         config = state.config if config is None else config
-        if species is not None and tuple(species) != state.latest_model.species:
-            raise ValueError("Continuation must retain the saved species order")
-        species = state.latest_model.species
     assert distance_model is not None and config is not None
     if on_step is not None and not callable(on_step):
         raise ValueError("on_step must be callable or None")
@@ -439,16 +430,14 @@ def train(
     if validation is not None and (not isinstance(validation, tuple) or len(validation) != 2):
         raise ValueError("validation must be a (regions, observations) tuple")
     prepared = _prepare_training_inputs(
-        region, observations, species, distance_model.num_species, validation=validation
+        region, observations, distance_model.species, validation=validation
     )
     first_region, first_observations = prepared.inputs[0]
-    species = prepared.species
     prototype = LandscapeGeneticsModel(
         distance_model,
         config.loss._calibration(first_observations.target, {}),
         first_region.feature_array.shape[-1],
         feature_names=first_region.feature_names,
-        species=species,
     )
     random_key = (
         jax.random.split(jax.random.key(config.seed))[1] if state is None else state.rng_key
@@ -586,14 +575,12 @@ def train(
             )
         if step == 0 or step % config.eval_every == 0 or step == config.steps:
             training_loss, regional_training, calibrations, species_training = _evaluate_regions(
-                parameters, training_batches, config, step, species=species
+                parameters, training_batches, config, step
             )
             validation_loss, regional_validation, _, species_validation = (
-                (None, {}, {}, None if distance_model.num_species == 1 else {})
+                (None, {}, {}, None if len(_model_species(distance_model)) == 1 else {})
                 if not validation_batches
-                else _evaluate_regions(
-                    parameters, validation_batches, config, step, calibrations, species
-                )
+                else _evaluate_regions(parameters, validation_batches, config, step, calibrations)
             )
             history.append(
                 StepRecord(
@@ -612,7 +599,7 @@ def train(
                 selected_loss = training_loss if validation_loss is None else validation_loss
         elif on_step is not None:
             _, _, current_calibrations, _ = _evaluate_regions(
-                parameters, training_batches, config, step, species=species
+                parameters, training_batches, config, step
             )
             latest = make_model(current_calibrations)
         if on_step is not None:

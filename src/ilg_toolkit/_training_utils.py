@@ -7,7 +7,7 @@ from typing import NamedTuple
 from .data import ObservationCollection, PairwiseObservations, RegionBatch, RegionCollection
 
 
-# Region name and index in the retained full species parameter order.
+# Region name and species index in the distance model's parameter order.
 type RegionSpeciesKey = tuple[str, int]
 
 
@@ -19,7 +19,7 @@ class _RegionWithGeneticObservations(NamedTuple):
 
 
 class _RegionSpeciesTrainingInput(NamedTuple):
-    """Species-specific region inputs, retained parameter index, and loss weight."""
+    """Species-specific region inputs, species parameter index, and loss weight."""
 
     region: RegionBatch
     observations: PairwiseObservations
@@ -104,29 +104,9 @@ def _validate_shared_training_contract(inputs: Sequence[_RegionWithGeneticObserv
             raise ValueError("Regional feature contracts must match meanings and order")
 
 
-def _resolve_training_species_order(
-    inputs: Sequence[_RegionWithGeneticObservations],
-    species: Sequence[str] | None,
-    num_species: int,
-) -> tuple[str, ...] | None:
-    """Retained parameter order, inferred only for a single-species distance model."""
-    from .models.base import validate_species_order
-
-    if species is None:
-        if num_species > 1:
-            raise ValueError("A multispecies distance model requires species= in parameter order")
-        names = {name for item in inputs for name in (item.region.species or ())}
-        names.update(
-            item.observations.species for item in inputs if item.observations.species is not None
-        )
-        species = tuple(sorted(names)) if names else None
-    return validate_species_order(species, num_species)
-
-
 def _prepare_region_species_inputs(
     inputs: Sequence[_RegionWithGeneticObservations],
-    order: tuple[str, ...] | None,
-    num_species: int,
+    species: tuple[str, ...] | None,
 ) -> tuple[_RegionSpeciesTrainingInput, ...]:
     """Prepare species-specific inputs with equal species and within-species region weights."""
     from .models.base import region_for_species
@@ -135,18 +115,25 @@ def _prepare_region_species_inputs(
     keys = set()
     for region, observations in inputs:
         name = observations.species
-        if name is None and order is not None and len(order) == 1:
-            name = order[0]
-        if order is None:
+        if name is None and species is not None and len(species) == 1:
+            name = species[0]
+        if species is None:
             if name is not None or region.species is not None:
-                raise ValueError("Named observations require a species order")
+                raise ValueError(
+                    "Named observations or sampling units require a distance model with species"
+                )
             index = 0
         else:
-            if name not in order or (num_species > 1 and region.species is None):
-                raise ValueError("Observations and sampling units must identify a modeled species")
-            index = order.index(name)
-            if region.species is not None and not set(region.species).issubset(order):
-                raise ValueError("Sampling-unit species must belong to the model species order")
+            if name not in species or (len(species) > 1 and region.species is None):
+                raise ValueError(
+                    f"Observations and sampling units must identify one of the distance "
+                    f"model's species {species!r}"
+                )
+            index = species.index(name)
+            if region.species is not None and not set(region.species).issubset(species):
+                raise ValueError(
+                    f"Sampling-unit species must belong to the distance model's species {species!r}"
+                )
         key = (region.name, index)
         if key in keys:
             raise ValueError("Provide one observations object per region–species group")
@@ -161,10 +148,9 @@ def _prepare_region_species_inputs(
 
 
 class _PreparedTrainingInputs(NamedTuple):
-    """Aligned inputs, retained species order, and weighted region–species groups."""
+    """Aligned inputs and weighted region–species groups."""
 
     inputs: tuple[_RegionWithGeneticObservations, ...]
-    species: tuple[str, ...] | None
     training: tuple[_RegionSpeciesTrainingInput, ...]
     validation: tuple[_RegionSpeciesTrainingInput, ...]
 
@@ -172,23 +158,20 @@ class _PreparedTrainingInputs(NamedTuple):
 def _prepare_training_inputs(
     region: RegionCollection,
     observations: ObservationCollection,
-    species: Sequence[str] | None,
-    num_species: int,
+    species: tuple[str, ...] | None,
     *,
     validation: tuple[RegionCollection, ObservationCollection] | None = None,
 ) -> _PreparedTrainingInputs:
-    """Region–species groups sharing one target, feature contract, and species order.
+    """Region–species groups sharing one target and feature contract.
 
-    Validation inputs must share the contract of the training inputs, from which
-    alone a single-species order is inferred.
+    ``species`` are the distance model's species names. Validation inputs must
+    share the contract of the training inputs.
     """
     inputs = _normalize_training_inputs(region, observations)
     validation_inputs = () if validation is None else _normalize_training_inputs(*validation)
     _validate_shared_training_contract((*inputs, *validation_inputs))
-    order = _resolve_training_species_order(inputs, species, num_species)
     return _PreparedTrainingInputs(
         inputs,
-        order,
-        _prepare_region_species_inputs(inputs, order, num_species),
-        _prepare_region_species_inputs(validation_inputs, order, num_species),
+        _prepare_region_species_inputs(inputs, species),
+        _prepare_region_species_inputs(validation_inputs, species),
     )

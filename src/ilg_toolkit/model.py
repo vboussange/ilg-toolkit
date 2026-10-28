@@ -10,7 +10,7 @@ from ._checks import _require_float64
 from .calibration import AbstractCalibrationModule
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 from .models import AbstractDistanceModel
-from .models.base import _species_distances, select_species, validate_species_order
+from .models.base import _model_species, _species_distances, select_species
 from .prediction import Prediction
 
 
@@ -18,23 +18,26 @@ from .prediction import Prediction
 class LandscapeGeneticsModel(eqx.Module):
     """A distance model composed with fitted genetic calibration.
 
-    ``species`` associates names with the distance model's parameter rows.
-    Feature meanings define the query contract. The calibration owns target
-    semantics and statistical prediction behavior.
+    Species names come from the distance model. Feature meanings define the query
+    contract. The calibration owns target semantics and statistical prediction
+    behavior.
     """
 
     distance_model: AbstractDistanceModel
     calibration: AbstractCalibrationModule
     feature_count: int
     feature_names: tuple[str, ...] | None = None
-    species: tuple[str, ...] | None = eqx.field(default=None, kw_only=True)
 
     def __post_init__(self):
         if not isinstance(self.distance_model, AbstractDistanceModel):
             raise TypeError("distance_model must implement AbstractDistanceModel")
         if not isinstance(self.calibration, AbstractCalibrationModule):
             raise TypeError("calibration must implement AbstractCalibrationModule")
-        self.species = validate_species_order(self.species, self.distance_model.num_species)
+
+    @property
+    def species(self) -> tuple[str, ...] | None:
+        """The distance model's species names, or ``None`` for one unnamed species."""
+        return self.distance_model.species
 
     @property
     def target(self) -> TargetSpec:
@@ -185,11 +188,8 @@ class LandscapeGeneticsModel(eqx.Module):
             calibration supports neither conditional mode. Every MLPE mode requires
             existing calibration for the query region/species and population units.
 
-            Support conditioning does not establish calibration in a new region.
-            Use [`calibrate`][ilg_toolkit.calibrate] to fit a fresh relationship there,
-            passing ``species=model.species`` when transferring a multispecies model.
             See the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md)
-            for training, fresh calibration, and evaluation, and the
+            for training, calibration, and evaluation, and the
             [ensemble workflow](../examples/ensemble.md) for checkpoint continuation.
         """
         _require_float64()
@@ -249,7 +249,7 @@ class LandscapeGeneticsModel(eqx.Module):
         by_species = {value.species: value for value in observations}
         if len(by_species) != len(observations):
             raise ValueError("Support requires one observations object per species")
-        if self.distance_model.num_species == 1 and set(by_species) == {None}:
+        if len(_model_species(self.distance_model)) == 1 and set(by_species) == {None}:
             by_species = {selected[0][0]: observations[0]}
         if set(by_species) != {name for name, _ in selected}:
             raise ValueError("Support observations must match the selected species")

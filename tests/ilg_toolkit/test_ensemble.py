@@ -37,9 +37,7 @@ def test_multispecies_predictions_and_distances_preserve_member_and_species_orde
         for index, member in enumerate(ensemble.members):
             np.testing.assert_array_equal(
                 ecological[name][index],
-                member.distance_model.predict(
-                    region, species=name, species_order=member.species
-                ).as_matrix(),
+                member.distance_model.predict(region, species=name).as_matrix(),
             )
         np.testing.assert_array_equal(
             ensemble.predict(region, species=name).prediction.values,
@@ -95,7 +93,9 @@ def test_incompatible_members_and_misaligned_predictions_report_position(known_e
     for changed in (
         replace(first, calibration=DirectCalibrationModule(TargetSpec("another target"))),
         replace(first, feature_names=("changed",)),
-        replace(first, species=("frog",)),
+        replace(
+            first, distance_model=type(first.distance_model)(jnp.asarray(1.0), species=("frog",))
+        ),
     ):
         with pytest.raises(ValueError, match="member 1"):
             Ensemble([first, changed])
