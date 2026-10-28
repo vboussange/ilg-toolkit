@@ -76,33 +76,25 @@ on relevant pull requests and main pushes. Successful main builds deploy through
 the GitHub Pages environment. Configure the repository's Pages source as
 **GitHub Actions**.
 
-### Docstrings and prose
+### Docstring format
 
 Use [Google-style Python docstrings](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings)
-throughout the codebase. Start with what the object is or does, using the
-canonical terms from `GLOSSARY.md`. Add `Args:`, `Returns:`, `Raises:`,
-`Attributes:`, `Notes:`, and `Examples:` sections when they clarify the contract.
-Indent section contents by four spaces. Describe units, array shapes, ordering,
-constraints, and scientific meaning; type annotations already describe Python
-types. Preserve substantive examples for prediction and calibration.
+throughout the codebase. The summary line of a function or method opens with a
+descriptive third-person verb whose subject is the function ("Returns the
+conductance surface ..."); a class's opens with what the object is ("A region
+batch ..."); a property's reads like an attribute ("The target contract ...").
+
+The sections are `Args:`, `Returns:`, `Raises:`, `Attributes:`, `Notes:`, and
+`Examples:`. Indent section contents by four spaces. Describe units, array shapes,
+ordering, constraints, and scientific meaning; type annotations describe Python
+types. Keep substantive examples for prediction and calibration.
 
 Document initialization on the class; constructors and standard lifecycle
-methods do not need duplicate docstrings. Document public methods and properties.
+methods carry no duplicate docstrings. Document public methods and properties.
 Ruff checks the Google convention, and mkdocstrings renders it in the API
 reference. Review scientific meaning and parameter coverage alongside those
-automated style checks.
-
-Describe current behavior in clear US English, with one glossary term per
-concept, following the paper's terminology mapped in `GLOSSARY.md`. ILG Toolkit
-**provides utilities** and never learns: reserve **learned** for trained models'
-parameters and surfaces. Training estimates distance-model and statistical
-parameters; calibration fits a genetic relationship for a fixed distance model. Use **training** for the optimization workflow and retain
-statistical terms such as **fitted calibration** where they describe the
-operation. Write **region–species** with an en dash and expand abbreviations on
-first use in each module or page. Use implementation terminology when it helps
-readers make a numerical or programming decision. Explain limitations beside
-the behavior they constrain, without historical comparisons or unsupported
-claims of ecological inference.
+automated style checks. The Prose section of `AGENTS.md` sets the wording rules
+for docstrings, including the required `Args:` sections.
 
 ## Releases
 
