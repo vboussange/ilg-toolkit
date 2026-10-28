@@ -185,8 +185,8 @@ class MLPELoss(AbstractLoss):
     each region–species group (group-specific calibration), while distance-model
     parameters are shared across groups. Standardization makes the loss invariant
     to the scale of ecological distances, so MLPE does not identify an absolute
-    connectivity scale. MLPE requires float64, population sampling units, and
-    dissimilarity targets. See the [advanced MLPE API](mlpe.md) for
+    connectivity scale. MLPE requires population sampling units and dissimilarity
+    targets. See the [advanced MLPE API](mlpe.md) for
     identifiability, precision, diagnostics, and the standalone array-distance fitter.
 
     Args:
@@ -228,8 +228,6 @@ class MLPELoss(AbstractLoss):
             object.__setattr__(self, name, float(value))
 
     def _prepare(self, region, observations, *, training):
-        if not jax.config.read("jax_enable_x64"):
-            raise RuntimeError("MLPE requires float64: enable JAX_ENABLE_X64 or jax.enable_x64()")
         if observations.target.kind != "dissimilarity":
             raise ValueError("Population MLPE requires dissimilarities")
         if any(kind != "population" for kind in region.sampling_unit_kinds):

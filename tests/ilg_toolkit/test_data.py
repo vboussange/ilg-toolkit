@@ -25,7 +25,7 @@ def test_species_observations_align_repeated_ids_without_cross_species_pairs(obs
         observations = PairwiseObservations.from_pairs(
             [("b", "a")], [value], target=target, species=species
         )
-        matrix_observations = PairwiseObservations.from_matrix(
+        matrix_observations = PairwiseObservations(
             ("a", "b"), [[0, value], [value, 0]], target=target, species=species
         )
         for observed in (observations, matrix_observations):
@@ -51,7 +51,7 @@ def test_observation_dtype_and_absent_pairs_survive_matrix_pair_and_region_align
     region, target, _ = observation_problem()
     measurements = jnp.asarray([0.123456789012345], dtype=dtype)
     paired = PairwiseObservations.from_pairs([("unit/20", "unit/7")], measurements, target=target)
-    matrix = PairwiseObservations.from_matrix(
+    matrix = PairwiseObservations(
         ("unit/20", "unit/7"),
         jnp.asarray([[0, measurements[0]], [measurements[0], 0]], dtype=dtype),
         target=target,
@@ -129,10 +129,9 @@ def test_array_like_observations_and_targets_follow_configured_precision(
 ):
     precise = 0.123456789012345
     with jax.enable_x64(enable_x64):
-        region, target, model = observation_problem()
+        region, target, _ = observation_problem()
         dtype = jnp.float64 if enable_x64 else jnp.float32
         expected = precise if enable_x64 else float(np.float32(precise))
-        predictions = []
         for values in ([precise], np.array([precise]), jnp.asarray([precise])):
             observations = PairwiseObservations.from_pairs(
                 [("unit/7", "unit/20")], values, target=target
@@ -142,25 +141,33 @@ def test_array_like_observations_and_targets_follow_configured_precision(
             for transformed in (target.forward(values), target.inverse(values)):
                 assert transformed.dtype == dtype
                 assert float(transformed[0]) == expected
-            fitted = train(
-                region,
-                observations,
-                distance_model=model,
-                config=TrainingConfig(loss=Log1pLoss(), steps=0),
-            )
-            prediction = fitted.selected_model.predict(region)
-            assert prediction.values.dtype == prediction.as_matrix().dtype == dtype
-            predictions.append(prediction.values)
-        np.testing.assert_array_equal(predictions[0], predictions[1])
-        np.testing.assert_array_equal(predictions[0], predictions[2])
-        assert jax.config.read("jax_enable_x64") is enable_x64
-
         integer_observations = PairwiseObservations.from_pairs(
             [("unit/7", "unit/20")], [1], target=target, sampling_unit_ids=region.sampling_unit_ids
         )
         assert integer_observations.values.dtype == dtype
         assert bool(jnp.isnan(integer_observations.values[0, 2]))
         assert float(integer_observations.observed_values[0]) == 1.0
+
+
+def test_array_like_observations_give_identical_float64_predictions(observation_problem):
+    region, target, model = observation_problem()
+    precise = 0.123456789012345
+    predictions = []
+    for values in ([precise], np.array([precise]), jnp.asarray([precise])):
+        observations = PairwiseObservations.from_pairs(
+            [("unit/7", "unit/20")], values, target=target
+        )
+        fitted = train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        )
+        prediction = fitted.selected_model.predict(region)
+        assert prediction.values.dtype == prediction.as_matrix().dtype == jnp.float64
+        predictions.append(prediction.values)
+    np.testing.assert_array_equal(predictions[0], predictions[1])
+    np.testing.assert_array_equal(predictions[0], predictions[2])
 
 
 def test_coordinate_declarations_reject_unknown_axes_and_conflicting_feature_labels(
@@ -190,7 +197,7 @@ def test_coordinate_declarations_reject_unknown_axes_and_conflicting_feature_lab
 
 def test_equivalent_matrix_and_pair_inputs_train_equivalent_models(observation_problem):
     region, target, model = observation_problem()
-    matrix = PairwiseObservations.from_matrix(
+    matrix = PairwiseObservations(
         region.sampling_unit_ids, [[0, 1, 4], [1, 0, 1], [4, 1, 0]], target=target
     )
     pairs = PairwiseObservations.from_pairs(
@@ -241,7 +248,7 @@ def test_incomplete_pairs_remain_absent_through_fitting(ScalarEmbedding, observa
 
 def test_selected_observations_are_disjoint_for_training_and_validation(observation_problem):
     region, target, model = observation_problem()
-    observations = PairwiseObservations.from_matrix(
+    observations = PairwiseObservations(
         region.sampling_unit_ids, [[0, 1, 4], [1, 0, 1], [4, 1, 0]], target=target
     )
     training = observations.select_pairs([("unit/7", "unit/20")])

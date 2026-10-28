@@ -1,4 +1,4 @@
-"""Standalone maximum-likelihood population effects (MLPE) calibration using float64."""
+"""Standalone maximum-likelihood population effects (MLPE) calibration."""
 
 import math
 from functools import partial
@@ -10,8 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import minimize
 
+from .._checks import _positive_integer, _require_float64
 from ..data import PairwiseObservations, TargetSpec
-from ..prediction import Prediction
 from .likelihood import finalize_mlpe_fit, MLPEFit, profiled_mlpe_ml_fit
 
 
@@ -158,36 +158,7 @@ class RegionalMLPECalibration(eqx.Module):
         if not self.region_name or len(set(self.population_ids)) != n:
             raise MLPEError("MLPE calibration region and sampling-unit identities must align")
 
-    def predict(
-        self,
-        distances,
-        pairs,
-        *,
-        known_effects: bool = False,
-        support: PairwiseObservations | None = None,
-        support_distances=None,
-    ) -> Prediction:
-        """Genetic predictions from ecological distances aligned with query pairs.
 
-        The ``model_values`` extra gives model-scale values; conditional modes
-        also give ``model_variance`` and ``effect_variance`` on that scale.
-        ``known_effects`` uses saved population effects, while ``support`` uses
-        disjoint observations and aligned ``support_distances`` to condition them.
-        Residual variance and jitter remain on this calibration.
-        """
-        from .prediction import predict
-
-        return predict(
-            self,
-            distances,
-            pairs,
-            known_effects=known_effects,
-            support=support,
-            support_distances=support_distances,
-        )
-
-
-@jax.enable_x64()
 def calibrate_mlpe(
     distances,
     observations: PairwiseObservations,
@@ -228,8 +199,7 @@ def calibrate_mlpe(
             For invalid, unidentifiable, numerically unsupported, or unconverged fits.
 
     Notes:
-        This call uses float64 internally. Joint MLPE training requires float64 enabled
-        beforehand. Population-sized covariance algebra avoids a dense pair-by-pair
+        Population-sized covariance algebra avoids a dense pair-by-pair
         covariance matrix. For population variance u, residual variance e, jitter j,
         and maximum observed population degree dmax, supported precision requires
         ``eps * (1 + 2 * dmax * u / (e + j)) <= 0.01``. Failed factorizations,
@@ -255,11 +225,11 @@ def calibrate_mlpe(
     """
     from ..losses import MLPELoss
 
+    _require_float64()
     loss = MLPELoss() if loss is None else loss
     if not isinstance(loss, MLPELoss):
         raise MLPEError("calibrate_mlpe requires MLPELoss settings")
-    if type(max_iterations) is not int or max_iterations < 1:
-        raise MLPEError("max_iterations must be a positive integer")
+    max_iterations = _positive_integer("max_iterations", max_iterations, error=MLPEError)
     distances = jnp.asarray(distances, dtype=jnp.float64)
     pairs = observations.observed_pairs
     targets = jnp.asarray(observations.observed_values, dtype=jnp.float64)

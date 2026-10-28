@@ -6,9 +6,7 @@ from .likelihood import (
     finalize_mlpe_fit,
     mlpe_effect_posterior,
     mlpe_ml_negative_log_likelihood,
-    pair_incidence_matrix,
     profiled_mlpe_ml_fit,
-    profiled_mlpe_ml_negative_log_likelihood,
     sample_standardize_distances,
 )
 
@@ -21,8 +19,6 @@ __all__ = [
     "finalize_mlpe_fit",
     "mlpe_effect_posterior",
     "mlpe_ml_negative_log_likelihood",
-    "pair_incidence_matrix",
     "profiled_mlpe_ml_fit",
-    "profiled_mlpe_ml_negative_log_likelihood",
     "sample_standardize_distances",
 ]

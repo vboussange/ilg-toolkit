@@ -33,7 +33,9 @@ from ilg_toolkit.models import ConductanceModel
 
 # Direct and MLPE calibrations, without and with species, save different trees.
 @pytest.mark.parametrize(("loss", "num_species"), [(Log1pLoss(), 1), (MLPELoss(), 2)])
-def test_saved_precision_is_preserved(tmp_path, training_problem, loss, num_species):
+def test_saved_precision_is_preserved(
+    tmp_path, training_problem, loss, num_species, float64_required
+):
     with jax.enable_x64():
         region, observations, distance_model = training_problem(
             "embedding", num_species=num_species
@@ -68,10 +70,9 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, loss, num_spec
                     lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,
                     distance_model,
                 )
-                with pytest.raises(ArtifactError):
-                    load = load_model if kind == "model" else load_checkpoint
-                    load(path, distance_model=narrow)
-                assert not jax.config.read("jax_enable_x64")
+            load = load_model if kind == "model" else load_checkpoint
+            with float64_required():
+                load(path, distance_model=narrow)
 
 
 # NumPy storage drops weak types, and eqx.tree_equal ignores them.
@@ -99,7 +100,12 @@ def test_saved_weak_types_are_restored_whatever_the_template(
         restored = load_checkpoint(tmp_path / "checkpoint.eqx", distance_model=template)
 
         def weak_types(tree):
-            return [leaf.weak_type for leaf in jax.tree.leaves(eqx.filter(tree, eqx.is_array))]
+            # Typed random keys have no weak type.
+            return [
+                leaf.weak_type
+                for leaf in jax.tree.leaves(eqx.filter(tree, eqx.is_array))
+                if not jnp.issubdtype(leaf.dtype, jax.dtypes.prng_key)
+            ]
 
         assert weak_types(model) == weak_types(initial.selected_model) == [True]
         assert 0 < sum(weak_types(trained)) < len(weak_types(trained))
@@ -189,7 +195,7 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
 
     region, observations = persistence_problem()
     other = replace(region, name="second-calibration")
-    other_observations = PairwiseObservations.from_matrix(
+    other_observations = PairwiseObservations(
         observations.sampling_unit_ids, observations.values * 2.0, target=observations.target
     )
     labels = set(region.sampling_unit_ids[:4])
@@ -315,3 +321,11 @@ def test_interrupted_model_replacement_preserves_previous_predictions(
     np.testing.assert_array_equal(restored.predict(region).values, first.predict(region).values)
     assert not np.array_equal(replacement.predict(region).values, first.predict(region).values)
     assert set(tmp_path.iterdir()) == {path}
+
+
+def test_loading_requires_float64(tmp_path, observation_problem, float64_required):
+    region, target, distance_model = observation_problem()
+    path = tmp_path / "model.eqx"
+    save_model(path, LandscapeGeneticsModel(distance_model, DirectCalibrationModule(target), 2))
+    with float64_required():
+        load_model(path, distance_model=distance_model)

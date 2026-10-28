@@ -2,11 +2,12 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import final, overload, TypeVar
+from typing import cast, final, overload, TypeVar
 
 import jax
 import jax.numpy as jnp
 
+from ._checks import _require_float64
 from .data import RegionBatch
 from .model import LandscapeGeneticsModel
 from .models import ConductanceModel
@@ -47,7 +48,6 @@ class EnsembleSurface:
     region_name: str
 
 
-@jax.enable_x64()
 def aggregate_predictions(predictions: Sequence[Prediction]) -> EnsemblePrediction:
     """Equal-weight original-scale mean and spread of ordered, aligned predictions.
 
@@ -94,7 +94,6 @@ def _member_moments(values):
     return mean, jnp.ldexp(jnp.std(normalized, axis=0, ddof=0), exponent)
 
 
-@jax.enable_x64()
 def _summarize_members(values):
     mean, spread = _member_moments(jnp.asarray(values, dtype=jnp.float64))
     if not bool(jnp.isfinite(mean).all() & jnp.isfinite(spread).all()):
@@ -178,17 +177,16 @@ class Ensemble:
         A species sequence returns a mapping and computes each member's patch
         features once. See ``LandscapeGeneticsModel.predict`` for species selection.
         """
+        _require_float64()
         pairs = None if pairs is None else tuple(pairs)
-        if isinstance(species, str) or species is None:
-            predictions = self._map_members(
-                "prediction", lambda model: model.predict(region, pairs=pairs, species=species)
-            )
-            return aggregate_predictions(predictions)
         predictions = self._map_members(
             "prediction", lambda model: model.predict(region, pairs=pairs, species=species)
         )
+        if isinstance(species, str) or species is None:
+            return aggregate_predictions(cast(tuple[Prediction, ...], predictions))
+        by_species = cast(tuple[dict[str, Prediction], ...], predictions)
         return {
-            name: aggregate_predictions(tuple(values[name] for values in predictions))
+            name: aggregate_predictions(tuple(values[name] for values in by_species))
             for name in species
         }
 
@@ -206,6 +204,7 @@ class Ensemble:
         self, region: RegionBatch, *, species: str | Sequence[str] | None = None
     ) -> tuple[jax.Array, ...] | dict[str, tuple[jax.Array, ...]]:
         """Ecological-distance matrices in member order, each on its own scale."""
+        _require_float64()
 
         def predict_member(model):
             model._validate_region(region)
@@ -228,11 +227,11 @@ class Ensemble:
         self, region: RegionBatch, *, species: Sequence[str]
     ) -> dict[str, EnsembleSurface]: ...
 
-    @jax.enable_x64()
     def conductance_surfaces(
         self, region: RegionBatch, *, species: str | Sequence[str] | None = None
     ) -> EnsembleSurface | dict[str, EnsembleSurface]:
         """Mean and descriptive spread of conductance surfaces in member order."""
+        _require_float64()
 
         def surface(model):
             model._validate_region(region)

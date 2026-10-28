@@ -66,9 +66,8 @@ class Prediction(eqx.Module):
         """
         values = self.values if name is None else self.extras[name]
         lookup = {label: index for index, label in enumerate(self.sampling_unit_ids)}
-        with jax.enable_x64(jax.config.read("jax_enable_x64") or values.dtype.itemsize == 8):
-            dtype = jnp.result_type(values.dtype, jnp.float32)
-            matrix = jnp.full((len(lookup), len(lookup)), jnp.nan, dtype=dtype)
-            left = jnp.asarray([lookup[a] for a, _ in self.pairs])
-            right = jnp.asarray([lookup[b] for _, b in self.pairs])
-            return matrix.at[left, right].set(values).at[right, left].set(values)
+        dtype = jnp.result_type(values.dtype, jnp.float32)
+        matrix = jnp.full((len(lookup), len(lookup)), jnp.nan, dtype=dtype)
+        left = jnp.asarray([lookup[a] for a, _ in self.pairs])
+        right = jnp.asarray([lookup[b] for _, b in self.pairs])
+        return matrix.at[left, right].set(values).at[right, left].set(values)

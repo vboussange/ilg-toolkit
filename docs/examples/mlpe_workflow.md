@@ -37,7 +37,8 @@ from ilg_toolkit import (
     TrainingConfig,
 )
 from ilg_toolkit.mlpe import calibrate_mlpe
-from ilg_toolkit.models import ResNet9Conductance
+from ilg_toolkit.models import LogLinearConductance, ResNet9Conductance
+from ilg_toolkit.models.base import prepare_distance_context
 from ilg_toolkit.resistance import effective_resistance
 from IPython.display import display, Markdown
 
@@ -60,7 +61,7 @@ def table(rows, columns=None):
     display(Markdown("\n".join(lines)))
 
 
-print("Devices:", jax.devices(), "— float64:", jax.config.read("jax_enable_x64"))
+print("Devices:", jax.devices(), "— float64:", jax.enable_x64.value)
 ```
 
     Devices: [CudaDevice(id=0)] — float64: True
@@ -103,8 +104,11 @@ def synthetic_region(name, *, seed, phase, columns=4, intercept=2.0, slope=0.3):
     patch_features = features.reshape(4, PATCH_SIZE, columns, PATCH_SIZE, 2).mean(axis=(1, 3))
     true_conductance = jnp.exp(2.0 * patch_features[..., 1] - 1.5 * patch_features[..., 0])
     # A complete small resistance matrix is useful for simulation, not required for prediction.
+    solver = prepare_distance_context(
+        LogLinearConductance(2, patch_size=PATCH_SIZE, solver_config=SOLVER), features
+    )
     true_resistance = effective_resistance(
-        true_conductance.astype(jnp.float64), jnp.arange(len(ids)), config=SOLVER
+        true_conductance.astype(jnp.float64), jnp.arange(len(ids)), context=solver
     )
     left, right = np.triu_indices(len(ids), 1)
     distances = np.asarray(true_resistance)[left, right]

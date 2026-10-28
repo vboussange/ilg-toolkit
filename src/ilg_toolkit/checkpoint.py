@@ -4,9 +4,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 import equinox as eqx
-import jax.numpy as jnp
+import jax
 import optax
 
+from ._checks import _require_float64
 from .config import TrainingConfig
 from .losses import _loss_from_metadata, _loss_metadata
 from .models import AbstractDistanceModel
@@ -74,7 +75,7 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
     """A saved training state restored with a caller-constructed distance model template.
 
     The template supplies the model class, static settings, numerical shapes, and
-    dtypes; float64 checkpoints require float64 enabled before loading. Continuation
+    dtypes. Continuation
     uses unchanged inputs and execution settings, allowing only the total step
     budget to increase. The built-in loss reconstructs its own statistical-state
     template from checkpoint metadata. Checkpoint persistence supports built-in
@@ -97,7 +98,9 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
 
     Raises:
         ArtifactError: The artifact or supplied template is incompatible.
+        RuntimeError: Float64 is disabled.
     """
+    _require_float64()
     try:
         with Path(path).open("rb") as stream:
             metadata, weak_leaves = _read_header(stream, kind="training_checkpoint")
@@ -116,7 +119,7 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
             template = TrainingState(
                 loss_state=loss_state,
                 optimizer_state=optimizer_state,
-                rng_key=jnp.zeros(2, dtype=jnp.uint32),
+                rng_key=jax.random.key(0),
                 config=config,
                 history=history,
                 latest_model=latest,

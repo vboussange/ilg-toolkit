@@ -159,6 +159,17 @@ def initial_state(training_problem):
     return region, observations, distance_model, state
 
 
+def test_checkpoint_restores_the_typed_random_key_and_its_stream(initial_state, tmp_path):
+    _, _, distance_model, state = initial_state
+    path = tmp_path / "key.eqx"
+    save_checkpoint(path, state)
+    restored = load_checkpoint(path, distance_model=distance_model)
+    assert jnp.issubdtype(restored.rng_key.dtype, jax.dtypes.prng_key)
+    np.testing.assert_array_equal(
+        jax.random.uniform(restored.rng_key, (4,)), jax.random.uniform(state.rng_key, (4,))
+    )
+
+
 def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(training_problem, tmp_path):
     with jax.enable_x64():
         region, observations, model = training_problem("embedding")
@@ -288,7 +299,9 @@ def test_checkpoint_enforces_progress_bounds(initial_state, tmp_path, boundary):
             header["metadata"]["history"] = [asdict(record) for record in invalid.history]
             with path.open("wb") as stream:
                 stream.write(json.dumps(header).encode() + b"\n")
-                eqx.tree_serialise_leaves(stream, invalid)
+                # Checkpoints store a typed random key as its raw key data.
+                stored = replace(invalid, rng_key=jax.random.key_data(invalid.rng_key))
+                eqx.tree_serialise_leaves(stream, stored)
         with pytest.raises(ValueError):
             if boundary == "save":
                 save_checkpoint(path, invalid)
@@ -296,3 +309,11 @@ def test_checkpoint_enforces_progress_bounds(initial_state, tmp_path, boundary):
                 load_checkpoint(path, distance_model=distance_model)
             else:
                 train(region, observations, state=invalid)
+
+
+def test_loading_requires_float64(initial_state, tmp_path, float64_required):
+    _, _, distance_model, state = initial_state
+    path = tmp_path / "checkpoint.eqx"
+    save_checkpoint(path, state)
+    with float64_required():
+        load_checkpoint(path, distance_model=distance_model)

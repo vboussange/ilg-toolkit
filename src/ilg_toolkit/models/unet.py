@@ -8,7 +8,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ..config import validate_patch_microbatch_size
+from .._checks import _positive_integer
 from .base import EmbeddingDistanceModel
 from .common import encode_patches
 
@@ -135,13 +135,16 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         patch_microbatch_size: int | None = None,
         key: jax.Array,
     ):
-        if isinstance(num_species, bool) or not isinstance(num_species, int) or num_species < 1:
-            raise ValueError("num_species must be a positive integer")
-        if patch_size <= 0 or base_channels <= 0 or embedding_dim <= 0:
-            raise ValueError("patch_size, base_channels, and embedding_dim must be positive")
+        in_channels = _positive_integer("in_channels", in_channels)
+        num_species = _positive_integer("num_species", num_species)
+        patch_size = _positive_integer("patch_size", patch_size)
+        base_channels = _positive_integer("base_channels", base_channels)
+        embedding_dim = _positive_integer("embedding_dim", embedding_dim)
         if not 0 <= dropout < 1:
             raise ValueError("dropout must lie in [0, 1)")
-        validate_patch_microbatch_size(patch_microbatch_size)
+        patch_microbatch_size = _positive_integer(
+            "patch_microbatch_size", patch_microbatch_size, optional=True
+        )
         keys = jax.random.split(key, 13)
         stage2, bottleneck = 2 * base_channels, 4 * base_channels
         self.patch_embedding = eqx.nn.Linear(

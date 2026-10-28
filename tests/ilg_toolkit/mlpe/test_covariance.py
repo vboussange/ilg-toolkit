@@ -36,6 +36,8 @@ def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian()
             distance_center=distances.mean(),
             distance_scale=distances.std(ddof=1),
             jitter=1e-7,
+            variance_floor=1e-10,
+            min_distance_scale=1e-12,
         )
         nll = mlpe_ml_negative_log_likelihood(
             distances,
@@ -48,6 +50,8 @@ def test_population_posterior_and_fixed_likelihood_match_direct_joint_gaussian()
             distance_center=distances.mean(),
             distance_scale=distances.std(ddof=1),
             jitter=1e-7,
+            variance_floor=1e-10,
+            min_distance_scale=1e-12,
         )
         mean, covariance, factor = map(np.asarray, (mean, covariance, factor))
     np.testing.assert_allclose(mean, expected_mean, atol=1e-12)

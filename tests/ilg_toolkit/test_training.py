@@ -33,7 +33,7 @@ def test_failed_solver_preserves_solver_failure(PointConductance):
             ("first", "last"),
             np.array([[0, 0], [2, 3]]),
         )
-        observations = PairwiseObservations.from_matrix(
+        observations = PairwiseObservations(
             region.sampling_unit_ids, [[0, 1], [1, 0]], target=TargetSpec("dissimilarity")
         )
         with pytest.raises(RuntimeError):
@@ -323,7 +323,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     assert eqx.tree_equal(first.loss_state, second.loss_state)
     assert eqx.tree_equal(first.latest_model.calibration, second.latest_model.calibration)
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
-    assert first.rng_key.dtype == np.uint32
+    assert jnp.issubdtype(first.rng_key.dtype, jax.dtypes.prng_key)
     expected_losses = []
     for index, (name, observed) in enumerate(zip(order, observed_groups, strict=True)):
         distances = np.asarray(
@@ -412,8 +412,6 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
     region, observations = embedding_problem(columns=2)
     model = WeightedEmbedding(jnp.zeros(2))
     config = TrainingConfig(loss=MLPELoss(), steps=0)
-    with jax.enable_x64(False), pytest.raises(RuntimeError):
-        train(region, observations, distance_model=model, config=config)
     with jax.enable_x64():
         six_units, _ = embedding_problem(columns=3)
         disjoint = PairwiseObservations.from_pairs(
@@ -566,7 +564,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
             np.testing.assert_allclose(
                 result.history[0].training_loss, independent_objective(initial), rtol=1e-8
             )
-            assert result.region_names == ("short", "wide")
+            assert set(result.history[0].training_by_region) == {"short", "wide"}
             for region in regions:
                 assert np.isfinite(
                     result.selected_model.predict(
@@ -908,3 +906,17 @@ def test_callback_models_keep_matching_distance_and_calibration_state(
         np.testing.assert_allclose([calibration.intercept, calibration.slope], beta, atol=1e-10)
         np.testing.assert_allclose(calibration.effect_mean, effects, atol=1e-10)
         np.testing.assert_allclose(calibration.effect_covariance, covariance, atol=1e-10)
+
+
+def test_training_requires_float64(observation_problem, float64_required):
+    region, target, model = observation_problem()
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20"), ("unit/20", "unit/99")], [1.0, 2.0], target=target
+    )
+    with float64_required():
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        )

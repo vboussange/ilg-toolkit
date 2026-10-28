@@ -37,12 +37,15 @@ def _region(shape=(8, 12, 3)):
     )
 
 
-def test_default_widths_keep_the_paper_architecture_and_parameter_count():
+def test_default_widths_keep_the_paper_architecture_parameter_count_and_float32_weights():
     # Shapes only: the default-width network is neither initialized nor compiled.
     model = eqx.filter_eval_shape(ResNet9Conductance, 3, key=jax.random.key(0))
     leaves = [leaf for leaf in jax.tree.leaves(model) if isinstance(leaf, jax.ShapeDtypeStruct)]
     assert model.channels == (64, 128, 256)
     assert sum(leaf.size for leaf in leaves) == _DEFAULT_PARAMETER_COUNT
+    # Float64 is enabled, and the patch encoder layers still hold float32 weights.
+    assert jax.enable_x64.value
+    assert {leaf.dtype for leaf in leaves} == {np.dtype("float32")}
 
 
 def test_patch_microbatches_preserve_surfaces_predictions_and_gradients(
@@ -72,7 +75,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     nodes = np.array([0, 1, 3])
     target = TargetSpec("synthetic dissimilarity", units="index")
     observations = tuple(
-        PairwiseObservations.from_matrix(
+        PairwiseObservations(
             ("south", "north", "east"),
             dense_resistance(np.full((2, 2), 2.0 * scale), nodes),
             target=target,

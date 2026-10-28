@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from numbers import Integral, Real
 
 import numpy as np
-from ilg_toolkit.config import ResistanceSolverConfig
 from ilg_toolkit.data import RegionBatch
 from ilg_toolkit.models import ConductanceModel
+from ilg_toolkit.models.base import prepare_distance_context
 from ilg_toolkit.models.common import pixel_to_patch_nodes
-from ilg_toolkit.resistance import build_resistance_context, effective_resistance
+from ilg_toolkit.resistance import effective_resistance
 
 
 def _helmert(populations):
@@ -313,7 +313,6 @@ def diagnose_wishart(
     training_unit_ids,
     anchor_id: str,
     parameter_source: str,
-    solver_config: ResistanceSolverConfig | None = None,
 ) -> WishartDiagnostic:
     """Connect an actual conductance grid graph to a frozen Gaussian-marker covariance.
 
@@ -347,13 +346,8 @@ def diagnose_wishart(
                 f"{name} must be finite and {'nonnegative' if lower_inclusive else 'positive'}"
             )
     height, width = region.feature_array.shape[:2]
-    if height % encoder.patch_size or width % encoder.patch_size:
-        raise ValueError("Raster dimensions must be divisible by encoder patch_size")
-    context = build_resistance_context(
-        (height // encoder.patch_size, width // encoder.patch_size), solver_config
-    )
-    if context.config != encoder.solver_config:
-        raise ValueError("Solver context policy does not match the conductance model settings")
+    context = prepare_distance_context(encoder, region.feature_array)
+    assert context is not None  # Conductance models always have a resistance solver.
     resistances = np.asarray(
         effective_resistance(
             encoder.conductance_surface(region),

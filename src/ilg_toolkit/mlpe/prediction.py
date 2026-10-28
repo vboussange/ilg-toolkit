@@ -47,8 +47,7 @@ def _effect_prediction(mean, covariance, left, right):
     return mean[left] + mean[right], effect_variance, jnp.isfinite(factor).all()
 
 
-@jax.enable_x64()
-def predict(
+def _predict_mlpe(
     calibration: RegionalMLPECalibration,
     distances,
     pairs,

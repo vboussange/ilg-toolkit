@@ -1,5 +1,6 @@
 """Shared scientific data and numerical reference fixtures."""
 
+import contextlib
 import itertools
 from collections.abc import Callable
 from dataclasses import replace
@@ -463,7 +464,7 @@ def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObserva
     ]
     target = TargetSpec("synthetic divergence", units="index")
     observations = [
-        PairwiseObservations.from_matrix(
+        PairwiseObservations(
             ("a", "b", "c"), [[0, 0.1, 0.1], [0.1, 0, 0.1], [0.1, 0.1, 0]], target=target
         ),
         PairwiseObservations.from_pairs([("x", "y")], [15], target=target),
@@ -523,7 +524,7 @@ def _population_effect_problem(
     noise = np.random.default_rng(17).normal(scale=0.12, size=(6, 6))
     observed += (noise + noise.T) / 2
     np.fill_diagonal(observed, 0)
-    observations = PairwiseObservations.from_matrix(labels, observed, target=target)
+    observations = PairwiseObservations(labels, observed, target=target)
     return region, observations
 
 
@@ -757,6 +758,18 @@ def regions_and_observations_fixture():
 @pytest.fixture(name="StochasticEmbedding", scope="session")
 def stochastic_embedding_fixture():
     return _StochasticEmbedding
+
+
+@contextlib.contextmanager
+def _float64_required():
+    """Disables float64 and expects the toolkit's precision error from the enclosed call."""
+    with jax.enable_x64(False), pytest.raises(RuntimeError, match="jax_enable_x64"):
+        yield
+
+
+@pytest.fixture(name="float64_required", scope="session")
+def float64_required_fixture():
+    return _float64_required
 
 
 @pytest.fixture(name="observation_problem", scope="session")

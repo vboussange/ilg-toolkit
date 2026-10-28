@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from ilg_toolkit import PairwiseObservations
+from ilg_toolkit import MLPECalibrationModule, PairwiseObservations
 from ilg_toolkit.mlpe import calibrate_mlpe
 
 
@@ -23,7 +23,9 @@ def test_calibration_matches_frozen_r_full_ml_and_predicts_without_query_targets
     np.testing.assert_allclose(head.effect_mean, mlpe_reference.blups, rtol=2e-4, atol=2e-5)
     assert head.distance_center == pytest.approx(-0.14328369260805038, abs=1e-14)
     assert head.distance_scale == pytest.approx(1.012896471531856, abs=1e-14)
-    query = head.predict([2.5, -2.0], [("new", "p01"), ("p02", "new")])
+    query = MLPECalibrationModule(observations.target, {("alpine", 0): head}).predict(
+        [2.5, -2.0], [("new", "p01"), ("p02", "new")], region_name="alpine"
+    )
     # Independent frozen predictions from the R coefficients and distance moments.
     np.testing.assert_allclose(query.values, [-0.49407802616878604, 2.4619456646531583], atol=1e-5)
     assert query.values[0] < 0  # Signed calibration is not clipped or repaired.
@@ -84,3 +86,9 @@ def test_explicit_numerical_constraints_and_optimization_failure_are_visible(
             region_name="alpine",
             max_iterations=1,
         )
+
+
+def test_calibration_requires_float64(reference_observations, mlpe_reference, float64_required):
+    observations = reference_observations()
+    with float64_required():
+        calibrate_mlpe(mlpe_reference.distances, observations, region_name="alpine")

@@ -125,3 +125,12 @@ def test_multi_region_calibration_requires_shared_named_features(observation_pro
             distance_model,
             loss=Log1pLoss(),
         )
+
+
+def test_calibration_fitting_requires_float64(observation_problem, float64_required):
+    region, target, model = observation_problem()
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20"), ("unit/20", "unit/99")], [1.0, 2.0], target=target
+    )
+    with float64_required():
+        calibrate(region, observations, model, loss=Log1pLoss())

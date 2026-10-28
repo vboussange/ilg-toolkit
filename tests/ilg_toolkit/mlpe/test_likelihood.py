@@ -4,10 +4,17 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from ilg_toolkit import MLPELoss
 from ilg_toolkit.mlpe import (
     finalize_mlpe_fit,
     mlpe_ml_negative_log_likelihood,
     profiled_mlpe_ml_fit,
+)
+
+
+# The kernels take MLPELoss's numerical settings explicitly.
+_SETTINGS = dict(
+    variance_floor=MLPELoss().variance_floor, min_distance_scale=MLPELoss().min_distance_scale
 )
 
 
@@ -26,7 +33,14 @@ def test_complete_mlpe_finalization_matches_incomplete_pair_dense_gaussian(dense
 
         def finalize():
             return finalize_mlpe_fit(
-                distances, targets, left, right, n_populations=4, raw_variances=raw, jitter=jitter
+                distances,
+                targets,
+                left,
+                right,
+                n_populations=4,
+                raw_variances=raw,
+                jitter=jitter,
+                **_SETTINGS,
             )
 
         result = jax.jit(finalize)()
@@ -39,40 +53,6 @@ def test_complete_mlpe_finalization_matches_incomplete_pair_dense_gaussian(dense
     np.testing.assert_allclose(mean, expected_mean, atol=1e-12)
     np.testing.assert_allclose(posterior, expected_covariance, atol=1e-12)
     np.testing.assert_allclose(factor @ factor.T @ posterior, np.eye(4), atol=1e-12)
-
-
-def test_masked_pairs_are_absent_from_likelihood_and_distance_standardization_under_jit(
-    dense_profile,
-):
-    distances = np.array([0.2, np.nan, 1.1, -0.3, 2.0, np.inf])
-    targets = np.array([0.5, np.nan, 0.1, 0.9, 0.3, np.inf])
-    left, right = np.array([3, -999, 0, 2, 0, 999]), np.array([1, 999, 2, 1, 1, -999])
-    mask = np.array([True, False, True, True, True, False])
-    raw = np.array([-0.7, -1.4])
-    expected_nll, expected_beta, _, _ = dense_profile(
-        distances[mask], targets[mask], left[mask], right[mask], 4, np.logaddexp(0, raw) + 1e-10
-    )
-    with jax.enable_x64():
-
-        def objective(s):
-            return profiled_mlpe_ml_fit(
-                s,
-                jnp.asarray(targets),
-                jnp.asarray(left),
-                jnp.asarray(right),
-                n_populations=4,
-                raw_variances=jnp.asarray(raw),
-                pair_mask=jnp.asarray(mask),
-            )
-
-        compiled, gradient = jax.jit(jax.value_and_grad(objective, has_aux=True))(
-            jnp.asarray(distances)
-        )
-    np.testing.assert_allclose(
-        [compiled[0], *compiled[1]], [expected_nll, *expected_beta], atol=1e-10
-    )
-    assert np.isfinite(gradient).all()
-    np.testing.assert_array_equal(np.asarray(gradient)[~mask], 0)
 
 
 def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance_reference(
@@ -89,7 +69,9 @@ def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance
         s, y = jnp.asarray(distances), jnp.asarray(targets)
 
         def accelerated(s, raw):
-            return profiled_mlpe_ml_fit(s, y, left, right, n_populations=6, raw_variances=raw)
+            return profiled_mlpe_ml_fit(
+                s, y, left, right, n_populations=6, raw_variances=raw, jitter=0.0, **_SETTINGS
+            )
 
         def dense(s, raw):
             return dense_jax_profile(s, y, left, right, 6, raw)
@@ -128,6 +110,8 @@ def test_unsupported_precision_and_singular_distances_have_explicit_nonfinite_di
                 right,
                 n_populations=4,
                 raw_variances=raw,
+                jitter=0.0,
+                **_SETTINGS,
             )
 
         compiled, compiled_beta = jax.jit(objective)(jnp.asarray(distances))
@@ -136,7 +120,14 @@ def test_unsupported_precision_and_singular_distances_have_explicit_nonfinite_di
     with jax.enable_x64():
         nll, beta = jax.jit(
             lambda: profiled_mlpe_ml_fit(
-                np.ones(6), distances, left, right, n_populations=4, raw_variances=jnp.zeros(2)
+                np.ones(6),
+                distances,
+                left,
+                right,
+                n_populations=4,
+                raw_variances=jnp.zeros(2),
+                jitter=0.0,
+                **_SETTINGS,
             )
         )()
     assert not np.isfinite(nll)
@@ -155,6 +146,8 @@ def test_unidentifiable_profile_is_rejected_but_one_pair_frozen_scoring_is_valid
                 jnp.array([1, 3, 5]),
                 n_populations=6,
                 raw_variances=raw,
+                jitter=0.0,
+                **_SETTINGS,
             )[0]
 
         assert not np.isfinite(jax.jit(unidentifiable)())
@@ -169,6 +162,8 @@ def test_unidentifiable_profile_is_rejected_but_one_pair_frozen_scoring_is_valid
                 raw_variances=raw,
                 distance_center=0.0,
                 distance_scale=1.0,
+                jitter=0.0,
+                **_SETTINGS,
             )
         )()
     # One query's marginal Gaussian variance is 2u+e; no covariance fitting occurs.

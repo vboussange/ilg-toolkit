@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import minimize
 
+from ._checks import _positive_integer, _require_float64
 from .data import TargetSpec
 
 
@@ -47,7 +48,6 @@ class IBDModel:
     Geographic distances must be Euclidean separations in ``distance_units``;
     convert raster positions to those units before fitting or prediction.
     Fitting compares genetic predictions and observations using log1p.
-    Enable JAX float64 before creating inputs for fitting or prediction.
     """
 
     slope: float
@@ -68,10 +68,9 @@ class IBDModel:
 
     def predict(self, distances: ArrayLike, *, distance_units: str) -> jax.Array:
         """Genetic predictions as a vector or square matrix, with a structural zero diagonal."""
+        _require_float64()
         if distance_units != self.distance_units:
             raise ValueError("Prediction distance_units must match the fitted model")
-        if not jax.config.read("jax_enable_x64"):
-            raise ValueError("IBD prediction requires JAX float64; enable x64 explicitly")
         array = _nonnegative_array(distances, "Prediction distances")
         if (
             not array.size
@@ -98,15 +97,9 @@ class IBDModel:
         max_iterations: int = 2000,
     ) -> IBDModel:
         """An isolation-by-distance model fitted with equal regional influence."""
+        _require_float64()
         _validate_metadata(distance_units, target)
-        if not jax.config.read("jax_enable_x64"):
-            raise ValueError("IBD fitting requires JAX float64; enable x64 explicitly")
-        if (
-            isinstance(max_iterations, (bool, np.bool_))
-            or not isinstance(max_iterations, int)
-            or max_iterations < 1
-        ):
-            raise ValueError("max_iterations must be a positive integer")
+        max_iterations = _positive_integer("max_iterations", max_iterations)
         if (
             not isinstance(distances_by_region, Mapping)
             or not isinstance(targets_by_region, Mapping)

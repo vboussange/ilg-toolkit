@@ -1,21 +1,24 @@
 """Abstract distance models deriving ecological distances from patch features."""
 
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from itertools import combinations
-from numbers import Integral
 from typing import cast, overload
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
+from jaxscape import GridGraph, ResistanceDistance
+from jaxscape.solvers import AMJaxCGSolver
 from numpy.typing import ArrayLike
 
+from .._checks import _positive_integer, _require_float64
 from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
-from ..resistance import build_resistance_context, effective_resistance, ResistanceSolverContext
+from ..resistance import _mean_conductance, effective_resistance, ResistanceSolverContext
 from .common import pixel_to_patch_nodes, with_dropout_mode
 
 
@@ -131,27 +134,15 @@ class AbstractDistanceModel(eqx.Module):
         avoids its distance matrix among sampling-unit vertices. Calling ``as_matrix()`` on the
         result explicitly allocates a sampling-unit-square array.
         """
+        _require_float64()
         order = validate_species_order(species_order, self.num_species)
         selected = select_species(order, species)
-        if self.num_species > 1 and region.species is None:
-            raise ValueError("Multispecies queries require sampling-unit species labels")
-        model = with_dropout_mode(self, inference=True, key=None)
-        context = prepare_distance_context(model, region.feature_array)
-        latent = model.backbone(region.feature_array)
-        results = {}
-        for name, index in selected:
-            prepared = region_for_species(region, name)
-            labels, values = query_distances_from_latent(
-                model,
-                latent,
-                prepared,
-                pairs,
-                species_index=index,
-                context=context,
-            )
-            results[name] = Prediction(
-                values, labels, region.name, prepared.sampling_unit_ids, name
-            )
+        results = {
+            name: Prediction(values, labels, region.name, prepared.sampling_unit_ids, name)
+            for name, (prepared, labels, values) in _species_distances(
+                self, region, selected, pairs
+            ).items()
+        }
         if isinstance(species, str) or species is None:
             return results[selected[0][0]]
         return cast(dict[str, Prediction], results)
@@ -181,14 +172,17 @@ class ConductanceModel(AbstractDistanceModel):
         *,
         context: ResistanceSolverContext | None = None,
     ) -> jax.Array:
-        """Effective resistance aligned with the requested sampling-unit pairs."""
+        """Effective resistance aligned with the requested sampling-unit pairs.
+
+        ``context`` is the solver that ``prepare_distance_context`` prepares for
+        this model and region.
+        """
         nodes, indices = pairs
-        surface = self.conductance(latent, species_index)
-        if context is not None and context.config != self.solver_config:
+        if context is None:
+            raise ValueError("Effective resistance requires a prepared resistance solver context")
+        if context.config != self.solver_config:
             raise ValueError("Solver context policy does not match the conductance model settings")
-        context = context or build_resistance_context(
-            (surface.shape[0], surface.shape[1]), self.solver_config
-        )
+        surface = self.conductance(latent, species_index)
         return effective_resistance(surface, nodes, context=context)[indices]
 
     @overload
@@ -221,6 +215,7 @@ class ConductanceModel(AbstractDistanceModel):
         ``species_order`` associates names with parameter rows for named species.
         A species sequence returns a mapping and computes patch features once.
         """
+        _require_float64()
         order = validate_species_order(species_order, self.num_species)
         selected = select_species(order, species)
         model = with_dropout_mode(self, inference=True, key=None)
@@ -257,8 +252,7 @@ class EmbeddingDistanceModel(AbstractDistanceModel):
 
 def validate_species_order(order: Sequence[str] | None, num_species: int) -> tuple[str, ...] | None:
     """Species names associated with the distance model's parameter rows."""
-    if isinstance(num_species, bool) or not isinstance(num_species, Integral) or num_species < 1:
-        raise ValueError("num_species must be a positive integer")
+    _positive_integer("num_species", num_species)
     if order is None:
         if num_species != 1:
             raise ValueError("Multispecies models require a species order")
@@ -329,18 +323,66 @@ def _query_pairs(
     return labels, (indices[:, 0], indices[:, 1])
 
 
+def _species_distances(
+    model: AbstractDistanceModel,
+    region: RegionBatch,
+    selected: tuple[tuple[str | None, int], ...],
+    pairs: Sequence[tuple[str, str]] | None,
+    extra_pairs: Mapping[str | None, tuple[tuple[str, str], ...]] | None = None,
+) -> dict[str | None, tuple[RegionBatch, tuple[tuple[str, str], ...], jax.Array]]:
+    """Each selected species' region batch, query pair labels, and ecological distances.
+
+    Patch features and the resistance solver are prepared once, with dropout
+    disabled. ``extra_pairs`` appends a species' additional pairs after its query
+    pairs, in both the labels and the distances.
+    """
+    if model.num_species > 1 and region.species is None:
+        raise ValueError("Multispecies queries require sampling-unit species labels")
+    model = with_dropout_mode(model, inference=True, key=None)
+    context = prepare_distance_context(model, region.feature_array)
+    latent = model.backbone(region.feature_array)
+    results = {}
+    for name, index in selected:
+        prepared = region_for_species(region, name)
+        extra = () if extra_pairs is None else extra_pairs.get(name, ())
+        query = _query_pairs(prepared, pairs)[0] + extra if extra else pairs
+        labels, values = query_distances_from_latent(
+            model, latent, prepared, query, species_index=index, context=context
+        )
+        results[name] = (prepared, labels, values)
+    return results
+
+
 def prepare_distance_context(
     model: AbstractDistanceModel, features: ArrayLike
 ) -> ResistanceSolverContext | None:
-    """Reusable resistance solver for the region's conductance grid graph."""
+    """Reusable resistance solver for the region's conductance grid graph.
+
+    Conjugate gradient, with optional algebraic multigrid preconditioning prepared
+    on a uniform conductance grid graph, follows the model's ``solver_config``.
+    Distance models without a conductance grid graph need no solver.
+    """
     if not isinstance(model, ConductanceModel):
         return None
     shape = jnp.asarray(features).shape
     if len(shape) != 3 or shape[0] % model.patch_size or shape[1] % model.patch_size:
         raise ValueError("Raster dimensions must be divisible by model patch_size")
-    return build_resistance_context(
-        (shape[0] // model.patch_size, shape[1] // model.patch_size), model.solver_config
+    graph_shape = (shape[0] // model.patch_size, shape[1] // model.patch_size)
+    if graph_shape[0] * graph_shape[1] < 2:
+        raise ValueError("Effective resistance requires at least two graph vertices")
+    config = model.solver_config
+    if not config.use_amg:
+        return ResistanceSolverContext(
+            graph_shape,
+            lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps),
+            config=config,
+        )
+    solver = AMJaxCGSolver(
+        rtol=config.rtol, atol=config.atol, max_steps=config.max_steps, coarse_solver="pinv"
     )
+    template = GridGraph(jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance)
+    state = ResistanceDistance(solver=solver).init_preconditioner(template)
+    return ResistanceSolverContext(graph_shape, solver, state, config)
 
 
 def query_distances_from_latent(
@@ -369,31 +411,6 @@ def query_distances_from_latent(
         "Distance model produced nonfinite or negative ecological distances",
     )
     return labels, values
-
-
-def distance_values(
-    model: AbstractDistanceModel,
-    features: jax.Array,
-    pixel_nodes: jax.Array,
-    indices: tuple[jax.Array, jax.Array],
-    *,
-    context: ResistanceSolverContext | None = None,
-    inference: bool = True,
-    key: jax.Array | None = None,
-    species_index: int | jax.Array = 0,
-) -> jax.Array:
-    """Ecological distances for located sampling-unit pairs."""
-    model = with_dropout_mode(model, inference=inference, key=key)
-    latent = model.backbone(features)
-    return distances_from_latent(
-        model,
-        latent,
-        pixel_nodes,
-        indices,
-        raster_shape=(features.shape[0], features.shape[1]),
-        species_index=species_index,
-        context=context,
-    )
 
 
 def distances_from_latent(
