@@ -18,7 +18,6 @@ def test_species_observations_align_repeated_ids_without_cross_species_pairs(obs
         region,
         sampling_unit_ids=("a", "b", "a", "b"),
         grid_positions=[[0, 0], [0, 1], [0, 1], [0, 2]],
-        sampling_unit_kinds=None,
         species=("frog", "frog", "newt", "newt"),
     )
     for species, value, indices in (("frog", 2.0, (0, 1)), ("newt", 5.0, (2, 3))):
@@ -74,7 +73,7 @@ def test_region_requires_named_features_and_normalizes_numpy_data_without_narrow
     with pytest.raises(TypeError):
         replace(region, features=cast(cx.Field, region.feature_array))
     features = np.array([[[0.123456789012345, 2.0], [1.0, 3.0], [2.0, 4.0]]])
-    field = cx.field(features, "row", "column", "feature")
+    field = cx.field(features, "row", "column", region.features.axes["feature"])
     normalized = replace(region, features=field, grid_positions=[[0, 0], [0, 1], [0, 2]])
     assert normalized.feature_array.dtype == jnp.float64
     np.testing.assert_array_equal(normalized.feature_array, features)
@@ -89,9 +88,8 @@ def test_labelled_raster_axes_normalize_without_changing_feature_meaning(observa
     """A named-axis permutation describes the same prepared raster and locations."""
     from dataclasses import replace
 
-    region, target, model = observation_problem()
-    names = ("elevation", "canopy")
-    plain = replace(region, feature_names=names)
+    plain, target, model = observation_problem()
+    names = plain.feature_names
     field = cx.field(
         plain.feature_array,
         cx.LabeledAxis("row", np.array([100])),
@@ -170,29 +168,13 @@ def test_array_like_observations_give_identical_float64_predictions(observation_
     np.testing.assert_array_equal(predictions[0], predictions[2])
 
 
-def test_coordinate_declarations_reject_unknown_axes_and_conflicting_feature_labels(
-    observation_problem,
-):
+def test_coordinate_declarations_reject_unknown_axes(observation_problem):
     from dataclasses import replace
 
     region, _, _ = observation_problem()
+    labels = cx.LabeledAxis("channel", np.array(region.feature_names))
     with pytest.raises(ValueError):
-        replace(region, features=cx.field(region.feature_array, "row", "column", "channel"))
-    field = cx.field(
-        region.feature_array,
-        "row",
-        "column",
-        cx.LabeledAxis("feature", np.array(["elevation", "canopy"])),
-    )
-    with pytest.raises(ValueError):
-        replace(region, features=field, feature_names=("canopy", "elevation"))
-    with pytest.raises(ValueError):
-        replace(
-            region,
-            features=cx.field(
-                region.feature_array, "row", "column", cx.LabeledAxis("feature", np.array([1, 2]))
-            ),
-        )
+        replace(region, features=cx.field(region.feature_array, "row", "column", labels))
 
 
 def test_equivalent_matrix_and_pair_inputs_train_equivalent_models(observation_problem):
@@ -271,17 +253,12 @@ def test_selected_observations_are_disjoint_for_training_and_validation(observat
         )
 
 
-def test_feature_order_and_sampling_unit_kinds_are_explicit(observation_problem):
+def test_feature_order_is_part_of_the_query_contract(observation_problem):
     from dataclasses import replace
 
     import pytest
 
     region, target, model = observation_problem()
-    region = replace(
-        region,
-        feature_names=("elevation", "canopy"),
-        sampling_unit_kinds=("individual", "population", "individual"),
-    )
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [1], target=target)
     result = train(
         region,
@@ -289,12 +266,15 @@ def test_feature_order_and_sampling_unit_kinds_are_explicit(observation_problem)
         distance_model=model,
         config=TrainingConfig(loss=Log1pLoss(), steps=0),
     )
-    assert region.sampling_unit_kinds == ("individual", "population", "individual")
     assert result.selected_model.feature_names == ("elevation", "canopy")
     swapped = replace(
         region,
-        features=cx.field(region.feature_array, "row", "column", "feature"),
-        feature_names=("canopy", "elevation"),
+        features=cx.field(
+            region.feature_array,
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["canopy", "elevation"])),
+        ),
     )
     with pytest.raises(ValueError):
         result.selected_model.predict(swapped)
@@ -396,3 +376,105 @@ def test_select_pairs_preserves_metadata_precision_and_deterministic_alignment(d
             observations.select_pairs(pairs)
     with pytest.raises(ValueError, match="unobserved"):
         selected.select_pairs([("c", "b")])
+
+
+def _raster(y_centers, x_centers, names=("grassland", "water")):
+    """Projected raster converted from xarray, with the row and column renames users apply."""
+    import xarray as xr
+
+    values = np.arange(len(y_centers) * len(x_centers) * len(names), dtype=np.float64)
+    data = xr.DataArray(
+        values.reshape(len(y_centers), len(x_centers), len(names)),
+        dims=("y", "x", "band"),
+        coords={"y": y_centers, "x": x_centers, "band": list(names)},
+    )
+    return cx.from_xarray(data.rename(y="row", x="column", band="feature"))
+
+
+def test_feature_names_and_raster_coordinates_come_from_xarray_axes():
+    from dataclasses import FrozenInstanceError
+
+    from ilg_toolkit import RegionBatch
+
+    features = _raster([25.0, 15.0, 5.0], [5.0, 15.0, 25.0, 35.0])
+    region = RegionBatch("alps", features, ("a", "b"), [[0, 0], [2, 3]])
+    assert region.feature_names == ("grassland", "water")
+    np.testing.assert_array_equal(
+        cast(cx.LabeledAxis, region.features.axes["row"]).ticks, [25, 15, 5]
+    )
+    np.testing.assert_array_equal(
+        cast(cx.LabeledAxis, region.features.axes["column"]).ticks, [5, 15, 25, 35]
+    )
+    with pytest.raises((AttributeError, FrozenInstanceError)):
+        region.feature_names = ("water", "grassland")  # type: ignore[misc]
+
+
+def test_features_without_a_labeled_feature_axis_raise(observation_problem):
+    from ilg_toolkit import RegionBatch
+
+    region, _, _ = observation_problem()
+    unlabeled = cx.field(region.feature_array, "row", "column", "feature")
+    with pytest.raises(ValueError, match="labeled feature axis"):
+        RegionBatch("anywhere", unlabeled, region.sampling_unit_ids, region.grid_positions)
+    for labels in (["elevation", ""], ["elevation", "elevation"], [1, 2]):
+        field = cx.field(
+            region.feature_array, "row", "column", cx.LabeledAxis("feature", np.array(labels))
+        )
+        with pytest.raises(ValueError, match="Feature names"):
+            RegionBatch("anywhere", field, region.sampling_unit_ids, region.grid_positions)
+
+
+@pytest.mark.parametrize("descending", [True, False])
+def test_points_snap_to_the_raster_cells_containing_them(descending):
+    from ilg_toolkit import RegionBatch
+
+    # Cells are 10 units wide: columns span x in [0, 40], rows span y in [0, 30].
+    y_centers = [25.0, 15.0, 5.0] if descending else [5.0, 15.0, 25.0]
+    features = _raster(y_centers, [5.0, 15.0, 25.0, 35.0])
+    points = {
+        "corner": (0.0, 30.0),  # Outer edges belong to the raster.
+        "far-corner": (40.0, 0.0),
+        "off-center": (14.9, 20.1),
+        # A shared edge belongs to the next cell in row or column order, as in GDAL.
+        "shared-edge": (10.0, 20.0),
+        "center": (35.0, 5.0),
+    }
+    region = RegionBatch.from_points(
+        "alps", features, tuple(points), np.array(list(points.values()))
+    )
+    expected = (
+        [[0, 0], [2, 3], [0, 1], [1, 1], [2, 3]]
+        if descending
+        else [[2, 0], [0, 3], [2, 1], [2, 1], [0, 3]]
+    )
+    np.testing.assert_array_equal(region.grid_positions, expected)
+    assert region.sampling_unit_ids == tuple(points)
+    assert region.feature_names == ("grassland", "water")
+
+
+def test_points_outside_the_raster_extent_raise_naming_the_sampling_units(observation_problem):
+    from ilg_toolkit import RegionBatch
+
+    features = _raster([25.0, 15.0, 5.0], [5.0, 15.0, 25.0, 35.0])
+    points = np.array([[5.0, 5.0], [40.01, 5.0], [5.0, -0.01], [-1.0, 31.0]])
+    with pytest.raises(ValueError, match="east, south, northwest"):
+        RegionBatch.from_points("alps", features, ("inside", "east", "south", "northwest"), points)
+    with pytest.raises(ValueError):
+        RegionBatch.from_points("alps", features, ("a", "b"), np.array([[5.0, 5.0]]))
+    with pytest.raises(ValueError):
+        RegionBatch.from_points("alps", features, ("a", "b"), np.array([[5.0, 5.0], [np.nan, 5]]))
+    region, _, _ = observation_problem()
+    with pytest.raises(ValueError, match="row coordinates"):
+        RegionBatch.from_points(
+            "anywhere", region.features, ("a", "b"), np.array([[0.0, 0.0], [1.0, 0.0]])
+        )
+
+
+def test_individual_based_regions_are_declared_once_for_all_sampling_units(observation_problem):
+    from dataclasses import replace
+
+    region, _, _ = observation_problem()
+    assert region.individual_based is False
+    assert replace(region, individual_based=True).individual_based is True
+    with pytest.raises(TypeError):
+        replace(region, individual_based="individual")

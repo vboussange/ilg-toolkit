@@ -230,8 +230,10 @@ class MLPELoss(AbstractLoss):
     def _prepare(self, region, observations, *, training):
         if observations.target.kind != "dissimilarity":
             raise ValueError("Population MLPE requires dissimilarities")
-        if any(kind != "population" for kind in region.sampling_unit_kinds):
-            raise ValueError("Population MLPE does not support individual sampling units")
+        if region.individual_based:
+            raise ValueError(
+                "Population MLPE rejects individual-based regions: its effects model populations"
+            )
         context = _context(region, observations)
         if training:
             if len(context.targets) < 3:

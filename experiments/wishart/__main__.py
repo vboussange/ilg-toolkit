@@ -15,8 +15,11 @@ def main():
     labels = ("west", "east", "north", "south")
     region = RegionBatch(
         "synthetic-valley",
-        cx.Field(
-            np.random.default_rng(4).normal(size=(8, 8, 2)), dims=("row", "column", "feature")
+        cx.field(
+            np.random.default_rng(4).normal(size=(8, 8, 2)),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation", "canopy"])),
         ),
         labels,
         np.array([[0, 0], [0, 7], [7, 0], [7, 7]]),

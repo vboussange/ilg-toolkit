@@ -30,10 +30,16 @@ def _region(shape=(8, 12, 3)):
     features = np.random.default_rng(4).normal(size=shape).astype(np.float32)
     return RegionBatch(
         "small-valley",
-        cx.field(features, "row", "column", "feature"),
+        cx.field(
+            features,
+            "row",
+            "column",
+            cx.LabeledAxis(
+                "feature", np.array(tuple(f"feature-{index}" for index in range(shape[2])))
+            ),
+        ),
         ("south", "north", "east"),
         np.array([[0, 0], [0, shape[1] - 1], [shape[0] - 1, shape[1] - 1]]),
-        feature_names=tuple(f"feature-{index}" for index in range(shape[2])),
     )
 
 
@@ -69,7 +75,6 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
         region,
         sampling_unit_ids=region.sampling_unit_ids * 2,
         grid_positions=np.tile(region.grid_positions, (2, 1)),
-        sampling_unit_kinds=None,
         species=("frog",) * 3 + ("newt",) * 3,
     )
     nodes = np.array([0, 1, 3])

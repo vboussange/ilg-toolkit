@@ -157,7 +157,9 @@ def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
     labels = ("west", "east", "north", "south")
     region = RegionBatch(
         "valley",
-        cx.Field(np.ones((2, 2, 1)), dims=("row", "column", "feature")),
+        cx.field(
+            np.ones((2, 2, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["cover"]))
+        ),
         labels,
         np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
     )
@@ -289,7 +291,9 @@ def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible
     )
     region = RegionBatch(
         "coincident",
-        cx.Field(np.ones((2, 2, 1)), dims=("row", "column", "feature")),
+        cx.field(
+            np.ones((2, 2, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["cover"]))
+        ),
         labels,
         np.zeros((3, 2), dtype=int),
     )

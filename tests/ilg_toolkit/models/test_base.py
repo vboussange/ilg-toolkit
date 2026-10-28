@@ -26,7 +26,9 @@ from jaxscape import GridGraph, ResistanceDistance
 def test_species_queries_follow_supplied_order_with_reused_sampling_unit_ids():
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "a", "b"),
         np.array([[0, 0], [0, 2], [0, 0], [0, 1]]),
         species=("hare", "hare", "stoat", "stoat"),
@@ -78,7 +80,7 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateCon
             jnp.array([[[0.3], [0.8], [0.2]], [[0.5], [0.1], [0.7]]], dtype=dtype),
             "row",
             "column",
-            "feature",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
         ),
         ("a", "b", "c", "d", "e"),
         np.array([[1, 2], [0, 0], [0, 2], [0, 2], [1, 0]]),
@@ -129,7 +131,9 @@ def test_conductance_surface_uses_prediction_mode_for_custom_dropout(
 def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductance):
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
@@ -162,7 +166,12 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
 ):
     region = RegionBatch(
         "custom",
-        cx.field(np.array([[[0.0], [1.0], [3.0]]]), "row", "column", "feature"),
+        cx.field(
+            np.array([[[0.0], [1.0], [3.0]]]),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
+        ),
         ("west", "middle", "east"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )

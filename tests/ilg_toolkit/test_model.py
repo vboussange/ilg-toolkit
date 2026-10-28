@@ -33,15 +33,13 @@ def test_genetic_queries_use_saved_species_order_and_original_scale(observation_
     model = LandscapeGeneticsModel(
         distance_model,
         DirectCalibrationModule(TargetSpec("divergence", transform="log1p")),
-        2,
-        feature_names=region.feature_names,
+        region.feature_names,
         species=("stoat", "hare"),
     )
     region = replace(
         region,
         sampling_unit_ids=region.sampling_unit_ids * 2,
         grid_positions=jnp.concatenate((region.grid_positions, region.grid_positions)),
-        sampling_unit_kinds=region.sampling_unit_kinds * 2,
         species=("hare",) * 3 + ("stoat",) * 3,
     )
     results = model.predict(region, species=("hare", "stoat"))
@@ -54,7 +52,6 @@ def test_genetic_queries_use_saved_species_order_and_original_scale(observation_
         region,
         sampling_unit_ids=region.sampling_unit_ids[:3],
         grid_positions=region.grid_positions[:3],
-        sampling_unit_kinds=region.sampling_unit_kinds[:3],
         species=("hare",) * 3,
     )
     np.testing.assert_array_equal(
@@ -90,17 +87,13 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
                 for index, reference in enumerate(references)
             },
         ),
-        region.feature_array.shape[-1],
-        feature_names=region.feature_names,
+        region.feature_names,
         species=names,
     )
-    kinds = region.sampling_unit_kinds
-    assert kinds is not None
     combined = replace(
         region,
         sampling_unit_ids=region.sampling_unit_ids * 2,
         grid_positions=jnp.concatenate((region.grid_positions, region.grid_positions)),
-        sampling_unit_kinds=kinds * 2,
         species=tuple(name for name in names for _ in region.sampling_unit_ids),
     )
     support = tuple(
@@ -271,6 +264,8 @@ def test_recalibrated_model_retains_target_scale_after_save_and_load(
 
 def test_prediction_requires_float64(observation_problem, float64_required):
     region, target, distance_model = observation_problem()
-    model = LandscapeGeneticsModel(distance_model, DirectCalibrationModule(target), 2)
+    model = LandscapeGeneticsModel(
+        distance_model, DirectCalibrationModule(target), region.feature_names
+    )
     with float64_required():
         model.predict(region)

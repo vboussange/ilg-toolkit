@@ -33,7 +33,7 @@ class AbstractCalibrationModule(eqx.Module):
         *,
         region_name: str,
         species_index: int = 0,
-        sampling_unit_kinds: tuple[str, ...] | None = None,
+        individual_based: bool = False,
         known_effects: bool = False,
         support: PairwiseObservations | None = None,
         support_distances=None,
@@ -58,7 +58,7 @@ class DirectCalibrationModule(AbstractCalibrationModule):
         *,
         region_name: str,
         species_index: int = 0,
-        sampling_unit_kinds: tuple[str, ...] | None = None,
+        individual_based: bool = False,
         known_effects: bool = False,
         support: PairwiseObservations | None = None,
         support_distances=None,
@@ -123,7 +123,7 @@ class MLPECalibrationModule(AbstractCalibrationModule):
         *,
         region_name: str,
         species_index: int = 0,
-        sampling_unit_kinds: tuple[str, ...] | None = None,
+        individual_based: bool = False,
         known_effects: bool = False,
         support: PairwiseObservations | None = None,
         support_distances=None,
@@ -135,10 +135,10 @@ class MLPECalibrationModule(AbstractCalibrationModule):
         ``known_effects`` uses saved population effects, while ``support`` uses
         disjoint observations and aligned ``support_distances`` to condition them.
         """
-        if sampling_unit_kinds is not None and any(
-            kind != "population" for kind in sampling_unit_kinds
-        ):
-            raise ValueError("Population MLPE prediction requires population sampling units")
+        if individual_based:
+            raise ValueError(
+                "Population MLPE rejects individual-based regions: its effects model populations"
+            )
         return _predict_mlpe(
             self.for_region(region_name, species_index),
             distances,
@@ -220,7 +220,6 @@ def calibrate(
     prepared = _prepare_training_inputs(region, observations, species, distance_model.num_species)
     first, order, groups = prepared.inputs[0], prepared.species, prepared.training
     target = first.observations.target
-    feature_count, feature_names = first.region.feature_array.shape[-1], first.region.feature_names
     for group in groups:
         loss._prepare(group.region, group.observations, training=True)
     inference_model = with_dropout_mode(distance_model, inference=True, key=None)
@@ -251,7 +250,6 @@ def calibrate(
     return LandscapeGeneticsModel(
         distance_model,
         loss._calibration(target, fitted),
-        feature_count,
-        feature_names=feature_names,
+        first.region.feature_names,
         species=order,
     )

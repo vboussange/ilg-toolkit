@@ -446,8 +446,7 @@ def train(
     prototype = LandscapeGeneticsModel(
         distance_model,
         config.loss._calibration(first_observations.target, {}),
-        first_region.feature_array.shape[-1],
-        feature_names=first_region.feature_names,
+        first_region.feature_names,
         species=species,
     )
     random_key = (
