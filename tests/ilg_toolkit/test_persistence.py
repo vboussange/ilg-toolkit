@@ -40,13 +40,12 @@ def test_saved_precision_is_preserved(
         region, observations, distance_model = training_problem(
             "embedding", num_species=num_species
         )
-        species = ("species-1", "species-0") if num_species > 1 else None
+        species = distance_model.species
         state = train(
             region,
             observations,
             distance_model=distance_model,
             config=TrainingConfig(loss=loss, steps=0),
-            species=species,
         )
         for kind in ("model", "checkpoint"):
             path = tmp_path / f"{kind}.eqx"
@@ -73,6 +72,36 @@ def test_saved_precision_is_preserved(
             load = load_model if kind == "model" else load_checkpoint
             with float64_required():
                 load(path, distance_model=narrow)
+
+
+def test_species_names_round_trip_and_predictions_are_identical(tmp_path, training_problem):
+    region, observations, distance_model = training_problem("embedding", num_species=2)
+    names = ("species-0", "species-1")
+    state = train(
+        region,
+        observations,
+        distance_model=distance_model,
+        config=TrainingConfig(loss=MLPELoss(), steps=1),
+    )
+    renamed = type(distance_model)(jnp.zeros((2, 2)), species=("frog", "newt"))
+    model_path, checkpoint_path = tmp_path / "model.eqx", tmp_path / "checkpoint.eqx"
+    save_model(model_path, state.selected_model)
+    save_checkpoint(checkpoint_path, state)
+    model = load_model(model_path, distance_model=renamed)
+    checkpoint = load_checkpoint(checkpoint_path, distance_model=renamed)
+    for restored in (model, checkpoint.selected_model, checkpoint.latest_model):
+        assert restored.species == restored.distance_model.species == names
+        assert eqx.tree_equal(restored.distance_model, state.selected_model.distance_model)
+        for name, prediction in restored.predict(region, species=names).items():
+            assert prediction.species == name
+            np.testing.assert_array_equal(
+                prediction.values, state.selected_model.predict(region, species=name).values
+            )
+    unnamed = type(distance_model)(jnp.zeros(2))
+    with pytest.raises(ArtifactError, match="species"):
+        load_model(model_path, distance_model=unnamed)
+    with pytest.raises(ArtifactError, match="species"):
+        load_checkpoint(checkpoint_path, distance_model=unnamed)
 
 
 # NumPy storage drops weak types, and eqx.tree_equal ignores them.

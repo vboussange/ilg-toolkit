@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import final
 
 import equinox as eqx
@@ -9,7 +10,7 @@ import jax
 import jax.numpy as jnp
 
 from .._checks import _positive_integer
-from .base import EmbeddingDistanceModel
+from .base import _species_names, EmbeddingDistanceModel
 from .common import encode_patches
 
 
@@ -77,7 +78,8 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
     Args:
         in_channels:
             Number of raster features, with meanings and order preserved across regions.
-        num_species: Number of species-specific embedding projections; default 1.
+        species: Species names, one embedding projection each in parameter order;
+            ``None`` (default) models one unnamed species.
         patch_size: Square raster patch side length, default 32. Both raster dimensions
             must be divisible by it; sampling units use their containing patch.
         base_channels: Width of the first U-Net stage, default 32. Later stages expand
@@ -117,7 +119,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
     merge1_norm: eqx.nn.GroupNorm
     decoder1: ResidualConvBlock
     embedding_head: eqx.nn.Conv2d
-    num_species: int = eqx.field(static=True, default=1, kw_only=True)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None, kw_only=True)
     patch_microbatch_size: int | None = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
     base_channels: int = eqx.field(static=True)
@@ -127,7 +129,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         self,
         in_channels: int,
         *,
-        num_species: int = 1,
+        species: Sequence[str] | None = None,
         patch_size: int = 32,
         base_channels: int = 32,
         embedding_dim: int = 16,
@@ -136,7 +138,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         key: jax.Array,
     ):
         in_channels = _positive_integer("in_channels", in_channels)
-        num_species = _positive_integer("num_species", num_species)
+        species = _species_names(species)
         patch_size = _positive_integer("patch_size", patch_size)
         base_channels = _positive_integer("base_channels", base_channels)
         embedding_dim = _positive_integer("embedding_dim", embedding_dim)
@@ -203,9 +205,13 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             base_channels, base_channels, dropout=dropout, key=keys[11]
         )
         self.embedding_head = eqx.nn.Conv2d(
-            base_channels, num_species * embedding_dim, 1, dtype=jnp.float32, key=keys[12]
+            base_channels,
+            (1 if species is None else len(species)) * embedding_dim,
+            1,
+            dtype=jnp.float32,
+            key=keys[12],
         )
-        self.num_species = num_species
+        self.species = species
         self.patch_microbatch_size = patch_microbatch_size
         self.patch_size = patch_size
         self.base_channels = base_channels

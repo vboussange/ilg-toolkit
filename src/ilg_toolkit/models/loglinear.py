@@ -17,7 +17,7 @@ from ..config import ResistanceSolverConfig
 from ..data import ObservationCollection, RegionBatch, RegionCollection
 from ..losses import AbstractLoss
 from ..resistance import effective_resistance
-from .base import ConductanceModel, prepare_distance_context
+from .base import _model_species, _species_names, ConductanceModel, prepare_distance_context
 from .common import encode_patches, pixel_to_patch_nodes
 
 
@@ -41,7 +41,8 @@ class LogLinearConductance(ConductanceModel):
     Args:
         in_channels:
             Number of landscape features, in their retained feature order.
-        num_species: Number of species-specific coefficient rows; default 1.
+        species: Species names, one coefficient row each in parameter order;
+            ``None`` (default) models one unnamed species.
         patch_size: Side length of square raster patches, default 32. Both raster
             dimensions must be divisible by it. Sampling units in the same patch
             share a vertex.
@@ -69,7 +70,7 @@ class LogLinearConductance(ConductanceModel):
 
     coefficients: jax.Array
     intercepts: jax.Array
-    num_species: int = eqx.field(static=True)
+    species: tuple[str, ...] | None = eqx.field(static=True)
     in_channels: int = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
     patch_microbatch_size: int | None = eqx.field(static=True)
@@ -81,7 +82,7 @@ class LogLinearConductance(ConductanceModel):
         self,
         in_channels: int,
         *,
-        num_species: int = 1,
+        species: Sequence[str] | None = None,
         patch_size: int = 32,
         patch_microbatch_size: int | None = None,
         min_conductance: float = 0.01,
@@ -89,7 +90,7 @@ class LogLinearConductance(ConductanceModel):
         solver_config: ResistanceSolverConfig | None = None,
     ):
         in_channels = _positive_integer("in_channels", in_channels)
-        num_species = _positive_integer("num_species", num_species)
+        species = _species_names(species)
         patch_size = _positive_integer("patch_size", patch_size)
         if (
             any(
@@ -106,15 +107,16 @@ class LogLinearConductance(ConductanceModel):
         )
         if solver_config is not None and not isinstance(solver_config, ResistanceSolverConfig):
             raise TypeError("solver_config must be a ResistanceSolverConfig")
-        self.num_species = num_species
+        self.species = species
         self.in_channels = in_channels
         self.patch_size = patch_size
         self.patch_microbatch_size = patch_microbatch_size
         self.min_conductance = float(min_conductance)
         self.max_conductance = float(max_conductance)
         self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
-        self.coefficients = jnp.zeros((num_species, in_channels))
-        self.intercepts = jnp.zeros(num_species)
+        count = 1 if species is None else len(species)
+        self.coefficients = jnp.zeros((count, in_channels))
+        self.intercepts = jnp.zeros(count)
 
     def backbone(self, features: jax.Array) -> jax.Array:
         """Patch-averaged landscape features."""
@@ -138,8 +140,6 @@ def initialize_uniform_conductance(
     region: RegionCollection,
     observations: ObservationCollection,
     loss: AbstractLoss,
-    *,
-    species: Sequence[str] | None = None,
 ) -> LogLinearConductance:
     """A log-linear patch encoder started at the best uniform conductance.
 
@@ -157,14 +157,12 @@ def initialize_uniform_conductance(
 
     Args:
         model: Log-linear patch encoder providing the conductance bounds, patch
-            size, solver settings, and species count.
+            size, solver settings, and species.
         region: One region batch, a sequence, or a mapping keyed by region name,
             as accepted by ``train``.
         observations: Pairwise genetic observations aligned with the regions, as
             accepted by ``train``.
         loss: Loss whose weighted value the uniform conductance minimizes.
-        species: Species names in parameter order. Required for multispecies
-            models; a single species can be inferred from the inputs.
 
     Returns:
         A copy of ``model`` with zero coefficients and one fitted intercept per
@@ -193,7 +191,7 @@ def initialize_uniform_conductance(
         raise TypeError("initialize_uniform_conductance requires a LogLinearConductance")
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must be an AbstractLoss")
-    prepared = _prepare_training_inputs(region, observations, species, model.num_species)
+    prepared = _prepare_training_inputs(region, observations, model.species)
     if prepared.inputs[0].region.feature_array.shape[-1] != model.in_channels:
         raise ValueError(f"Expected landscape features with {model.in_channels} channels")
     groups = prepared.training
@@ -208,7 +206,7 @@ def initialize_uniform_conductance(
     loss_state = loss._initialize(contexts)
     lower, upper = math.log(model.min_conductance), math.log(model.max_conductance)
     intercepts = []
-    for index in range(model.num_species):
+    for index in range(len(_model_species(model))):
         selected = [group for group in groups if group.species_index == index]
         if not selected:
             intercepts.append(model.intercepts[index])

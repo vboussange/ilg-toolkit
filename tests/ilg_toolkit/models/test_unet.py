@@ -22,7 +22,7 @@ from ilg_toolkit.models import UNetEmbeddingDistance
 def _unet(
     seed: int,
     *,
-    num_species: int = 1,
+    species: tuple[str, ...] | None = None,
     patch_size: int = 1,
     embedding_dim: int = 2,
     dropout: float = 0.1,
@@ -30,7 +30,7 @@ def _unet(
 ) -> UNetEmbeddingDistance:
     return UNetEmbeddingDistance(
         2,
-        num_species=num_species,
+        species=species,
         patch_size=patch_size,
         base_channels=2,
         embedding_dim=embedding_dim,
@@ -84,8 +84,7 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
     result = train(
         region,
         observations,
-        distance_model=_unet(3, num_species=2, dropout=0),
-        species=order,
+        distance_model=_unet(3, species=order, dropout=0),
         config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.01, seed=3),
     )
     assert result.history[-1].training_loss < result.history[0].training_loss * 0.75
@@ -98,13 +97,13 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
         np.testing.assert_allclose(matrix, matrix.T, atol=1e-6)
         assert np.isnan(np.diag(matrix)).all()
         np.testing.assert_allclose(
-            fitted.distance_model.predict(region, species=name, species_order=order).as_matrix(),
+            fitted.distance_model.predict(region, species=name).as_matrix(),
             matrix,
         )
 
     path = tmp_path / "unet.eqx"
     save_model(path, fitted)
-    restored = load_model(path, distance_model=_unet(7, num_species=2, dropout=0))
+    restored = load_model(path, distance_model=_unet(7, species=order, dropout=0))
     assert isinstance(restored.distance_model, UNetEmbeddingDistance)
     for name in order:
         np.testing.assert_array_equal(
@@ -112,4 +111,4 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
             fitted.predict(region, species=name).values,
         )
     with pytest.raises(ArtifactError):
-        load_model(path, distance_model=_unet(7, num_species=2, dropout=0, embedding_dim=3))
+        load_model(path, distance_model=_unet(7, species=order, dropout=0, embedding_dim=3))

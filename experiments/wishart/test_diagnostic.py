@@ -137,7 +137,7 @@ def test_population_holdout_matches_independent_gaussian_regression_decompositio
 @final
 class UniformConductance(ConductanceModel):
     scale: jax.Array
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()

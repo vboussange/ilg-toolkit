@@ -31,7 +31,6 @@ class _ResumeScenario:
     targets: tuple[Any, ...]
     distance_model: AbstractDistanceModel
     config: TrainingConfig
-    species: tuple[str, ...] | None = None
     validation: tuple[tuple[RegionBatch, ...], tuple[Any, ...]] | None = None
 
 
@@ -88,7 +87,6 @@ def _species_microbatch_validation(training_problem):
         targets,
         model,
         config,
-        species=("species-1", "species-0"),
         validation=(regions, validation),
     )
 
@@ -107,7 +105,6 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
         targets,
         distance_model=scenario.distance_model,
         config=scenario.config,
-        species=scenario.species,
         validation=validation,
         on_step=states.append,
     )
@@ -123,12 +120,12 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
     resumed = train(regions[::-1], targets[::-1], state=restored, validation=validation)
     assert eqx.tree_equal(resumed, uninterrupted)
     for prepared in regions:
-        for name in scenario.species or (None,):
+        for name in scenario.distance_model.species or (None,):
             np.testing.assert_array_equal(
                 resumed.selected_model.predict(prepared, species=name).values,
                 uninterrupted.selected_model.predict(prepared, species=name).values,
             )
-    if validation is not None and scenario.species is None:
+    if validation is not None and scenario.distance_model.species is None:
         # A completed budget returns the saved state without further updates.
         save_checkpoint(path, resumed)
         completed = load_checkpoint(path, distance_model=scenario.distance_model)
@@ -141,7 +138,7 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
         assert resumed.selected_step == 0
         validation_loss = resumed.history[-1].validation_loss
         assert validation_loss is not None and validation_loss > resumed.selected_loss
-    if validation is not None and scenario.species is not None:
+    if validation is not None and scenario.distance_model.species is not None:
         assert resumed.history[-1].validation_by_species is not None
         assert set(resumed.history[-1].validation_by_species) == {"species-0"}
 

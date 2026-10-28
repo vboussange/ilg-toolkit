@@ -1,7 +1,6 @@
 """Genetic calibration from ecological distances to original-scale predictions."""
 
 from abc import abstractmethod
-from collections.abc import Sequence
 from typing import final, TYPE_CHECKING
 
 import equinox as eqx
@@ -155,7 +154,6 @@ def calibrate(
     distance_model: "AbstractDistanceModel",
     *,
     loss: "AbstractLoss",
-    species: Sequence[str] | None = None,
     max_iterations: int | None = None,
 ) -> "LandscapeGeneticsModel":
     """Fit genetic calibration while preserving every distance-model parameter.
@@ -165,16 +163,14 @@ def calibrate(
     per group in Equinox inference mode, and MLPE estimates both variance components
     with deterministic multistart optimization (2,000 iterations by default).
     ``Log1pLoss`` constructs a direct calibration and rejects an iteration budget.
-    Transferring a multispecies distance model requires its original full species
-    order, even when observations cover only one species.
+    Species names come from the distance model.
 
     Args:
         region: One region batch or a sequence or mapping of region batches.
         observations: Genetic observations aligned with regions and their species.
-        distance_model: Distance model whose parameters remain fixed during calibration.
+        distance_model: Distance model whose parameters and species remain fixed
+            during calibration.
         loss: Statistical criterion and numerical settings for genetic calibration.
-        species: Full species parameter order retained by the distance model, even
-            when calibration observations cover only a subset of species.
         max_iterations: Per-start calibration optimization budget. MLPE defaults to
             2,000 iterations; direct calibration requires this to be omitted.
 
@@ -185,16 +181,16 @@ def calibrate(
         Earlier calibrations are not merged into the returned model.
 
     Examples:
-        Train a landscape relationship, then fit new genetic calibration without
-        further landscape updates::
+        Train a patch encoder, then refit genetic calibration on the same region
+        without further distance-model updates::
 
             loss = MLPELoss(jitter=0.0)
             state = train(region, observations, distance_model=distance_model,
                           config=TrainingConfig(loss=loss, steps=500))
-            adapted = calibrate(new_region, new_observations,
-                                state.selected_model.distance_model, loss=loss,
-                                species=state.selected_model.species, max_iterations=2000)
-            prediction = adapted.predict(new_region, pairs=query_pairs)
+            refitted = calibrate(region, observations,
+                                 state.selected_model.distance_model, loss=loss,
+                                 max_iterations=2000)
+            prediction = refitted.predict(region, pairs=query_pairs)
 
         For parameter-free direct prediction, use ``loss=Log1pLoss()`` and omit
         ``max_iterations``. For updating only population effects of an existing MLPE
@@ -218,8 +214,8 @@ def calibrate(
     inference_model = _inference_model(distance_model)
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
-    prepared = _prepare_training_inputs(region, observations, species, distance_model.num_species)
-    first, order, groups = prepared.inputs[0], prepared.species, prepared.training
+    prepared = _prepare_training_inputs(region, observations, distance_model.species)
+    first, groups = prepared.inputs[0], prepared.training
     target = first.observations.target
     feature_count, feature_names = first.region.feature_array.shape[-1], first.region.feature_names
     for group in groups:
@@ -253,5 +249,4 @@ def calibrate(
         loss._calibration(target, fitted),
         feature_count,
         feature_names=feature_names,
-        species=order,
     )

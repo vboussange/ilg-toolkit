@@ -14,7 +14,7 @@ from jaxscape import GridGraph, ResistanceDistance
 from jaxscape.solvers import AMJaxCGSolver
 from numpy.typing import ArrayLike
 
-from .._checks import _positive_integer, _require_float64
+from .._checks import _require_float64
 from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
@@ -47,8 +47,10 @@ class AbstractDistanceModel(eqx.Module):
       ``ecological_distances(latent, pairs, species_index)``, returning ecological
       distances aligned with ``pairs``.
 
-    Declare static ``num_species`` and ``patch_size`` fields; conductance models
+    Declare static ``species`` and ``patch_size`` fields; conductance models
     also declare a static ``solver_config`` holding a ``ResistanceSolverConfig``.
+    ``species`` is a tuple of unique species names, one per species-specific head
+    in parameter order, or ``None`` for one unnamed species.
     Keep fields and initialization together in the concrete class, and compose
     existing concrete models to reuse their behavior rather than subclassing them.
 
@@ -59,7 +61,7 @@ class AbstractDistanceModel(eqx.Module):
     parameters by array indexing. The inherited ``predict`` returns a
     ``Prediction``, and ``train`` estimates the array-valued parameters with the
     chosen loss. See the experimental [multispecies example](../examples/multispecies.md)
-    for species labels and parameter order.
+    for species labels.
 
     Calibration fitting, prediction, validation and conductance surfaces evaluate
     the model in Equinox inference mode (``eqx.nn.inference_mode``). Training clears
@@ -74,7 +76,7 @@ class AbstractDistanceModel(eqx.Module):
         >>> @final
         ... class LinearEmbedding(EmbeddingDistanceModel):
         ...     weights: jax.Array
-        ...     num_species: int = eqx.field(static=True, default=1)
+        ...     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
         ...     patch_size: int = eqx.field(static=True, default=1)
         ...
         ...     def backbone(self, features: jax.Array) -> jax.Array:
@@ -85,8 +87,13 @@ class AbstractDistanceModel(eqx.Module):
         >>> distance_model = LinearEmbedding(jnp.eye(2))
     """
 
-    num_species: eqx.AbstractVar[int]
+    species: eqx.AbstractVar[tuple[str, ...] | None]
     patch_size: eqx.AbstractVar[int]
+
+    def __check_init__(self):
+        if self.species is not None and not isinstance(self.species, tuple):
+            raise ValueError("Distance-model species must be a tuple of names or None")
+        _species_names(self.species)
 
     @abstractmethod
     def backbone(self, features: jax.Array) -> jax.Array:
@@ -109,7 +116,6 @@ class AbstractDistanceModel(eqx.Module):
         region: RegionBatch,
         *,
         species: str | None = None,
-        species_order: Sequence[str] | None = None,
         pairs: Sequence[tuple[str, str]] | None = None,
     ) -> Prediction: ...
 
@@ -119,7 +125,6 @@ class AbstractDistanceModel(eqx.Module):
         region: RegionBatch,
         *,
         species: Sequence[str],
-        species_order: Sequence[str] | None = None,
         pairs: Sequence[tuple[str, str]] | None = None,
     ) -> dict[str, Prediction]: ...
 
@@ -128,13 +133,12 @@ class AbstractDistanceModel(eqx.Module):
         region: RegionBatch,
         *,
         species: str | Sequence[str] | None = None,
-        species_order: Sequence[str] | None = None,
         pairs: Sequence[tuple[str, str]] | None = None,
     ) -> Prediction | dict[str, Prediction]:
         """Ecological distances for query pairs of the selected species.
 
         Omitted pairs request every distinct pair in sampling-unit order.
-        ``species_order`` associates names with parameter rows for named species.
+        Species names come from the distance model's ``species``.
         A species sequence returns a mapping and computes patch features once.
         Explicit ``pairs`` limit the returned vector and avoid generating all
         pair labels; this does not guarantee that an underlying resistance solver
@@ -142,8 +146,7 @@ class AbstractDistanceModel(eqx.Module):
         result explicitly allocates a sampling-unit-square array.
         """
         _require_float64()
-        order = validate_species_order(species_order, self.num_species)
-        selected = select_species(order, species)
+        selected = select_species(self.species, species)
         results = {
             name: Prediction(values, labels, region.name, prepared.sampling_unit_ids, name)
             for name, (prepared, labels, values) in _species_distances(
@@ -198,7 +201,6 @@ class ConductanceModel(AbstractDistanceModel):
         region: RegionBatch,
         *,
         species: str | None = None,
-        species_order: Sequence[str] | None = None,
     ) -> jax.Array: ...
 
     @overload
@@ -207,7 +209,6 @@ class ConductanceModel(AbstractDistanceModel):
         region: RegionBatch,
         *,
         species: Sequence[str],
-        species_order: Sequence[str] | None = None,
     ) -> dict[str, jax.Array]: ...
 
     def conductance_surface(
@@ -215,16 +216,14 @@ class ConductanceModel(AbstractDistanceModel):
         region: RegionBatch,
         *,
         species: str | Sequence[str] | None = None,
-        species_order: Sequence[str] | None = None,
     ) -> jax.Array | dict[str, jax.Array]:
         """Positive conductance surfaces for the selected species.
 
-        ``species_order`` associates names with parameter rows for named species.
-        A species sequence returns a mapping and computes patch features once.
+        Species names come from the distance model's ``species``. A species
+        sequence returns a mapping and computes patch features once.
         """
         _require_float64()
-        order = validate_species_order(species_order, self.num_species)
-        selected = select_species(order, species)
+        selected = select_species(self.species, species)
         model = _inference_model(self)
         latent = model.backbone(region.feature_array)
         results = {}
@@ -257,23 +256,23 @@ class EmbeddingDistanceModel(AbstractDistanceModel):
         return jnp.sum(jnp.square(embeddings[left] - embeddings[right]), axis=-1)
 
 
-def validate_species_order(order: Sequence[str] | None, num_species: int) -> tuple[str, ...] | None:
-    """Species names associated with the distance model's parameter rows."""
-    _positive_integer("num_species", num_species)
-    if order is None:
-        if num_species != 1:
-            raise ValueError("Multispecies models require a species order")
+def _species_names(species: Sequence[str] | None) -> tuple[str, ...] | None:
+    """Unique, nonempty species names in parameter order, or ``None`` for one unnamed species."""
+    if species is None:
         return None
-    if isinstance(order, (str, bytes)) or not isinstance(order, Sequence):
-        raise ValueError("Species order must be a sequence of names")
-    names = tuple(order)
-    if (
-        len(names) != num_species
-        or any(not isinstance(name, str) or not name for name in names)
-        or len(set(names)) != len(names)
-    ):
-        raise ValueError("Species order must contain one unique name per modeled species")
+    if isinstance(species, (str, bytes)) or not isinstance(species, Sequence):
+        raise ValueError("Species must be a sequence of names or None")
+    names = tuple(species)
+    if not names or any(not isinstance(name, str) or not name for name in names):
+        raise ValueError("Species must contain at least one nonempty name")
+    if len(set(names)) != len(names):
+        raise ValueError(f"Species names must be unique, got {names!r}")
     return names
+
+
+def _model_species(model: AbstractDistanceModel) -> tuple[str | None, ...]:
+    """The distance model's species names in parameter order; ``None`` names one unnamed species."""
+    return (None,) if model.species is None else model.species
 
 
 def select_species(
@@ -293,7 +292,7 @@ def select_species(
         or any(not isinstance(name, str) or name not in order for name in names)
         or len(set(names)) != len(names)
     ):
-        raise ValueError("Species selection must contain unique names from the model's order")
+        raise ValueError("Species selection must contain unique names from the model's species")
     return tuple((name, order.index(name)) for name in names)
 
 
@@ -343,7 +342,7 @@ def _species_distances(
     mode. ``extra_pairs`` appends a species' additional pairs after its query
     pairs, in both the labels and the distances.
     """
-    if model.num_species > 1 and region.species is None:
+    if len(_model_species(model)) > 1 and region.species is None:
         raise ValueError("Multispecies queries require sampling-unit species labels")
     model = _inference_model(model)
     context = prepare_distance_context(model, region.feature_array)

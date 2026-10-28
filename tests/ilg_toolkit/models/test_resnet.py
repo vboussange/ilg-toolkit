@@ -87,7 +87,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     def model(seed, solver_config=None):
         return ResNet9Conductance(
             2,
-            num_species=2,
+            species=species,
             patch_size=4,
             channels=_TINY,
             min_conductance=0.02,
@@ -100,7 +100,6 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
         region,
         observations,
         distance_model=model(6, ResistanceSolverConfig(rtol=1e-9, atol=1e-10)),
-        species=species,
         config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.01),
     )
     assert np.isfinite(result.history[-1].training_loss)
@@ -108,7 +107,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     fitted = result.selected_model
     distance_model = fitted.distance_model
     assert isinstance(distance_model, ResNet9Conductance)
-    surfaces = distance_model.conductance_surface(region, species=species, species_order=species)
+    surfaces = distance_model.conductance_surface(region, species=species)
     assert not np.allclose(surfaces["frog"], surfaces["newt"])
     for name in species:
         surface = np.asarray(surfaces[name])
@@ -119,7 +118,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
         prediction = fitted.predict(region, species=name).as_matrix()
         np.testing.assert_allclose(prediction, expected, rtol=2e-6)
         np.testing.assert_allclose(
-            distance_model.predict(region, species=name, species_order=species).as_matrix(),
+            distance_model.predict(region, species=name).as_matrix(),
             prediction,
         )
 
@@ -128,9 +127,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     restored = load_model(path, distance_model=model(9))
     restored_model = restored.distance_model
     assert isinstance(restored_model, ResNet9Conductance)
-    restored_surfaces = restored_model.conductance_surface(
-        region, species=species, species_order=species
-    )
+    restored_surfaces = restored_model.conductance_surface(region, species=species)
     for name in species:
         np.testing.assert_array_equal(restored_surfaces[name], surfaces[name])
         np.testing.assert_array_equal(

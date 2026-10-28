@@ -24,9 +24,9 @@ from ilg_toolkit import (
 from ilg_toolkit.models import LogLinearConductance
 
 
-def test_genetic_queries_use_saved_species_order_and_original_scale(observation_problem):
+def test_genetic_queries_use_distance_model_species_and_original_scale(observation_problem):
     region, _, _ = observation_problem()
-    distance_model = LogLinearConductance(2, num_species=2, patch_size=1)
+    distance_model = LogLinearConductance(2, species=("stoat", "hare"), patch_size=1)
     distance_model = eqx.tree_at(
         lambda model: model.intercepts, distance_model, jnp.log(jnp.array([1.99, 0.99]))
     )
@@ -35,8 +35,8 @@ def test_genetic_queries_use_saved_species_order_and_original_scale(observation_
         DirectCalibrationModule(TargetSpec("divergence", transform="log1p")),
         2,
         feature_names=region.feature_names,
-        species=("stoat", "hare"),
     )
+    assert model.species == ("stoat", "hare")
     region = replace(
         region,
         sampling_unit_ids=region.sampling_unit_ids * 2,
@@ -80,7 +80,7 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
         ),
     )
     model = LandscapeGeneticsModel(
-        ScalarEmbedding(jnp.array([1.0, 2.0]), num_species=2),
+        ScalarEmbedding(jnp.array([1.0, 2.0]), species=names),
         MLPECalibrationModule(
             observations.target,
             {
@@ -92,7 +92,6 @@ def test_species_calibration_and_support_preserve_separate_population_effects(
         ),
         region.feature_array.shape[-1],
         feature_names=region.feature_names,
-        species=names,
     )
     kinds = region.sampling_unit_kinds
     assert kinds is not None

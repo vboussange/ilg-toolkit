@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import final
 
 import equinox as eqx
@@ -11,7 +12,7 @@ import jax.numpy as jnp
 
 from .._checks import _positive_integer
 from ..config import ResistanceSolverConfig
-from .base import ConductanceModel
+from .base import _species_names, ConductanceModel
 from .common import encode_patches
 
 
@@ -49,8 +50,9 @@ class ResNet9Conductance(ConductanceModel):
     Args:
         in_channels:
             Number of landscape features, in their retained feature order.
-        num_species: Number of species-specific output rows; default 1. The
-            convolutional layers are shared by all regions and species.
+        species: Species names, one output row each in parameter order; ``None``
+            (default) models one unnamed species. The convolutional layers are
+            shared by all regions and species.
         patch_size: Square patch side length, at least 4 (default 4). Raster dimensions
             must be divisible by it; output shape is
             ``(rows // patch_size, columns // patch_size)``. Sampling units in the
@@ -87,7 +89,7 @@ class ResNet9Conductance(ConductanceModel):
     residual1: ResidualBlock
     residual2: ResidualBlock
     output: eqx.nn.Linear
-    num_species: int = eqx.field(static=True, default=1, kw_only=True)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None, kw_only=True)
     channels: tuple[int, int, int] = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
@@ -98,7 +100,7 @@ class ResNet9Conductance(ConductanceModel):
         self,
         in_channels: int,
         *,
-        num_species: int = 1,
+        species: Sequence[str] | None = None,
         patch_size: int = 4,
         channels: tuple[int, int, int] = (64, 128, 256),
         min_conductance: float = 1e-6,
@@ -106,7 +108,7 @@ class ResNet9Conductance(ConductanceModel):
         solver_config: ResistanceSolverConfig | None = None,
         key: jax.Array,
     ):
-        num_species = _positive_integer("num_species", num_species)
+        species = _species_names(species)
         in_channels = _positive_integer("in_channels", in_channels)
         patch_size = _positive_integer("patch_size", patch_size)
         if patch_size < 4:
@@ -132,8 +134,9 @@ class ResNet9Conductance(ConductanceModel):
         self.residual2 = ResidualBlock(second, key=keys[3])
         self.conv3 = eqx.nn.Conv2d(second, third, 3, padding=1, dtype=jnp.float32, key=keys[4])
         self.norm3 = eqx.nn.GroupNorm(8, third, dtype=jnp.float32)
-        self.output = eqx.nn.Linear(third, num_species, dtype=jnp.float32, key=keys[5])
-        self.num_species = num_species
+        count = 1 if species is None else len(species)
+        self.output = eqx.nn.Linear(third, count, dtype=jnp.float32, key=keys[5])
+        self.species = species
         self.channels = (first, second, third)
         self.patch_size = patch_size
         self.min_conductance = min_conductance

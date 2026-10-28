@@ -62,8 +62,9 @@ def test_patch_mean_predictor_obeys_conductance_bounds(patch_microbatch_size):
     [
         {"in_channels": 0},
         {"in_channels": True},
-        {"num_species": 0},
-        {"num_species": 1.5},
+        {"species": ()},
+        {"species": "frog"},
+        {"species": ("frog", "frog")},
         {"patch_size": 0},
         {"patch_size": True},
         {"patch_microbatch_size": 0},
@@ -244,12 +245,11 @@ def _uniform_problem(dense_resistance, conductance, *, name="valley", seed=3, no
     return region, observations
 
 
-def _training_loss(model, region, observations, loss, species=None):
+def _training_loss(model, region, observations, loss):
     state = train(
         region,
         observations,
         distance_model=model,
-        species=species,
         config=TrainingConfig(loss=loss, steps=0),
     )
     return state.history[0].training_loss
@@ -326,15 +326,12 @@ def test_uniform_initialization_sets_one_intercept_per_species(dense_resistance)
         species=("frog",) * count + ("newt",) * count,
     )
     model = initialize_uniform_conductance(
-        LogLinearConductance(2, num_species=2, patch_size=2),
+        LogLinearConductance(2, species=("newt", "frog"), patch_size=2),
         region,
         (frog, newt),
         Log1pLoss(),
-        species=("newt", "frog"),
     )
-    surfaces = model.conductance_surface(
-        region, species=("newt", "frog"), species_order=("newt", "frog")
-    )
+    surfaces = model.conductance_surface(region, species=("newt", "frog"))
     np.testing.assert_allclose(surfaces["frog"], 0.5, rtol=1e-6)
     np.testing.assert_allclose(surfaces["newt"], 3.0, rtol=1e-6)
 

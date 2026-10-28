@@ -23,7 +23,28 @@ from ilg_toolkit.models import ConductanceModel, LogLinearConductance
 from jaxscape import GridGraph, ResistanceDistance
 
 
-def test_species_queries_follow_supplied_order_with_reused_sampling_unit_ids():
+def test_distance_models_carry_unique_species_names(PointConductance):
+    region = RegionBatch(
+        "river",
+        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        ("a", "b", "c"),
+        np.array([[0, 0], [0, 1], [0, 2]]),
+    )
+    unnamed = LogLinearConductance(1, patch_size=1)
+    assert unnamed.species is None
+    prediction = unnamed.predict(region)
+    assert prediction.species is None
+    assert prediction.pairs == (("a", "b"), ("a", "c"), ("b", "c"))
+    named = PointConductance(jnp.zeros(2), species=("stoat", "hare"))
+    assert named.species == ("stoat", "hare")
+    for species in ((), ("hare", "hare"), "hare", ("hare", ""), ("hare", 1)):
+        with pytest.raises(ValueError, match="[Ss]pecies"):
+            LogLinearConductance(1, species=species)  # pyright: ignore[reportArgumentType]
+        with pytest.raises(ValueError, match="[Ss]pecies"):
+            PointConductance(jnp.zeros(2), species=species)
+
+
+def test_species_queries_follow_the_model_species_with_reused_sampling_unit_ids():
     region = RegionBatch(
         "river",
         cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
@@ -31,41 +52,33 @@ def test_species_queries_follow_supplied_order_with_reused_sampling_unit_ids():
         np.array([[0, 0], [0, 2], [0, 0], [0, 1]]),
         species=("hare", "hare", "stoat", "stoat"),
     )
-    model = LogLinearConductance(1, num_species=2, patch_size=1)
+    model = LogLinearConductance(1, species=("stoat", "hare"), patch_size=1)
     model = eqx.tree_at(lambda value: value.intercepts, model, jnp.log(jnp.array([1.99, 0.99])))
-    order = ("stoat", "hare")
-    results = model.predict(region, species=("hare", "stoat"), species_order=order)
+    results = model.predict(region, species=("hare", "stoat"))
     np.testing.assert_allclose(results["hare"].values, [2.0], rtol=1e-6)
     np.testing.assert_allclose(results["stoat"].values, [0.5], rtol=1e-6)
     for name, result in results.items():
         assert result.species == name
         assert result.sampling_unit_ids == ("a", "b")
-        np.testing.assert_array_equal(
-            model.predict(region, species=name, species_order=order).values, result.values
-        )
-    surfaces = model.conductance_surface(region, species=("hare", "stoat"), species_order=order)
+        np.testing.assert_array_equal(model.predict(region, species=name).values, result.values)
+    surfaces = model.conductance_surface(region, species=("hare", "stoat"))
     np.testing.assert_allclose(surfaces["hare"], np.ones((1, 3)), rtol=1e-6)
     np.testing.assert_allclose(surfaces["stoat"], np.full((1, 3), 2), rtol=1e-6)
     unlabeled = replace(region, sampling_unit_ids=("a", "b", "c", "d"), species=None)
     np.testing.assert_allclose(
-        model.conductance_surface(unlabeled, species="hare", species_order=order),
+        model.conductance_surface(unlabeled, species="hare"),
         surfaces["hare"],
     )
     partial = replace(unlabeled, species=("stoat",) * 4)
     np.testing.assert_allclose(
-        model.conductance_surface(partial, species="hare", species_order=order),
+        model.conductance_surface(partial, species="hare"),
         surfaces["hare"],
     )
-    for options in (
-        {},
-        {"species": "hare"},
-        {"species_order": order},
-        {"species": "missing", "species_order": order},
-        {"species": ("hare", "hare"), "species_order": order},
-        {"species": "hare", "species_order": ("hare", "hare")},
-    ):
+    for species in (None, "missing", ("hare", "hare")):
         with pytest.raises(ValueError):
-            model.predict(region, **options)
+            model.predict(region, species=species)
+    with pytest.raises(ValueError, match="sampling-unit species labels"):
+        model.predict(unlabeled, species="hare")
 
 
 def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateConductance):

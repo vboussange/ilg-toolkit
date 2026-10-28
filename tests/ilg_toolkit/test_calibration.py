@@ -76,34 +76,45 @@ def test_direct_calibration_preserves_target_transform_and_rejects_iteration_bud
         calibrate(region, observations, distance_model, loss=Log1pLoss(), max_iterations=5)
 
 
-def test_transfer_calibration_preserves_original_species_parameter_order(training_problem):
+def test_calibration_reads_species_from_the_distance_model(training_problem):
     region, observations, distance_model = training_problem("embedding", num_species=2)
-    order = ("species-1", "species-0")
-    observed = next(value for value in observations if value.species == "species-0")
-    model = calibrate(region, observed, distance_model, species=order, loss=MLPELoss())
-    assert model.species == order
-    assert set(cast(MLPECalibrationModule, model.calibration).regions) == {(region.name, 1)}
+    model = calibrate(region, observations, distance_model, loss=MLPELoss())
+    assert model.species == distance_model.species == ("species-0", "species-1")
+    assert set(cast(MLPECalibrationModule, model.calibration).regions) == {
+        (region.name, 0),
+        (region.name, 1),
+    }
     assert eqx.tree_equal(model.distance_model, distance_model)
-    assert np.isfinite(model.predict(region, species="species-0").values).all()
-    with pytest.raises(ValueError, match="calibrat"):
-        model.predict(region, species="species-1")
-    with pytest.raises(ValueError):
-        calibrate(region, observed, distance_model, loss=MLPELoss())
+    predictions = model.predict(region, species=("species-0", "species-1"))
+    assert [prediction.species for prediction in predictions.values()] == [
+        "species-0",
+        "species-1",
+    ]
+    unnamed = type(distance_model)(distance_model.log_weights)
+    with pytest.raises(ValueError, match="distance model with species"):
+        calibrate(region, observations, unnamed, loss=MLPELoss())
 
 
-def test_single_species_calibration_infers_labels_from_the_region(observation_problem):
+def test_single_species_calibration_names_its_species_once(observation_problem):
     region, target, distance_model = observation_problem()
-    region = replace(region, species=("frog",) * len(region.sampling_unit_ids))
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [2.0], target=target)
-    model = calibrate(region, observations, distance_model, loss=Log1pLoss())
+    unnamed = calibrate(region, observations, distance_model, loss=Log1pLoss())
+    assert unnamed.species is None
+    assert unnamed.predict(region).species is None
+    frog_model = type(distance_model)(distance_model.weight, species=("frog",))
+    region = replace(region, species=("frog",) * len(region.sampling_unit_ids))
+    model = calibrate(region, observations, frog_model, loss=Log1pLoss())
     assert model.species == ("frog",)
     assert model.predict(region).species == "frog"
     np.testing.assert_array_equal(
-        model.predict(region).values,
-        distance_model.predict(region, species_order=("frog",)).values,
+        model.predict(region).values, unnamed.predict(replace(region, species=None)).values
     )
-    with pytest.raises(ValueError):
-        calibrate(region, replace(observations, species="newt"), distance_model, loss=Log1pLoss())
+    for invalid_model, invalid_observations in (
+        (frog_model, replace(observations, species="newt")),
+        (distance_model, replace(observations, species="frog")),
+    ):
+        with pytest.raises(ValueError, match="species"):
+            calibrate(region, invalid_observations, invalid_model, loss=Log1pLoss())
 
 
 def test_multi_region_calibration_requires_shared_named_features(observation_problem):

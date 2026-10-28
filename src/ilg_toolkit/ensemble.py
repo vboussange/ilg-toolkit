@@ -106,7 +106,7 @@ def _summarize_members(values):
 class Ensemble:
     """An ordered, nonempty collection of compatible fitted genetic models.
 
-    Members share target semantics, feature meanings, and species order. The
+    Members share target semantics, feature meanings, and species. The
     input list or tuple is snapshotted, and repeated entries remain separate
     members. Every member must predict successfully; errors identify the failing
     member's zero-based position.
@@ -142,7 +142,7 @@ class Ensemble:
                 or member.species != first.species
             ):
                 raise ValueError(
-                    f"Ensemble member {index} must have matching target, features and species order"
+                    f"Ensemble member {index} must have matching target, features and species"
                 )
         object.__setattr__(self, "members", members)
 
@@ -208,9 +208,7 @@ class Ensemble:
 
         def predict_member(model):
             model._validate_region(region)
-            return model.distance_model.predict(
-                region, species=species, species_order=model.species
-            )
+            return model.distance_model.predict(region, species=species)
 
         predictions = self._map_members("ecological-distance prediction", predict_member)
         if isinstance(species, str) or species is None:
@@ -237,9 +235,7 @@ class Ensemble:
             model._validate_region(region)
             if not isinstance(model.distance_model, ConductanceModel):
                 raise TypeError("This distance model does not produce a conductance surface")
-            return model.distance_model.conductance_surface(
-                region, species=species, species_order=model.species
-            )
+            return model.distance_model.conductance_surface(region, species=species)
 
         surfaces = self._map_members("conductance-surface prediction", surface)
 
