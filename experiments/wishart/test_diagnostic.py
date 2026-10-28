@@ -284,6 +284,7 @@ def test_generic_genetic_targets_are_not_silently_promoted_to_marker_observation
         wishart_log_likelihood(cast(GaussianMarkerDistances, generic), np.eye(len(labels) - 1))
 
 
+@pytest.mark.filterwarnings("ignore:Sampling units share a vertex")
 def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible():
     labels, raw, distances, _ = gaussian_example(populations=3)
     observations = GaussianMarkerDistances(

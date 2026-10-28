@@ -25,7 +25,12 @@ from .data import ObservationCollection, PairwiseObservations, RegionBatch, Regi
 from .losses import _LossContext, AbstractLoss
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
-from .models.base import _model_species, distances_from_latent, prepare_distance_context
+from .models.base import (
+    _check_regions,
+    _model_species,
+    distances_from_latent,
+    prepare_distance_context,
+)
 from .models.common import _inference_model, _reject_stateful_layers, _training_model
 from .resistance import ResistanceSolverContext
 
@@ -552,6 +557,7 @@ def train(
     prepared = _prepare_training_inputs(
         region, observations, distance_model.species, validation=validation
     )
+    _check_regions(distance_model, prepared.regions)
     first_region, first_observations = prepared.inputs[0]
     prototype = LandscapeGeneticsModel(
         distance_model,

@@ -203,6 +203,7 @@ def calibrate(
     from .model import LandscapeGeneticsModel
     from .models import AbstractDistanceModel
     from .models.base import (
+        _check_regions,
         prepare_distance_context,
         query_distances_from_latent,
     )
@@ -215,6 +216,7 @@ def calibrate(
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
     prepared = _prepare_training_inputs(region, observations, distance_model.species)
+    _check_regions(distance_model, prepared.regions)
     first, groups = prepared.inputs[0], prepared.training
     target = first.observations.target
     for group in groups:

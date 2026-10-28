@@ -163,3 +163,12 @@ def test_mlpe_calibration_rejects_individual_based_query_regions(
     region, _, _ = four_population_calibration
     with pytest.raises(ValueError, match="individual-based"):
         mlpe_calibrated_model.predict(replace(region, individual_based=True))
+
+
+def test_calibration_checks_the_patch_grid(patch_check_problem):
+    problem = patch_check_problem
+    misaligned, shared = problem.misaligned, problem.shared
+    with problem.trim_required():
+        calibrate(misaligned, problem.observations(misaligned), problem.model, loss=Log1pLoss())
+    with problem.shared_vertices_warned():
+        calibrate(shared, problem.observations(shared), problem.model, loss=Log1pLoss())

@@ -144,11 +144,12 @@ def _prepare_region_species_inputs(
 
 
 class _PreparedTrainingInputs(NamedTuple):
-    """Aligned inputs and weighted region–species groups."""
+    """Aligned inputs, weighted region–species groups, and every distinct region batch."""
 
     inputs: tuple[_RegionWithGeneticObservations, ...]
     training: tuple[_RegionSpeciesTrainingInput, ...]
     validation: tuple[_RegionSpeciesTrainingInput, ...]
+    regions: tuple[RegionBatch, ...]
 
 
 def _prepare_training_inputs(
@@ -170,4 +171,5 @@ def _prepare_training_inputs(
         inputs,
         _prepare_region_species_inputs(inputs, species),
         _prepare_region_species_inputs(validation_inputs, species),
+        tuple({id(item.region): item.region for item in (*inputs, *validation_inputs)}.values()),
     )
