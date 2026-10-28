@@ -2,6 +2,7 @@
 
 import contextlib
 import itertools
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from ilg_toolkit.models import (
     AbstractDistanceModel,
     ConductanceModel,
     EmbeddingDistanceModel,
+    LogLinearConductance,
 )
 
 
@@ -800,6 +802,65 @@ def _float64_required():
 @pytest.fixture(name="float64_required", scope="session")
 def float64_required_fixture():
     return _float64_required
+
+
+def _patch_check_problem() -> SimpleNamespace:
+    """A patch_size=2 log-linear patch encoder meeting regions that break its patch grid.
+
+    ``misaligned`` has 5 x 3 raster cells, which 2 x 2 patches do not tile. In
+    ``shared``, sampling units ``a`` and ``b``, and ``c`` and ``d``, share vertices.
+    """
+    names = ("elevation",)
+    misaligned = RegionBatch(
+        "ridge",
+        _feature_field(np.linspace(0, 1, 15).reshape(5, 3, 1), names),
+        ("a", "b", "c"),
+        np.array([[0, 0], [2, 1], [4, 2]]),
+    )
+    shared = RegionBatch(
+        "valley",
+        _feature_field(np.linspace(0, 1, 16).reshape(4, 4, 1), names),
+        ("a", "b", "c", "d", "e", "f"),
+        np.array([[0, 0], [1, 1], [2, 2], [3, 3], [0, 3], [3, 0]]),
+    )
+    target = TargetSpec("divergence", transform="log1p")
+
+    def observations(region: RegionBatch) -> PairwiseObservations:
+        pairs = tuple(itertools.combinations(region.sampling_unit_ids, 2))
+        return PairwiseObservations.from_pairs(
+            pairs, np.linspace(0.1, 0.9, len(pairs)), target=target
+        )
+
+    @contextlib.contextmanager
+    def trim_required():
+        message = "Region 'ridge' (5 x 3 cells): drop 1 row and 1 column to get 4 x 2 cells"
+        with pytest.raises(ValueError, match=re.escape(message)):
+            yield
+
+    @contextlib.contextmanager
+    def shared_vertices_warned():
+        with pytest.warns(UserWarning) as record:
+            yield
+        messages = [
+            str(warning.message) for warning in record if "share a vertex" in str(warning.message)
+        ]
+        assert len(messages) == 1
+        assert messages[0].endswith("region 'valley': (a, b), (c, d)")
+
+    return SimpleNamespace(
+        model=LogLinearConductance(1, patch_size=2),
+        misaligned=misaligned,
+        shared=shared,
+        target=target,
+        observations=observations,
+        trim_required=trim_required,
+        shared_vertices_warned=shared_vertices_warned,
+    )
+
+
+@pytest.fixture(name="patch_check_problem", scope="session")
+def patch_check_problem_fixture():
+    return _patch_check_problem()
 
 
 @pytest.fixture(name="observation_problem", scope="session")

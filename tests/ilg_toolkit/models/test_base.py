@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import lineax as lx
 import numpy as np
 import pytest
+import xarray as xr
 from ilg_toolkit import (
     load_model,
     Log1pLoss,
@@ -72,9 +73,9 @@ def test_species_queries_follow_the_model_species_with_reused_sampling_unit_ids(
     assert tuple(every_hare_pair) == ("hare",)
     assert every_hare_pair["hare"].pairs == (("a", "b"), ("a", "c"), ("b", "c"))
     np.testing.assert_allclose(every_hare_pair["hare"].values, [2.0, 1.0, 1.0], rtol=1e-6)
-    np.testing.assert_allclose(model.conductance_surface(region, "hare"), np.ones((1, 3)))
+    np.testing.assert_allclose(model.conductance_surface(region, "hare").data, np.ones((1, 3)))
     np.testing.assert_allclose(
-        model.conductance_surface(region, species="stoat"), np.full((1, 3), 2), rtol=1e-6
+        model.conductance_surface(region, species="stoat").data, np.full((1, 3), 2), rtol=1e-6
     )
     unlabeled = replace(region, sampling_unit_ids=("a", "b", "c", "d", "e"), species=None)
     for query in (None, [("a", "b")], {"missing": None}, {"hare": [("a", "missing")]}):
@@ -116,16 +117,18 @@ def test_single_species_queries_return_one_prediction(PointConductance):
     assert tuple(by_species) == ("frog",)
     np.testing.assert_array_equal(by_species["frog"].values, selected.values)
     np.testing.assert_array_equal(
-        named.conductance_surface(region), named.conductance_surface(region, "frog")
+        named.conductance_surface(region).data, named.conductance_surface(region, "frog").data
     )
     for query in ({}, {"toad": None}, 3):
         with pytest.raises(ValueError):
             named.predict(region, query)  # pyright: ignore[reportArgumentType]
 
 
+@pytest.mark.filterwarnings("ignore:Sampling units share a vertex")
 def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateConductance):
     # Float32 features exercise the float64 solve and cast back. Float64 resistances
     # meet the dense Laplacian reference in the log-linear and conductance training tests.
+    # Sampling units c and d share a vertex, so their resistance is exactly zero.
     dtype = jnp.float32
     region = RegionBatch(
         "river",
@@ -144,7 +147,7 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateCon
 
     def objective(distance_model, *, upstream):
         if upstream:
-            surface = distance_model.conductance_surface(region)
+            surface = distance_model.conductance_surface(region).data
             graph = GridGraph(surface.astype(jnp.float64), fun=lambda a, b: (a + b) / 2)
             config = distance_model.solver_config
             solver = lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps)
@@ -174,7 +177,7 @@ def test_conductance_surface_uses_prediction_mode_for_custom_dropout(
 ):
     region, _, _ = observation_problem()
     model = DropoutConductance()
-    np.testing.assert_allclose(model.conductance_surface(region), [[1.0, np.e, np.e**2]])
+    np.testing.assert_allclose(model.conductance_surface(region).data, [[1.0, np.e, np.e**2]])
     np.testing.assert_allclose(
         model.predict(region, [("unit/7", "unit/99")]).values,
         [2 / (1 + np.e) + 2 / (np.e + np.e**2)],
@@ -219,7 +222,12 @@ def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductan
         state.selected_model.distance_model.predict(region).values,
     )
     assert np.all(
-        cast(ConductanceModel, state.selected_model.distance_model).conductance_surface(region) > 0
+        np.asarray(
+            cast(ConductanceModel, state.selected_model.distance_model)
+            .conductance_surface(region)
+            .data
+        )
+        > 0
     )
 
 
@@ -270,3 +278,49 @@ def test_prediction_and_conductance_surfaces_require_float64(observation_problem
         model.predict(region)
     with float64_required():
         LogLinearConductance(2, patch_size=1).conductance_surface(region)
+
+
+def test_conductance_surfaces_carry_patch_centers_from_xarray_features():
+    # Descending y, as in most GeoTIFFs; each 2 x 2 patch is one vertex.
+    raster = xr.DataArray(
+        np.linspace(0, 1, 24).reshape(4, 6, 1),
+        dims=("y", "x", "band"),
+        coords={
+            "y": [350.0, 250.0, 150.0, 50.0],
+            "x": [1000.0, 1100.0, 1200.0, 1300.0, 1400.0, 1500.0],
+            "band": ["elevation"],
+        },
+    )
+    features = cx.from_xarray(raster.rename(y="row", x="column", band="feature"))
+    region = RegionBatch.from_points(
+        "valley", features, ("a", "b"), np.array([[1010.0, 340.0], [1490.0, 60.0]])
+    )
+    model = eqx.tree_at(
+        lambda value: value.coefficients, LogLinearConductance(1, patch_size=2), jnp.ones((1, 1))
+    )
+    surface = model.conductance_surface(region).to_xarray()
+    assert surface.dims == ("row", "column")
+    np.testing.assert_array_equal(surface["row"], [300.0, 100.0])
+    np.testing.assert_array_equal(surface["column"], [1050.0, 1250.0, 1450.0])
+    patch_means = raster.to_numpy()[..., 0].reshape(2, 2, 3, 2).mean(axis=(1, 3))
+    np.testing.assert_allclose(surface.to_numpy(), 0.01 + np.exp(patch_means))
+
+    # Synthetic features without coordinates give the same surface over plain axes.
+    plain = RegionBatch(
+        "valley",
+        cx.field(raster.to_numpy(), "row", "column", features.axes["feature"]),
+        ("a", "b"),
+        region.grid_positions,
+    )
+    plain_surface = model.conductance_surface(plain).to_xarray()
+    assert plain_surface.dims == ("row", "column") and not plain_surface.coords
+    np.testing.assert_array_equal(plain_surface.to_numpy(), surface.to_numpy())
+
+
+@pytest.mark.parametrize("evaluate", ["predict", "conductance_surface"])
+def test_prediction_and_conductance_surfaces_check_the_patch_grid(patch_check_problem, evaluate):
+    problem = patch_check_problem
+    with problem.trim_required():
+        getattr(problem.model, evaluate)(problem.misaligned)
+    with problem.shared_vertices_warned():
+        getattr(problem.model, evaluate)(problem.shared)

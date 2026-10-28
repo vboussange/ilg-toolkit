@@ -438,8 +438,10 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
         assert result.history[-1].training_loss < result.history[0].training_loss - 0.2
         assert float(cast(Any, result.selected_model.distance_model).weight) > 0.6
         assert np.isfinite(result.selected_model.predict(region).values).all()
-        surface = cast(ConductanceModel, result.selected_model.distance_model).conductance_surface(
-            region
+        surface = (
+            cast(ConductanceModel, result.selected_model.distance_model)
+            .conductance_surface(region)
+            .data
         )
         actual_distances = result.selected_model.distance_model.predict(region).as_matrix()
     expected = dense_resistance(surface, region.pixel_nodes)
@@ -932,3 +934,35 @@ def test_training_requires_float64(observation_problem, float64_required):
             distance_model=model,
             config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
+
+
+def test_training_checks_the_patch_grid_of_training_and_validation_regions(patch_check_problem):
+    problem = patch_check_problem
+    config = TrainingConfig(loss=Log1pLoss(), steps=1)
+    misaligned, shared = problem.misaligned, problem.shared
+    with problem.trim_required():
+        train(
+            misaligned,
+            problem.observations(misaligned),
+            distance_model=problem.model,
+            config=config,
+        )
+    with problem.trim_required():
+        train(
+            shared,
+            problem.observations(shared),
+            distance_model=problem.model,
+            config=config,
+            validation=(misaligned, problem.observations(misaligned)),
+        )
+    observations = problem.observations(shared)
+    pairs = observations.observed_pairs
+    with problem.shared_vertices_warned():
+        state = train(
+            shared,
+            observations.select_pairs(pairs[:8]),
+            distance_model=problem.model,
+            config=config,
+            validation=(shared, observations.select_pairs(pairs[8:])),
+        )
+    assert np.isfinite(state.selected_loss)

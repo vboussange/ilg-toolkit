@@ -45,7 +45,7 @@ def test_patch_mean_predictor_obeys_conductance_bounds(patch_microbatch_size):
         min_conductance=0.25,
         max_conductance=5.0,
     )
-    np.testing.assert_allclose(model.conductance_surface(region), [[1.25, 1.25]])
+    np.testing.assert_allclose(np.asarray(model.conductance_surface(region).data), [[1.25, 1.25]])
     model = eqx.tree_at(
         lambda model: (model.coefficients, model.intercepts),
         model,
@@ -53,10 +53,11 @@ def test_patch_mean_predictor_obeys_conductance_bounds(patch_microbatch_size):
     )
     # Patch covariates are (-2, 0) and (2, 0), giving predictors -0.7 and 1.3.
     np.testing.assert_allclose(
-        model.conductance_surface(region), [[0.7465853037914095, 3.9192966676192444]]
+        np.asarray(model.conductance_surface(region).data),
+        [[0.7465853037914095, 3.9192966676192444]],
     )
     extreme = eqx.tree_at(lambda model: model.coefficients, model, jnp.array([[1e4, 2.0]]))
-    np.testing.assert_allclose(extreme.conductance_surface(region), [[0.25, 5.0]])
+    np.testing.assert_allclose(np.asarray(extreme.conductance_surface(region).data), [[0.25, 5.0]])
 
 
 @pytest.mark.parametrize(
@@ -278,7 +279,9 @@ def test_uniform_initialization_recovers_the_generating_conductance(dense_resist
     )
     initialized = initialize_uniform_conductance(model, region, observations, Log1pLoss())
     np.testing.assert_array_equal(initialized.coefficients, np.zeros((1, 2)))
-    np.testing.assert_allclose(initialized.conductance_surface(region), 3.7, rtol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(initialized.conductance_surface(region).data), 3.7, rtol=1e-6
+    )
     np.testing.assert_allclose(
         _training_loss(initialized, region, observations, Log1pLoss()), 0, atol=1e-12
     )
@@ -302,7 +305,7 @@ def test_uniform_initialization_minimizes_the_region_weighted_loss(dense_resista
     model = initialize_uniform_conductance(
         LogLinearConductance(2, patch_size=2), regions, observations, Log1pLoss()
     )
-    conductance = float(model.conductance_surface(regions[0])[0, 0])
+    conductance = float(np.asarray(model.conductance_surface(regions[0]).data)[0, 0])
     assert 2.0 < conductance < 9.0
     best = _training_loss(model, regions, observations, Log1pLoss())
     for factor in (0.999, 1.001, 0.9, 1.1):
@@ -319,7 +322,7 @@ def test_uniform_initialization_stays_inside_the_conductance_bounds(dense_resist
     region, observations = _uniform_problem(dense_resistance, generating)
     model = LogLinearConductance(2, patch_size=2, min_conductance=0.01, max_conductance=1000.0)
     initialized = initialize_uniform_conductance(model, region, observations, Log1pLoss())
-    surface = np.asarray(initialized.conductance_surface(region))
+    surface = np.asarray(initialized.conductance_surface(region).data)
     assert np.all(np.isfinite(initialized.intercepts))
     assert np.all((surface > 0.01) & (surface < 1000.0))
     np.testing.assert_allclose(surface, 1000.0 if generating > 1 else 0.01, rtol=1e-3)
@@ -344,8 +347,12 @@ def test_uniform_initialization_sets_one_intercept_per_species(dense_resistance)
         (frog, newt),
         Log1pLoss(),
     )
-    np.testing.assert_allclose(model.conductance_surface(region, "frog"), 0.5, rtol=1e-6)
-    np.testing.assert_allclose(model.conductance_surface(region, "newt"), 3.0, rtol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(model.conductance_surface(region, "frog").data), 0.5, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.asarray(model.conductance_surface(region, "newt").data), 3.0, rtol=1e-6
+    )
 
 
 def test_standardized_mlpe_does_not_move_the_uniform_conductance(dense_resistance):
@@ -371,4 +378,17 @@ def test_uniform_conductance_initialization_requires_float64(observation_problem
     with float64_required():
         initialize_uniform_conductance(
             LogLinearConductance(2, patch_size=1), region, observations, Log1pLoss()
+        )
+
+
+def test_uniform_initialization_checks_the_patch_grid(patch_check_problem):
+    problem = patch_check_problem
+    misaligned, shared = problem.misaligned, problem.shared
+    with problem.trim_required():
+        initialize_uniform_conductance(
+            problem.model, misaligned, problem.observations(misaligned), Log1pLoss()
+        )
+    with problem.shared_vertices_warned():
+        initialize_uniform_conductance(
+            problem.model, shared, problem.observations(shared), Log1pLoss()
         )

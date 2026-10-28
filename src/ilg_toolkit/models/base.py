@@ -1,15 +1,19 @@
 """Abstract distance models deriving ecological distances from patch features."""
 
+import os
+import warnings
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import combinations
 from typing import cast, final, overload
 
+import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax as lx
+import numpy as np
 from jaxscape import GridGraph, ResistanceDistance
 from jaxscape.solvers import AMJaxCGSolver
 from numpy.typing import ArrayLike
@@ -58,7 +62,11 @@ class AbstractDistanceModel(eqx.Module):
 
     Raster features have shape ``(rows, columns, features)``, with meanings and
     order compatible across regions. Sampling locations are integer
-    ``(row, column)`` cells mapped to the vertex of their containing patch. During
+    ``(row, column)`` cells mapped to the vertex of their containing patch.
+    Training, calibration fitting, prediction and conductance surfaces raise a
+    ``ValueError`` naming the trim needed when ``patch_size`` does not divide a
+    raster's rows and columns, and warn, naming them, about sampling units of one
+    species that share a vertex. During
     training, ``species_index`` may be a scalar integer array, so select species
     parameters by array indexing. The inherited ``predict`` returns ecological
     distances for a ``query``, and ``train`` estimates the array-valued parameters with the
@@ -193,20 +201,41 @@ class ConductanceModel(AbstractDistanceModel):
         surface = self.conductance(latent, species_index)
         return effective_resistance(surface, nodes, context=context)[indices]
 
-    def conductance_surface(self, region: RegionBatch, species: str | None = None) -> jax.Array:
+    def conductance_surface(self, region: RegionBatch, species: str | None = None) -> cx.Field:
         """Positive conductance surface of one species, requested by name.
 
         ``species`` is one of the distance model's ``species``; a single-species
-        model needs no name.
+        model needs no name. The surface has one value per vertex along ``row`` and
+        ``column`` dimensions. When the region's features carry numeric row and
+        column coordinates, as ``cx.from_xarray`` keeps them, each vertex is
+        labeled with the center of its patch: the mean coordinate of its cells.
+        Otherwise the dimensions carry no coordinates.
+
+        The raster's rows and columns must be multiples of ``patch_size``, and
+        sampling units sharing a vertex trigger a ``UserWarning`` naming them.
+
+        Examples:
+            Write a learned surface as a GeoTIFF with rioxarray, reattaching the
+            coordinate reference system of the raster the features came from::
+
+                surface = distance_model.conductance_surface(region).to_xarray()
+                surface = surface.rename(row="y", column="x").rio.write_crs(raster.rio.crs)
+                surface.rio.to_raster("conductance.tif")
         """
         _require_float64()
         index = _species_index(self.species, species)
+        _check_regions(self, (region,))
         model = _inference_model(self)
         surface = model.conductance(model.backbone(region.feature_array), index)
-        return eqx.error_if(
+        surface = eqx.error_if(
             surface,
             jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
             "Distance model produced nonfinite or nonpositive conductance",
+        )
+        return cx.field(
+            surface,
+            _patch_axis(region.features.axes.get("row"), "row", self.patch_size),
+            _patch_axis(region.features.axes.get("column"), "column", self.patch_size),
         )
 
 
@@ -239,6 +268,95 @@ def _species_names(species: Sequence[str] | None) -> tuple[str, ...] | None:
     if len(set(names)) != len(names):
         raise ValueError(f"Species names must be unique, got {names!r}")
     return names
+
+
+def _patch_axis(axis: cx.Coordinate | None, dimension: str, patch_size: int) -> cx.Coordinate | str:
+    """Patch-center coordinates along one raster dimension, or the bare dimension name.
+
+    Each patch center is the mean coordinate of its ``patch_size`` cells, which holds
+    for increasing and decreasing coordinates alike.
+    """
+    if not isinstance(axis, cx.LabeledAxis) or not np.issubdtype(axis.ticks.dtype, np.number):
+        return dimension
+    centers = axis.ticks.astype(np.float64).reshape(-1, patch_size).mean(axis=1)
+    return cx.LabeledAxis(dimension, centers)
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def _patch_trim(region: RegionBatch, patch_size: int) -> str | None:
+    """How to trim a region's raster to whole patches, or ``None`` when patches tile it."""
+    height, width = region.features.shape[:2]
+    rows, columns = height % patch_size, width % patch_size
+    if not rows and not columns:
+        return None
+    if height < patch_size or width < patch_size:
+        return (
+            f"Region {region.name!r} ({height} x {width} cells) is smaller than one "
+            f"{patch_size} x {patch_size} patch"
+        )
+    drop = " and ".join(
+        _plural(count, noun) for count, noun in ((rows, "row"), (columns, "column")) if count
+    )
+    return (
+        f"Region {region.name!r} ({height} x {width} cells): drop {drop} "
+        f"to get {height - rows} x {width - columns} cells"
+    )
+
+
+def _shared_vertices(region: RegionBatch, patch_size: int) -> str | None:
+    """Sampling units of one species sharing a vertex in a region, or ``None``."""
+    positions = np.asarray(region.grid_positions) // patch_size
+    species = (None,) * len(positions) if region.species is None else region.species
+    groups: dict[tuple[str | None, int, int], list[str]] = {}
+    for name, label, (row, column) in zip(
+        species, region.sampling_unit_ids, positions.tolist(), strict=True
+    ):
+        groups.setdefault((name, row, column), []).append(label)
+    shared = [
+        ("" if name is None else f"{name} ") + f"({', '.join(labels)})"
+        for (name, _, _), labels in groups.items()
+        if len(labels) > 1
+    ]
+    return f"region {region.name!r}: {', '.join(shared)}" if shared else None
+
+
+# Directories skipped when attributing warnings: the toolkit, and the Equinox and
+# JAX wrappers around its methods, so that a warning points at the caller's code.
+_INTERNAL_FILES = tuple(
+    os.path.dirname(path)
+    for path in (os.path.dirname(__file__), eqx.__file__, jax.__file__)
+    if path
+)
+
+
+def _check_regions(model: AbstractDistanceModel, regions: Iterable[RegionBatch]) -> None:
+    """Checks where a distance model first meets region batches.
+
+    Raises a ``ValueError`` naming the trim each raster needs when ``patch_size``
+    does not divide its rows and columns, and emits one ``UserWarning`` naming
+    the sampling units of each species that share a vertex, whose ecological
+    distances the model cannot tell apart.
+    """
+    regions = tuple({id(region): region for region in regions}.values())
+    patch_size = model.patch_size
+    trims = [trim for region in regions if (trim := _patch_trim(region, patch_size))]
+    if trims:
+        raise ValueError(
+            f"Raster rows and columns must be multiples of the distance model's "
+            f"patch_size={patch_size}. " + "; ".join(trims)
+        )
+    shared = [found for region in regions if (found := _shared_vertices(region, patch_size))]
+    if shared:
+        warnings.warn(
+            f"Sampling units share a vertex at patch_size={patch_size}, so the distance "
+            "model cannot tell their locations apart and their pairwise genetic "
+            "observations carry no landscape information: " + "; ".join(shared),
+            UserWarning,
+            skip_file_prefixes=_INTERNAL_FILES,
+        )
 
 
 def _model_species(model: AbstractDistanceModel) -> tuple[str | None, ...]:
@@ -357,6 +475,7 @@ def _species_distances(
     """
     if len(_model_species(model)) > 1 and region.species is None:
         raise ValueError("Multispecies queries require sampling-unit species labels")
+    _check_regions(model, (region,))
     model = _inference_model(model)
     context = prepare_distance_context(model, region.feature_array)
     latent = model.backbone(region.feature_array)

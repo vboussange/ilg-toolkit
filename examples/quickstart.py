@@ -111,7 +111,9 @@ resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 
 rows, columns = conductance.shape
 print(f"Conductance grid graph: {rows}x{columns} vertices")
-print(f"Best uniform conductance: {float(distance_model.conductance_surface(region)[0, 0]):.4g}")
+print(
+    f"Best uniform conductance: {float(distance_model.conductance_surface(region).data[0, 0]):.4g}"
+)
 print(
     f"Log1p loss: {state.history[0].training_loss:.5f} at step 0, "
     f"{state.selected_loss:.5f} at step {state.selected_step}"
@@ -155,7 +157,7 @@ cover.legend(
     fontsize=8,
 )
 cover.set(title="ESA WorldCover 2021 land cover", xlabel="Easting (km)", ylabel="Northing (km)")
-image = surface.imshow(np.log10(np.asarray(resistance)), cmap="magma", extent=extent)
+image = surface.imshow(np.log10(np.asarray(resistance.data)), cmap="magma", extent=extent)
 figure.colorbar(image, ax=surface, shrink=0.8, label="log$_{10}$ local resistance Q = 1/C")
 surface.set(title="Trained resistance surface", xlabel="Easting (km)")
 for axis in (cover, surface):

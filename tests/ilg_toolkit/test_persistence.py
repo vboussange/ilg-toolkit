@@ -291,8 +291,8 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(
     restored = load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
     restored_model = cast(ConductanceModel, restored.distance_model)
     np.testing.assert_array_equal(
-        restored_model.conductance_surface(region),
-        cast(ConductanceModel, model.distance_model).conductance_surface(region),
+        restored_model.conductance_surface(region).data,
+        cast(ConductanceModel, model.distance_model).conductance_surface(region).data,
     )
     np.testing.assert_array_equal(
         restored_model.predict(region).as_matrix(),

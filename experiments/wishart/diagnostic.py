@@ -346,7 +346,7 @@ def diagnose_wishart(
     assert context is not None  # Conductance models always have a resistance solver.
     resistances = np.asarray(
         effective_resistance(
-            encoder.conductance_surface(region),
+            encoder.conductance_surface(region).data,
             pixel_to_patch_nodes(
                 region.pixel_nodes, raster_shape=(height, width), patch_size=encoder.patch_size
             ),
