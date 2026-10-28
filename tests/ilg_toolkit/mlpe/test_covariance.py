@@ -1,4 +1,4 @@
-"""Private population-covariance likelihood kernel against a joint Gaussian reference."""
+"""Tests of the private population-covariance likelihood kernel against a joint Gaussian."""
 
 import numpy as np
 import pytest

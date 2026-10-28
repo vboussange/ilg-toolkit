@@ -1,4 +1,4 @@
-"""Shared raster-to-patch utilities."""
+"""Raster-to-patch and inference-mode utilities shared by distance models."""
 
 from __future__ import annotations
 
@@ -15,15 +15,17 @@ from .._checks import _positive_integer
 
 
 class _PatchModel(Protocol):
+    """A distance model encoding raster patches in optional microbatches."""
+
     patch_size: int
     patch_microbatch_size: int | None
 
 
-def encode_patches(
+def _encode_patches(
     model: _PatchModel, features: jax.Array, encode: Callable[[jax.Array], jax.Array]
 ) -> jax.Array:
-    """Patch features computed from non-overlapping raster patches."""
-    patches, shape = patchify(features, model.patch_size)
+    """Encodes non-overlapping raster patches into a grid with one encoding per vertex."""
+    patches, shape = _patchify(features, model.patch_size)
     batch_size = model.patch_microbatch_size
     if batch_size is None:
         values = eqx.filter_vmap(encode)(patches)
@@ -33,6 +35,7 @@ def encode_patches(
 
 
 def _is_stateful(value: object) -> bool:
+    """Returns whether a pytree node is an Equinox state index."""
     return isinstance(value, eqx.nn.StateIndex)
 
 
@@ -46,12 +49,13 @@ def _reject_stateful_layers(model: object) -> None:
 
 
 def _inference_model[Model](model: Model) -> Model:
-    """Stateless distance model with every ``inference`` flag set for frozen evaluation."""
+    """Returns the stateless distance model with every ``inference`` flag set."""
     _reject_stateful_layers(model)
     return eqx.nn.inference_mode(model, value=True)
 
 
 def _takes_key(value: object) -> bool:
+    """Returns whether a value is an inference-dependent layer whose call accepts ``key``."""
     if not isinstance(value, eqx.Module) or not hasattr(value, "inference"):
         return False
     call = getattr(type(value), "__call__", None)
@@ -59,7 +63,7 @@ def _takes_key(value: object) -> bool:
 
 
 def _training_model[Model](model: Model, key: jax.Array) -> Model:
-    """Distance model in training mode, with random keys bound to its stochastic layers.
+    """Returns the distance model in training mode, with random keys bound to its layers.
 
     Every ``inference`` flag is cleared. Each inference-dependent layer whose call
     accepts a ``key`` receives its own split of ``key``, in tree order.
@@ -80,8 +84,8 @@ def _training_model[Model](model: Model, key: jax.Array) -> Model:
     )
 
 
-def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
-    """Non-overlapping feature-first patches from row, column, feature data."""
+def _patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
+    """Splits row, column, feature data into non-overlapping, feature-first patches."""
     raster = jnp.asarray(features)
     if raster.ndim != 3:
         raise ValueError(f"Expected features with shape (row, column, feature), got {raster.shape}")
@@ -97,13 +101,13 @@ def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int
     return patches.reshape(rows * columns, channels, patch_size, patch_size), (rows, columns)
 
 
-def pixel_to_patch_nodes(
+def _pixel_to_patch_nodes(
     pixel_nodes: ArrayLike,
     *,
     raster_shape: tuple[int, int],
     patch_size: int,
 ) -> jax.Array:
-    """Row-major patch vertices corresponding to row-major raster pixel indices."""
+    """Maps row-major raster pixel indices to the row-major vertices of their patches."""
     height, width = raster_shape
     if height % patch_size or width % patch_size:
         raise ValueError("Raster dimensions must be divisible by patch_size")

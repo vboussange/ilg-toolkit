@@ -1,4 +1,4 @@
-"""Training and effective-resistance layer settings."""
+"""Training configuration and effective-resistance solver settings."""
 
 import math
 from dataclasses import dataclass, field
@@ -12,25 +12,22 @@ from .losses import AbstractLoss
 
 @dataclass(frozen=True)
 class ResistanceSolverConfig:
-    """Float64 solver settings for the effective-resistance layer.
+    """Settings of the float64 solver in the effective-resistance layer.
 
-    Conjugate gradient is the default solver; ``use_amg=True`` enables algebraic
-    multigrid (AMG) preconditioning through the optional ``amg`` extra.
-    The preconditioner is prepared before solving.
-    Exhausting ``max_steps`` raises an error. ``rtol`` and ``atol`` default to
-    1e-6 and ``max_steps`` to 1000; at least one tolerance must be positive.
-    Tighter tolerances increase solve work and can expose conditioning limits.
-    Settings belong to the conductance model, independently of training budgets.
+    The solver runs conjugate gradient, optionally preconditioned with algebraic
+    multigrid (AMG) through the ``amg`` extra, and raises an error when it reaches
+    ``max_steps`` before either tolerance. A conductance model carries its solver
+    settings.
 
-    Attributes:
-        rtol: Relative residual tolerance for the resistance solve.
-        atol: Absolute residual tolerance for the resistance solve.
-        max_steps: Maximum conjugate-gradient iterations.
-        use_amg: Enable the optional algebraic multigrid preconditioner.
+    Args:
+        rtol: Relative residual tolerance, finite and nonnegative.
+        atol: Absolute residual tolerance, finite and nonnegative; at least one of
+            ``rtol`` and ``atol`` is positive.
+        max_steps: Maximum number of conjugate-gradient iterations.
+        use_amg: Whether to precondition with AMG.
 
-    Notes:
-        AMG preparation is specific to graph shape and must be rebuilt for a new
-        region shape; it does not fix poorly chosen ecological boundaries.
+    Raises:
+        ValueError: If a setting is invalid.
     """
 
     rtol: float = 1e-6
@@ -57,41 +54,40 @@ class ResistanceSolverConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Optimization budget and scientific settings for training a landscape genetics model.
+    """Training configuration: loss, optimizer, update budget and batching settings.
 
-    Each update samples up to ``region_batch_size`` regions and then
-    ``species_batch_size`` species within each region; ``None`` uses all available.
-    ``species_microbatch_size`` controls how many species are processed together
-    before their gradients are combined into one update.
-    Evaluation at step zero, every ``eval_every`` updates, and the final step
-    determines model selection.
+    Each update samples up to ``region_batch_size`` regions, then up to
+    ``species_batch_size`` species within each sampled region, and processes
+    ``species_microbatch_size`` species at a time before combining their gradients.
+    Training evaluates at step zero, every ``eval_every`` updates and at the final
+    step, and selects the model among these evaluations.
 
-    Any optax optimizer applies the updates. Each update also receives the step's
-    objective value, its gradient, and a function evaluating that objective for the
-    same regions, species and random key, so line-search optimizers such as
-    ``optax.lbfgs()`` work through ``train``; other optimizers ignore them.
-    Checkpoints store the optimizer state but not the optimizer, and configuration
-    equality ignores the optimizer.
+    The optimizer receives, with each update, the objective value, its gradient and
+    a function evaluating the same objective (same regions, species and random key),
+    so line-search optimizers such as ``optax.lbfgs()`` work through
+    [`train`][ilg_toolkit.train]. Configuration equality ignores the optimizer.
 
-    Attributes:
-        loss: Statistical criterion and its numerical settings.
-        steps: Total update budget, including completed updates when resuming; with
-            ``gradient_tolerance``, the iteration cap.
+    Args:
+        loss: Loss of every region–species group.
+        steps: Total number of updates, including completed updates when continuing;
+            with ``gradient_tolerance``, the maximum number of updates.
         eval_every: Number of updates between evaluations.
         optimizer: Optax optimizer applying the updates; Adam with learning rate
             1e-3 by default.
-        gradient_tolerance: Stop after the first update whose gradient norm (global
-            L2 norm over trainable parameters for that update's objective) is at or
-            below this value; ``None`` runs the full ``steps`` budget.
-        region_batch_size: Maximum regions sampled per update; ``None`` uses all.
-        species_batch_size: Maximum species sampled per region; ``None`` uses all.
-        species_microbatch_size: Maximum species processed together before their
-            gradients are combined; ``None`` processes all sampled species together.
-        seed: Seed for training's random sampling.
+        gradient_tolerance: Gradient-norm threshold ending training: training stops
+            after the first update whose gradient norm (global L2 norm over the
+            trainable parameters for that update's objective) is at or below it;
+            ``None`` runs all ``steps``.
+        region_batch_size: Maximum number of regions sampled per update; ``None``
+            samples every region.
+        species_batch_size: Maximum number of species sampled per region; ``None``
+            samples every species.
+        species_microbatch_size: Maximum number of species processed together;
+            ``None`` processes all sampled species of a region together.
+        seed: Seed of the random sampling and random layers, in ``[0, 2**32)``.
 
-    Notes:
-        Training always compiles its numerical calculations. Debug them eagerly
-        with ``jax.disable_jit()``.
+    Raises:
+        ValueError: If a setting is invalid.
     """
 
     loss: AbstractLoss

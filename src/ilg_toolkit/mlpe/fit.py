@@ -20,16 +20,19 @@ if TYPE_CHECKING:
 
 
 class MLPEError(ValueError):
-    """An invalid or numerically unusable maximum-likelihood calibration."""
+    """An error raised for an invalid or numerically unusable MLPE calibration."""
 
 
 def _raw_from_log_variances(log_variances):
+    """Returns the raw variance parameters whose softplus equals ``exp(log_variances)``."""
     variances = jnp.exp(log_variances)
     return variances + jnp.log(-jnp.expm1(-variances))
 
 
 @partial(jax.jit, static_argnames=("n_populations",))
 def _optimizer_value_and_gradient(log_variances, distances, targets, left, right, **options):
+    """Returns the profiled negative log likelihood and its gradient in log variances."""
+
     def objective(parameters):
         return _profiled_mlpe_ml_fit(
             distances,
@@ -45,28 +48,40 @@ def _optimizer_value_and_gradient(log_variances, distances, targets, left, right
 
 @final
 class MLPECalibration(eqx.Module):
-    """One region–species group's fitted MLPE calibration on the model scale.
+    """One region–species group's MLPE calibration on the model scale.
 
     An [`MLPECalibrationHead`][ilg_toolkit.MLPECalibrationHead] holds one MLPE
     calibration per region–species group and owns their target contract and
-    region names.
+    region names. Model-scale targets are
+    ``intercept + slope * (distance - distance_center) / distance_scale`` plus the
+    two endpoints' population effects and a residual.
 
-    ``distance_center`` and ``distance_scale`` standardize the ecological distances
-    used in calibration (sample standard deviation, ddof=1). ``intercept`` and
-    ``slope`` are signed coefficients on the target's model scale.
-    ``unit_variance`` and ``residual_variance`` are the two fitted variance
-    components; the jitter of ``loss`` is added to the residual component in
-    likelihoods and conditioning.
-
-    ``population_ids`` orders the population-effect posterior ``effect_mean`` and
-    ``effect_covariance``. The posterior applies to ``calibration_pairs``; support
-    observations must be disjoint from those measurements. ``ml_log_likelihood``
-    is the maximum marginal log likelihood of the calibration observations, not a
-    score on untouched targets. ``converged``, ``optimizer_iterations`` and
-    ``optimizer_message`` describe the variance optimizer of
-    [`fit_calibration_head`][ilg_toolkit.fit_calibration_head]; the fixed training
-    budget makes no convergence claim. Inspect both the likelihood and the signed
-    slope when interpreting association.
+    Attributes:
+        population_ids: Sampling units of the calibration observations, in the
+            order of ``effect_mean`` and ``effect_covariance``.
+        distance_center: Mean of the calibration's ecological distances.
+        distance_scale: Sample standard deviation (ddof=1) of the calibration's
+            ecological distances.
+        intercept: Signed intercept on the target's model scale.
+        slope: Signed slope per standardized ecological distance, on the target's
+            model scale.
+        unit_variance: Variance of the population effects.
+        residual_variance: Residual variance of each pair; the jitter of ``loss``
+            is added to it in likelihoods and support conditioning.
+        effect_mean: Posterior mean of the population effects.
+        effect_covariance: Posterior covariance of the population effects.
+        calibration_pairs: Sampling-unit pairs the posterior conditions on.
+            Support observations are disjoint from them.
+        ml_log_likelihood: Maximum marginal log likelihood of the calibration
+            observations.
+        loss: MLPE loss whose settings the calibration was fitted with.
+        optimizer_iterations: Iterations of the variance optimizer of
+            [`fit_calibration_head`][ilg_toolkit.fit_calibration_head], or the
+            training step of a calibration that training produced.
+        optimizer_message: Final message of the variance optimizer, or training's
+            description of its step budget.
+        converged: Whether the variance optimizer converged; ``False`` for a
+            calibration that training produced.
 
     Raises:
         MLPEError: A fitted value is nonfinite, the distance scale or a variance
@@ -132,6 +147,7 @@ def _calibration_from_fit(
     optimizer_message: str,
     converged: bool = True,
 ) -> MLPECalibration:
+    """Builds an MLPE calibration from a finalized fit and its bookkeeping."""
     mean, covariance = fit.posterior
     return MLPECalibration(
         population_ids=population_ids,
@@ -159,7 +175,7 @@ def _fit_mlpe(
     loss: "MLPELoss",
     max_iterations: int,
 ) -> MLPECalibration:
-    """MLPE calibration from ecological distances aligned to ``observations.observed_pairs``.
+    """Fits an MLPE calibration to distances aligned with ``observations.observed_pairs``.
 
     The observations have passed ``MLPELoss._prepare``: a dissimilarity target, at
     least three observed pairs, and pairs sharing sampling units. Coefficients are
@@ -168,7 +184,7 @@ def _fit_mlpe(
     ``max_iterations``; the finite converged start with the highest marginal
     likelihood is retained.
 
-    Population-sized covariance algebra avoids a dense pair-by-pair covariance
+    Covariance algebra is population-sized, with no dense pair-by-pair covariance
     matrix. For population variance u, residual variance e, jitter j and maximum
     observed population degree dmax, supported precision requires
     ``eps * (1 + 2 * dmax * u / (e + j)) <= 0.01``. Failed factorizations,

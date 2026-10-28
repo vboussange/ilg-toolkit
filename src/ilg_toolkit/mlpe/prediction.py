@@ -10,6 +10,7 @@ from .fit import MLPECalibration, MLPEError
 
 
 def _query(distances, pairs):
+    """Validates query distances and pairs, and returns them with the canonical pairs."""
     distances = jnp.asarray(distances, dtype=jnp.float64)
     try:
         pairs = _validate_pairs(pairs)
@@ -22,6 +23,7 @@ def _query(distances, pairs):
 
 
 def _extend(calibration, population_ids, mean, covariance, pairs):
+    """Extends the population-effect posterior with the prior of unseen sampling units."""
     extras = tuple(
         dict.fromkeys(label for pair in pairs for label in pair if label not in population_ids)
     )
@@ -33,6 +35,7 @@ def _extend(calibration, population_ids, mean, covariance, pairs):
 
 
 def _endpoints(pairs, population_ids):
+    """Returns the population indices of each pair's two endpoints."""
     lookup = {label: index for index, label in enumerate(population_ids)}
     return (
         jnp.asarray([lookup[left] for left, _ in pairs], dtype=jnp.int32),
@@ -42,6 +45,7 @@ def _endpoints(pairs, population_ids):
 
 @jax.jit
 def _effect_prediction(mean, covariance, left, right):
+    """Returns pair population-effect means and variances, and whether the factor is finite."""
     factor = jnp.linalg.cholesky(covariance)
     effect_variance = jnp.sum(jnp.square(factor[left] + factor[right]), axis=1)
     return mean[left] + mean[right], effect_variance, jnp.isfinite(factor).all()
@@ -58,7 +62,7 @@ def _predict_mlpe(
     support: PairwiseObservations | None = None,
     support_distances=None,
 ) -> Prediction:
-    """Genetic predictions from a fitted MLPE calibration and ecological distances.
+    """Predicts genetic values from an MLPE calibration and ecological distances.
 
     ``target`` is the calibration head's target contract. Conditional modes add
     ``model_variance`` and ``effect_variance`` to the ``model_values`` extra, all
@@ -113,7 +117,7 @@ def _predict_mlpe(
 
 @jax.jit
 def _condition_posterior(mean, covariance, residual, left, right, noise):
-    # Population-effect precision includes every sampling unit observed in support.
+    """Conditions the population-effect posterior on support residuals with Gaussian noise."""
     prior_factor = jnp.linalg.cholesky(covariance)
     whitened = prior_factor[left] + prior_factor[right]
     precision = jnp.eye(len(mean)) + (whitened.T @ whitened) / noise
@@ -129,7 +133,7 @@ def _condition_on_support(
     support_distances,
     support_observations: PairwiseObservations,
 ) -> tuple[tuple[str, ...], jax.Array, jax.Array]:
-    """Population effects conditioned on support observations with calibration fixed."""
+    """Conditions population effects on support observations with the calibration fixed."""
     distances, pairs, canonical = _query(support_distances, support_observations.observed_pairs)
     calibration_pairs = tuple((min(pair), max(pair)) for pair in calibration.calibration_pairs)
     if set(canonical) & set(calibration_pairs):

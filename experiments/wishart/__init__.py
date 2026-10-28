@@ -1,4 +1,4 @@
-"""Explicitly experimental diagnostic references, separate from stable fitting."""
+"""Experimental Wishart diagnostics of conductance grid graphs on Gaussian-marker distances."""
 
 from .diagnostic import (
     diagnose_wishart,

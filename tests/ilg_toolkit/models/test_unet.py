@@ -1,4 +1,4 @@
-"""Scientific behavior of models.unet, covered once at tiny width."""
+"""Tests of the U-Net embedding-distance model at tiny width."""
 
 import coordax as cx
 import equinox as eqx
@@ -64,7 +64,7 @@ def test_patch_microbatches_preserve_predictions_and_gradients(assert_patch_micr
     )
 
 
-def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_path):
+def test_species_training_improves_predicts_without_query_targets_and_reloads(tmp_path):
     features = np.arange(18, dtype=np.float32).reshape(3, 3, 2) / 18
     targets = np.array(
         [[0, 0.2, 0.4, 0.6], [0.2, 0, 0.2, 0.4], [0.4, 0.2, 0, 0.2], [0.6, 0.4, 0.2, 0]]
@@ -84,35 +84,35 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
         PairwiseObservations(ids, targets * scale, target=target, species=name)
         for scale, name in ((1, "frog"), (2, "newt"))
     )
-    order = ("frog", "newt")
+    species = ("frog", "newt")
     result = train(
         region,
         observations,
-        distance_model=_unet(3, species=order, dropout=0),
+        distance_model=_unet(3, species=species, dropout=0),
         config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.01), seed=3),
     )
     assert result.history[-1].training_loss < result.history[0].training_loss * 0.75
-    fitted = result.selected_model
-    for name in order:
-        prediction = fitted.predict(region, {name: None})[name]
+    trained = result.selected_model
+    for name in species:
+        prediction = trained.predict(region, {name: None})[name]
         matrix = prediction.as_matrix()
         assert matrix.shape == (4, 4)
         assert np.all(np.isfinite(prediction.values))
         np.testing.assert_allclose(matrix, matrix.T, atol=1e-6)
         assert np.isnan(np.diag(matrix)).all()
         np.testing.assert_allclose(
-            fitted.distance_model.predict(region, {name: None})[name].as_matrix(),
+            trained.distance_model.predict(region, {name: None})[name].as_matrix(),
             matrix,
         )
 
     path = tmp_path / "unet.eqx"
-    save_model(path, fitted)
-    restored = load_model(path, distance_model=_unet(7, species=order, dropout=0))
+    save_model(path, trained)
+    restored = load_model(path, distance_model=_unet(7, species=species, dropout=0))
     assert isinstance(restored.distance_model, UNetEmbeddingDistance)
-    for name in order:
+    for name in species:
         np.testing.assert_array_equal(
             restored.predict(region, {name: None})[name].values,
-            fitted.predict(region, {name: None})[name].values,
+            trained.predict(region, {name: None})[name].values,
         )
     with pytest.raises(ArtifactError):
-        load_model(path, distance_model=_unet(7, species=order, dropout=0, embedding_dim=3))
+        load_model(path, distance_model=_unet(7, species=species, dropout=0, embedding_dim=3))

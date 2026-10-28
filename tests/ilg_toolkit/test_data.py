@@ -1,4 +1,4 @@
-"""Scientific behavior of data."""
+"""Tests of region batches, pairwise genetic observations and target transforms."""
 
 from typing import cast
 
@@ -84,8 +84,8 @@ def test_region_requires_named_features_and_normalizes_numpy_data_without_narrow
         replace(region, grid_positions=[[0, 0], [0, 1], [0, 3]])
 
 
-def test_labelled_raster_axes_normalize_without_changing_feature_meaning(observation_problem):
-    """A named-axis permutation describes the same prepared raster and locations."""
+def test_labeled_raster_axes_normalize_without_changing_feature_meaning(observation_problem):
+    """A named-axis permutation describes the same landscape features and grid positions."""
     from dataclasses import replace
 
     plain, target, model = observation_problem()
@@ -96,7 +96,7 @@ def test_labelled_raster_axes_normalize_without_changing_feature_meaning(observa
         cx.LabeledAxis("column", np.array([10, 20, 30])),
         cx.LabeledAxis("feature", np.array(names)),
     ).order_as("feature", "column", "row")
-    labelled = replace(plain, features=field)
+    labeled = replace(plain, features=field)
     observations = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20"), ("unit/20", "unit/99")], [0.4, 0.6], target=target
     )
@@ -107,18 +107,18 @@ def test_labelled_raster_axes_normalize_without_changing_feature_meaning(observa
         config=TrainingConfig(loss=Log1pLoss(), steps=1),
     ).selected_model
     actual = train(
-        labelled,
+        labeled,
         observations,
         distance_model=model,
         config=TrainingConfig(loss=Log1pLoss(), steps=1),
     ).selected_model
-    assert labelled.features.dims == ("row", "column", "feature")
-    row_axis = labelled.features.axes["row"]
-    column_axis = labelled.features.axes["column"]
+    assert labeled.features.dims == ("row", "column", "feature")
+    row_axis = labeled.features.axes["row"]
+    column_axis = labeled.features.axes["column"]
     np.testing.assert_array_equal(cast(cx.LabeledAxis, row_axis).ticks, [100])
     np.testing.assert_array_equal(cast(cx.LabeledAxis, column_axis).ticks, [10, 20, 30])
-    assert labelled.feature_names == names
-    np.testing.assert_array_equal(actual.predict(labelled).values, expected.predict(plain).values)
+    assert labeled.feature_names == names
+    np.testing.assert_array_equal(actual.predict(labeled).values, expected.predict(plain).values)
 
 
 @pytest.mark.parametrize("enable_x64", [False, True])
@@ -155,13 +155,13 @@ def test_array_like_observations_give_identical_float64_predictions(observation_
         observations = PairwiseObservations.from_pairs(
             [("unit/7", "unit/20")], values, target=target
         )
-        fitted = train(
+        trained = train(
             region,
             observations,
             distance_model=model,
             config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
-        prediction = fitted.selected_model.predict(region)
+        prediction = trained.selected_model.predict(region)
         assert prediction.values.dtype == prediction.as_matrix().dtype == jnp.float64
         predictions.append(prediction.values)
     np.testing.assert_array_equal(predictions[0], predictions[1])
@@ -207,7 +207,7 @@ def test_equivalent_matrix_and_pair_inputs_train_equivalent_models(observation_p
     assert left.history[-1].training_loss == right.history[-1].training_loss
 
 
-def test_incomplete_pairs_remain_absent_through_fitting(ScalarEmbedding, observation_problem):
+def test_incomplete_pairs_remain_absent_through_training(ScalarEmbedding, observation_problem):
     region, target, _ = observation_problem()
     observations = PairwiseObservations.from_pairs(
         [("unit/7", "unit/20")],
@@ -224,7 +224,7 @@ def test_incomplete_pairs_remain_absent_through_fitting(ScalarEmbedding, observa
     assert observations.observed_pairs == (("unit/7", "unit/20"),)
     assert np.isnan(observations.values[0, 2])
     assert result.history[0].training_loss == pytest.approx(0, abs=1e-14)
-    # Unobserved pairs can still be predicted, but never become zero training targets.
+    # Unobserved pairs are predicted and never become zero training targets.
     np.testing.assert_allclose(result.selected_model.predict(region).as_matrix()[0, 2], 4)
 
 
@@ -373,13 +373,13 @@ def test_select_pairs_preserves_metadata_precision_and_deterministic_alignment(d
         [("a",)],
     ):
         with pytest.raises(ValueError):
-            observations.select_pairs(pairs)
+            observations.select_pairs(pairs)  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="unobserved"):
         selected.select_pairs([("c", "b")])
 
 
 def _raster(y_centers, x_centers, names=("grassland", "water")):
-    """Projected raster converted from xarray, with the row and column renames users apply."""
+    """Returns a projected raster converted from xarray, with row, column and feature axes."""
     import xarray as xr
 
     values = np.arange(len(y_centers) * len(x_centers) * len(names), dtype=np.float64)

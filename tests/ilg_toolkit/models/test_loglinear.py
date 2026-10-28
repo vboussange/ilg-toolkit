@@ -1,4 +1,4 @@
-"""Scientific behavior of models.loglinear."""
+"""Tests of the log-linear patch encoder and its uniform-conductance initialization."""
 
 import itertools
 
@@ -52,7 +52,7 @@ def test_patch_mean_predictor_obeys_conductance_bounds(patch_microbatch_size):
         model,
         (jnp.array([[0.5, 2.0]]), jnp.array([0.3])),
     )
-    # Patch covariates are (-2, 0) and (2, 0), giving predictors -0.7 and 1.3.
+    # Patch means of the features are (-2, 0) and (2, 0), giving predictors -0.7 and 1.3.
     np.testing.assert_allclose(
         np.asarray(model.conductance_surface(region).data),
         [[0.7465853037914095, 3.9192966676192444]],
@@ -86,10 +86,10 @@ def test_invalid_model_configuration_is_rejected(settings):
 
 
 def test_training_gradients_and_predictions_match_dense_reference(dense_resistance):
-    """Shared log-linear updates over two regions of different sizes match a dense Laplacian.
+    """Log-linear updates over two regions of different sizes match a dense-Laplacian reference.
 
-    The regions have different patch grids and pair counts, so each keeps its own
-    resistance solver and the two regional losses still carry equal weight.
+    The regions have different patch grids and pair counts. Each keeps its own
+    resistance solver, and the two region losses carry equal weight.
     """
     valley = np.array([[[-0.5, 0.4], [0.3, -0.2]], [[-0.1, 0.7], [0.6, -0.9]]])
     ridge = np.array([[[0.1, -0.6], [0.8, 0.2], [-0.4, 0.5]]])
@@ -222,7 +222,7 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
         )
 
 
-def test_surface_rejects_incompatible_feature_count(observation_problem):
+def test_surface_rejects_incompatible_landscape_features(observation_problem):
     region, _, _ = observation_problem()
     model = LogLinearConductance(3, patch_size=1)
     with pytest.raises(ValueError):
@@ -233,7 +233,7 @@ _UNIFORM_POSITIONS = np.array([[0, 0], [0, 7], [3, 4], [7, 0], [7, 6], [5, 2]])
 
 
 def _uniform_problem(dense_resistance, conductance, *, name="valley", seed=3, noise=0.0):
-    """Region on a 4x4 conductance grid graph and resistances at a uniform conductance."""
+    """Returns a region on a 4x4 conductance grid graph and resistances at a uniform conductance."""
     rng = np.random.default_rng(seed)
     region = RegionBatch(
         name,
@@ -296,7 +296,7 @@ def test_uniform_initialization_minimizes_the_region_weighted_loss(dense_resista
         dense_resistance, 9.0, name="valley", seed=6, noise=0.4
     )
     regions = [ridge, valley]
-    # Unequal pair counts must not change the equal regional weighting.
+    # The valley region keeps two pairs; both regions receive equal weight.
     observations = [
         ridge_observations,
         valley_observations.select_pairs(
@@ -308,14 +308,14 @@ def test_uniform_initialization_minimizes_the_region_weighted_loss(dense_resista
     )
     conductance = float(np.asarray(model.conductance_surface(regions[0]).data)[0, 0])
     assert 2.0 < conductance < 9.0
-    best = _training_loss(model, regions, observations, Log1pLoss())
+    initialized_loss = _training_loss(model, regions, observations, Log1pLoss())
     for factor in (0.999, 1.001, 0.9, 1.1):
-        neighbour = eqx.tree_at(
+        neighbor = eqx.tree_at(
             lambda model: model.intercepts,
             model,
             jnp.log(jnp.array([conductance * factor - model.min_conductance])),
         )
-        assert best <= _training_loss(neighbour, regions, observations, Log1pLoss())
+        assert initialized_loss <= _training_loss(neighbor, regions, observations, Log1pLoss())
 
 
 @pytest.mark.parametrize("generating", [1e5, 1e-5])
@@ -363,7 +363,9 @@ def test_standardized_mlpe_does_not_move_the_uniform_conductance(dense_resistanc
     np.testing.assert_array_equal(initialized.intercepts, model.intercepts)
 
 
-def test_uniform_initialization_requires_a_log_linear_model(dense_resistance, PointConductance):
+def test_uniform_initialization_requires_a_log_linear_patch_encoder(
+    dense_resistance, PointConductance
+):
     region, observations = _uniform_problem(dense_resistance, 1.0)
     with pytest.raises(TypeError):
         initialize_uniform_conductance(

@@ -1,14 +1,14 @@
-"""Aligned region–species observations shared by training and calibration."""
+"""Region–species groups shared by training and calibration fitting."""
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
-from .data import ObservationCollection, PairwiseObservations, RegionBatch, RegionCollection
+from .data import _ObservationCollection, _RegionCollection, PairwiseObservations, RegionBatch
 
 
 # Region name and species index in the distance model's parameter order.
-type RegionSpeciesKey = tuple[str, int]
+type _RegionSpeciesKey = tuple[str, int]
 
 
 class _RegionWithGeneticObservations(NamedTuple):
@@ -19,19 +19,19 @@ class _RegionWithGeneticObservations(NamedTuple):
 
 
 class _RegionSpeciesTrainingInput(NamedTuple):
-    """Species-specific region inputs, species parameter index, and loss weight."""
+    """One region–species group's region batch, observations, species index and loss weight."""
 
     region: RegionBatch
     observations: PairwiseObservations
     species_index: int
-    key: RegionSpeciesKey
+    key: _RegionSpeciesKey
     loss_weight: float
 
 
 def _align_observations_to_regions(
     values: object, names: Sequence[str], description: str
 ) -> tuple[object, ...]:
-    """A labeled collection aligned with its region batches."""
+    """Returns a collection aligned with the region names, one entry per region."""
     if isinstance(values, Mapping):
         if set(values) != set(names):
             raise ValueError(f"{description} mapping keys must match region names exactly")
@@ -46,10 +46,10 @@ def _align_observations_to_regions(
 
 
 def _normalize_training_inputs(
-    regions: RegionCollection,
-    observations: ObservationCollection,
+    regions: _RegionCollection,
+    observations: _ObservationCollection,
 ) -> tuple[_RegionWithGeneticObservations, ...]:
-    """Aligned collections with region identities sorted for reproducible random sampling."""
+    """Returns region batches paired with their observations, sorted by region name."""
     if isinstance(regions, RegionBatch):
         ordered = [regions]
     elif isinstance(regions, Mapping):
@@ -67,9 +67,7 @@ def _normalize_training_inputs(
         raise ValueError("Regions must be a nonempty collection of RegionBatch inputs")
     names = [region.name for region in ordered]
     if len(set(names)) != len(names):
-        raise ValueError(
-            "Region names must be unique; duplicate names cannot share training inputs"
-        )
+        raise ValueError("Region names must be unique")
 
     observed = (
         (observations,)
@@ -91,7 +89,7 @@ def _normalize_training_inputs(
 
 
 def _validate_shared_training_contract(inputs: Sequence[_RegionWithGeneticObservations]) -> None:
-    """Common target semantics and feature meanings for training or calibration inputs."""
+    """Raises a ``ValueError`` unless all inputs share one target contract and feature names."""
     first = inputs[0]
     for region, observations in inputs:
         if observations.target != first.observations.target:
@@ -104,8 +102,8 @@ def _prepare_region_species_inputs(
     inputs: Sequence[_RegionWithGeneticObservations],
     species: tuple[str, ...] | None,
 ) -> tuple[_RegionSpeciesTrainingInput, ...]:
-    """Prepare species-specific inputs with equal species and within-species region weights."""
-    from .models.base import region_for_species
+    """Returns weighted region–species groups, with equal species and region influence."""
+    from .models.base import _region_for_species
 
     groups = []
     keys = set()
@@ -134,7 +132,7 @@ def _prepare_region_species_inputs(
         if key in keys:
             raise ValueError("Provide one observations object per region–species group")
         keys.add(key)
-        selected = region_for_species(region, name)
+        selected = _region_for_species(region, name)
         groups.append(_RegionSpeciesTrainingInput(selected, observations, index, key, 0.0))
     coverage = Counter(group.species_index for group in groups)
     return tuple(
@@ -153,13 +151,13 @@ class _PreparedTrainingInputs(NamedTuple):
 
 
 def _prepare_training_inputs(
-    region: RegionCollection,
-    observations: ObservationCollection,
+    region: _RegionCollection,
+    observations: _ObservationCollection,
     species: tuple[str, ...] | None,
     *,
-    validation: tuple[RegionCollection, ObservationCollection] | None = None,
+    validation: tuple[_RegionCollection, _ObservationCollection] | None = None,
 ) -> _PreparedTrainingInputs:
-    """Region–species groups sharing one target and feature contract.
+    """Returns the training and validation region–species groups and their region batches.
 
     ``species`` are the distance model's species names. Validation inputs must
     share the contract of the training inputs.

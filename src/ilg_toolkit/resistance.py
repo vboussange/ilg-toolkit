@@ -14,8 +14,8 @@ from .config import ResistanceSolverConfig
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
-class ResistanceSolverContext:
-    """A shape-specific solver with dynamic, reusable preconditioner arrays."""
+class _ResistanceSolverContext:
+    """A resistance solver for one graph shape, with reusable preconditioner arrays."""
 
     graph_shape: tuple[int, int] = field(metadata={"static": True})
     solver: lx.AbstractLinearSolver
@@ -26,22 +26,30 @@ class ResistanceSolverContext:
 
 
 def _mean_conductance(left, right):
+    """Returns the conductance of an edge: the mean of its two vertices' conductances."""
     return 0.5 * (left + right)
 
 
-def effective_resistance(
+def _effective_resistance(
     conductance,
     terminal_nodes,
     *,
-    context: ResistanceSolverContext,
+    context: _ResistanceSolverContext,
 ) -> jax.Array:
-    """Effective resistance among sampling-unit vertices of a positive conductance grid.
+    """Computes effective resistances among vertices of a conductance grid graph.
 
-    Each edge in the four-neighbor grid averages its two vertices' conductances.
-    Calculations use float64 and return the surface's floating data type, with
-    zero resistance for coincident vertices.
-    ``context`` is the solver prepared for the surface's shape. Invalid inputs
-    or failed solves raise errors.
+    Each edge of the four-neighbor grid graph averages its two vertices'
+    conductances. The solve runs in float64 and returns the surface's floating
+    data type, with zero resistance between coincident vertices. Invalid inputs
+    and failed solves raise errors.
+
+    Args:
+        conductance: Positive conductance surface with shape ``(rows, columns)``.
+        terminal_nodes: Row-major vertex indices of the sampling units.
+        context: Resistance solver prepared for the surface's shape.
+
+    Returns:
+        The square matrix of effective resistances among ``terminal_nodes``.
     """
     surface = jnp.asarray(conductance)
     if surface.ndim != 2 or surface.size < 2:

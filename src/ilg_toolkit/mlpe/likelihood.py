@@ -1,10 +1,8 @@
-"""Maximum-likelihood population effects (MLPE) likelihood and calibration.
+"""Maximum-likelihood population effects (MLPE) likelihood kernels.
 
-Generalized least squares (GLS) fits the calibration coefficients.
-
-Input array data types control precision.
-Invalid inputs, singular systems, or unsupported numerical conditioning return
-nonfinite results.
+Generalized least squares (GLS) profiles the calibration coefficients. Input
+array data types set the precision. Invalid inputs, singular systems and
+unsupported numerical conditioning return nonfinite results.
 """
 
 import math
@@ -18,7 +16,7 @@ from .covariance import _population_covariance_factor
 
 
 class _MLPEFit(NamedTuple):
-    """MLPE calibration coefficients, likelihood, and population effects at supplied variances."""
+    """MLPE coefficients, likelihood and population-effect posterior at supplied variances."""
 
     nll: jax.Array
     coefficients: jax.Array
@@ -29,7 +27,7 @@ class _MLPEFit(NamedTuple):
 
 
 def _sample_standardize_distances(distances, *, center=None, scale=None):
-    """Standardized ecological distances with their mean and sample standard deviation."""
+    """Standardizes ecological distances and returns them with their center and scale."""
     distances = jnp.asarray(distances)
     count = distances.size
     center = jnp.mean(distances) if center is None else jnp.asarray(center, dtype=distances.dtype)
@@ -43,7 +41,7 @@ def _sample_standardize_distances(distances, *, center=None, scale=None):
 
 
 def _decode_mlpe_variances(raw_variances, *, variance_floor):
-    """Population and residual variance parameters obtained through softplus."""
+    """Decodes raw parameters into the population and residual variances through softplus."""
     positive = jax.nn.softplus(jnp.asarray(raw_variances)) + variance_floor
     return positive[0], positive[1]
 
@@ -62,6 +60,7 @@ def _components(
     variance_floor,
     jitter,
 ):
+    """Returns targets, GLS design, population covariance factor, validity and distance moments."""
     distances, targets, raw_variances = map(jnp.asarray, (distances, targets, raw_variances))
     dtype = jnp.result_type(distances, targets, raw_variances, jnp.float32)
     distances = jnp.asarray(distances, dtype=dtype)
@@ -102,11 +101,13 @@ def _components(
 
 
 def _nll(system, remaining, effects):
+    """Returns the Gaussian negative log likelihood from residual components."""
     quadratic = jnp.sum(remaining**2) / system.residual + jnp.sum(effects**2) / system.unit
     return 0.5 * (system.pair_count * math.log(2 * math.pi) + system.logdet + quadratic)
 
 
 def _profile(targets, design, system, valid):
+    """Profiles the GLS coefficients and returns the likelihood, coefficients and effects."""
     rhs = jnp.column_stack((design, targets))
     inner, remaining, effects = system.inner_products(rhs)
     beta = jnp.linalg.solve(inner[:2, :2], inner[:2, 2])
@@ -125,6 +126,7 @@ def _profile(targets, design, system, valid):
 
 
 def _posterior(system, effects, valid):
+    """Returns the population-effect posterior mean and covariance."""
     covariance = system.unit * cho_solve(
         (system.factor, True), jnp.eye(len(system.factor), dtype=system.factor.dtype)
     )
@@ -148,10 +150,10 @@ def _profiled_mlpe_ml_fit(
     variance_floor,
     jitter,
 ):
-    """Unnormalized negative log likelihood and signed GLS coefficients for MLPE calibration.
+    """Computes the negative log likelihood and signed GLS coefficients of an MLPE fit.
 
-    Numerical conditioning must satisfy eps*(1+2*max_degree*u/(e+j)) <= 0.01;
-    unsupported inputs return not-a-number (NaN) results.
+    Inputs with numerical conditioning beyond eps*(1+2*max_degree*u/(e+j)) <= 0.01
+    return not-a-number (NaN) results.
     """
     targets, design, system, valid, _, _ = _components(
         distances,
@@ -184,11 +186,11 @@ def _finalize_mlpe_fit(
     variance_floor,
     jitter,
 ) -> _MLPEFit:
-    """MLPE coefficients, likelihood, and population effects at supplied variances.
+    """Computes MLPE coefficients, likelihood and population effects at supplied variances.
 
-    The population system is factored once and reused for all fitted quantities.
-    Distance moments use the supplied observations or the supplied training moments.
-    ``_profiled_mlpe_ml_fit`` provides the likelihood and coefficients for gradient optimization.
+    The population covariance is factored once for every fitted quantity. Distance
+    moments come from the distances, or from the supplied ``distance_center`` and
+    ``distance_scale``.
     """
     targets, design, system, valid, center, scale = _components(
         distances,
@@ -233,7 +235,7 @@ def _mlpe_ml_negative_log_likelihood(
     variance_floor,
     jitter,
 ):
-    """Validation negative log likelihood using fitted coefficients and distance moments."""
+    """Computes the negative log likelihood at fixed coefficients and distance moments."""
     targets, design, system, valid, _, _ = _components(
         distances,
         targets,

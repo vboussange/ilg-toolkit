@@ -1,4 +1,4 @@
-"""Scientific behavior of persistence."""
+"""Tests of saving and loading landscape genetics models and checkpoints."""
 
 import json
 from dataclasses import replace
@@ -32,16 +32,11 @@ from ilg_toolkit import (
 from ilg_toolkit.models import ConductanceModel
 
 
-# Direct and MLPE calibrations, without and with species, save different trees.
-@pytest.mark.parametrize(("loss", "num_species"), [(Log1pLoss(), 1), (MLPELoss(), 2)])
-def test_saved_precision_is_preserved(
-    tmp_path, training_problem, loss, num_species, float64_required
-):
+# Direct and MLPE calibration heads, with unnamed and named species, save different trees.
+@pytest.mark.parametrize(("loss", "species"), [(Log1pLoss(), None), (MLPELoss(), ("frog", "newt"))])
+def test_saved_precision_is_preserved(tmp_path, training_problem, loss, species, float64_required):
     with jax.enable_x64():
-        region, observations, distance_model = training_problem(
-            "embedding", num_species=num_species
-        )
-        species = distance_model.species
+        region, observations, distance_model = training_problem("embedding", species=species)
         state = train(
             region,
             observations,
@@ -79,8 +74,8 @@ def test_saved_precision_is_preserved(
 
 
 def test_species_names_round_trip_and_predictions_are_identical(tmp_path, training_problem):
-    region, observations, distance_model = training_problem("embedding", num_species=2)
-    names = ("species-0", "species-1")
+    names = ("stoat", "hare")
+    region, observations, distance_model = training_problem("embedding", species=names)
     state = train(
         region,
         observations,
@@ -234,7 +229,7 @@ def test_direct_model_reload_uses_caller_template_and_preserves_predictions(
     assert restored.feature_names == model.feature_names
 
 
-def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
+def test_custom_mlpe_reload_preserves_mlpe_calibrations_and_support_conditioning(
     persistence_problem, WeightedEmbedding, tmp_path
 ):
     from dataclasses import replace

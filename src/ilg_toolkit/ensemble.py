@@ -1,4 +1,4 @@
-"""Ordered fitted-model ensembles and original-scale genetic predictions."""
+"""Ensembles of landscape genetics models and their averaged genetic predictions."""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -16,12 +16,13 @@ from .prediction import Prediction
 
 @final
 class EnsemblePrediction(eqx.Module):
-    """Original-scale mean of the members' genetic predictions, and the member predictions.
+    """Ensemble prediction: the mean of the members' genetic predictions and each member's.
 
-    ``mean`` holds the equal-weight mean of the member values, aligned with the
-    query pairs. ``members`` holds each member's own ``Prediction``, extras
-    included, in ensemble member order, for spread statistics of the caller's
-    choice.
+    Attributes:
+        mean: Equal-weight mean of the members' original-scale values, aligned with
+            the query pairs, without extras.
+        members: Each ensemble member's ``Prediction``, extras included, in ensemble
+            order.
     """
 
     mean: Prediction
@@ -29,7 +30,7 @@ class EnsemblePrediction(eqx.Module):
 
 
 def _average_predictions(predictions: tuple[Prediction, ...]) -> EnsemblePrediction:
-    """Equal-weight original-scale mean of aligned member predictions."""
+    """Returns the equal-weight original-scale mean of aligned member predictions."""
     values = jnp.stack([jnp.asarray(value.values, dtype=jnp.float64) for value in predictions])
     for index, member in enumerate(values):
         if not bool(jnp.isfinite(member).all()):
@@ -46,16 +47,22 @@ def _average_predictions(predictions: tuple[Prediction, ...]) -> EnsemblePredict
 @final
 @dataclass(frozen=True)
 class Ensemble:
-    """An ordered, nonempty collection of compatible fitted genetic models.
+    """Ensemble: an ordered collection of compatible landscape genetics models.
 
-    Members share target semantics, feature meanings, and species. The
-    input list or tuple is snapshotted, and repeated entries remain separate
-    members. Every member must predict successfully; errors identify the failing
-    member's zero-based position. Conductance surfaces and ecological distances
-    come from each member's own distance model.
+    Ensemble members share their target contract, feature names and species. The
+    ensemble stores the members as a tuple, and a repeated model counts as several
+    members. Conductance surfaces and ecological distances come from each
+    member's own distance model.
+
+    Args:
+        members: Nonempty list or tuple of landscape genetics models.
+
+    Raises:
+        ValueError: If ``members`` is empty, not a list or tuple, holds an object
+            that is not a landscape genetics model, or holds incompatible models.
 
     Examples:
-        Assemble models fitted independently by the caller::
+        Combine the selected models of two training runs::
 
             ensemble = Ensemble([first_state.selected_model, second_state.selected_model])
             result = ensemble.predict(region, [("north", "south")])
@@ -63,9 +70,9 @@ class Ensemble:
             member_values = jnp.stack([member.values for member in result.members])
             spread = member_values.std(axis=0)
 
-        Means and member predictions are in the original target units. Each member
-        applies its inverse target transform before averaging. Member surfaces
-        come from the members themselves::
+        Each member applies its inverse target transform before averaging, so means
+        and member predictions are on the original scale. Conductance surfaces come
+        from the members::
 
             surfaces = [
                 member.distance_model.conductance_surface(region)
@@ -77,11 +84,13 @@ class Ensemble:
 
     def __post_init__(self):
         if not isinstance(self.members, (list, tuple)) or not self.members:
-            raise ValueError("An ensemble requires a nonempty list or tuple of fitted models")
+            raise ValueError(
+                "An ensemble requires a nonempty list or tuple of landscape genetics models"
+            )
         members = tuple(self.members)
         for index, member in enumerate(members):
             if not isinstance(member, LandscapeGeneticsModel):
-                raise ValueError(f"Ensemble member {index} must be a fitted LandscapeGeneticsModel")
+                raise ValueError(f"Ensemble member {index} must be a LandscapeGeneticsModel")
         first = members[0]
         for index, member in enumerate(members[1:], start=1):
             if (
@@ -111,13 +120,28 @@ class Ensemble:
         | Sequence[tuple[str, str]]
         | None = None,
     ) -> EnsemblePrediction | dict[str, EnsemblePrediction]:
-        """Genetic predictions averaged in original target units over every member.
+        """Returns genetic predictions averaged over the ensemble members on the original scale.
 
-        ``query`` follows ``LandscapeGeneticsModel.predict``: a mapping from
-        species name to pairs, or to ``None`` for every distinct pair, returns
-        results by species; a sequence of pairs, or ``None``, on a single-species
-        ensemble returns one result. Each result holds the mean and every member's
-        prediction.
+        An error of a member's prediction propagates with a note naming the member's
+        zero-based position.
+
+        Args:
+            region: Region batch with the landscape features and the query pairs'
+                sampling units.
+            query: Query as in
+                [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]:
+                a mapping from species name to query pairs, or to ``None`` for every
+                distinct pair; for a single-species ensemble, a sequence of query
+                pairs, or ``None`` for every distinct pair.
+
+        Returns:
+            Ensemble predictions by species for a mapping query, or one
+            ``EnsemblePrediction`` for a sequence of pairs or ``None``.
+
+        Raises:
+            ValueError: If the query is invalid, or a member's predictions are not
+                finite.
+            RuntimeError: If float64 is disabled.
         """
         _require_float64()
         requests, by_species = _resolve_query(self.members[0].species, query)
@@ -126,7 +150,8 @@ class Ensemble:
             try:
                 prediction = model.predict(region, query)
             except Exception as error:
-                raise RuntimeError(f"Ensemble member {index} prediction failed: {error}") from error
+                error.add_note(f"Raised by ensemble member {index}")
+                raise
             by_member.append(
                 cast(dict[str | None, Prediction], prediction)
                 if by_species

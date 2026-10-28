@@ -1,4 +1,4 @@
-"""Population-sized covariance calculations for pairwise genetic observations."""
+"""Population-sized covariance algebra for pairwise genetic observations."""
 
 from typing import NamedTuple
 
@@ -7,28 +7,27 @@ from jax import Array
 from jax.scipy.linalg import cho_solve
 
 
-# The maximum number of observed pairs per sampling unit bounds
-# eps*cond(I + u/d Z.T Z), including incomplete and bipartite pair sets.
-# Calculations outside this precision bound return nonfinite results.
+# Bound on eps * (1 + 2 * (u/d) * maximum pairs per sampling unit), which bounds
+# eps * cond(I + (u/d) Z.T Z) for complete, incomplete and bipartite pair sets.
+# Calculations beyond it return nonfinite results.
 _MAX_ROUNDOFF_BOUND = 0.01
 
 
 def _endpoint_sums(values, left, right, n_populations):
-    """Sums of pairwise values for each sampling unit."""
+    """Sums pairwise values over the pairs of each sampling unit."""
     values = jnp.asarray(values)
     result = jnp.zeros((n_populations, values.shape[1]), dtype=values.dtype)
     return result.at[left].add(values).at[right].add(values)
 
 
 class _PopulationCovarianceFactor(NamedTuple):
-    """Factor of I + (u/d) Z.T Z and the observed sampling-unit indices.
+    """The Cholesky factor of K = I + (u/d) Z.T Z and the observed sampling-unit indices.
 
     For V = d I + u Z Z.T, the determinant lemma gives
-    logdet(V) = m log(d) + logdet(I + (u/d) Z.T Z). For columns B,
-    A = (u/d) K^-1 Z.T B and R = B - Z A give the positive identity
-    B.T V^-1 B = R.T R / d + A.T A / u. This avoids cancellation from
-    subtracting large, nearly equal terms in the Woodbury form. Accumulation
-    uses O(n^2 + m) storage and the population-sized factorization O(n^3) work.
+    logdet(V) = m log(d) + logdet(K). For columns B, A = (u/d) K^-1 Z.T B and
+    R = B - Z A give the sum of positive terms B.T V^-1 B = R.T R / d + A.T A / u,
+    with no cancellation between large, nearly equal terms as in the Woodbury
+    form. Accumulation uses O(n^2 + m) storage and the factorization O(n^3) work.
     """
 
     left: Array
@@ -42,21 +41,21 @@ class _PopulationCovarianceFactor(NamedTuple):
     identifiable: Array
 
     def residual_components(self, values):
-        """Positive representation for B.T V^-1 C; stable against subtraction."""
+        """Returns the residual components R and population effects A of ``values``."""
         sums = _endpoint_sums(values, self.left, self.right, len(self.factor))
         effects = (self.unit / self.residual) * cho_solve((self.factor, True), sums)
         remaining = values - effects[self.left] - effects[self.right]
         return remaining, effects
 
     def inner_products(self, values):
-        """Covariance-weighted inner products, residuals, and population effects."""
+        """Returns covariance-weighted inner products, residual components and effects."""
         remaining, effects = self.residual_components(values)
         inner = remaining.T @ remaining / self.residual + effects.T @ effects / self.unit
         return inner, remaining, effects
 
 
 def _population_covariance_factor(left, right, *, n_populations, unit, residual, dtype):
-    """Population covariance factor for observed unordered pairs.
+    """Factors the population covariance of observed unordered pairs.
 
     ``residual`` includes the configured jitter.
     """
