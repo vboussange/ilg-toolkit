@@ -7,7 +7,7 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from ._checks import _require_float64
-from .calibration import AbstractCalibrationHead
+from .calibration import AbstractCalibrationHead, MLPECalibrationHead
 from .data import _feature_names, PairwiseObservations, RegionBatch, TargetSpec
 from .models import AbstractDistanceModel
 from .models.base import (
@@ -39,7 +39,8 @@ class LandscapeGeneticsModel(eqx.Module):
     Raises:
         TypeError: If ``distance_model`` or ``calibration_head`` has an unsupported
             type.
-        ValueError: If the feature names are empty or repeat a name.
+        ValueError: If the feature names are empty or repeat a name, or an MLPE
+            calibration head holds species that the distance model lacks.
     """
 
     distance_model: AbstractDistanceModel
@@ -51,6 +52,13 @@ class LandscapeGeneticsModel(eqx.Module):
             raise TypeError("distance_model must implement AbstractDistanceModel")
         if not isinstance(self.calibration_head, AbstractCalibrationHead):
             raise TypeError("calibration_head must implement AbstractCalibrationHead")
+        if isinstance(self.calibration_head, MLPECalibrationHead):
+            fitted = {species for _, species in self.calibration_head.calibrations}
+            if not fitted <= set(_model_species(self.distance_model)):
+                raise ValueError(
+                    f"MLPE calibration species {sorted(fitted, key=str)!r} must be species of "
+                    f"the distance model, {self.distance_model.species!r}"
+                )
         self.feature_names = _feature_names(self.feature_names)
 
     @property
@@ -214,6 +222,8 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         _require_float64()
         self._validate_region(region)
+        if region.individual_based and isinstance(self.calibration_head, MLPECalibrationHead):
+            raise ValueError("MLPE calibration heads reject individual-based region batches")
         requests, by_species = _resolve_query(self.species, query)
         support_by_species = self._support_observations(support, requests)
         distances_by_species = _species_distances(

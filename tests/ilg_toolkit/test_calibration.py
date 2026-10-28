@@ -1,6 +1,7 @@
 """Tests of calibration heads and their fitting for frozen distance models."""
 
 from dataclasses import replace
+from types import MappingProxyType
 
 import coordax as cx
 import equinox as eqx
@@ -19,7 +20,7 @@ from ilg_toolkit import (
     train,
     TrainingConfig,
 )
-from ilg_toolkit.mlpe import MLPECalibration
+from ilg_toolkit.mlpe import MLPECalibration, MLPEError
 
 
 def test_fitted_mlpe_calibration_matches_the_dense_reference_profile(
@@ -150,14 +151,23 @@ def test_mlpe_calibration_heads_validate_their_target_and_groups(
     assert MLPECalibrationHead(target, {}).calibrations == {}
     with pytest.raises(ValueError, match="dissimilarity"):
         MLPECalibrationHead(TargetSpec("relatedness", kind="relatedness"), {})
-    for groups in (
+    groups: dict[tuple[str, str | None], MLPECalibration] = {(region.name, None): calibration}
+    head = MLPECalibrationHead(target, MappingProxyType(groups))
+    groups[("other", None)] = calibration
+    assert set(head.calibrations) == {(region.name, None)}
+    with pytest.raises(ValueError, match="species names or all None"):
+        MLPECalibrationHead(
+            target, {(region.name, None): calibration, ("other", "frog"): calibration}
+        )
+    for invalid in (
         {(region.name, None): "not a calibration"},
         {("", None): calibration},
         {(region.name, 0): calibration},
         {region.name: calibration},
+        [((region.name, None), calibration)],
     ):
         with pytest.raises(ValueError):
-            MLPECalibrationHead(target, groups)  # type: ignore[arg-type]
+            MLPECalibrationHead(target, invalid)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="TargetSpec"):
         DirectCalibrationHead("divergence")  # type: ignore[arg-type]
 
@@ -274,6 +284,44 @@ def test_calibration_fitting_rejects_stateful_layers(BatchNormConductance, obser
     )
     with pytest.raises(TypeError, match="stateful layers"):
         fit_calibration_head(region, observations, BatchNormConductance(), loss=Log1pLoss())
+
+
+def test_direct_calibration_heads_need_no_ecological_distances(
+    observation_problem, PointConductance
+):
+    region, target, _ = observation_problem()
+    # Zero conductance would fail any effective-resistance solve.
+    region = replace(
+        region,
+        features=cx.field(
+            np.zeros(region.feature_array.shape),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(region.feature_names)),
+        ),
+    )
+    observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [2.0], target=target)
+    distance_model = PointConductance(jnp.asarray(0.0))
+    head = fit_calibration_head(region, observations, distance_model, loss=Log1pLoss())
+    assert head == DirectCalibrationHead(target)
+    with pytest.raises(ValueError, match="iteration budget"):
+        fit_calibration_head(
+            region, observations, distance_model, loss=Log1pLoss(), max_iterations=5
+        )
+    with pytest.raises(MLPEError, match="max_iterations"):
+        fit_calibration_head(
+            region, observations, distance_model, loss=MLPELoss(), max_iterations=0
+        )
+
+
+def test_calibration_head_predictions_require_float64(
+    four_population_calibration, mlpe_calibrated_head, float64_required
+):
+    region, _, _ = four_population_calibration
+    pairs = [region.sampling_unit_ids[:2]]
+    for head in (mlpe_calibrated_head, DirectCalibrationHead(mlpe_calibrated_head.target)):
+        with float64_required():
+            head.predict(jnp.ones(1), pairs, region_name=region.name)
 
 
 def test_calibration_fitting_requires_float64(observation_problem, float64_required):

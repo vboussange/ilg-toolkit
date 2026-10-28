@@ -295,6 +295,46 @@ def test_mlpe_calibration_head_retains_target_scale_after_save_and_load(
     np.testing.assert_array_equal(restored.predict(region).values, converted.predict(region).values)
 
 
+def test_mlpe_calibration_heads_match_the_distance_model_species(
+    ScalarEmbedding, four_population_calibration, mlpe_calibrated_head
+):
+    region, _, _ = four_population_calibration
+    for species in (("frog",), ("frog", "newt")):
+        with pytest.raises(ValueError, match="species"):
+            LandscapeGeneticsModel(
+                ScalarEmbedding(jnp.zeros(len(species)), species=species),
+                mlpe_calibrated_head,
+                region.feature_names,
+            )
+    frog = MLPECalibrationHead(
+        mlpe_calibrated_head.target,
+        {(region.name, "frog"): mlpe_calibrated_head.for_region(region.name)},
+    )
+    with pytest.raises(ValueError, match="species"):
+        LandscapeGeneticsModel(ScalarEmbedding(jnp.asarray(1.0)), frog, region.feature_names)
+    with pytest.raises(ValueError, match="species"):
+        LandscapeGeneticsModel(
+            ScalarEmbedding(jnp.zeros(1), species=("newt",)), frog, region.feature_names
+        )
+    named = LandscapeGeneticsModel(
+        ScalarEmbedding(jnp.ones(2), species=("frog", "newt")), frog, region.feature_names
+    )
+    assert named.species == ("frog", "newt")
+
+
+def test_mlpe_prediction_rejects_individuals_before_computing_distances(
+    PointConductance, four_population_calibration, mlpe_calibrated_head
+):
+    region, _, _ = four_population_calibration
+    model = LandscapeGeneticsModel(
+        PointConductance(jnp.asarray(0.0)), mlpe_calibrated_head, region.feature_names
+    )
+    # Zero conductance would fail the effective-resistance solve.
+    individuals = replace(region, features=region.features * 0.0, individual_based=True)
+    with pytest.raises(ValueError, match="individual-based"):
+        model.predict(individuals)
+
+
 def test_prediction_rejects_stateful_layers(BatchNormConductance, observation_problem):
     region, target, _ = observation_problem()
     model = LandscapeGeneticsModel(

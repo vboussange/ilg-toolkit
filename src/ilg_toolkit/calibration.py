@@ -2,6 +2,7 @@
 
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
+from functools import partial
 from typing import final, TYPE_CHECKING
 
 import equinox as eqx
@@ -121,7 +122,9 @@ class DirectCalibrationHead(AbstractCalibrationHead):
         Raises:
             ValueError: If ``known_effects``, ``support`` or ``support_distances``
                 requests population-effect conditioning.
+            RuntimeError: If float64 is disabled.
         """
+        _require_float64()
         if known_effects or support is not None or support_distances is not None:
             raise ValueError(
                 "A direct calibration head does not support population-effect conditioning"
@@ -148,10 +151,12 @@ class MLPECalibrationHead(AbstractCalibrationHead):
         target: Dissimilarity target contract shared by every region–species group.
         calibrations: MLPE calibrations keyed by region name and species name, or
             by region name and ``None`` for a distance model without species names.
+            The calibration head keeps a copy of the mapping.
 
     Raises:
-        ValueError: If ``target`` is not a dissimilarity ``TargetSpec``, or a key or
-            value of ``calibrations`` is invalid.
+        ValueError: If ``target`` is not a dissimilarity ``TargetSpec``, a key or
+            value of ``calibrations`` is invalid, or species names and ``None``
+            are mixed.
 
     Examples:
         Inspect the calibration of one region–species group::
@@ -168,11 +173,11 @@ class MLPECalibrationHead(AbstractCalibrationHead):
     def __init__(
         self,
         target: TargetSpec,
-        calibrations: dict[tuple[str, str | None], MLPECalibration],
+        calibrations: Mapping[tuple[str, str | None], MLPECalibration],
     ):
         if not isinstance(target, TargetSpec) or target.kind != "dissimilarity":
             raise ValueError("An MLPE calibration head requires a dissimilarity TargetSpec")
-        if not isinstance(calibrations, dict):
+        if not isinstance(calibrations, Mapping):
             raise ValueError("MLPE calibrations must be a mapping keyed by region and species")
         for key, value in calibrations.items():
             if (
@@ -187,6 +192,8 @@ class MLPECalibrationHead(AbstractCalibrationHead):
                 )
             if not isinstance(value, MLPECalibration):
                 raise ValueError("MLPE calibration head values must be MLPECalibration records")
+        if len({species is None for _, species in calibrations}) > 1:
+            raise ValueError("MLPE calibration keys require all species names or all None")
         self.target = target
         self.calibrations = dict(calibrations)
 
@@ -260,7 +267,9 @@ class MLPECalibrationHead(AbstractCalibrationHead):
             ValueError: If the region is individual-based or the region–species group
                 has no MLPE calibration.
             MLPEError: If the distances, pairs or support are invalid.
+            RuntimeError: If float64 is disabled.
         """
+        _require_float64()
         if individual_based:
             raise ValueError("MLPE calibration heads reject individual-based region batches")
         return _predict_mlpe(
@@ -304,7 +313,8 @@ def fit_calibration_head(
         distance_model: Frozen distance model giving the ecological distances.
         loss: Loss defining the calibration head and its numerical settings.
         max_iterations: Iteration budget of each MLPE optimization start; ``None``
-            for a direct calibration head.
+            gives 2,000 iterations for MLPE and is required for a direct
+            calibration head.
 
     Returns:
         The calibration head; compose it with the distance model in a
@@ -316,7 +326,8 @@ def fit_calibration_head(
         ValueError: If the regions or observations are invalid, a raster is not a
             multiple of the distance model's patch size, ``max_iterations`` is set
             for a direct calibration head, or MLPE receives individual-based regions.
-        MLPEError: If an MLPE calibration cannot be fitted.
+        MLPEError: If ``max_iterations`` is not a positive integer for MLPE, or an
+            MLPE calibration cannot be fitted.
         RuntimeError: If float64 is disabled.
 
     Examples:
@@ -339,7 +350,7 @@ def fit_calibration_head(
         [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
         conditions population effects without refitting.
     """
-    from ._training_utils import _prepare_training_inputs
+    from ._training_utils import _prepare_training_inputs, _RegionSpeciesTrainingInput
     from .losses import AbstractLoss
     from .models import AbstractDistanceModel
     from .models.base import (
@@ -355,14 +366,15 @@ def fit_calibration_head(
     inference_model = _inference_model(distance_model)
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
+    budget = loss._iteration_budget(max_iterations)
     prepared = _prepare_training_inputs(region, observations, distance_model.species)
     _check_regions(distance_model, prepared.regions)
     groups = prepared.training
     for group in groups:
         loss._prepare(group.region, group.observations, training=True)
     prepared_regions = {}
-    fitted = {}
-    for group in groups:
+
+    def group_distances(group: _RegionSpeciesTrainingInput) -> jax.Array:
         if group.region.name not in prepared_regions:
             features = group.region.feature_array
             prepared_regions[group.region.name] = (
@@ -370,17 +382,21 @@ def fit_calibration_head(
                 _prepare_distance_context(inference_model, features),
             )
         latent, context = prepared_regions[group.region.name]
-        _, distances = _query_distances_from_latent(
+        return _query_distances_from_latent(
             inference_model,
             latent,
             group.region,
             group.observations.observed_pairs,
             species_index=group.species_index,
             context=context,
+        )[1]
+
+    fitted = {
+        group.key: loss._fit_group(
+            partial(group_distances, group), group.observations, max_iterations=budget
         )
-        fitted[group.key] = loss._fit_group(
-            distances, group.observations, max_iterations=max_iterations
-        )
+        for group in groups
+    }
     return loss._calibration_head(
         prepared.inputs[0].observations.target, fitted, distance_model.species
     )
