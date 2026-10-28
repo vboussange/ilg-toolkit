@@ -12,12 +12,12 @@ import numpy as np
 import pytest
 from ilg_toolkit import (
     ArtifactError,
-    DirectCalibrationModule,
+    DirectCalibrationHead,
     LandscapeGeneticsModel,
     load_checkpoint,
     load_model,
     Log1pLoss,
-    MLPECalibrationModule,
+    MLPECalibrationHead,
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
@@ -88,9 +88,17 @@ def test_species_names_round_trip_and_predictions_are_identical(tmp_path, traini
     save_checkpoint(checkpoint_path, state)
     model = load_model(model_path, distance_model=renamed)
     checkpoint = load_checkpoint(checkpoint_path, distance_model=renamed)
-    for restored in (model, checkpoint.selected_model, checkpoint.latest_model):
+    for restored, saved in (
+        (model, state.selected_model),
+        (checkpoint.selected_model, state.selected_model),
+        (checkpoint.latest_model, state.latest_model),
+    ):
         assert restored.species == restored.distance_model.species == names
-        assert eqx.tree_equal(restored.distance_model, state.selected_model.distance_model)
+        assert eqx.tree_equal(restored.distance_model, saved.distance_model)
+        assert eqx.tree_equal(restored.calibration_head, saved.calibration_head)
+        assert set(cast(MLPECalibrationHead, restored.calibration_head).calibrations) == {
+            (region.name, name) for name in names
+        }
         expected = state.selected_model.predict(region, dict.fromkeys(names))
         for name, prediction in restored.predict(region, dict.fromkeys(names)).items():
             assert prediction.species == name
@@ -211,6 +219,8 @@ def test_direct_model_reload_uses_caller_template_and_preserves_predictions(
         model.distance_model.predict(region).as_matrix(),
     )
     np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
+    assert isinstance(restored.calibration_head, DirectCalibrationHead)
+    assert eqx.tree_equal(restored.calibration_head, model.calibration_head)
     assert restored.target == model.target
     assert restored.feature_names == model.feature_names
 
@@ -238,13 +248,14 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
     save_model(path, model)
     restored = load_model(path, distance_model=WeightedEmbedding(jnp.asarray([4.0, 3.0])))
     assert type(restored.distance_model) is WeightedEmbedding
+    assert eqx.tree_equal(restored.calibration_head, model.calibration_head)
+    assert set(cast(MLPECalibrationHead, restored.calibration_head).calibrations) == {
+        (region.name, None),
+        (other.name, None),
+    }
     for prepared in (region, other):
         np.testing.assert_array_equal(
             restored.predict(prepared).values, model.predict(prepared).values
-        )
-        assert eqx.tree_equal(
-            cast(MLPECalibrationModule, restored.calibration).regions[(prepared.name, 0)],
-            cast(MLPECalibrationModule, model.calibration).regions[(prepared.name, 0)],
         )
     query = (("population-4", "population-2"), ("population-5", "population-3"))
     before = model.predict(region, query, known_effects=True)
@@ -259,7 +270,9 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
     np.testing.assert_array_equal(after.values, before.values)
     np.testing.assert_array_equal(after.extras["model_variance"], before.extras["model_variance"])
     assert (
-        cast(MLPECalibrationModule, restored.calibration).regions[(region.name, 0)].converged
+        cast(MLPECalibrationHead, restored.calibration_head)
+        .calibrations[(region.name, None)]
+        .converged
         is False
     )
 
@@ -283,7 +296,7 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(
     assert solver_config != ResistanceSolverConfig()
     model = LandscapeGeneticsModel(
         PointConductance(jnp.asarray(0.3), solver_config=solver_config),
-        DirectCalibrationModule(TargetSpec("divergence")),
+        DirectCalibrationHead(TargetSpec("divergence")),
         region.feature_names,
     )
     path = tmp_path / "conductance.eqx"
@@ -307,7 +320,7 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(WeightedEmbeddin
         distance_model = WeightedEmbedding(jnp.asarray([0.2, -0.4], dtype=jnp.float32))
         model = LandscapeGeneticsModel(
             distance_model,
-            DirectCalibrationModule(TargetSpec("divergence")),
+            DirectCalibrationHead(TargetSpec("divergence")),
             ("elevation", "canopy"),
         )
         path = tmp_path / "model.eqx"
@@ -334,7 +347,7 @@ def test_interrupted_model_replacement_preserves_previous_predictions(
     def model(log_weights):
         return LandscapeGeneticsModel(
             WeightedEmbedding(jnp.asarray(log_weights)),
-            DirectCalibrationModule(TargetSpec("divergence")),
+            DirectCalibrationHead(TargetSpec("divergence")),
             region.feature_names,
         )
 
@@ -359,9 +372,7 @@ def test_loading_requires_float64(tmp_path, observation_problem, float64_require
     path = tmp_path / "model.eqx"
     save_model(
         path,
-        LandscapeGeneticsModel(
-            distance_model, DirectCalibrationModule(target), region.feature_names
-        ),
+        LandscapeGeneticsModel(distance_model, DirectCalibrationHead(target), region.feature_names),
     )
     with float64_required():
         load_model(path, distance_model=distance_model)

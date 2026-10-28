@@ -1,4 +1,4 @@
-"""Genetic calibration from ecological distances to original-scale predictions."""
+"""Calibration heads mapping ecological distances to original-scale genetic predictions."""
 
 from abc import abstractmethod
 from typing import final, TYPE_CHECKING
@@ -6,21 +6,26 @@ from typing import final, TYPE_CHECKING
 import equinox as eqx
 
 from ._checks import _require_float64
-from ._training_utils import RegionSpeciesKey
 from .data import ObservationCollection, PairwiseObservations, RegionCollection, TargetSpec
-from .mlpe import RegionalMLPECalibration
+from .mlpe import MLPECalibration
 from .mlpe.prediction import _predict_mlpe
 from .prediction import Prediction
 
 
 if TYPE_CHECKING:
     from .losses import AbstractLoss
-    from .model import LandscapeGeneticsModel
     from .models import AbstractDistanceModel
 
 
-class AbstractCalibrationModule(eqx.Module):
-    """Abstract fitted genetic prediction behavior and target contract."""
+class AbstractCalibrationHead(eqx.Module):
+    """The part of a landscape genetics model that maps ecological distances to genetic predictions.
+
+    A calibration head owns the target contract and returns predictions on the
+    target's original scale. [`DirectCalibrationHead`][ilg_toolkit.DirectCalibrationHead]
+    and [`MLPECalibrationHead`][ilg_toolkit.MLPECalibrationHead] are its
+    implementations; [`fit_calibration_head`][ilg_toolkit.fit_calibration_head]
+    fits one for a frozen distance model, and training produces one through its loss.
+    """
 
     target: eqx.AbstractVar[TargetSpec]
 
@@ -31,24 +36,49 @@ class AbstractCalibrationModule(eqx.Module):
         pairs,
         *,
         region_name: str,
-        species_index: int = 0,
+        species: str | None = None,
         individual_based: bool = False,
         known_effects: bool = False,
         support: PairwiseObservations | None = None,
         support_distances=None,
     ) -> Prediction:
-        """Genetic predictions and statistical extras for pair-aligned ecological distances."""
+        """Predict genetic relationships from pair-aligned ecological distances.
+
+        Args:
+            distances: Ecological distances, one per pair in ``pairs``.
+            pairs: Ordered sampling-unit pairs of the region.
+            region_name: Name of the region holding the pairs.
+            species: Species of the sampling units, from the distance model's
+                ``species``; ``None`` for a distance model without species names.
+            individual_based: Whether the region's sampling units are individuals.
+            known_effects: Include the saved population-effect posterior.
+            support: Observations, disjoint from calibration and query pairs, that
+                condition the saved population-effect posterior.
+            support_distances: Ecological distances aligned with
+                ``support.observed_pairs``.
+
+        Returns:
+            Original-scale genetic predictions aligned with ``pairs``.
+        """
 
 
 @final
-class DirectCalibrationModule(AbstractCalibrationModule):
-    """Direct genetic calibration applying the inverse target transform."""
+class DirectCalibrationHead(AbstractCalibrationHead):
+    """Calibration head applying the inverse target transform in any region.
+
+    Training with [`Log1pLoss`][ilg_toolkit.Log1pLoss] produces this head, which
+    has no fitted parameters and therefore also predicts in regions without
+    genetic observations.
+
+    Args:
+        target: Target contract of the genetic observations.
+    """
 
     target: TargetSpec
 
-    def __post_init__(self):
+    def __check_init__(self):
         if not isinstance(self.target, TargetSpec):
-            raise ValueError("Direct calibration requires a TargetSpec")
+            raise ValueError("A direct calibration head requires a TargetSpec")
 
     def predict(
         self,
@@ -56,15 +86,34 @@ class DirectCalibrationModule(AbstractCalibrationModule):
         pairs,
         *,
         region_name: str,
-        species_index: int = 0,
+        species: str | None = None,
         individual_based: bool = False,
         known_effects: bool = False,
         support: PairwiseObservations | None = None,
         support_distances=None,
     ) -> Prediction:
-        """Original-scale genetic predictions from the inverse target transform."""
+        """Predict genetic relationships as the inverse target transform of the distances.
+
+        Args:
+            distances: Ecological distances, one per pair in ``pairs``.
+            pairs: Ordered sampling-unit pairs of the region.
+            region_name: Name of the region holding the pairs.
+            species: Ignored; the head applies to every species.
+            individual_based: Ignored; the head applies to individuals too.
+            known_effects: Must be ``False``.
+            support: Must be ``None``.
+            support_distances: Must be ``None``.
+
+        Returns:
+            Original-scale genetic predictions aligned with ``pairs``.
+
+        Raises:
+            ValueError: A population-effect conditioning mode is requested.
+        """
         if known_effects or support is not None or support_distances is not None:
-            raise ValueError("Direct calibration does not support population-effect conditioning")
+            raise ValueError(
+                "A direct calibration head does not support population-effect conditioning"
+            )
         return Prediction(
             self.target.inverse(distances),
             pairs,
@@ -74,46 +123,87 @@ class DirectCalibrationModule(AbstractCalibrationModule):
 
 
 @final
-class MLPECalibrationModule(AbstractCalibrationModule):
-    """Group-specific maximum-likelihood population effects (MLPE) calibration.
+class MLPECalibrationHead(AbstractCalibrationHead):
+    """Calibration head holding one MLPE calibration per region–species group.
 
-    Each region–species group keeps its own fitted calibration. ``regions`` maps
-    normalized ``(region_name, species_index)`` identities to fitted calibrations.
-    Single-species models use species index zero.
+    Training and [`fit_calibration_head`][ilg_toolkit.fit_calibration_head] with
+    [`MLPELoss`][ilg_toolkit.MLPELoss] produce this head. Each
+    [`MLPECalibration`][ilg_toolkit.mlpe.MLPECalibration] is fitted on the model
+    scale of the head's target, and predictions require the calibration of the
+    queried region and species.
+
+    Args:
+        target: Dissimilarity target contract shared by every group.
+        calibrations: MLPE calibrations keyed by region name and species name, or
+            ``None`` as the species of a distance model without species names.
+
+    Examples:
+        Inspect the calibration of one region–species group::
+
+            head = fit_calibration_head(region, observations, distance_model,
+                                        loss=MLPELoss())
+            calibration = head.for_region(region.name, "frog")
+            calibration.slope, calibration.ml_log_likelihood
     """
 
     target: TargetSpec
-    regions: dict[RegionSpeciesKey, RegionalMLPECalibration] = eqx.field(default_factory=dict)
+    calibrations: dict[tuple[str, str | None], MLPECalibration]
 
-    def __post_init__(self):
-        if not isinstance(self.target, TargetSpec) or self.target.kind != "dissimilarity":
-            raise ValueError("Population MLPE requires a dissimilarity target")
-        regions = dict(self.regions)
-        if any(not isinstance(value, RegionalMLPECalibration) for value in regions.values()):
-            raise ValueError("MLPE regions require fitted RegionalMLPECalibration values")
-        for key, value in regions.items():
+    def __init__(
+        self,
+        target: TargetSpec,
+        calibrations: dict[tuple[str, str | None], MLPECalibration],
+    ):
+        if not isinstance(target, TargetSpec) or target.kind != "dissimilarity":
+            raise ValueError("An MLPE calibration head requires a dissimilarity TargetSpec")
+        if not isinstance(calibrations, dict):
+            raise ValueError("MLPE calibrations must be a mapping keyed by region and species")
+        for key, value in calibrations.items():
             if (
                 not isinstance(key, tuple)
                 or len(key) != 2
                 or not isinstance(key[0], str)
                 or not key[0]
-                or type(key[1]) is not int
-                or key[1] < 0
+                or not (key[1] is None or isinstance(key[1], str))
             ):
-                raise ValueError("MLPE calibration keys require a region and species index")
-            if key[0] != value.region_name or value.target != self.target:
                 raise ValueError(
-                    "MLPE calibration region names and target contracts must match the module"
+                    "MLPE calibration keys require a region name and a species name or None"
                 )
-        self.regions = regions
+            if not isinstance(value, MLPECalibration):
+                raise ValueError("MLPE calibration head values must be MLPECalibration records")
+        self.target = target
+        self.calibrations = dict(calibrations)
 
-    def for_region(self, region_name: str, species_index: int = 0) -> RegionalMLPECalibration:
-        """Fitted MLPE calibration for one region–species group."""
-        key = (region_name, species_index)
-        value = self.regions.get(key)
-        if value is None:
-            raise ValueError(f"Region–species group {key!r} has no MLPE calibration; use calibrate")
-        return value
+    def for_region(self, region_name: str, species: str | None = None) -> MLPECalibration:
+        """Look up the MLPE calibration of one region–species group.
+
+        Args:
+            region_name: Name of a region the head was fitted on.
+            species: Species name; may be omitted when every group of the head
+                belongs to one species.
+
+        Returns:
+            The group's MLPE calibration.
+
+        Raises:
+            ValueError: The head holds several species and none is named, or the
+                group has no calibration.
+        """
+        if species is None:
+            names = {name for _, name in self.calibrations}
+            if len(names) > 1:
+                raise ValueError(
+                    f"Name one of the species {sorted(names, key=str)!r} to look up a "
+                    "multispecies MLPE calibration"
+                )
+            species = next(iter(names), None)
+        calibration = self.calibrations.get((region_name, species))
+        if calibration is None:
+            raise ValueError(
+                f"Region {region_name!r}, species {species!r} has no MLPE calibration; "
+                "fit one with fit_calibration_head"
+            )
+        return calibration
 
     def predict(
         self,
@@ -121,91 +211,114 @@ class MLPECalibrationModule(AbstractCalibrationModule):
         pairs,
         *,
         region_name: str,
-        species_index: int = 0,
+        species: str | None = None,
         individual_based: bool = False,
         known_effects: bool = False,
         support: PairwiseObservations | None = None,
         support_distances=None,
     ) -> Prediction:
-        """Genetic predictions from the requested region–species MLPE calibration.
+        """Predict genetic relationships with the region–species group's MLPE calibration.
 
-        The ``model_values`` extra gives model-scale values; conditional modes
-        also give ``model_variance`` and ``effect_variance`` on that scale.
-        ``known_effects`` uses saved population effects, while ``support`` uses
-        disjoint observations and aligned ``support_distances`` to condition them.
+        The ``model_values`` extra gives model-scale means; conditional modes also
+        give ``model_variance`` and ``effect_variance`` on that scale.
+
+        Args:
+            distances: Ecological distances, one per pair in ``pairs``.
+            pairs: Ordered sampling-unit pairs of the region.
+            region_name: Name of a region the head was fitted on.
+            species: Species of the sampling units; may be omitted when every
+                group of the head belongs to one species.
+            individual_based: Must be ``False``: population effects model populations.
+            known_effects: Include the saved population-effect posterior.
+            support: Observations with the head's target, disjoint from calibration
+                and query pairs, that condition the saved population-effect posterior.
+            support_distances: Ecological distances aligned with
+                ``support.observed_pairs``.
+
+        Returns:
+            Original-scale genetic predictions aligned with ``pairs``.
+
+        Raises:
+            ValueError: The region is individual-based or the group has no calibration.
+            MLPEError: Invalid distances, pairs or support.
         """
         if individual_based:
             raise ValueError(
                 "Population MLPE rejects individual-based regions: its effects model populations"
             )
         return _predict_mlpe(
-            self.for_region(region_name, species_index),
+            self.for_region(region_name, species),
             distances,
             pairs,
+            target=self.target,
+            region_name=region_name,
             known_effects=known_effects,
             support=support,
             support_distances=support_distances,
         )
 
 
-def calibrate(
+def fit_calibration_head(
     region: RegionCollection,
     observations: ObservationCollection,
     distance_model: "AbstractDistanceModel",
     *,
     loss: "AbstractLoss",
     max_iterations: int | None = None,
-) -> "LandscapeGeneticsModel":
-    """Fit genetic calibration while preserving every distance-model parameter.
+) -> AbstractCalibrationHead:
+    """Fit a calibration head for a frozen distance model.
 
-    Target semantics come from observations, and the supplied region–species groups
-    receive fitted calibration. Distances are computed once
-    per group in Equinox inference mode, and MLPE estimates both variance components
-    with deterministic multistart optimization (2,000 iterations by default).
-    ``Log1pLoss`` constructs a direct calibration and rejects an iteration budget.
-    Species names come from the distance model.
+    The distance model is evaluated in Equinox inference mode and left unchanged,
+    including its backbone and species-specific heads. Species names come from the
+    distance model, and the target contract from the observations. The head holds
+    one fitted calibration for each supplied region–species group: MLPE estimates
+    coefficients and both variance components by deterministic multistart
+    optimization (2,000 iterations per start by default), while
+    [`Log1pLoss`][ilg_toolkit.Log1pLoss] gives a direct calibration head without
+    fitted parameters.
 
     Args:
         region: One region batch or a sequence or mapping of region batches.
-        observations: Genetic observations aligned with regions and their species.
-        distance_model: Distance model whose parameters and species remain fixed
-            during calibration.
-        loss: Statistical criterion and numerical settings for genetic calibration.
-        max_iterations: Per-start calibration optimization budget. MLPE defaults to
-            2,000 iterations; direct calibration requires this to be omitted.
+        observations: Genetic observations aligned with the regions and their species.
+        distance_model: Frozen distance model giving the ecological distances.
+        loss: Statistical criterion and numerical settings of the calibration.
+        max_iterations: Iteration budget of each MLPE optimization start; omit for
+            direct calibration.
 
     Returns:
-        A landscape genetics model with calibration for the supplied region–species groups.
+        The fitted calibration head; compose it with the distance model in a
+        [`LandscapeGeneticsModel`][ilg_toolkit.LandscapeGeneticsModel].
 
-    Notes:
-        Earlier calibrations are not merged into the returned model.
+    Raises:
+        TypeError: The distance model, or the loss, has an unsupported type, or the
+            distance model has stateful layers.
+        ValueError: Invalid regions or observations, an iteration budget for
+            direct calibration, or individual-based regions for MLPE.
+        MLPEError: An MLPE calibration cannot be fitted.
 
     Examples:
-        Train a patch encoder, then refit genetic calibration on the same region
-        without further distance-model updates::
+        Train a patch encoder, then refit its calibration head on the training
+        region without further distance-model updates::
 
             loss = MLPELoss(jitter=0.0)
             state = train(region, observations, distance_model=distance_model,
                           config=TrainingConfig(loss=loss, steps=500))
-            refitted = calibrate(region, observations,
-                                 state.selected_model.distance_model, loss=loss,
-                                 max_iterations=2000)
-            prediction = refitted.predict(region, query_pairs)
+            distance_model = state.selected_model.distance_model
+            head = fit_calibration_head(region, observations, distance_model,
+                                        loss=loss, max_iterations=2000)
+            model = LandscapeGeneticsModel(distance_model, head, region.feature_names)
+            prediction = model.predict(region, query_pairs)
 
-        For parameter-free direct prediction, use ``loss=Log1pLoss()`` and omit
-        ``max_iterations``. For updating only population effects of an existing MLPE
-        calibration, see the worked modes in
-        [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
-        and the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md).
+        To compare geographic and learned distances, fit both calibration heads on
+        the same observations with the same loss and iteration budget, and compare
+        ``head.for_region(region.name).ml_log_likelihood``. Conditioning population
+        effects without refitting is described in
+        [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict].
     """
     from ._training_utils import _prepare_training_inputs
     from .losses import AbstractLoss
-    from .model import LandscapeGeneticsModel
     from .models import AbstractDistanceModel
-    from .models.base import (
-        prepare_distance_context,
-        query_distances_from_latent,
-    )
+    from .models.base import prepare_distance_context, query_distances_from_latent
     from .models.common import _inference_model
 
     _require_float64()
@@ -215,8 +328,7 @@ def calibrate(
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
     prepared = _prepare_training_inputs(region, observations, distance_model.species)
-    first, groups = prepared.inputs[0], prepared.training
-    target = first.observations.target
+    groups = prepared.training
     for group in groups:
         loss._prepare(group.region, group.observations, training=True)
     prepared_regions = {}
@@ -238,13 +350,8 @@ def calibrate(
             context=context,
         )
         fitted[group.key] = loss._fit_group(
-            distances,
-            group.observations,
-            region_name=group.region.name,
-            max_iterations=max_iterations,
+            distances, group.observations, max_iterations=max_iterations
         )
-    return LandscapeGeneticsModel(
-        distance_model,
-        loss._calibration(target, fitted),
-        first.region.feature_names,
+    return loss._calibration_head(
+        prepared.inputs[0].observations.target, fitted, distance_model.species
     )

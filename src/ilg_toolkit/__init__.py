@@ -1,10 +1,10 @@
 """Inverse landscape genetics toolkit."""
 
 from .calibration import (
-    AbstractCalibrationModule,
-    calibrate,
-    DirectCalibrationModule,
-    MLPECalibrationModule,
+    AbstractCalibrationHead,
+    DirectCalibrationHead,
+    fit_calibration_head,
+    MLPECalibrationHead,
 )
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
@@ -12,7 +12,6 @@ from .data import PairwiseObservations, RegionBatch, TargetSpec
 from .ensemble import Ensemble, EnsemblePrediction
 from .ibd import IBDModel
 from .losses import AbstractLoss, Log1pLoss, MLPELoss
-from .mlpe import calibrate_mlpe, MLPEError, RegionalMLPECalibration
 from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
 from .prediction import Prediction
@@ -20,29 +19,26 @@ from .training import StepRecord, train, TrainingState
 
 
 __all__ = [
-    "AbstractCalibrationModule",
+    "AbstractCalibrationHead",
     "AbstractLoss",
     "ArtifactError",
-    "DirectCalibrationModule",
+    "DirectCalibrationHead",
     "Ensemble",
     "EnsemblePrediction",
     "IBDModel",
     "LandscapeGeneticsModel",
     "Log1pLoss",
-    "MLPECalibrationModule",
-    "MLPEError",
+    "MLPECalibrationHead",
     "MLPELoss",
     "PairwiseObservations",
     "Prediction",
     "RegionBatch",
-    "RegionalMLPECalibration",
     "ResistanceSolverConfig",
     "StepRecord",
     "TargetSpec",
     "TrainingConfig",
     "TrainingState",
-    "calibrate",
-    "calibrate_mlpe",
+    "fit_calibration_head",
     "load_checkpoint",
     "load_model",
     "save_checkpoint",

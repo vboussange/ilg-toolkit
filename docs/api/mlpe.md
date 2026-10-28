@@ -1,7 +1,5 @@
-# Advanced maximum-likelihood population effects (MLPE) calibration
+# Maximum-likelihood population effects (MLPE) calibrations
 
-::: ilg_toolkit.calibrate_mlpe
+::: ilg_toolkit.mlpe.MLPECalibration
 
-::: ilg_toolkit.RegionalMLPECalibration
-
-::: ilg_toolkit.MLPEError
+::: ilg_toolkit.mlpe.MLPEError

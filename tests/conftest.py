@@ -14,8 +14,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from ilg_toolkit import (
-    DirectCalibrationModule,
+    DirectCalibrationHead,
     Ensemble,
+    fit_calibration_head,
     LandscapeGeneticsModel,
     MLPELoss,
     PairwiseObservations,
@@ -23,7 +24,6 @@ from ilg_toolkit import (
     ResistanceSolverConfig,
     TargetSpec,
 )
-from ilg_toolkit.mlpe import calibrate_mlpe
 from ilg_toolkit.models import (
     AbstractDistanceModel,
     ConductanceModel,
@@ -115,6 +115,10 @@ _R_VARIANCES = np.array([0.23562746377731067, 0.02879401793899513])
 
 
 _R_DISTANCE_CENTER = -0.14328369260805038
+
+# MLPE standardizes distances, so this shift makes the R distances valid
+# (non-negative) ecological distances and changes only the fitted distance center.
+_R_DISTANCE_SHIFT = 2.0
 _R_DISTANCE_SCALE = 1.012896471531856
 
 
@@ -265,7 +269,7 @@ def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec
                 jnp.asarray(weight if num_species == 1 else [weight, weight + 2]),
                 species=None if num_species == 1 else ("frog", "newt"),
             ),
-            DirectCalibrationModule(target),
+            DirectCalibrationHead(target),
             ("elevation",),
         )
         for weight in (1.0, 2.0)
@@ -281,11 +285,50 @@ def _reference_observations():
     )
 
 
+@final
+class _TabulatedDistance(AbstractDistanceModel):
+    """Distance model reading ecological distances from a vertex-by-vertex table."""
+
+    table: jax.Array
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, table: jax.Array):
+        self.table = table
+
+    def backbone(self, features):
+        return self.table
+
+    def ecological_distances(self, latent, pairs, species_index):
+        nodes, (left, right) = pairs
+        return latent[nodes[left], nodes[right]]
+
+
+def _reference_problem(pairs, distances) -> tuple[RegionBatch, _TabulatedDistance]:
+    """A one-row region of the reference populations and a distance model giving ``distances``.
+
+    Each sampling unit has its own vertex, and ``distances`` align with ``pairs``.
+    """
+    ids = tuple(sorted({label for pair in pairs for label in pair}))
+    region = RegionBatch(
+        "alpine",
+        _feature_field(np.zeros((1, len(ids), 1)), ("elevation",)),
+        ids,
+        np.array([[0, index] for index in range(len(ids))]),
+    )
+    lookup = {label: index for index, label in enumerate(ids)}
+    table = np.zeros((len(ids), len(ids)))
+    for (a, b), value in zip(pairs, np.asarray(distances, dtype=np.float64), strict=True):
+        table[lookup[a], lookup[b]] = table[lookup[b], lookup[a]] = value
+    return region, _TabulatedDistance(jnp.asarray(table))
+
+
 def _calibrated():
     observations = _reference_observations()
-    head = calibrate_mlpe(
-        _R_DISTANCES, observations, region_name="alpine", loss=MLPELoss(jitter=1e-7)
+    region, distance_model = _reference_problem(
+        observations.observed_pairs, _R_DISTANCES + _R_DISTANCE_SHIFT
     )
+    head = fit_calibration_head(region, observations, distance_model, loss=MLPELoss(jitter=1e-7))
     return head, observations
 
 
@@ -832,10 +875,14 @@ def mlpe_reference():
     """Frozen maximum-likelihood population effects (MLPE) reference values.
 
     Computed with R 4.1.2, lme4 1.1-28 and ResistanceGA2 1.1.20, using full
-    maximum likelihood and sample standard deviation scaling.
+    maximum likelihood and sample standard deviation scaling. ``problem(pairs,
+    distances)`` builds a region and a distance model giving those distances;
+    fits use the R distances plus ``shift``.
     """
     return SimpleNamespace(
         distances=_R_DISTANCES,
+        shift=_R_DISTANCE_SHIFT,
+        problem=_reference_problem,
         targets=_R_TARGETS,
         fixed=_R_FIXED,
         variances=_R_VARIANCES,

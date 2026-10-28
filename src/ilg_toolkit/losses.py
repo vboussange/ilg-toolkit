@@ -16,7 +16,7 @@ from .data import PairwiseObservations, RegionBatch, TargetSpec
 
 
 if TYPE_CHECKING:
-    from .calibration import AbstractCalibrationModule
+    from .calibration import AbstractCalibrationHead
 
 
 @final
@@ -29,7 +29,7 @@ class _LossContext(eqx.Module):
 class AbstractLoss(ABC):
     """A statistical criterion for a complete region–species group.
 
-    Each loss owns its reduction, statistical parameters, and fitted calibration.
+    Each loss owns its reduction, statistical parameters, and calibration head.
     Training combines the resulting scalars with equal species influence and equal
     region influence within species. Observation target transformations remain
     separate from the statistical criterion.
@@ -54,10 +54,15 @@ class AbstractLoss(ABC):
     def _fixed_parameters(self, fitted) -> Any: ...
 
     @abstractmethod
-    def _calibration(self, target: TargetSpec, fitted: Mapping) -> "AbstractCalibrationModule": ...
+    def _calibration_head(
+        self,
+        target: TargetSpec,
+        fitted: Mapping[RegionSpeciesKey, Any],
+        species: tuple[str, ...] | None,
+    ) -> "AbstractCalibrationHead": ...
 
     @abstractmethod
-    def _fit_group(self, distances, observations, *, region_name, max_iterations) -> Any: ...
+    def _fit_group(self, distances, observations, *, max_iterations) -> Any: ...
 
     @abstractmethod
     def _state_metadata(self, state) -> Any: ...
@@ -89,15 +94,15 @@ class Log1pLoss(AbstractLoss):
     transform are separate choices. The target must describe nonnegative
     dissimilarities.
 
-    The fitted direct calibration returns $T^{-1}(s)$, with no coefficients or
+    The direct calibration head returns $T^{-1}(s)$, with no coefficients or
     variance parameters, so this loss identifies an absolute connectivity scale.
     It has no statistical parameters or standalone optimization budget.
 
     Examples:
         >>> config = TrainingConfig(loss=Log1pLoss(), steps=100)
         >>> state = train(region, observations, distance_model=distance_model, config=config)
-        >>> fitted = calibrate(region, observations, state.selected_model.distance_model,
-        ...                    loss=Log1pLoss())
+        >>> head = fit_calibration_head(region, observations,
+        ...                             state.selected_model.distance_model, loss=Log1pLoss())
     """
 
     def _prepare(self, region, observations, *, training):
@@ -120,12 +125,12 @@ class Log1pLoss(AbstractLoss):
     def _fixed_parameters(self, fitted):
         return None
 
-    def _calibration(self, target, fitted):
-        from .calibration import DirectCalibrationModule
+    def _calibration_head(self, target, fitted, species):
+        from .calibration import DirectCalibrationHead
 
-        return DirectCalibrationModule(target)
+        return DirectCalibrationHead(target)
 
-    def _fit_group(self, distances, observations, *, region_name, max_iterations):
+    def _fit_group(self, distances, observations, *, max_iterations):
         if max_iterations is not None:
             raise ValueError("Log1pLoss calibration has no iteration budget")
         return None
@@ -186,8 +191,8 @@ class MLPELoss(AbstractLoss):
     parameters are shared across groups. Standardization makes the loss invariant
     to the scale of ecological distances, so MLPE does not identify an absolute
     connectivity scale. MLPE requires population sampling units and dissimilarity
-    targets. See the [advanced MLPE API](mlpe.md) for
-    identifiability, precision, diagnostics, and the standalone array-distance fitter.
+    targets. See [`MLPECalibration`][ilg_toolkit.mlpe.MLPECalibration] for the
+    fitted values and diagnostics of each group.
 
     Args:
         variance_floor:
@@ -199,15 +204,15 @@ class MLPELoss(AbstractLoss):
         >>> loss = MLPELoss(jitter=0.0)
         >>> state = train(region, observations, distance_model=distance_model,
         ...               config=TrainingConfig(loss=loss, steps=500))
-        >>> fitted = calibrate(new_region, new_observations,
-        ...                    state.selected_model.distance_model,
-        ...                    loss=loss, max_iterations=2000)
+        >>> head = fit_calibration_head(region, observations,
+        ...                             state.selected_model.distance_model,
+        ...                             loss=loss, max_iterations=2000)
 
         Built-in training validation uses training-fitted coefficients, distance moments,
         and variances. ``train`` updates distance and variance parameters with a fixed
-        Adam budget, and zero training steps only initializes the variances. Fresh
-        calibration keeps the distance model fixed and estimates both variance
-        components with deterministic multistart optimization.
+        Adam budget, and zero training steps only initializes the variances.
+        ``fit_calibration_head`` keeps the distance model fixed and estimates both
+        variance components with deterministic multistart optimization.
     """
 
     variance_floor: float = 1e-10
@@ -269,14 +274,14 @@ class MLPELoss(AbstractLoss):
         )
 
     def _value(self, distances, context, state, fixed=None):
-        from .mlpe.likelihood import mlpe_ml_negative_log_likelihood, profiled_mlpe_ml_fit
+        from .mlpe.likelihood import _mlpe_ml_negative_log_likelihood, _profiled_mlpe_ml_fit
 
         distances = distances.astype(jnp.float64)
         options = self._options(context, state)
         if fixed is None:
-            value = profiled_mlpe_ml_fit(distances, context.targets, *context.pairs, **options)[0]
+            value = _profiled_mlpe_ml_fit(distances, context.targets, *context.pairs, **options)[0]
         else:
-            value = mlpe_ml_negative_log_likelihood(
+            value = _mlpe_ml_negative_log_likelihood(
                 distances,
                 context.targets,
                 *context.pairs,
@@ -288,19 +293,17 @@ class MLPELoss(AbstractLoss):
         return value / len(distances)
 
     def _finalize(self, distances, context, state, *, region, observations, step):
-        from .mlpe.fit import RegionalMLPECalibration
-        from .mlpe.likelihood import finalize_mlpe_fit
+        from .mlpe.fit import _calibration_from_fit
+        from .mlpe.likelihood import _finalize_mlpe_fit
 
-        result = eqx.filter_jit(finalize_mlpe_fit)(
+        result = eqx.filter_jit(_finalize_mlpe_fit)(
             distances.astype(jnp.float64),
             context.targets,
             *context.pairs,
             **self._options(context, state),
         )
-        return RegionalMLPECalibration.from_fit(
+        return _calibration_from_fit(
             result,
-            region_name=region.name,
-            target=observations.target,
             population_ids=region.sampling_unit_ids,
             calibration_pairs=observations.observed_pairs,
             loss=self,
@@ -318,18 +321,23 @@ class MLPELoss(AbstractLoss):
             jnp.asarray(fitted.distance_scale),
         )
 
-    def _calibration(self, target, fitted):
-        from .calibration import MLPECalibrationModule
+    def _calibration_head(self, target, fitted, species):
+        from .calibration import MLPECalibrationHead
 
-        return MLPECalibrationModule(target, dict(fitted))
+        return MLPECalibrationHead(
+            target,
+            {
+                (region, None if species is None else species[index]): calibration
+                for (region, index), calibration in fitted.items()
+            },
+        )
 
-    def _fit_group(self, distances, observations, *, region_name, max_iterations):
-        from .mlpe.fit import calibrate_mlpe
+    def _fit_group(self, distances, observations, *, max_iterations):
+        from .mlpe.fit import _fit_mlpe
 
-        return calibrate_mlpe(
+        return _fit_mlpe(
             distances,
             observations,
-            region_name=region_name,
             loss=self,
             max_iterations=2000 if max_iterations is None else max_iterations,
         )

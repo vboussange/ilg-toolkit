@@ -14,10 +14,10 @@
 
 ::: ilg_toolkit.StepRecord
 
-::: ilg_toolkit.calibrate
+::: ilg_toolkit.fit_calibration_head
 
-::: ilg_toolkit.AbstractCalibrationModule
+::: ilg_toolkit.AbstractCalibrationHead
 
-::: ilg_toolkit.DirectCalibrationModule
+::: ilg_toolkit.DirectCalibrationHead
 
-::: ilg_toolkit.MLPECalibrationModule
+::: ilg_toolkit.MLPECalibrationHead

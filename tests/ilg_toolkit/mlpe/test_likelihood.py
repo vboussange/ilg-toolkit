@@ -1,58 +1,22 @@
-"""Scientific behavior of mlpe.likelihood."""
+"""Private MLPE likelihood kernels against dense references.
+
+No public interface exposes the kernels' gradients and nonfinite diagnostics, so
+these tests call them directly; fitted calibrations are tested through
+``fit_calibration_head`` and training.
+"""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from ilg_toolkit import MLPELoss
-from ilg_toolkit.mlpe import (
-    finalize_mlpe_fit,
-    mlpe_ml_negative_log_likelihood,
-    profiled_mlpe_ml_fit,
-)
+from ilg_toolkit.mlpe.likelihood import _mlpe_ml_negative_log_likelihood, _profiled_mlpe_ml_fit
 
 
 # The kernels take MLPELoss's numerical settings explicitly.
 _SETTINGS = dict(
     variance_floor=MLPELoss().variance_floor, min_distance_scale=MLPELoss().min_distance_scale
 )
-
-
-def test_complete_mlpe_finalization_matches_incomplete_pair_dense_gaussian(dense_profile):
-    # Joint training compiles this finalization; standalone calibration runs it eagerly
-    # and meets the frozen R reference in test_fit.py.
-    distances = np.array([0.2, 1.1, -0.3, 2.0])
-    targets = np.array([0.5, 0.1, 0.9, 0.3])
-    left, right = np.array([3, 0, 2, 0]), np.array([1, 2, 1, 1])
-    variances, jitter = np.array([0.6, 0.12]), 1e-7
-    expected_nll, beta, expected_mean, expected_covariance = dense_profile(
-        distances, targets, left, right, 4, variances, jitter=jitter
-    )
-    with jax.enable_x64():
-        raw = jnp.log(jnp.expm1(jnp.asarray(variances) - 1e-10))
-
-        def finalize():
-            return finalize_mlpe_fit(
-                distances,
-                targets,
-                left,
-                right,
-                n_populations=4,
-                raw_variances=raw,
-                jitter=jitter,
-                **_SETTINGS,
-            )
-
-        result = jax.jit(finalize)()
-    mean, posterior, factor = result.posterior
-    assert result.nll == pytest.approx(expected_nll, abs=1e-12)
-    np.testing.assert_allclose(result.coefficients, beta, atol=1e-12)
-    np.testing.assert_allclose(result.variances, variances, atol=1e-15)
-    assert result.distance_center == pytest.approx(distances.mean(), abs=1e-15)
-    assert result.distance_scale == pytest.approx(distances.std(ddof=1), abs=1e-15)
-    np.testing.assert_allclose(mean, expected_mean, atol=1e-12)
-    np.testing.assert_allclose(posterior, expected_covariance, atol=1e-12)
-    np.testing.assert_allclose(factor @ factor.T @ posterior, np.eye(4), atol=1e-12)
 
 
 def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance_reference(
@@ -69,7 +33,7 @@ def test_endpoint_likelihood_gls_and_gradients_agree_with_dense_extreme_variance
         s, y = jnp.asarray(distances), jnp.asarray(targets)
 
         def accelerated(s, raw):
-            return profiled_mlpe_ml_fit(
+            return _profiled_mlpe_ml_fit(
                 s, y, left, right, n_populations=6, raw_variances=raw, jitter=0.0, **_SETTINGS
             )
 
@@ -103,7 +67,7 @@ def test_unsupported_precision_and_singular_distances_have_explicit_nonfinite_di
         raw = jnp.asarray(np.log(np.expm1(np.array([1.0, 1e-8]) - 1e-10)), dtype=jnp.float32)
 
         def objective(s):
-            return profiled_mlpe_ml_fit(
+            return _profiled_mlpe_ml_fit(
                 s,
                 jnp.asarray(distances),
                 left,
@@ -119,7 +83,7 @@ def test_unsupported_precision_and_singular_distances_have_explicit_nonfinite_di
     assert not np.isfinite(compiled_beta).any()
     with jax.enable_x64():
         nll, beta = jax.jit(
-            lambda: profiled_mlpe_ml_fit(
+            lambda: _profiled_mlpe_ml_fit(
                 np.ones(6),
                 distances,
                 left,
@@ -139,7 +103,7 @@ def test_unidentifiable_profile_is_rejected_but_one_pair_frozen_scoring_is_valid
         raw = jnp.log(jnp.expm1(jnp.array([0.6, 0.12]) - 1e-10))
 
         def unidentifiable():
-            return profiled_mlpe_ml_fit(
+            return _profiled_mlpe_ml_fit(
                 jnp.array([0.2, 0.5, 1.0]),
                 jnp.array([0.3, 0.4, 0.5]),
                 jnp.array([0, 2, 4]),
@@ -152,7 +116,7 @@ def test_unidentifiable_profile_is_rejected_but_one_pair_frozen_scoring_is_valid
 
         assert not np.isfinite(jax.jit(unidentifiable)())
         actual = jax.jit(
-            lambda: mlpe_ml_negative_log_likelihood(
+            lambda: _mlpe_ml_negative_log_likelihood(
                 jnp.array([0.2]),
                 jnp.array([0.3]),
                 jnp.array([0]),

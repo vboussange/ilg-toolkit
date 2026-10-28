@@ -32,6 +32,8 @@ term and the public identifier that implements it.
 | Geographic region | Region | `RegionBatch` |
 | Fit | Training | `train` |
 | Objective | Loss | `Log1pLoss`, `MLPELoss` |
+| Calibration | Calibration head | `LandscapeGeneticsModel.calibration_head`, `AbstractCalibrationHead`, `DirectCalibrationHead`, `MLPECalibrationHead`, `fit_calibration_head` |
+| Maximum-likelihood population effects (MLPE) | MLPE calibration | `ilg_toolkit.mlpe.MLPECalibration`, `MLPECalibrationHead.for_region` |
 
 ## Language
 

@@ -27,7 +27,7 @@ nav = [
     {"Prediction" = "api/prediction.md"},
     {"Ensembles" = "api/ensemble.md"},
     {"Persistence" = "api/persistence.md"},
-    {"Advanced MLPE" = "api/mlpe.md"},
+    {"MLPE calibrations" = "api/mlpe.md"},
     {"Isolation-by-distance model" = "api/ibd.md"},
   ]},
 ]

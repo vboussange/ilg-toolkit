@@ -13,7 +13,7 @@ import pytest
 from ilg_toolkit import (
     LandscapeGeneticsModel,
     Log1pLoss,
-    MLPECalibrationModule,
+    MLPECalibrationHead,
     MLPELoss,
     PairwiseObservations,
     Prediction,
@@ -243,7 +243,7 @@ def test_mlpe_updates_match_dense_reference(
     np.testing.assert_allclose(result.history[-1].training_loss, objective(expected), atol=1e-8)
     assert result.history[-1].training_loss < result.history[0].training_loss
     assert result.step == result.selected_step == 2
-    calibration = cast(MLPECalibrationModule, result.selected_model.calibration)
+    calibration = cast(MLPECalibrationHead, result.selected_model.calibration_head)
     for index, (region, observed) in enumerate(problems):
         embedding = np.asarray(region.feature_array).reshape(unit_count, 2) * np.exp(
             expected[2 * groups_species[index] : 2 * groups_species[index] + 2]
@@ -266,7 +266,9 @@ def test_mlpe_updates_match_dense_reference(
             np.logaddexp(0, expected[parameter_count + 2 * index : parameter_count + 2 * index + 2])
             + 1e-10
         )
-        head = calibration.for_region(region.name, 0 if species is None else groups_species[index])
+        head = calibration.for_region(
+            region.name, None if species is None else species[groups_species[index]]
+        )
         np.testing.assert_allclose(
             [head.unit_variance, head.residual_variance],
             variances,
@@ -365,7 +367,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         cast(Any, second.latest_model.distance_model).log_weights,
     )
     assert eqx.tree_equal(first.loss_state, second.loss_state)
-    assert eqx.tree_equal(first.latest_model.calibration, second.latest_model.calibration)
+    assert eqx.tree_equal(first.latest_model.calibration_head, second.latest_model.calibration_head)
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
     assert jnp.issubdtype(first.rng_key.dtype, jax.dtypes.prng_key)
     expected_losses = []
@@ -373,8 +375,8 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         distances = np.asarray(
             first.latest_model.distance_model.predict(region, {name: None})[name].as_matrix()
         )
-        head = cast(MLPECalibrationModule, first.latest_model.calibration).for_region(
-            region.name, index
+        head = cast(MLPECalibrationHead, first.latest_model.calibration_head).for_region(
+            region.name, name
         )
         assert set(head.calibration_pairs) == set(train_pairs)
         (left, right), _ = observed.select_pairs(train_pairs).aligned_pairs(single_region)
@@ -876,7 +878,7 @@ def test_callback_models_keep_matching_distance_and_calibration_state(
     for current in mlpe_embedding_fit.callbacks:
         model = current.latest_model
         distances = model.distance_model.predict(region, observations.observed_pairs).values
-        calibration = cast(MLPECalibrationModule, model.calibration).for_region(region.name)
+        calibration = cast(MLPECalibrationHead, model.calibration_head).for_region(region.name)
         nll, beta, effects, covariance = dense_profile(
             distances,
             targets,
