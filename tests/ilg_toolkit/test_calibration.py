@@ -1,5 +1,6 @@
 """Tests of calibration heads and their fitting for frozen distance models."""
 
+import itertools
 from dataclasses import replace
 from types import MappingProxyType
 
@@ -69,6 +70,52 @@ def test_fitted_mlpe_calibration_matches_the_dense_reference_profile(
     assert isinstance(initialized, MLPECalibrationHead)
     initial = initialized.for_region(region.name)
     assert calibration.ml_log_likelihood > initial.ml_log_likelihood + 1e-5
+
+
+@pytest.mark.parametrize("variation", ["residual-free", "effect-free"])
+def test_mlpe_calibrations_at_extreme_variance_ratios_match_the_dense_profile(
+    mlpe_reference, dense_profile, variation
+):
+    rng = np.random.default_rng(12)
+    ids = tuple(f"p{index}" for index in range(6))
+    # Three absent pairs make the design incomplete; pairs are reversed and shuffled.
+    indices = [pair[::-1] for pair in itertools.combinations(range(6), 2)]
+    indices = [indices[index] for index in rng.permutation(len(indices))[3:]]
+    distances = rng.uniform(0.5, 3.0, size=len(indices))
+    effects = rng.normal(scale=0.7, size=6)
+    left, right = (np.array(ends) for ends in zip(*indices, strict=True))
+    if variation == "residual-free":
+        targets = 2 + 0.4 * distances + effects[left] + effects[right]
+    else:
+        targets = 2 + 0.4 * distances + rng.normal(scale=0.3, size=len(indices))
+    pairs = [(ids[a], ids[b]) for a, b in indices]
+    observations = PairwiseObservations.from_pairs(
+        pairs, targets, target=TargetSpec("divergence", units="index"), sampling_unit_ids=ids
+    )
+    by_pair = {frozenset(pair): value for pair, value in zip(pairs, distances, strict=True)}
+    region, distance_model = mlpe_reference.problem(
+        observations.observed_pairs,
+        [by_pair[frozenset(pair)] for pair in observations.observed_pairs],
+    )
+    head = fit_calibration_head(region, observations, distance_model, loss=MLPELoss())
+    assert isinstance(head, MLPECalibrationHead)
+    calibration = head.for_region(region.name)
+    ratio = calibration.unit_variance / calibration.residual_variance
+    assert ratio > 1e8 if variation == "residual-free" else ratio < 1e-8
+
+    lookup = {label: index for index, label in enumerate(calibration.population_ids)}
+    nll, beta, effect_mean, effect_covariance = dense_profile(
+        np.asarray(distance_model.predict(region, observations.observed_pairs).values),
+        np.asarray(observations.observed_values),
+        [lookup[a] for a, _ in observations.observed_pairs],
+        [lookup[b] for _, b in observations.observed_pairs],
+        6,
+        (calibration.unit_variance, calibration.residual_variance),
+    )
+    assert -calibration.ml_log_likelihood == pytest.approx(nll, rel=2e-7, abs=1e-8)
+    np.testing.assert_allclose([calibration.intercept, calibration.slope], beta, rtol=2e-7)
+    np.testing.assert_allclose(calibration.effect_mean, effect_mean, rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(calibration.effect_covariance, effect_covariance, atol=1e-10)
 
 
 def test_calibration_fitting_leaves_the_distance_model_unchanged(
