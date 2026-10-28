@@ -18,9 +18,24 @@ Before exploring or changing domain behavior, read `docs/agents/domain.md`. This
 ## Repository conventions
 
 - Keep benchmarks on `perf/<topic>` branches that are never merged. Each contains a README, a results report, and the scripts needed to reproduce the results.
-- Before changing docs, docstrings, comments, or examples, read the documentation and prose conventions in `CONTRIBUTING.md`.
+- Before changing docs, docstrings, comments, or examples, read the Prose section below and the docstring format in `CONTRIBUTING.md`.
 - Perform one-off operational tasks directly; do not add scripts for them.
 - Organize tests to mirror the modules and packages under `src` one-to-one.
+
+## Prose
+
+These rules apply to docstrings, comments, notebook text, plot labels, error messages and the README.
+
+- **One term per concept.** Use the `GLOSSARY.md` term for each concept, identically everywhere, and none of the terms it lists under _Avoid_. Add a glossary entry before naming a new concept.
+- **Trained and learned.** Patch encoders are trained; resistance and conductance surfaces are learned. ILG Toolkit provides utilities and never learns. Training estimates distance-model and statistical parameters; calibration fits a genetic relationship for a frozen distance model.
+- **Paper wording.** Where the toolkit uses a term of the NeurIPS TCCML paper, use the paper's wording: complete pooling, population-holdout evaluation, learned resistance surface.
+- **Statements.** State what something is or does. Use a contrasting negation ("It does X. It does not Y.") only where it prevents a likely misuse.
+- **No justifications, caveats or disclaimers.** Write no sentence explaining why a result can't be trusted, why an example is not a real analysis, or what a check cannot establish. The README's statement on interpreting results covers them.
+- **Current behavior.** Describe the code as it is, without historical comparisons.
+- **Plain names in examples.** Name variables and data with plain, common names (`region`, `observations`, `distance_model`, `fst`). Name only supported capabilities.
+- **`Args:` everywhere.** Document `Args:` for every public function and method that takes parameters, in the docstring format of `CONTRIBUTING.md`.
+- **Spelling and notation.** Write US English everywhere, including private identifiers and test names. Write **region–species** with an en dash. Expand abbreviations on first use in each module or page.
+- **Implementation terms.** Use implementation terminology where it helps readers make a numerical or programming decision.
 
 ## Coding practices
 

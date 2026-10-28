@@ -1,8 +1,7 @@
 # ILG Toolkit
 
-Inverse landscape genetics infers how landscapes shape movement from geolocated
-genetic data, through a conductance grid graph whose effective resistances
-predict genetic dissimilarity.
+The glossary names each concept of ILG Toolkit with one term, used identically
+in code, docstrings, examples, notebooks and issues.
 
 ## Paper terms
 
@@ -36,10 +35,11 @@ term and the public identifier that implements it.
 ## Language
 
 **Inverse landscape genetics (ILG)**:
-Inferring how landscapes shape movement, a spatial ecological network, from
-geolocated genetic data, through a conductance grid graph whose effective
-resistances predict genetic dissimilarity.
-The toolkit also supports squared embedding distances as ecological distances,
+Inferring spatial ecological networks from geolocated genetic data by learning
+a conductance grid graph whose edge weights encode local landscape permeability
+to movement, so that the effective resistances it induces between sampled
+populations predict their genetic dissimilarity.
+ILG Toolkit also supports squared embedding distances as ecological distances,
 and individuals as sampling units.
 
 **Region**:
@@ -48,9 +48,16 @@ _Paper_: geographic region.
 _Avoid_: Dataset, when referring to one region within a multi-region study.
 
 **Region batch**:
-The prepared landscape features, sampling-unit identifiers, and grid positions for one region, independent of genetic observations.
-An optional species column labels each sampling unit; when omitted, all sampling units belong to one species.
+The prepared landscape features, sampling-unit identifiers, and grid positions
+for one region, independent of genetic observations.
+An optional species column labels each sampling unit; when omitted, all sampling
+units belong to one species.
 _Avoid_: Prepared region, when naming this input boundary.
+
+**Individual-based region batch**:
+A region batch whose sampling units are individuals.
+MLPE losses and MLPE calibration heads reject individual-based region batches;
+the log1p loss accepts them.
 
 **Landscape features**:
 Named raster layers describing a region's landscape, with row, column, and feature dimensions.
@@ -62,6 +69,13 @@ An identified population or individual with a landscape location, linked to othe
 _Paper_: population.
 _Avoid_: Population, when the sampling unit represents an individual.
 
+**Species**:
+The ordered, unique species names a distance model carries, one for each
+species-specific head. A single-species distance model may leave its species
+unnamed. Species names select a species' parameters, genetic predictions and
+conductance surface.
+_Avoid_: Species order; registry.
+
 **Pairwise genetic observation**:
 A measured genetic relationship between two sampling units, whose meaning and scale are defined by the chosen target. Genetic dissimilarity and individual relatedness are different kinds of pairwise genetic observation.
 _Paper_: genetic dissimilarity.
@@ -72,26 +86,50 @@ One species' sampling units and pairwise genetic observations within one region.
 Losses are evaluated, and MLPE calibrations fitted, for each region–species group.
 
 **Distance model**:
-A relationship deriving ecological distances from landscape features and
-sampling-unit locations without genetic observations. Effective resistance
-through a conductance grid graph and squared embedding distance are supported
-forms of ecological distance.
+A model deriving ecological distances between sampling units from landscape
+features and sampling-unit locations. Patch encoders, the IBD model and the
+U-Net embedding-distance model are distance models. Effective resistance through
+a conductance grid graph and squared embedding distance are supported forms of
+ecological distance.
 _Paper_: ILG pipeline, for a patch encoder composed with the effective-resistance layer.
-_Avoid_: Genetic predictor, when the relationship has no genetic calibration.
+_Avoid_: Genetic predictor; relationship, which names the genetic relationship
+fitted by calibration.
 
 **Patch encoder**:
-A map from one patch of landscape features to one vertex conductance of a
-conductance grid graph. The patch size decouples the resolution of landscape
-features from that of the graph.
+The distance model that maps landscape features to the vertex conductances of a
+conductance grid graph, one patch of landscape features per vertex, and so
+provides a feature-to-conductance map. The patch size decouples the resolution
+of landscape features from that of the graph. Patch encoders are trained; the
+conductance and resistance surfaces they produce are learned.
 The log-linear patch encoder (`LogLinearConductance`) has low capacity; the
 ResNet9 patch encoder (`ResNet9Conductance`) is a deep patch encoder.
+_Avoid_: Landscape relationship; common relationship; neural network or network,
+for a patch encoder.
+
+**Backbone**:
+The species-shared part of a distance model, mapping landscape features to the
+backbone output that every species-specific head reads
+(`AbstractDistanceModel.backbone`).
+_Avoid_: Patch features; shared patch features, for the backbone output.
+
+**Species-specific head**:
+The layer mapping backbone output to one species' conductance or embedding.
+_Avoid_: Head, without a qualifier.
+
+**Isolation-by-distance (IBD) model**:
+The distance model whose ecological distance is a non-negative affine function
+of the straight-line distance between sampling units' vertices. One IBD model is
+trained jointly across regions.
+_Avoid_: IBR, when referring to this geographic-distance baseline; common
+relationship; geographic relationship.
 
 **Conductance surface**:
 A spatial grid of positive values describing how readily a landscape permits movement for one species, with one conductance $C$ per vertex of the conductance grid graph.
 
 **Resistance surface**:
 Local resistance $Q = 1/C$ at each vertex, the inverse of the conductance surface.
-Trained models' learned resistance surfaces are the toolkit's main output.
+A trained patch encoder yields a learned resistance surface, the main result of
+an ILG study.
 
 **Conductance grid graph**:
 A four-neighbor grid graph with one vertex per patch of landscape features,
@@ -121,10 +159,9 @@ _Avoid_: Raw distance; landscape score; genetic prediction, before calibration t
 
 **Complete pooling**:
 Training one distance model jointly from every region, with equal region influence.
-With several species, the parameters producing patch features are shared by all
-regions and species, each species keeps its own conductance or embedding
-parameters, species receive equal influence, and regions receive equal influence
-within each species.
+With several species, the backbone is shared by all regions and species, each
+species keeps its own species-specific head, species receive equal influence,
+and regions receive equal influence within each species.
 _Avoid_: Pooled backbone; distance model pooled across regions.
 
 **No pooling**:
@@ -151,41 +188,38 @@ _Avoid_: Objective name, when referring to the criterion and its settings.
 **Statistical parameter state**:
 The current statistical parameters estimated jointly with distance-model parameters during training, as required by the chosen loss.
 For maximum-likelihood population effects (MLPE) these are variance parameters; the direct log1p criterion has none.
-_Avoid_: Fitted calibration, when referring only to the parameters being optimized.
+_Avoid_: MLPE calibration, when referring only to the parameters being optimized.
 
 **Landscape genetics model**:
-A distance model composed with genetic calibration, retaining feature meanings,
-target semantics, and species order.
-Its predictions describe genetic relationships on the original scale.
+A distance model composed with a calibration head. The distance model maps
+landscape features to ecological distances; the calibration head maps
+ecological distances to genetic predictions on the original scale.
 _Avoid_: Distance model, when referring to the complete genetic prediction model.
 
 **Genetic calibration**:
-The relationship between ecological distances and genetic observations on the target scale.
+The relationship between ecological distances and genetic observations on the model scale.
 Direct calibration applies the inverse target transform in every region; MLPE calibration is group-specific.
 
-**Calibration module**:
-A fitted genetic relationship and its target contract, mapping ecological distances to genetic predictions.
-Direct calibration applies the inverse target transform; MLPE calibration retains a fitted relationship for each supplied region–species group.
-
-**Fitted calibration**:
-A genetic relationship estimated for supplied observations and a particular distance model.
-For MLPE it includes distance moments, coefficients, variance estimates, and a population-effect posterior.
-_Avoid_: Recalibrated distance model, when its distance parameters have stayed fixed.
+**Calibration head**:
+The part of a landscape genetics model that maps ecological distances to genetic
+predictions on the original scale and owns the target contract. A direct
+calibration head applies the inverse target transform in any region; an MLPE
+calibration head holds one MLPE calibration per region–species group.
+_Avoid_: Head, without a qualifier; calibration module; recalibrated distance
+model, when the distance model stays frozen.
 
 **MLPE calibration**:
-One region–species group's fitted relationship between ecological distances
-and genetic targets, including population dependence and population-effect uncertainty.
-_Avoid_: Regional MLPE calibration; complete model, when referring only to this
-fitted relationship.
+One region–species group's fitted relationship between ecological distances and
+genetic targets on the model scale, under maximum-likelihood population effects
+(MLPE): distance moments, coefficients, both variance components and the
+population-effect posterior.
+_Avoid_: Regional MLPE calibration; fitted calibration; complete model, when
+referring only to this fitted relationship.
 
 **Group-specific calibration**:
 Calibration coefficients and variance parameters estimated separately for each
 region–species group, retaining population dependence within each MLPE calibration.
 _Avoid_: Unpooled genetic calibration; regional calibration, when describing this policy.
-
-**Isolation-by-distance (IBD) model**:
-A reference relationship between straight-line geographic distance and genetic dissimilarity, independent of landscape resistance.
-_Avoid_: IBR, when referring to the geographic-distance baseline.
 
 **Ensemble**:
 An ordered collection of compatible fitted landscape genetics models whose genetic predictions are averaged on the original target scale.
@@ -204,8 +238,10 @@ An unordered pair of distinct populations within a landscape, associated with an
 _Avoid_: Sample, when referring to a pair rather than an individual population or genetic specimen.
 
 **Selected model**:
-A fitted landscape genetics model retained for prediction from the evaluated training steps, chosen by the lowest validation loss when validation observations are supplied.
-Without built-in validation, the final evaluated model is selected; a study's own candidate-selection procedure may retain a different model.
+A fitted landscape genetics model retained for prediction from the evaluated
+training steps, chosen by the lowest validation loss when validation
+observations are supplied. Without validation observations, the final evaluated
+model is selected.
 _Avoid_: Best model; snapshot, when referring to the selected model.
 
 **Latest model**:
@@ -217,8 +253,10 @@ Assessment of predictive accuracy on pairwise genetic observations involving sam
 Each region's populations are split into folds; for each fold, a model trained without the fold's populations is scored on the within-region pairs that involve them.
 
 **Explanatory evaluation**:
-Assessment of the association between frozen ecological distances and genetic observations through fresh calibration on the assessed populations.
-When those observations fit and score calibration, the resulting score measures association rather than the predictive accuracy that population-holdout evaluation measures.
+Assessment of the association between frozen ecological distances and genetic
+observations through fresh calibration on the assessed populations.
+Its score measures association; population-holdout evaluation measures
+predictive accuracy.
 
 **Observation selection**:
 A subset of measured sampling-unit pairs that retains their targets, species, and sampling-unit identities.
@@ -236,7 +274,7 @@ The distance model, distance moments, fitted coefficients, and variance paramete
 A genetic prediction using the fitted relationship with population effects averaged over their zero-mean distribution.
 
 **Saved-effect prediction**:
-A genetic prediction using the population-effect posterior retained by fitted calibration.
+A genetic prediction using the population-effect posterior retained by an MLPE calibration.
 _Avoid_: Support conditioning, when no additional observations are supplied.
 
 **Support conditioning**:
@@ -258,7 +296,3 @@ An estimated genetic relationship for an identified pair of sampling units in a
 region, expressed in the target's original units.
 A prediction matrix arranges values for the requested pairs.
 _Avoid_: Calibrated distance.
-
-**Species order**:
-An ordered sequence of species names retained by a landscape genetics model to associate species with their parameters and predictions.
-_Avoid_: Registry, when referring to species order.
