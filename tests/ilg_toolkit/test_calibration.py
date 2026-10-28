@@ -3,6 +3,7 @@
 from dataclasses import replace
 from typing import cast
 
+import coordax as cx
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
@@ -121,17 +122,17 @@ def test_multi_region_calibration_requires_shared_named_features(observation_pro
     region, target, distance_model = observation_problem()
     observations = PairwiseObservations.from_pairs([("unit/7", "unit/20")], [2.0], target=target)
     other = replace(region, name="other")
-    with pytest.raises(ValueError, match="feature"):
-        calibrate((region, other), (observations, observations), distance_model, loss=Log1pLoss())
-    named = replace(region, feature_names=("elevation", "canopy"))
-    other_named = replace(named, name="other")
     fitted = calibrate(
-        (named, other_named), (observations, observations), distance_model, loss=Log1pLoss()
+        (region, other), (observations, observations), distance_model, loss=Log1pLoss()
     )
     assert fitted.feature_names == ("elevation", "canopy")
+    swapped = cx.LabeledAxis("feature", np.array(["canopy", "elevation"]))
     with pytest.raises(ValueError, match="feature"):
         calibrate(
-            (named, replace(other_named, feature_names=("canopy", "elevation"))),
+            (
+                region,
+                replace(other, features=cx.field(region.feature_array, "row", "column", swapped)),
+            ),
             (observations, observations),
             distance_model,
             loss=Log1pLoss(),
@@ -154,3 +155,11 @@ def test_calibration_fitting_requires_float64(observation_problem, float64_requi
     )
     with float64_required():
         calibrate(region, observations, model, loss=Log1pLoss())
+
+
+def test_mlpe_calibration_rejects_individual_based_query_regions(
+    four_population_calibration, mlpe_calibrated_model
+):
+    region, _, _ = four_population_calibration
+    with pytest.raises(ValueError, match="individual-based"):
+        mlpe_calibrated_model.predict(replace(region, individual_based=True))

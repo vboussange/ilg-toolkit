@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from ._checks import _require_float64
 from .calibration import AbstractCalibrationModule
-from .data import PairwiseObservations, RegionBatch, TargetSpec
+from .data import _feature_names, PairwiseObservations, RegionBatch, TargetSpec
 from .models import AbstractDistanceModel
 from .models.base import _model_species, _species_distances, select_species
 from .prediction import Prediction
@@ -18,21 +18,21 @@ from .prediction import Prediction
 class LandscapeGeneticsModel(eqx.Module):
     """A distance model composed with fitted genetic calibration.
 
-    Species names come from the distance model. Feature meanings define the query
-    contract. The calibration owns target semantics and statistical prediction
-    behavior.
+    Species names come from the distance model. ``feature_names`` are the training
+    regions' feature names, which query regions must match in meaning and order. The
+    calibration owns target semantics and statistical prediction behavior.
     """
 
     distance_model: AbstractDistanceModel
     calibration: AbstractCalibrationModule
-    feature_count: int
-    feature_names: tuple[str, ...] | None = None
+    feature_names: tuple[str, ...]
 
     def __post_init__(self):
         if not isinstance(self.distance_model, AbstractDistanceModel):
             raise TypeError("distance_model must implement AbstractDistanceModel")
         if not isinstance(self.calibration, AbstractCalibrationModule):
             raise TypeError("calibration must implement AbstractCalibrationModule")
+        self.feature_names = _feature_names(self.feature_names)
 
     @property
     def species(self) -> tuple[str, ...] | None:
@@ -45,11 +45,10 @@ class LandscapeGeneticsModel(eqx.Module):
         return self.calibration.target
 
     def _validate_region(self, region: RegionBatch):
-        if region.feature_array.shape[-1] != self.feature_count:
-            raise ValueError(f"Expected {self.feature_count} feature channels")
         if region.feature_names != self.feature_names:
             raise ValueError(
-                "Query feature contract must match training feature meanings and order"
+                f"Query features {region.feature_names} must match the training features "
+                f"{self.feature_names} in meaning and order"
             )
 
     @overload
@@ -118,6 +117,7 @@ class LandscapeGeneticsModel(eqx.Module):
                 import coordax as cx
                 import jax
                 import jax.numpy as jnp
+                import numpy as np
 
                 jax.config.update("jax_enable_x64", True)
                 from ilg_toolkit import (
@@ -125,12 +125,10 @@ class LandscapeGeneticsModel(eqx.Module):
                 )
                 from ilg_toolkit.models import LogLinearConductance
 
-                region = RegionBatch(
-                    "valley", cx.field(jnp.arange(6.0).reshape(1, 6, 1),
-                                       "row", "column", "feature"),
-                    tuple(f"p{i}" for i in range(6)),
-                    [[0, i] for i in range(6)], feature_names=("elevation",),
-                )
+                features = cx.field(jnp.arange(6.0).reshape(1, 6, 1), "row", "column",
+                                    cx.LabeledAxis("feature", np.array(["elevation"])))
+                region = RegionBatch("valley", features, tuple(f"p{i}" for i in range(6)),
+                                     [[0, i] for i in range(6)])
                 observations = PairwiseObservations.from_pairs(
                     [("p0", "p1"), ("p0", "p2"), ("p0", "p3"),
                      ("p1", "p2"), ("p1", "p3"), ("p2", "p3")],
@@ -215,7 +213,7 @@ class LandscapeGeneticsModel(eqx.Module):
                 labels[:query_count],
                 region_name=region.name,
                 species_index=index,
-                sampling_unit_kinds=prepared.sampling_unit_kinds,
+                individual_based=prepared.individual_based,
                 known_effects=known_effects,
                 support=observations,
                 support_distances=None if observations is None else distances[query_count:],

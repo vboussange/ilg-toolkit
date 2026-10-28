@@ -22,7 +22,8 @@ docs = [
 tests = [
   "jaxscape[amjax]==0.0.11",
   "pytest==9.2.0",
-  "pytest-xdist==3.8.0"
+  "pytest-xdist==3.8.0",
+  "xarray==2026.9.0"
 ]
 
 [project]

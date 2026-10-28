@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+import coordax as cx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -130,20 +131,24 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(Point
     with jax.enable_x64():
         region = RegionBatch(
             "graph",
-            cx.field(np.ones((1, 4, 1)), "row", "column", "feature"),
+            cx.field(
+                np.ones((1, 4, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["cover"]))
+            ),
             ("a", "b", "c", "d"),
             np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
         )
         calibration = DirectCalibrationModule(TargetSpec("divergence"))
         models = [
-            LandscapeGeneticsModel(PointConductance(jnp.log(jnp.asarray(level))), calibration, 1)
+            LandscapeGeneticsModel(
+                PointConductance(jnp.log(jnp.asarray(level))), calibration, ("cover",)
+            )
             for level in (4.0, 1.0)
         ]
         ensemble = Ensemble(models)
         prediction = ensemble.predict(region)
         summary = ensemble.conductance_surfaces(region)
         averaged_surface_model = LandscapeGeneticsModel(
-            PointConductance(jnp.log(jnp.asarray(2.5))), calibration, 1
+            PointConductance(jnp.log(jnp.asarray(2.5))), calibration, ("cover",)
         )
         surface_prediction = averaged_surface_model.predict(region)
     assert summary.member_ids == (0, 1)
@@ -157,7 +162,8 @@ def test_known_graph_outputs_keep_surface_mean_separate_from_distance_mean(Point
 @pytest.mark.parametrize("method", ["predict", "ecological_distances", "conductance_surfaces"])
 def test_feature_meanings_are_validated_for_every_ensemble_operation(known_ensemble, method):
     region, ensemble, _ = known_ensemble()
-    changed = replace(region, feature_names=("different meaning",))
+    meaning = cx.LabeledAxis("feature", np.array(["different meaning"]))
+    changed = replace(region, features=cx.field(region.feature_array, "row", "column", meaning))
     with pytest.raises(RuntimeError, match="member 0.*feature"):
         getattr(ensemble, method)(changed)
 
@@ -170,14 +176,16 @@ def test_surface_failures_identify_member_without_restricting_genetic_prediction
 
     region = RegionBatch(
         "grid",
-        cx.field(np.ones((4, 4, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((4, 4, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["cover"]))
+        ),
         ("west", "east"),
         [[0, 0], [3, 3]],
     )
     first = LandscapeGeneticsModel(
         LogLinearConductance(1, patch_size=1),
         DirectCalibrationModule(TargetSpec("divergence")),
-        1,
+        ("cover",),
     )
     # A coarser patch size changes only the surface shape; genetic predictions still align.
     coarse = replace(first, distance_model=LogLinearConductance(1, patch_size=2))

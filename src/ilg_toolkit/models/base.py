@@ -303,13 +303,10 @@ def region_for_species(region: RegionBatch, name: str | None) -> RegionBatch:
     indices = tuple(index for index, species in enumerate(region.species) if species == name)
     if len(indices) < 2:
         raise ValueError("A species query requires at least two sampling units in the region")
-    kinds = region.sampling_unit_kinds
-    assert kinds is not None
     return replace(
         region,
         sampling_unit_ids=tuple(region.sampling_unit_ids[index] for index in indices),
         grid_positions=jnp.asarray(region.grid_positions)[jnp.asarray(indices)],
-        sampling_unit_kinds=tuple(kinds[index] for index in indices),
         species=None,
     )
 
