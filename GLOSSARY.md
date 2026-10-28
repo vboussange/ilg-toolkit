@@ -179,7 +179,7 @@ _Avoid_: Pooled backbone; distance model pooled across regions.
 Training one distance model per region, using only that region's genetic observations.
 
 **Training configuration**:
-The chosen loss, joint optimization budget, and batching settings for training a distance model and its statistical parameters.
+The chosen loss, optimizer, joint optimization budget, optional gradient tolerance, and batching settings for training a distance model and its statistical parameters.
 _Avoid_: Calibration settings, when referring to the training budget.
 
 **Training**:
@@ -188,7 +188,7 @@ _Paper_: fit.
 _Avoid_: Fitting, when naming this optimization workflow.
 
 **Checkpoint**:
-A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, and selected model, for continuing training.
+A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, convergence, and selected model, for continuing training. The optimizer itself is not saved; it is supplied when loading, like the distance-model template.
 _Paper_: none.
 
 **Loss**:

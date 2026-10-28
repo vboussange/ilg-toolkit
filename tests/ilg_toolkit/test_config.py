@@ -1,6 +1,7 @@
 """Scientific behavior of config."""
 
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import Log1pLoss, PairwiseObservations, train, TrainingConfig
 
@@ -45,3 +46,25 @@ def test_training_configuration_holds_only_scientific_settings():
     # Eager debugging uses jax.disable_jit() rather than a configuration flag.
     with pytest.raises(TypeError):
         TrainingConfig(loss=Log1pLoss(), jit=False)  # type: ignore[call-arg]
+
+
+def test_any_optax_optimizer_configures_training_and_equality_ignores_it():
+    default = TrainingConfig(loss=Log1pLoss())
+    assert isinstance(default.optimizer, optax.GradientTransformation)
+    assert TrainingConfig(loss=Log1pLoss(), optimizer=optax.lbfgs()) == default
+    assert TrainingConfig(loss=Log1pLoss(), optimizer=optax.sgd(0.1)) == default
+    with pytest.raises(ValueError, match="optimizer"):
+        TrainingConfig(loss=Log1pLoss(), optimizer=0.001)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        TrainingConfig(loss=Log1pLoss(), learning_rate=0.001)  # type: ignore[call-arg]
+
+
+def test_gradient_tolerance_is_optional_finite_and_nonnegative():
+    assert TrainingConfig(loss=Log1pLoss()).gradient_tolerance is None
+    tolerance = TrainingConfig(loss=Log1pLoss(), gradient_tolerance=np.float64(1e-3))
+    assert type(tolerance.gradient_tolerance) is float
+    assert TrainingConfig(loss=Log1pLoss(), gradient_tolerance=0).gradient_tolerance == 0.0
+    assert tolerance != TrainingConfig(loss=Log1pLoss(), gradient_tolerance=1e-4)
+    for invalid in (-1e-3, float("nan"), float("inf"), True, "1e-3"):
+        with pytest.raises(ValueError, match="gradient_tolerance"):
+            TrainingConfig(loss=Log1pLoss(), gradient_tolerance=invalid)  # type: ignore[arg-type]

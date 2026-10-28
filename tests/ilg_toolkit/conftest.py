@@ -8,6 +8,7 @@ import itertools
 from types import SimpleNamespace
 
 import jax.numpy as jnp
+import optax
 import pytest
 from ilg_toolkit import (
     fit_calibration_head,
@@ -58,7 +59,7 @@ def mlpe_embedding_fit(WeightedEmbedding, embedding_problem):
         region,
         observations,
         distance_model=WeightedEmbedding(jnp.zeros(2)),
-        config=TrainingConfig(loss=MLPELoss(), steps=3, eval_every=3, learning_rate=0.03),
+        config=TrainingConfig(loss=MLPELoss(), steps=3, eval_every=3, optimizer=optax.adam(0.03)),
         on_step=callbacks.append,
     )
     return SimpleNamespace(
