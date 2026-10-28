@@ -10,6 +10,8 @@ import jax
 import jax.numpy as jnp
 from numpy.typing import ArrayLike
 
+from .._checks import _positive_integer
+
 
 class _PatchModel(Protocol):
     patch_size: int
@@ -58,8 +60,7 @@ def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int
     raster = jnp.asarray(features)
     if raster.ndim != 3:
         raise ValueError(f"Expected features with shape (row, column, feature), got {raster.shape}")
-    if patch_size <= 0:
-        raise ValueError("patch_size must be positive")
+    patch_size = _positive_integer("patch_size", patch_size)
     height, width, channels = raster.shape
     if height % patch_size or width % patch_size:
         raise ValueError(

@@ -13,7 +13,9 @@ from ilg_toolkit.resistance import effective_resistance
 def _context(shape, config=None):
     """Resistance solver for a conductance grid graph of the given shape."""
     model = LogLinearConductance(1, patch_size=1, solver_config=config)
-    return prepare_distance_context(model, jnp.zeros((*shape, 1)))
+    context = prepare_distance_context(model, jnp.zeros((*shape, 1)))
+    assert context is not None
+    return context
 
 
 def test_amg_resistance_and_gradients_match_independent_laplacian(dense_resistance):

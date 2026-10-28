@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import final, overload, TypeVar
+from typing import cast, final, overload, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -179,16 +179,14 @@ class Ensemble:
         features once. See ``LandscapeGeneticsModel.predict`` for species selection.
         """
         pairs = None if pairs is None else tuple(pairs)
-        if isinstance(species, str) or species is None:
-            predictions = self._map_members(
-                "prediction", lambda model: model.predict(region, pairs=pairs, species=species)
-            )
-            return aggregate_predictions(predictions)
         predictions = self._map_members(
             "prediction", lambda model: model.predict(region, pairs=pairs, species=species)
         )
+        if isinstance(species, str) or species is None:
+            return aggregate_predictions(cast(tuple[Prediction, ...], predictions))
+        by_species = cast(tuple[dict[str, Prediction], ...], predictions)
         return {
-            name: aggregate_predictions(tuple(values[name] for values in predictions))
+            name: aggregate_predictions(tuple(values[name] for values in by_species))
             for name in species
         }
 

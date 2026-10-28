@@ -4,7 +4,6 @@ from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from itertools import combinations
-from numbers import Integral
 from typing import cast, overload
 
 import equinox as eqx
@@ -15,6 +14,7 @@ from jaxscape import GridGraph, ResistanceDistance
 from jaxscape.solvers import AMJaxCGSolver
 from numpy.typing import ArrayLike
 
+from .._checks import _positive_integer
 from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
@@ -169,7 +169,7 @@ class ConductanceModel(AbstractDistanceModel):
         pairs: DistancePairs,
         species_index: int | jax.Array,
         *,
-        context: ResistanceSolverContext,
+        context: ResistanceSolverContext | None = None,
     ) -> jax.Array:
         """Effective resistance aligned with the requested sampling-unit pairs.
 
@@ -177,6 +177,8 @@ class ConductanceModel(AbstractDistanceModel):
         this model and region.
         """
         nodes, indices = pairs
+        if context is None:
+            raise ValueError("Effective resistance requires a prepared resistance solver context")
         if context.config != self.solver_config:
             raise ValueError("Solver context policy does not match the conductance model settings")
         surface = self.conductance(latent, species_index)
@@ -248,8 +250,7 @@ class EmbeddingDistanceModel(AbstractDistanceModel):
 
 def validate_species_order(order: Sequence[str] | None, num_species: int) -> tuple[str, ...] | None:
     """Species names associated with the distance model's parameter rows."""
-    if isinstance(num_species, bool) or not isinstance(num_species, Integral) or num_species < 1:
-        raise ValueError("num_species must be a positive integer")
+    _positive_integer("num_species", num_species)
     if order is None:
         if num_species != 1:
             raise ValueError("Multispecies models require a species order")
@@ -428,7 +429,5 @@ def distances_from_latent(
     )
     pairs = (nodes, indices)
     if isinstance(model, ConductanceModel):
-        if context is None:
-            raise ValueError("Conductance models require a prepared resistance solver context")
         return model.ecological_distances(latent, pairs, species_index, context=context)
     return model.ecological_distances(latent, pairs, species_index)

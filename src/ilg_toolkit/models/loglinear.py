@@ -3,7 +3,7 @@
 import math
 from collections.abc import Sequence
 from functools import partial
-from numbers import Integral, Real
+from numbers import Real
 from typing import final
 
 import equinox as eqx
@@ -11,8 +11,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .._checks import _positive_integer
 from .._training_utils import _prepare_training_inputs
-from ..config import ResistanceSolverConfig, validate_patch_microbatch_size
+from ..config import ResistanceSolverConfig
 from ..data import ObservationCollection, RegionBatch, RegionCollection
 from ..losses import AbstractLoss
 from ..resistance import effective_resistance
@@ -88,13 +89,9 @@ class LogLinearConductance(ConductanceModel):
         max_conductance: float = 1000.0,
         solver_config: ResistanceSolverConfig | None = None,
     ):
-        for name, value in (
-            ("in_channels", in_channels),
-            ("num_species", num_species),
-            ("patch_size", patch_size),
-        ):
-            if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
+        in_channels = _positive_integer("in_channels", in_channels)
+        num_species = _positive_integer("num_species", num_species)
+        patch_size = _positive_integer("patch_size", patch_size)
         if (
             any(
                 isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value)
@@ -105,12 +102,14 @@ class LogLinearConductance(ConductanceModel):
             raise ValueError(
                 "Require finite conductance bounds 0 < min_conductance < max_conductance"
             )
-        validate_patch_microbatch_size(patch_microbatch_size)
+        patch_microbatch_size = _positive_integer(
+            "patch_microbatch_size", patch_microbatch_size, optional=True
+        )
         if solver_config is not None and not isinstance(solver_config, ResistanceSolverConfig):
             raise TypeError("solver_config must be a ResistanceSolverConfig")
-        self.num_species = int(num_species)
-        self.in_channels = int(in_channels)
-        self.patch_size = int(patch_size)
+        self.num_species = num_species
+        self.in_channels = in_channels
+        self.patch_size = patch_size
         self.patch_microbatch_size = patch_microbatch_size
         self.min_conductance = float(min_conductance)
         self.max_conductance = float(max_conductance)

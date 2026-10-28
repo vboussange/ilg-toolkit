@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import minimize
 
+from ._checks import _positive_integer
 from .data import TargetSpec
 
 
@@ -101,12 +102,7 @@ class IBDModel:
         _validate_metadata(distance_units, target)
         if not jax.config.read("jax_enable_x64"):
             raise ValueError("IBD fitting requires JAX float64; enable x64 explicitly")
-        if (
-            isinstance(max_iterations, (bool, np.bool_))
-            or not isinstance(max_iterations, int)
-            or max_iterations < 1
-        ):
-            raise ValueError("max_iterations must be a positive integer")
+        max_iterations = _positive_integer("max_iterations", max_iterations)
         if (
             not isinstance(distances_by_region, Mapping)
             or not isinstance(targets_by_region, Mapping)

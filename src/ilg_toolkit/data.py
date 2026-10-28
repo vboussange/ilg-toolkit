@@ -224,7 +224,7 @@ def _validate_pairs(pairs) -> tuple[tuple[str, str], ...]:
     return labels
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class PairwiseObservations:
     """Labeled pairwise genetic observations with not-a-number (NaN) entries for absent pairs.
 
@@ -239,11 +239,25 @@ class PairwiseObservations:
     target: TargetSpec
     species: str | None = None
 
-    def __post_init__(self):
-        if self.species is not None and (not isinstance(self.species, str) or not self.species):
+    def __init__(
+        self,
+        sampling_unit_ids: Sequence[str],
+        values: ArrayLike,
+        target: TargetSpec,
+        species: str | None = None,
+    ):
+        """Observations from a labeled symmetric matrix with a zero diagonal.
+
+        Args:
+            sampling_unit_ids: Unique labels ordering the matrix rows and columns.
+            values: Symmetric matrix with NaN entries for absent pairs.
+            target: Measured genetic quantity and its transform.
+            species: Species the observations describe, or ``None`` for one unnamed species.
+        """
+        if species is not None and (not isinstance(species, str) or not species):
             raise ValueError("Observation species must be a nonempty name or None")
-        ids = tuple(self.sampling_unit_ids)
-        values = jnp.asarray(self.values)
+        ids = tuple(sampling_unit_ids)
+        values = jnp.asarray(values)
         if (
             len(ids) < 2
             or any(not isinstance(x, str) or not x for x in ids)
@@ -262,6 +276,8 @@ class PairwiseObservations:
             raise ValueError("At least one observed pair is required")
         object.__setattr__(self, "sampling_unit_ids", ids)
         object.__setattr__(self, "values", values)
+        object.__setattr__(self, "target", target)
+        object.__setattr__(self, "species", species)
 
     @classmethod
     def from_pairs(cls, pairs, values, *, target, sampling_unit_ids=None, species=None):

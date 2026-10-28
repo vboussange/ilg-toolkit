@@ -134,13 +134,11 @@ def _group_distances(model, latent, payload, species_index, context):
 
 
 class _Contribution(NamedTuple):
-    payload: _TrainingPayload
-    key: RegionSpeciesKey
-    species_index: jax.Array
-    loss_weight: jax.Array
+    """One region–species group's arrays entering a compiled gradient.
 
+    The group's string identity stays outside, so groups share compiled programs.
+    """
 
-class _NumericContribution(NamedTuple):
     payload: _TrainingPayload
     species_index: jax.Array
     loss_weight: jax.Array
@@ -168,26 +166,26 @@ def _backbone(model, features, key):
     return with_dropout_mode(model, inference=key is None, key=key).backbone(features)
 
 
-def _regional_gradient(parameters, contributions, config, context, key):
+def _regional_gradient(parameters, contributions, groups, config, context, key):
     model, loss_state = parameters
     features = contributions[0].payload.features
     latent, backward = eqx.filter_vjp(lambda m: _backbone(m, features, key), model)
     size = config.species_microbatch_size or len(contributions)
     accumulated = None
     for start in range(0, len(contributions), size):
-        selected = contributions[start : start + size]
+        selected = groups[start : start + size]
         selected_states, state_backward = eqx.filter_vjp(
             lambda current, selected=selected: tuple(
-                config.loss._group_state(current, item.key) for item in selected
+                config.loss._group_state(current, group) for group in selected
             ),
             loss_state,
         )
-        numeric = tuple(
-            _NumericContribution(item.payload, item.species_index, item.loss_weight)
-            for item in selected
-        )
         model_gradient, latent_gradient, selected_gradient = _microbatch_gradient(
-            (model, latent, selected_states), numeric, config.loss, context, key
+            (model, latent, selected_states),
+            contributions[start : start + size],
+            config.loss,
+            context,
+            key,
         )
         gradient = (model_gradient, latent_gradient, state_backward(selected_gradient)[0])
         accumulated = (
@@ -557,14 +555,18 @@ def train(
                 contributions = tuple(
                     _Contribution(
                         groups[i].payload,
-                        groups[i].key,
                         jnp.asarray(groups[i].species_index),
                         jnp.asarray(groups[i].loss_weight * correction),
                     )
                     for i in chosen
                 )
                 gradient = _regional_gradient(
-                    parameters, contributions, config, groups[0].context, keys[index]
+                    parameters,
+                    contributions,
+                    tuple(groups[i].key for i in chosen),
+                    config,
+                    groups[0].context,
+                    keys[index],
                 )
                 accumulated = (
                     gradient

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import math
-from numbers import Integral
 from typing import final
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ..config import ResistanceSolverConfig, validate_patch_microbatch_size
+from .._checks import _positive_integer
+from ..config import ResistanceSolverConfig
 from .base import ConductanceModel
 from .common import encode_patches
 
@@ -106,29 +106,23 @@ class ResNet9Conductance(ConductanceModel):
         solver_config: ResistanceSolverConfig | None = None,
         key: jax.Array,
     ):
-        if isinstance(num_species, bool) or not isinstance(num_species, int) or num_species < 1:
-            raise ValueError("num_species must be a positive integer")
-        if (
-            isinstance(in_channels, bool)
-            or not isinstance(in_channels, Integral)
-            or in_channels < 1
-        ):
-            raise ValueError("in_channels must be a positive integer")
-        if isinstance(patch_size, bool) or not isinstance(patch_size, Integral) or patch_size < 4:
+        num_species = _positive_integer("num_species", num_species)
+        in_channels = _positive_integer("in_channels", in_channels)
+        patch_size = _positive_integer("patch_size", patch_size)
+        if patch_size < 4:
             raise ValueError("ResNet9Conductance requires integer patch_size >= 4")
-        widths = tuple(channels)
-        if len(widths) != 3 or any(
-            isinstance(width, bool) or not isinstance(width, Integral) or width < 8 or width % 8
-            for width in widths
-        ):
+        widths = tuple(_positive_integer("channels", width) for width in channels)
+        if len(widths) != 3 or any(width % 8 for width in widths):
             raise ValueError("ResNet9Conductance channels must be three positive multiples of 8")
         if not math.isfinite(min_conductance) or min_conductance <= 0:
             raise ValueError("min_conductance must be finite and positive")
-        validate_patch_microbatch_size(patch_microbatch_size)
+        patch_microbatch_size = _positive_integer(
+            "patch_microbatch_size", patch_microbatch_size, optional=True
+        )
         solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
         if not isinstance(solver_config, ResistanceSolverConfig):
             raise TypeError("solver_config must be a ResistanceSolverConfig")
-        first, second, third = (int(width) for width in widths)
+        first, second, third = widths
         keys = jax.random.split(key, 8)
         self.conv1 = eqx.nn.Conv2d(in_channels, first, 3, padding=1, dtype=jnp.float32, key=keys[0])
         self.norm1 = eqx.nn.GroupNorm(8, first, dtype=jnp.float32)
