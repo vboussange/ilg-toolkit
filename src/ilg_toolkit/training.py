@@ -25,7 +25,7 @@ from .losses import _LossContext
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .models.base import _model_species, distances_from_latent, prepare_distance_context
-from .models.common import with_dropout_mode
+from .models.common import _inference_model, _reject_stateful_layers, _training_model
 from .resistance import ResistanceSolverContext
 
 
@@ -147,7 +147,7 @@ class _Contribution(NamedTuple):
 
 def _microbatch_objective(parameters, contributions, loss, context, key):
     model, latent, states = parameters
-    configured = with_dropout_mode(model, inference=False, key=key)
+    configured = _training_model(model, key)
     return sum(
         item.loss_weight
         * loss._value(
@@ -164,7 +164,9 @@ _microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_objective))
 
 @eqx.filter_jit
 def _backbone(model, features, key):
-    return with_dropout_mode(model, inference=key is None, key=key).backbone(features)
+    """Patch features in training mode with ``key``, or in inference mode without one."""
+    configured = _inference_model(model) if key is None else _training_model(model, key)
+    return configured.backbone(features)
 
 
 def _regional_gradient(parameters, contributions, groups, config, context, key):
@@ -295,7 +297,7 @@ def _evaluate_regions(
 ) -> tuple[float, dict[str, float], dict, dict[str, float] | None]:
     """Regional criteria and calibration from matching distance and statistical parameters."""
     values, fitted = {}, {}
-    configured = with_dropout_mode(parameters[0], inference=True, key=None)
+    configured = _inference_model(parameters[0])
     previous_region, latent = None, None
     for batch in batches:
         if batch.region.name != previous_region:
@@ -415,6 +417,7 @@ def train(
         distance_model = state.latest_model.distance_model
         config = state.config if config is None else config
     assert distance_model is not None and config is not None
+    _reject_stateful_layers(distance_model)
     if on_step is not None and not callable(on_step):
         raise ValueError("on_step must be callable or None")
     if state is not None:

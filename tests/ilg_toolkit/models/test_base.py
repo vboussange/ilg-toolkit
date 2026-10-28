@@ -139,6 +139,15 @@ def test_conductance_surface_uses_prediction_mode_for_custom_dropout(
     )
 
 
+@pytest.mark.parametrize("evaluate", ["predict", "conductance_surface"])
+def test_prediction_and_conductance_surfaces_reject_stateful_layers(
+    BatchNormConductance, observation_problem, evaluate
+):
+    region, _, _ = observation_problem()
+    with pytest.raises(TypeError, match="stateful layers"):
+        getattr(BatchNormConductance(), evaluate)(region)
+
+
 def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductance):
     region = RegionBatch(
         "river",

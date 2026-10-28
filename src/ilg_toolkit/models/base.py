@@ -19,7 +19,7 @@ from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
 from ..resistance import _mean_conductance, effective_resistance, ResistanceSolverContext
-from .common import pixel_to_patch_nodes, with_dropout_mode
+from .common import _inference_model, pixel_to_patch_nodes
 
 
 # Sampling-unit vertices, followed by pairs indexing those sampling units.
@@ -62,6 +62,13 @@ class AbstractDistanceModel(eqx.Module):
     ``Prediction``, and ``train`` estimates the array-valued parameters with the
     chosen loss. See the experimental [multispecies example](../examples/multispecies.md)
     for species labels.
+
+    Calibration fitting, prediction, validation and conductance surfaces evaluate
+    the model in Equinox inference mode (``eqx.nn.inference_mode``). Training clears
+    every ``inference`` flag and binds its own random key to each
+    inference-dependent layer whose call accepts ``key``, such as
+    ``eqx.nn.Dropout``, so call those layers without a key. Stateful layers
+    (Equinox state indices, such as ``eqx.nn.BatchNorm``) raise a ``TypeError``.
 
     Examples:
         A single-species embedding-distance model with a trainable linear feature map:
@@ -217,7 +224,7 @@ class ConductanceModel(AbstractDistanceModel):
         """
         _require_float64()
         selected = select_species(self.species, species)
-        model = with_dropout_mode(self, inference=True, key=None)
+        model = _inference_model(self)
         latent = model.backbone(region.feature_array)
         results = {}
         for name, index in selected:
@@ -331,13 +338,13 @@ def _species_distances(
 ) -> dict[str | None, tuple[RegionBatch, tuple[tuple[str, str], ...], jax.Array]]:
     """Each selected species' region batch, query pair labels, and ecological distances.
 
-    Patch features and the resistance solver are prepared once, with dropout
-    disabled. ``extra_pairs`` appends a species' additional pairs after its query
+    Patch features and the resistance solver are prepared once, in inference
+    mode. ``extra_pairs`` appends a species' additional pairs after its query
     pairs, in both the labels and the distances.
     """
     if len(_model_species(model)) > 1 and region.species is None:
         raise ValueError("Multispecies queries require sampling-unit species labels")
-    model = with_dropout_mode(model, inference=True, key=None)
+    model = _inference_model(model)
     context = prepare_distance_context(model, region.feature_array)
     latent = model.backbone(region.feature_array)
     results = {}

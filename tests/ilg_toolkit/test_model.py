@@ -268,6 +268,13 @@ def test_recalibrated_model_retains_target_scale_after_save_and_load(
     np.testing.assert_array_equal(restored.predict(region).values, converted.predict(region).values)
 
 
+def test_prediction_rejects_stateful_layers(BatchNormConductance, observation_problem):
+    region, target, _ = observation_problem()
+    model = LandscapeGeneticsModel(BatchNormConductance(), DirectCalibrationModule(target), 2)
+    with pytest.raises(TypeError, match="stateful layers"):
+        model.predict(region)
+
+
 def test_prediction_requires_float64(observation_problem, float64_required):
     region, target, distance_model = observation_problem()
     model = LandscapeGeneticsModel(distance_model, DirectCalibrationModule(target), 2)

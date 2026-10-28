@@ -208,6 +208,36 @@ def dropout_conductance_class():
     return _DropoutConductance
 
 
+@final
+class _BatchNormConductance(ConductanceModel):
+    """Point conductance whose patch features pass through a stateful batch norm."""
+
+    distance_model: _PointConductance
+    norm: eqx.nn.BatchNorm
+    num_species: int = eqx.field(static=True, default=1)
+    patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
+
+    def __init__(self):
+        self.distance_model = _PointConductance(jnp.asarray(0.0))
+        self.norm = eqx.nn.BatchNorm(1, "batch", mode="batch")
+
+    def backbone(self, features):
+        pixels = features[..., :1].reshape(-1, 1)
+        normalized, _ = jax.vmap(
+            self.norm, in_axes=(0, None), out_axes=(0, None), axis_name="batch"
+        )(pixels, eqx.nn.State(self.norm))
+        return normalized.reshape(*features.shape[:-1], 1)
+
+    def conductance(self, latent, species_index):
+        return jnp.exp(self.distance_model.conductance(latent, species_index))
+
+
+@pytest.fixture(name="BatchNormConductance", scope="session")
+def batch_norm_conductance_class():
+    return _BatchNormConductance
+
+
 def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec]:
     region = RegionBatch(
         "alpine",

@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, cast, final
 
 import coordax as cx
 import equinox as eqx
@@ -21,7 +21,38 @@ from ilg_toolkit import (
     train,
     TrainingConfig,
 )
-from ilg_toolkit.models import ConductanceModel
+from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
+
+
+class _Jitter(eqx.Module):
+    """Inference-dependent layer, other than dropout, that rescales by random noise."""
+
+    inference: bool = False
+
+    def __call__(self, x, *, key: jax.Array | None = None):
+        if self.inference:
+            return x
+        if key is None:
+            raise ValueError("Training a jitter layer requires a random key")
+        return x * jax.random.uniform(key, x.shape, minval=0.5, maxval=1.5)
+
+
+@final
+class _JitteredEmbedding(EmbeddingDistanceModel):
+    weight: jax.Array
+    jitter: _Jitter
+    num_species: int = eqx.field(static=True, default=1)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, weight: jax.Array):
+        self.weight = weight
+        self.jitter = _Jitter()
+
+    def backbone(self, features):
+        return self.jitter(features)
+
+    def embedding(self, latent, species_index):
+        return self.weight * latent
 
 
 def test_failed_solver_preserves_solver_failure(PointConductance):
@@ -852,6 +883,35 @@ def test_callback_models_keep_matching_distance_and_calibration_state(
         np.testing.assert_allclose([calibration.intercept, calibration.slope], beta, atol=1e-10)
         np.testing.assert_allclose(calibration.effect_mean, effects, atol=1e-10)
         np.testing.assert_allclose(calibration.effect_covariance, covariance, atol=1e-10)
+
+
+def test_training_rejects_stateful_layers(BatchNormConductance, regions_and_observations):
+    regions, observations = regions_and_observations()
+    with pytest.raises(TypeError, match="stateful layers"):
+        train(
+            regions,
+            observations,
+            distance_model=BatchNormConductance(),
+            config=TrainingConfig(loss=Log1pLoss(), steps=1),
+        )
+
+
+def test_training_passes_random_keys_to_custom_inference_layers(regions_and_observations):
+    regions, observations = regions_and_observations()
+    model = _JitteredEmbedding(jnp.asarray(1.0))
+    config = TrainingConfig(loss=Log1pLoss(), steps=2, seed=3)
+    trained = train(regions, observations, distance_model=model, config=config)
+    repeated = train(regions, observations, distance_model=model, config=config)
+    reseeded = train(regions, observations, distance_model=model, config=replace(config, seed=4))
+    weight = cast(Any, trained.latest_model.distance_model).weight
+    assert weight == cast(Any, repeated.latest_model.distance_model).weight
+    assert weight != cast(Any, reseeded.latest_model.distance_model).weight
+    region = regions[0]
+    assert cast(Any, trained.latest_model.distance_model).jitter.inference is False
+    np.testing.assert_allclose(
+        trained.latest_model.distance_model.predict(region).values,
+        weight**2 * np.array([1.0, 4.0, 1.0]),
+    )
 
 
 def test_training_requires_float64(observation_problem, float64_required):

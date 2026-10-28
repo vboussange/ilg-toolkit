@@ -138,6 +138,15 @@ def test_multi_region_calibration_requires_shared_named_features(observation_pro
         )
 
 
+def test_calibration_fitting_rejects_stateful_layers(BatchNormConductance, observation_problem):
+    region, target, _ = observation_problem()
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20"), ("unit/20", "unit/99")], [1.0, 2.0], target=target
+    )
+    with pytest.raises(TypeError, match="stateful layers"):
+        calibrate(region, observations, BatchNormConductance(), loss=Log1pLoss())
+
+
 def test_calibration_fitting_requires_float64(observation_problem, float64_required):
     region, target, model = observation_problem()
     observations = PairwiseObservations.from_pairs(

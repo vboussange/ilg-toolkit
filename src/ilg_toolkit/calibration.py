@@ -160,7 +160,7 @@ def calibrate(
 
     Target semantics come from observations, and the supplied region–species groups
     receive fitted calibration. Distances are computed once
-    per group with dropout disabled, and MLPE estimates both variance components
+    per group in Equinox inference mode, and MLPE estimates both variance components
     with deterministic multistart optimization (2,000 iterations by default).
     ``Log1pLoss`` constructs a direct calibration and rejects an iteration budget.
     Species names come from the distance model.
@@ -206,11 +206,12 @@ def calibrate(
         prepare_distance_context,
         query_distances_from_latent,
     )
-    from .models.common import with_dropout_mode
+    from .models.common import _inference_model
 
     _require_float64()
     if not isinstance(distance_model, AbstractDistanceModel):
         raise TypeError("distance_model must implement AbstractDistanceModel")
+    inference_model = _inference_model(distance_model)
     if not isinstance(loss, AbstractLoss):
         raise TypeError("loss must implement AbstractLoss")
     prepared = _prepare_training_inputs(region, observations, distance_model.species)
@@ -219,7 +220,6 @@ def calibrate(
     feature_count, feature_names = first.region.feature_array.shape[-1], first.region.feature_names
     for group in groups:
         loss._prepare(group.region, group.observations, training=True)
-    inference_model = with_dropout_mode(distance_model, inference=True, key=None)
     prepared_regions = {}
     fitted = {}
     for group in groups:
