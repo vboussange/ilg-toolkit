@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jaxscape import EuclideanDistance, GridGraph
 
 from .._checks import _positive_integer
-from .base import _species_names, AbstractDistanceModel, DistancePairs
+from .base import _DistancePairs, _species_names, AbstractDistanceModel
 
 
 @final
@@ -103,7 +103,7 @@ class IBDModel(AbstractDistanceModel):
         return jnp.zeros((rows, columns, 0), dtype=self.raw_slopes.dtype)
 
     def ecological_distances(
-        self, latent: jax.Array, pairs: DistancePairs, species_index: int | jax.Array
+        self, latent: jax.Array, pairs: _DistancePairs, species_index: int | jax.Array
     ) -> jax.Array:
         """Affine straight-line distances between the vertices of the requested pairs."""
         nodes, (left, right) = pairs

@@ -321,8 +321,8 @@ def fit_calibration_head(
     from .models import AbstractDistanceModel
     from .models.base import (
         _check_regions,
-        prepare_distance_context,
-        query_distances_from_latent,
+        _prepare_distance_context,
+        _query_distances_from_latent,
     )
     from .models.common import _inference_model
 
@@ -344,10 +344,10 @@ def fit_calibration_head(
             features = group.region.feature_array
             prepared_regions[group.region.name] = (
                 inference_model.backbone(features),
-                prepare_distance_context(inference_model, features),
+                _prepare_distance_context(inference_model, features),
             )
         latent, context = prepared_regions[group.region.name]
-        _, distances = query_distances_from_latent(
+        _, distances = _query_distances_from_latent(
             inference_model,
             latent,
             group.region,

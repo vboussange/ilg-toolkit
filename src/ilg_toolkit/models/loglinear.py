@@ -16,15 +16,15 @@ from .._training_utils import _prepare_training_inputs
 from ..config import ResistanceSolverConfig
 from ..data import ObservationCollection, RegionBatch, RegionCollection
 from ..losses import AbstractLoss
-from ..resistance import effective_resistance
+from ..resistance import _effective_resistance
 from .base import (
     _check_regions,
     _model_species,
+    _prepare_distance_context,
     _species_names,
     ConductanceModel,
-    prepare_distance_context,
 )
-from .common import encode_patches, pixel_to_patch_nodes
+from .common import _encode_patches, _pixel_to_patch_nodes
 
 
 # Log-spaced uniform conductances screened before golden-section refinement.
@@ -128,7 +128,7 @@ class LogLinearConductance(ConductanceModel):
         """Patch-averaged landscape features."""
         if features.ndim != 3 or features.shape[-1] != self.in_channels:
             raise ValueError(f"Expected row, column, feature data with {self.in_channels} features")
-        return encode_patches(self, features, partial(jnp.mean, axis=(1, 2)))
+        return _encode_patches(self, features, partial(jnp.mean, axis=(1, 2)))
 
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Conductance surface for one species from patch-averaged landscape features."""
@@ -252,18 +252,18 @@ def _unit_conductance_resistances(
     Returns the resistance-matrix row of each sampling-unit pixel, shared by the
     sampling units of every species, and the matrix in the model's parameter dtype.
     """
-    context = prepare_distance_context(model, region.feature_array)
+    context = _prepare_distance_context(model, region.feature_array)
     assert context is not None
     height, width = region.feature_array.shape[:2]
     pixels = np.asarray(region.pixel_nodes)
     vertices = np.asarray(
-        pixel_to_patch_nodes(pixels, raster_shape=(height, width), patch_size=model.patch_size)
+        _pixel_to_patch_nodes(pixels, raster_shape=(height, width), patch_size=model.patch_size)
     )
     unique = np.unique(vertices)
     rows = np.searchsorted(unique, vertices)
     surface = jnp.ones(context.graph_shape, dtype=model.intercepts.dtype)
     matrix_rows = dict(zip(pixels.tolist(), rows.tolist(), strict=True))
-    return matrix_rows, effective_resistance(surface, jnp.asarray(unique), context=context)
+    return matrix_rows, _effective_resistance(surface, jnp.asarray(unique), context=context)
 
 
 def _species_loss(log_conductance, loss, distances, contexts, states, weights):

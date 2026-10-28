@@ -13,11 +13,11 @@ import jax.numpy as jnp
 from .._checks import _positive_integer
 from ..config import ResistanceSolverConfig
 from .base import _species_names, ConductanceModel
-from .common import encode_patches
+from .common import _encode_patches
 
 
 @final
-class ResidualBlock(eqx.Module):
+class _ResidualBlock(eqx.Module):
     """Two convolutions with GroupNorm and an identity skip connection."""
 
     conv1: eqx.nn.Conv2d
@@ -86,8 +86,8 @@ class ResNet9Conductance(ConductanceModel):
     norm1: eqx.nn.GroupNorm
     norm2: eqx.nn.GroupNorm
     norm3: eqx.nn.GroupNorm
-    residual1: ResidualBlock
-    residual2: ResidualBlock
+    residual1: _ResidualBlock
+    residual2: _ResidualBlock
     output: eqx.nn.Linear
     species: tuple[str, ...] | None = eqx.field(static=True, default=None, kw_only=True)
     channels: tuple[int, int, int] = eqx.field(static=True)
@@ -128,10 +128,10 @@ class ResNet9Conductance(ConductanceModel):
         keys = jax.random.split(key, 8)
         self.conv1 = eqx.nn.Conv2d(in_channels, first, 3, padding=1, dtype=jnp.float32, key=keys[0])
         self.norm1 = eqx.nn.GroupNorm(8, first, dtype=jnp.float32)
-        self.residual1 = ResidualBlock(first, key=keys[1])
+        self.residual1 = _ResidualBlock(first, key=keys[1])
         self.conv2 = eqx.nn.Conv2d(first, second, 3, padding=1, dtype=jnp.float32, key=keys[2])
         self.norm2 = eqx.nn.GroupNorm(8, second, dtype=jnp.float32)
-        self.residual2 = ResidualBlock(second, key=keys[3])
+        self.residual2 = _ResidualBlock(second, key=keys[3])
         self.conv3 = eqx.nn.Conv2d(second, third, 3, padding=1, dtype=jnp.float32, key=keys[4])
         self.norm3 = eqx.nn.GroupNorm(8, third, dtype=jnp.float32)
         count = 1 if species is None else len(species)
@@ -162,7 +162,7 @@ class ResNet9Conductance(ConductanceModel):
             raise ValueError(
                 f"Expected row, column, feature data with {self.conv1.weight.shape[1]} features"
             )
-        return encode_patches(self, features, self._encode_patch)
+        return _encode_patches(self, features, self._encode_patch)
 
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Positive conductance surface from patch features."""

@@ -19,11 +19,11 @@ class _PatchModel(Protocol):
     patch_microbatch_size: int | None
 
 
-def encode_patches(
+def _encode_patches(
     model: _PatchModel, features: jax.Array, encode: Callable[[jax.Array], jax.Array]
 ) -> jax.Array:
     """Patch features computed from non-overlapping raster patches."""
-    patches, shape = patchify(features, model.patch_size)
+    patches, shape = _patchify(features, model.patch_size)
     batch_size = model.patch_microbatch_size
     if batch_size is None:
         values = eqx.filter_vmap(encode)(patches)
@@ -80,7 +80,7 @@ def _training_model[Model](model: Model, key: jax.Array) -> Model:
     )
 
 
-def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
+def _patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
     """Non-overlapping feature-first patches from row, column, feature data."""
     raster = jnp.asarray(features)
     if raster.ndim != 3:
@@ -97,7 +97,7 @@ def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int
     return patches.reshape(rows * columns, channels, patch_size, patch_size), (rows, columns)
 
 
-def pixel_to_patch_nodes(
+def _pixel_to_patch_nodes(
     pixel_nodes: ArrayLike,
     *,
     raster_shape: tuple[int, int],

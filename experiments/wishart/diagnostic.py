@@ -13,9 +13,9 @@ from numbers import Integral, Real
 import numpy as np
 from ilg_toolkit.data import RegionBatch
 from ilg_toolkit.models import ConductanceModel
-from ilg_toolkit.models.base import prepare_distance_context
-from ilg_toolkit.models.common import pixel_to_patch_nodes
-from ilg_toolkit.resistance import effective_resistance
+from ilg_toolkit.models.base import _prepare_distance_context
+from ilg_toolkit.models.common import _pixel_to_patch_nodes
+from ilg_toolkit.resistance import _effective_resistance
 
 
 def _helmert(populations):
@@ -342,12 +342,12 @@ def diagnose_wishart(
                 f"{name} must be finite and {'nonnegative' if lower_inclusive else 'positive'}"
             )
     height, width = region.feature_array.shape[:2]
-    context = prepare_distance_context(encoder, region.feature_array)
+    context = _prepare_distance_context(encoder, region.feature_array)
     assert context is not None  # Conductance models always have a resistance solver.
     resistances = np.asarray(
-        effective_resistance(
+        _effective_resistance(
             encoder.conductance_surface(region).data,
-            pixel_to_patch_nodes(
+            _pixel_to_patch_nodes(
                 region.pixel_nodes, raster_shape=(height, width), patch_size=encoder.patch_size
             ),
             context=context,

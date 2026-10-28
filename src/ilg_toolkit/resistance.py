@@ -14,7 +14,7 @@ from .config import ResistanceSolverConfig
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
-class ResistanceSolverContext:
+class _ResistanceSolverContext:
     """A shape-specific solver with dynamic, reusable preconditioner arrays."""
 
     graph_shape: tuple[int, int] = field(metadata={"static": True})
@@ -29,11 +29,11 @@ def _mean_conductance(left, right):
     return 0.5 * (left + right)
 
 
-def effective_resistance(
+def _effective_resistance(
     conductance,
     terminal_nodes,
     *,
-    context: ResistanceSolverContext,
+    context: _ResistanceSolverContext,
 ) -> jax.Array:
     """Effective resistance among sampling-unit vertices of a positive conductance grid.
 

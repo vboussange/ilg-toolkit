@@ -27,12 +27,12 @@ from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .models.base import (
     _check_regions,
+    _distances_from_latent,
     _model_species,
-    distances_from_latent,
-    prepare_distance_context,
+    _prepare_distance_context,
 )
 from .models.common import _inference_model, _reject_stateful_layers, _training_model
-from .resistance import ResistanceSolverContext
+from .resistance import _ResistanceSolverContext
 
 
 Parameters = tuple[AbstractDistanceModel, Any]
@@ -138,7 +138,7 @@ class _RegionSpeciesTrainingBatch:
     species_index: int
     key: RegionSpeciesKey
     loss_weight: float
-    context: ResistanceSolverContext | None = None
+    context: _ResistanceSolverContext | None = None
 
 
 def _prepared(region, observations, loss, *, training):
@@ -151,7 +151,7 @@ def _prepared(region, observations, loss, *, training):
 
 @eqx.filter_jit
 def _group_distances(model, latent, payload, species_index, context):
-    return distances_from_latent(
+    return _distances_from_latent(
         model,
         latent,
         payload.nodes,
@@ -248,7 +248,7 @@ class _TrainingObjective(eqx.Module):
     """
 
     regions: tuple[tuple[_Contribution, ...], ...]
-    contexts: tuple[ResistanceSolverContext | None, ...]
+    contexts: tuple[_ResistanceSolverContext | None, ...]
     keys: jax.Array
     groups: tuple[tuple[RegionSpeciesKey, ...], ...] = eqx.field(static=True)
     loss: AbstractLoss = eqx.field(static=True)
@@ -304,7 +304,7 @@ def _prepare_batches(
     config: TrainingConfig,
 ) -> tuple[tuple[_RegionSpeciesTrainingBatch, ...], tuple[_RegionSpeciesTrainingBatch, ...]]:
     """Regional genetic targets with reusable resistance solvers."""
-    contexts: dict[tuple[int, int], ResistanceSolverContext | None] = {}
+    contexts: dict[tuple[int, int], _ResistanceSolverContext | None] = {}
 
     def make_batch(
         inputs: _RegionSpeciesTrainingInput, *, training: bool
@@ -313,7 +313,7 @@ def _prepare_batches(
         payload = _prepared(region, observations, config.loss, training=training)
         shape = (region.feature_array.shape[0], region.feature_array.shape[1])
         if shape not in contexts:
-            contexts[shape] = prepare_distance_context(distance_model, region.feature_array)
+            contexts[shape] = _prepare_distance_context(distance_model, region.feature_array)
         context = contexts[shape]
         return _RegionSpeciesTrainingBatch(
             region, observations, payload, species_index, key, loss_weight, context

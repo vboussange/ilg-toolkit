@@ -11,7 +11,7 @@ import jax.numpy as jnp
 
 from .._checks import _positive_integer
 from .base import _species_names, EmbeddingDistanceModel
-from .common import encode_patches
+from .common import _encode_patches
 
 
 def _match_shape(values: jax.Array, reference: jax.Array) -> jax.Array:
@@ -36,7 +36,7 @@ def _match_shape(values: jax.Array, reference: jax.Array) -> jax.Array:
 
 
 @final
-class ResidualConvBlock(eqx.Module):
+class _ResidualConvBlock(eqx.Module):
     """Residual convolutional block used throughout the U-Net."""
 
     conv1: eqx.nn.Conv2d
@@ -103,21 +103,21 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
 
     patch_embedding: eqx.nn.Linear
     patch_norm: eqx.nn.GroupNorm
-    encoder1: ResidualConvBlock
+    encoder1: _ResidualConvBlock
     down1: eqx.nn.Conv2d
     down1_norm: eqx.nn.GroupNorm
-    encoder2: ResidualConvBlock
+    encoder2: _ResidualConvBlock
     down2: eqx.nn.Conv2d
     down2_norm: eqx.nn.GroupNorm
-    bottleneck: ResidualConvBlock
+    bottleneck: _ResidualConvBlock
     up2: eqx.nn.ConvTranspose2d
     merge2: eqx.nn.Conv2d
     merge2_norm: eqx.nn.GroupNorm
-    decoder2: ResidualConvBlock
+    decoder2: _ResidualConvBlock
     up1: eqx.nn.ConvTranspose2d
     merge1: eqx.nn.Conv2d
     merge1_norm: eqx.nn.GroupNorm
-    decoder1: ResidualConvBlock
+    decoder1: _ResidualConvBlock
     embedding_head: eqx.nn.Conv2d
     species: tuple[str, ...] | None = eqx.field(static=True, default=None, kw_only=True)
     patch_microbatch_size: int | None = eqx.field(static=True)
@@ -156,7 +156,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             key=keys[0],
         )
         self.patch_norm = eqx.nn.GroupNorm(min(8, base_channels), base_channels, dtype=jnp.float32)
-        self.encoder1 = ResidualConvBlock(
+        self.encoder1 = _ResidualConvBlock(
             base_channels, base_channels, dropout=dropout, key=keys[1]
         )
         self.down1 = eqx.nn.Conv2d(
@@ -169,7 +169,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             key=keys[2],
         )
         self.down1_norm = eqx.nn.GroupNorm(min(8, stage2), stage2, dtype=jnp.float32)
-        self.encoder2 = ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[3])
+        self.encoder2 = _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[3])
         self.down2 = eqx.nn.Conv2d(
             stage2,
             bottleneck,
@@ -180,7 +180,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             key=keys[4],
         )
         self.down2_norm = eqx.nn.GroupNorm(min(8, bottleneck), bottleneck, dtype=jnp.float32)
-        self.bottleneck = ResidualConvBlock(bottleneck, bottleneck, dropout=dropout, key=keys[5])
+        self.bottleneck = _ResidualConvBlock(bottleneck, bottleneck, dropout=dropout, key=keys[5])
         self.up2 = eqx.nn.ConvTranspose2d(
             bottleneck, stage2, 2, stride=2, dtype=jnp.float32, key=keys[6]
         )
@@ -188,7 +188,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             2 * stage2, stage2, 3, padding=1, dtype=jnp.float32, key=keys[7]
         )
         self.merge2_norm = eqx.nn.GroupNorm(min(8, stage2), stage2, dtype=jnp.float32)
-        self.decoder2 = ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[8])
+        self.decoder2 = _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[8])
         self.up1 = eqx.nn.ConvTranspose2d(
             stage2, base_channels, 2, stride=2, dtype=jnp.float32, key=keys[9]
         )
@@ -201,7 +201,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             key=keys[10],
         )
         self.merge1_norm = eqx.nn.GroupNorm(min(8, base_channels), base_channels, dtype=jnp.float32)
-        self.decoder1 = ResidualConvBlock(
+        self.decoder1 = _ResidualConvBlock(
             base_channels, base_channels, dropout=dropout, key=keys[11]
         )
         self.embedding_head = eqx.nn.Conv2d(
@@ -219,7 +219,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
 
     def backbone(self, features: jax.Array) -> jax.Array:
         """Patch features with a region-wide receptive field."""
-        values = encode_patches(
+        values = _encode_patches(
             self,
             features,
             lambda patch: self.patch_embedding(

@@ -6,14 +6,14 @@ import numpy as np
 import pytest
 from ilg_toolkit import ResistanceSolverConfig
 from ilg_toolkit.models import LogLinearConductance
-from ilg_toolkit.models.base import prepare_distance_context
-from ilg_toolkit.resistance import effective_resistance
+from ilg_toolkit.models.base import _prepare_distance_context
+from ilg_toolkit.resistance import _effective_resistance
 
 
 def _context(shape, config=None):
     """Resistance solver for a conductance grid graph of the given shape."""
     model = LogLinearConductance(1, patch_size=1, solver_config=config)
-    context = prepare_distance_context(model, jnp.zeros((*shape, 1)))
+    context = _prepare_distance_context(model, jnp.zeros((*shape, 1)))
     assert context is not None
     return context
 
@@ -27,17 +27,17 @@ def test_amg_resistance_and_gradients_match_independent_laplacian(dense_resistan
         surface = np.array([[1.0, 1.4], [0.8, 2.0]])
         nodes = np.array([3, 0, 1, 1])
         context = _context(surface.shape, ResistanceSolverConfig(use_amg=True))
-        actual = effective_resistance(surface, nodes, context=context)
+        actual = _effective_resistance(surface, nodes, context=context)
         expected = dense_resistance(surface, nodes)
         np.testing.assert_allclose(actual, expected, atol=1e-8, rtol=1e-8)
         np.testing.assert_allclose(
-            effective_resistance(surface.tolist(), nodes.tolist(), context=context),
+            _effective_resistance(surface.tolist(), nodes.tolist(), context=context),
             expected,
             atol=1e-8,
             rtol=1e-8,
         )
         gradient = jax.grad(
-            lambda values: effective_resistance(values, nodes, context=context).sum()
+            lambda values: _effective_resistance(values, nodes, context=context).sum()
         )(jnp.asarray(surface))
         finite_difference = np.zeros_like(surface)
         for index in np.ndindex(surface.shape):
@@ -54,13 +54,13 @@ def test_solver_rejects_invalid_terminals_conductances_and_mismatched_contexts()
     with jax.enable_x64():
         square, row = _context((2, 2)), _context((1, 2))
         with pytest.raises(ValueError):
-            effective_resistance(jnp.ones((2, 2)), np.array([0.0, 1.5]), context=square)
+            _effective_resistance(jnp.ones((2, 2)), np.array([0.0, 1.5]), context=square)
         with pytest.raises(RuntimeError):
-            effective_resistance(jnp.ones((2, 2)), np.array([0, 4]), context=square)
+            _effective_resistance(jnp.ones((2, 2)), np.array([0, 4]), context=square)
         with pytest.raises(RuntimeError):
-            effective_resistance(jnp.array([[1.0, 0.0]]), np.array([0, 1]), context=row)
+            _effective_resistance(jnp.array([[1.0, 0.0]]), np.array([0, 1]), context=row)
         with pytest.raises(ValueError, match="does not match surface"):
-            effective_resistance(jnp.ones((2, 2)), np.array([0, 1]), context=row)
+            _effective_resistance(jnp.ones((2, 2)), np.array([0, 1]), context=row)
 
 
 @pytest.mark.parametrize(
