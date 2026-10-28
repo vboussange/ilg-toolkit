@@ -55,23 +55,24 @@ lists the CUDA versions and platforms JAX supports.
 The [quickstart](https://vboussange.github.io/ilg-toolkit/examples/quickstart/)
 trains a log-linear patch encoder on pairwise Fst between 12 Mountain
 Pygmy-possum sampling units in the Victorian Alps, kindly provided by
-[Cesar Australia](https://cesaraustralia.com), using ESA WorldCover 2021 land
-cover (CC BY 4.0). It finishes in about a minute on a CPU.
+[Cesar Australia](https://cesaraustralia.com), and ESA WorldCover 2021 land
+cover (CC BY 4.0). Run it with uv and the `examples` extra:
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/examples/quickstart_files/quickstart.png" width="720" alt="Land cover and sampling units next to the trained log10 resistance surface.">
-</p>
+```bash
+curl -O https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/examples/quickstart.py
+uv run --with "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit" python quickstart.py
+```
 
-After turning land-cover fractions into landscape `features` and sampling-unit
-coordinates into `grid_positions`, the script trains the patch encoder from the
-best uniform conductance and reads its resistance surface:
+The script reads the land-cover GeoTIFF with rioxarray, turns it into land-cover
+fractions, places the sampling units by their coordinates, and trains the patch
+encoder from the best uniform conductance:
 
 ```python
-region = RegionBatch(
-    name="victorian-alps",
-    features=cx.from_xarray(features),
+region = RegionBatch.from_points(
+    "victorian-alps",
+    cx.from_xarray(features),
     sampling_unit_ids=tuple(sites.index),
-    grid_positions=grid_positions,
+    coordinates=sites[["x", "y"]].to_numpy(),
 )
 observations = PairwiseObservations(
     tuple(fst.index),
@@ -86,11 +87,17 @@ state = train(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(loss=loss, steps=100, optimizer=optax.adam(0.1)),
+    config=TrainingConfig(loss=loss, steps=2000, eval_every=100),
 )
 conductance = state.selected_model.distance_model.conductance_surface(region)
 resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 ```
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/examples/quickstart_files/quickstart.png" width="720" alt="Land cover and sampling units next to the learned log10 resistance surface.">
+</p>
+
+The quickstart runs in about a minute on an NVIDIA RTX 3090.
 
 Swap in `ResNet9Conductance` as a deep patch encoder that maps raw patches of
 landscape features to vertex conductances.
