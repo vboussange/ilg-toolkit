@@ -11,7 +11,7 @@ from .diagnostic import diagnose_wishart, GaussianMarkerDistances
 
 
 def main():
-    """Demonstrate known-parameter Gaussian-marker diagnostics through a real graph."""
+    """Runs the Wishart diagnostic on a ResNet9 patch encoder with known parameters."""
     labels = ("west", "east", "north", "south")
     region = RegionBatch(
         "synthetic-valley",
@@ -24,8 +24,8 @@ def main():
         labels,
         np.array([[0, 0], [0, 7], [7, 0], [7, 7]]),
     )
-    encoder = ResNet9Conductance(2, patch_size=4, key=jax.random.key(6))
-    resistances = np.array(encoder.predict(region).as_matrix())
+    patch_encoder = ResNet9Conductance(2, patch_size=4, key=jax.random.key(6))
+    resistances = np.array(patch_encoder.predict(region).as_matrix())
     np.fill_diagonal(resistances, 0)
     basis = helmert(len(labels))
     scale, nugget, marker_count = 1.3, 0.2, 20
@@ -42,17 +42,17 @@ def main():
     report = diagnose_wishart(
         region,
         observations,
-        encoder=encoder,
+        patch_encoder=patch_encoder,
         scale=scale,
         nugget=nugget,
         training_unit_ids=labels[:2],
         anchor_id=labels[0],
         parameter_source="fixed",
     )
-    print("Reference log likelihood:", report.log_likelihood)
+    print("Log likelihood:", report.log_likelihood)
     print("Conditional held-out log likelihood:", report.heldout_score.log_likelihood)
     print("Held-out score measure:", report.heldout_score.coordinate_measure)
-    print("Experimental training:", report.training_gate)
+    print("Training gate:", report.training_gate)
     for reason in report.gate_reasons:
         print(" -", reason)
 

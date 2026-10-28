@@ -38,11 +38,12 @@ _IMPROVEMENT_RTOL = 1e-9
 class LogLinearConductance(ConductanceModel):
     """A log-linear patch encoder with species-specific coefficients.
 
-    Patch-averaged landscape features form a linear predictor for each species
-    index. Conductance is ``min_conductance + exp(predictor)``, capped at
-    ``max_conductance``. Coefficient columns follow the raster feature order;
-    coefficients and intercepts start at zero. ``initialize_uniform_conductance``
-    instead starts the intercepts at the best uniform conductance.
+    Patch-averaged landscape features form a linear predictor for each species.
+    Conductance is ``min_conductance + exp(predictor)``, capped at
+    ``max_conductance``. Coefficient columns follow the order of the landscape
+    features; coefficients and intercepts start at zero.
+    ``initialize_uniform_conductance`` starts the intercepts at the best uniform
+    conductance instead.
 
     Args:
         in_channels:
@@ -53,7 +54,7 @@ class LogLinearConductance(ConductanceModel):
             dimensions must be divisible by it. Sampling units in the same patch
             share a vertex.
         patch_microbatch_size: Maximum patches encoded together; ``None`` encodes all
-            patches at once. This controls peak encoder memory.
+            patches at once. It bounds the peak memory of the backbone.
         min_conductance: Positive floor, default 0.01, added to the exponentiated linear
             predictor.
         max_conductance: Positive cap, default 1000. Conductance is
@@ -62,16 +63,16 @@ class LogLinearConductance(ConductanceModel):
             ``ResistanceSolverConfig``.
 
     Notes:
-        Patch microbatch size does not change graph resolution or ecological context.
-        Prepare feature scaling and categorical reference levels before constructing
-        a region batch. Use full-rank coding with the intercept (for example, k-1
-        indicators for k categories). ``train`` estimates each species' coefficients
-        from all of its regions (complete pooling); species share no parameters.
+        Prepare feature scaling and categorical reference levels before building a
+        region batch, and use full-rank coding with the intercept (for example,
+        k-1 indicators for k categories). ``train`` estimates each species'
+        coefficients from all of its regions (complete pooling); species share no
+        parameters.
 
-        The intercept scales the exponential before the floor and cap, so those limits
-        can alter relative conductances. Standardized maximum-likelihood population effects
-        (MLPE) does not identify an absolute connectivity scale; interpret conductance
-        patterns on a relative scale.
+        The intercept scales the exponential before the floor and cap, so those
+        limits change relative conductances near them. Maximum-likelihood
+        population effects (MLPE) losses standardize ecological distances, so
+        they identify conductances up to a common factor.
     """
 
     coefficients: jax.Array
@@ -125,13 +126,31 @@ class LogLinearConductance(ConductanceModel):
         self.intercepts = jnp.zeros(count)
 
     def backbone(self, features: jax.Array) -> jax.Array:
-        """Patch-averaged landscape features."""
+        """Averages landscape features over each patch.
+
+        Args:
+            features: Landscape features with shape ``(rows, columns, in_channels)``.
+
+        Returns:
+            Patch means with shape ``(rows // patch_size, columns // patch_size,
+            in_channels)``.
+        """
         if features.ndim != 3 or features.shape[-1] != self.in_channels:
             raise ValueError(f"Expected row, column, feature data with {self.in_channels} features")
         return _encode_patches(self, features, partial(jnp.mean, axis=(1, 2)))
 
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Conductance surface for one species from patch-averaged landscape features."""
+        """Computes one species' conductance surface from patch-averaged landscape features.
+
+        Args:
+            latent: Patch means returned by ``backbone``.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            Conductances between ``min_conductance`` and ``max_conductance``, one
+            per vertex.
+        """
         predictor = latent @ self.coefficients[species_index] + self.intercepts[species_index]
         ceiling = jnp.log(self.max_conductance - self.min_conductance)
         return jnp.clip(
@@ -147,17 +166,16 @@ def initialize_uniform_conductance(
     observations: ObservationCollection,
     loss: AbstractLoss,
 ) -> LogLinearConductance:
-    """A log-linear patch encoder started at the best uniform conductance.
+    """Initializes a log-linear patch encoder at the best uniform conductance.
 
     Coefficients are set to zero, so every vertex of the conductance grid graph
     has the same conductance ``C``. Each species' intercept is set to the ``C``
     minimizing ``loss`` on that species' pairwise genetic observations, with the
-    region and species weighting used by ``train``. Short training runs then
-    spend their steps on landscape effects rather than on the global scale.
+    region and species weighting of ``train``.
 
     On a uniform conductance grid graph, effective resistance scales as ``1 / C``.
-    The search therefore needs one effective-resistance solve per region at unit
-    conductance, followed by a one-dimensional search over ``log(C)`` in the open
+    The search runs one effective-resistance solve per region at unit
+    conductance, then a one-dimensional search over ``log(C)`` in the open
     interval ``(min_conductance, max_conductance)``: a log-spaced grid, refined
     by golden-section search.
 
@@ -180,10 +198,9 @@ def initialize_uniform_conductance(
         ValueError: The inputs violate the contract that ``train`` enforces.
 
     Notes:
-        The initialization only matters for losses that identify an absolute
-        connectivity scale, such as ``Log1pLoss``. Standardized maximum-likelihood
-        population effects (MLPE) is invariant to the uniform conductance, so an
-        intercept is kept unless the loss improves on it.
+        Losses that identify an absolute conductance scale, such as ``Log1pLoss``,
+        depend on the uniform conductance. Maximum-likelihood population effects
+        (MLPE) losses do not, so an intercept stays unless the loss improves on it.
 
     Examples:
         >>> distance_model = initialize_uniform_conductance(
@@ -247,7 +264,7 @@ def initialize_uniform_conductance(
 def _unit_conductance_resistances(
     model: LogLinearConductance, region: RegionBatch
 ) -> tuple[dict[int, int], jax.Array]:
-    """Effective resistances among a region's sampling-unit vertices at unit uniform conductance.
+    """Computes effective resistances among a region's sampling-unit vertices at unit conductance.
 
     Returns the resistance-matrix row of each sampling-unit pixel, shared by the
     sampling units of every species, and the matrix in the model's parameter dtype.
@@ -267,7 +284,7 @@ def _unit_conductance_resistances(
 
 
 def _species_loss(log_conductance, loss, distances, contexts, states, weights):
-    """Weighted loss of one species' region groups at a uniform conductance."""
+    """Returns the weighted loss of one species' region–species groups at a uniform conductance."""
     conductance = jnp.exp(log_conductance)
     values = [
         loss._value(unit / conductance, context, state)
@@ -278,7 +295,7 @@ def _species_loss(log_conductance, loss, distances, contexts, states, weights):
 
 @eqx.filter_jit
 def _best_log_conductance(loss, distances, contexts, states, weights, bounds, current):
-    """Log uniform conductance minimizing a species' loss inside open bounds."""
+    """Returns the log uniform conductance minimizing a species' loss inside open bounds."""
 
     def value(log_conductance):
         return _species_loss(log_conductance, loss, distances, contexts, states, weights)

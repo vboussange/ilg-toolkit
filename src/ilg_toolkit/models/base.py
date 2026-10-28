@@ -1,4 +1,4 @@
-"""Abstract distance models deriving ecological distances from patch features."""
+"""Abstract distance models deriving ecological distances from landscape features."""
 
 import os
 import warnings
@@ -26,26 +26,26 @@ from ..resistance import _effective_resistance, _mean_conductance, _ResistanceSo
 from .common import _inference_model, _pixel_to_patch_nodes
 
 
-# Sampling-unit vertices, followed by pairs indexing those sampling units.
+# Sampling-unit vertices, followed by the pairs indexing those sampling units.
 type _DistancePairs = tuple[jax.Array, tuple[jax.Array, jax.Array]]
 # Ordered sampling-unit pairs, or ``None`` for every distinct pair.
 type _Pairs = Sequence[tuple[str, str]] | None
 
 
 class AbstractDistanceModel(eqx.Module):
-    """Abstract distance model deriving ecological distances from landscape features.
+    """A distance model deriving ecological distances from landscape features.
 
     A distance model maps a region's landscape features to ecological distances
-    between its sampling units, without genetic observations. ``backbone`` computes
-    patch features shared by every species, and ``ecological_distances`` turns one
-    species' patch features into distances for requested pairs. ``train`` estimates
-    one set of parameters from every supplied region (complete pooling).
+    between its sampling units. ``backbone`` computes the backbone output shared by
+    every species, and ``ecological_distances`` turns the backbone output into one
+    species' ecological distances for requested pairs. ``train`` estimates one set
+    of parameters from every supplied region (complete pooling).
 
     Write a custom distance model as a final concrete subclass of one abstract
     class, and implement its abstract methods:
 
     - ``ConductanceModel``: ``backbone(features)`` and
-      ``conductance(latent, species_index)``, returning a positive conductance grid.
+      ``conductance(latent, species_index)``, returning a positive conductance surface.
     - ``EmbeddingDistanceModel``: ``backbone(features)`` and
       ``embedding(latent, species_index)``, returning a grid with the embedding
       dimension last.
@@ -58,20 +58,20 @@ class AbstractDistanceModel(eqx.Module):
     ``species`` is a tuple of unique species names, one per species-specific head
     in parameter order, or ``None`` for one unnamed species.
     Keep fields and initialization together in the concrete class, and compose
-    existing concrete models to reuse their behavior rather than subclassing them.
+    existing concrete models to reuse their behavior instead of subclassing them.
 
-    Raster features have shape ``(rows, columns, features)``, with meanings and
-    order compatible across regions. Sampling locations are integer
-    ``(row, column)`` cells mapped to the vertex of their containing patch.
-    Training, calibration fitting, prediction and conductance surfaces raise a
+    Landscape features have shape ``(rows, columns, features)``, with meanings and
+    order shared by every region. Grid positions are integer ``(row, column)``
+    cells, each mapped to the vertex of its containing patch. Training,
+    calibration fitting, prediction and conductance surfaces raise a
     ``ValueError`` naming the trim needed when ``patch_size`` does not divide a
     raster's rows and columns, and warn, naming them, about sampling units of one
-    species that share a vertex. During
-    training, ``species_index`` may be a scalar integer array, so select species
-    parameters by array indexing. The inherited ``predict`` returns ecological
-    distances for a ``query``, and ``train`` estimates the array-valued parameters with the
-    chosen loss. See the experimental [multispecies example](../examples/multispecies.md)
-    for species labels.
+    species that share a vertex. During training, ``species_index`` may be a
+    scalar integer array, so select species parameters by array indexing. The
+    inherited ``predict`` returns ecological distances for a ``query``, and
+    ``train`` estimates the array-valued parameters with the chosen loss. See the
+    experimental [multispecies example](../examples/multispecies.md) for species
+    labels.
 
     Calibration fitting, prediction, validation and conductance surfaces evaluate
     the model in Equinox inference mode (``eqx.nn.inference_mode``). Training clears
@@ -107,17 +107,33 @@ class AbstractDistanceModel(eqx.Module):
 
     @abstractmethod
     def backbone(self, features: jax.Array) -> jax.Array:
-        """Patch features, shared by every species, from a row, column, feature raster."""
+        """Computes the backbone output, shared by every species, from landscape features.
+
+        Args:
+            features: Landscape features with shape ``(rows, columns, features)``.
+
+        Returns:
+            The backbone output, with one leading row and column per vertex and
+            output channels last.
+        """
 
     @abstractmethod
     def ecological_distances(
         self, latent: jax.Array, pairs: _DistancePairs, species_index: int | jax.Array
     ) -> jax.Array:
-        """Ecological distances aligned with pairs of sampling-unit indices.
+        """Computes one species' ecological distances for pairs of sampling units.
 
-        ``pairs`` is ``(vertices, (left, right))``: ``vertices`` locates sampling
-        units on the flattened patch grid, and ``left`` and ``right`` index those
-        sampling units, one array for each end of a pair.
+        Args:
+            latent: Backbone output of the region.
+            pairs: ``(vertices, (left, right))``: ``vertices`` locates sampling
+                units on the flattened, row-major vertex grid, and ``left`` and
+                ``right`` index those sampling units, one array for each end of a
+                pair.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            Non-negative ecological distances aligned with ``left`` and ``right``.
         """
 
     @overload
@@ -137,21 +153,29 @@ class AbstractDistanceModel(eqx.Module):
         | Sequence[tuple[str, str]]
         | None = None,
     ) -> Prediction | dict[str, Prediction]:
-        """Ecological distances for the queried species and sampling-unit pairs.
+        """Predicts ecological distances for the queried species and sampling-unit pairs.
 
-        ``query`` maps species names from the distance model's ``species`` to
-        ordered pairs, or to ``None`` for every distinct pair in sampling-unit
-        order, and returns a mapping of predictions by species in query order.
-        Patch features are computed once for every queried species. A
-        single-species model also accepts a sequence of pairs, or ``None`` for
-        every distinct pair, and returns one ``Prediction``. Unknown species, and
-        a sequence or ``None`` for a multispecies model, raise a ``ValueError``.
+        The backbone output is computed once for every queried species. Explicit
+        pairs limit the returned values and the pair labels generated; for patch
+        encoders, the effective-resistance layer still computes effective
+        resistances among every sampling-unit vertex.
+        ``as_matrix()`` on a result allocates a square array over sampling units.
 
-        Explicit pairs limit the returned vector and avoid generating all pair
-        labels; this does not guarantee that an underlying resistance solver
-        avoids its distance matrix among sampling-unit vertices. Calling
-        ``as_matrix()`` on a result explicitly allocates a sampling-unit-square
-        array.
+        Args:
+            region: Region batch holding the landscape features and sampling units.
+            query: A mapping from species names of the distance model's
+                ``species`` to ordered sampling-unit pairs, or to ``None`` for every
+                distinct pair in sampling-unit order. A single-species model also
+                accepts a sequence of pairs, or ``None`` (default) for every
+                distinct pair.
+
+        Returns:
+            A mapping of ecological distances by species in query order for a
+            mapping query, or one ``Prediction`` otherwise.
+
+        Raises:
+            ValueError: A species is unknown, a multispecies model receives a
+                sequence or ``None``, or a pair names an unknown sampling unit.
         """
         _require_float64()
         requests, by_species = _resolve_query(self.species, query)
@@ -165,20 +189,31 @@ class AbstractDistanceModel(eqx.Module):
 
 
 class ConductanceModel(AbstractDistanceModel):
-    """A patch encoder whose conductance surface forms a conductance grid graph.
+    """A patch encoder whose conductance surface weights a conductance grid graph.
 
     Each patch is one vertex with a positive conductance, and each edge between
     neighboring vertices averages their conductances. The effective-resistance
     layer returns the effective resistance between sampling-unit vertices as
-    ecological distance. Custom models implement ``backbone`` and ``conductance``
-    and declare a static ``solver_config`` alongside their other model fields.
+    ecological distance. Custom patch encoders implement ``backbone`` and
+    ``conductance`` and declare a static ``solver_config`` alongside their other
+    fields.
     """
 
     solver_config: eqx.AbstractVar[ResistanceSolverConfig]
 
     @abstractmethod
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Positive conductance surface for one species from patch features."""
+        """Computes one species' positive conductance surface from the backbone output.
+
+        Args:
+            latent: Backbone output of the region.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            Positive conductances with shape ``(rows // patch_size,
+            columns // patch_size)``, one per vertex.
+        """
 
     def ecological_distances(
         self,
@@ -188,10 +223,23 @@ class ConductanceModel(AbstractDistanceModel):
         *,
         context: _ResistanceSolverContext | None = None,
     ) -> jax.Array:
-        """Effective resistance aligned with the requested sampling-unit pairs.
+        """Computes effective resistances for pairs of sampling units.
 
-        ``context`` is the solver that ``_prepare_distance_context`` prepares for
-        this model and region.
+        Args:
+            latent: Backbone output of the region.
+            pairs: ``(vertices, (left, right))``, as in
+                ``AbstractDistanceModel.ecological_distances``.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+            context: Resistance solver prepared for this patch encoder and the
+                region's raster shape; training and prediction supply it.
+
+        Returns:
+            Effective resistances aligned with ``left`` and ``right``.
+
+        Raises:
+            ValueError: ``context`` is missing or was prepared for other solver
+                settings.
         """
         nodes, indices = pairs
         if context is None:
@@ -202,17 +250,28 @@ class ConductanceModel(AbstractDistanceModel):
         return _effective_resistance(surface, nodes, context=context)[indices]
 
     def conductance_surface(self, region: RegionBatch, species: str | None = None) -> cx.Field:
-        """Positive conductance surface of one species, requested by name.
+        """Returns one species' positive conductance surface over a region.
 
-        ``species`` is one of the distance model's ``species``; a single-species
-        model needs no name. The surface has one value per vertex along ``row`` and
-        ``column`` dimensions. When the region's features carry numeric row and
+        The surface has one value per vertex along ``row`` and ``column``
+        dimensions. When the region's landscape features carry numeric row and
         column coordinates, as ``cx.from_xarray`` keeps them, each vertex is
         labeled with the center of its patch: the mean coordinate of its cells.
-        Otherwise the dimensions carry no coordinates.
+        Otherwise the dimensions carry no coordinates. Sampling units sharing a
+        vertex trigger a ``UserWarning`` naming them.
 
-        The raster's rows and columns must be multiples of ``patch_size``, and
-        sampling units sharing a vertex trigger a ``UserWarning`` naming them.
+        Args:
+            region: Region batch whose raster rows and columns are multiples of
+                ``patch_size``.
+            species: A name from the distance model's ``species``; ``None``
+                (default) selects the species of a single-species model.
+
+        Returns:
+            The conductance surface as a ``coordax.Field`` with ``row`` and
+            ``column`` dimensions.
+
+        Raises:
+            ValueError: The species is unknown or missing for a multispecies model,
+                or ``patch_size`` does not divide the raster.
 
         Examples:
             Write a learned surface as a GeoTIFF with rioxarray, reattaching the
@@ -240,16 +299,41 @@ class ConductanceModel(AbstractDistanceModel):
 
 
 class EmbeddingDistanceModel(AbstractDistanceModel):
-    """A distance model deriving squared embedding distances from landscape features."""
+    """A distance model deriving squared embedding distances from landscape features.
+
+    Custom embedding-distance models implement ``backbone`` and ``embedding``.
+    """
 
     @abstractmethod
     def embedding(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Embedding grid for one species from patch features."""
+        """Computes one species' embedding of every vertex from the backbone output.
+
+        Args:
+            latent: Backbone output of the region.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            Embeddings with shape ``(rows // patch_size, columns // patch_size,
+            embedding dimension)``.
+        """
 
     def ecological_distances(
         self, latent: jax.Array, pairs: _DistancePairs, species_index: int | jax.Array
     ) -> jax.Array:
-        """Squared embedding distances aligned with the requested sampling-unit pairs."""
+        """Computes squared embedding distances for pairs of sampling units.
+
+        Args:
+            latent: Backbone output of the region.
+            pairs: ``(vertices, (left, right))``, as in
+                ``AbstractDistanceModel.ecological_distances``.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            Squared Euclidean distances between the embeddings of the vertices of
+            ``left`` and ``right``.
+        """
         nodes, (left, right) = pairs
         grid = self.embedding(latent, species_index)
         embeddings = grid.reshape(-1, grid.shape[-1])[nodes]
@@ -257,7 +341,7 @@ class EmbeddingDistanceModel(AbstractDistanceModel):
 
 
 def _species_names(species: Sequence[str] | None) -> tuple[str, ...] | None:
-    """Unique, nonempty species names in parameter order, or ``None`` for one unnamed species."""
+    """Validates species names and returns them as a tuple, or ``None`` for one unnamed species."""
     if species is None:
         return None
     if isinstance(species, (str, bytes)) or not isinstance(species, Sequence):
@@ -271,10 +355,10 @@ def _species_names(species: Sequence[str] | None) -> tuple[str, ...] | None:
 
 
 def _patch_axis(axis: cx.Coordinate | None, dimension: str, patch_size: int) -> cx.Coordinate | str:
-    """Patch-center coordinates along one raster dimension, or the bare dimension name.
+    """Returns patch-center coordinates along one raster dimension, or the dimension name.
 
-    Each patch center is the mean coordinate of its ``patch_size`` cells, which holds
-    for increasing and decreasing coordinates alike.
+    Each patch center is the mean coordinate of its ``patch_size`` cells, for
+    increasing and decreasing coordinates alike.
     """
     if not isinstance(axis, cx.LabeledAxis) or not np.issubdtype(axis.ticks.dtype, np.number):
         return dimension
@@ -283,11 +367,12 @@ def _patch_axis(axis: cx.Coordinate | None, dimension: str, patch_size: int) -> 
 
 
 def _plural(count: int, noun: str) -> str:
+    """Formats a count with its noun, pluralized with an ``s``."""
     return f"{count} {noun}{'' if count == 1 else 's'}"
 
 
 def _patch_trim(region: RegionBatch, patch_size: int) -> str | None:
-    """How to trim a region's raster to whole patches, or ``None`` when patches tile it."""
+    """Describes how to trim a region's raster to whole patches, or returns ``None``."""
     height, width = region.features.shape[:2]
     rows, columns = height % patch_size, width % patch_size
     if not rows and not columns:
@@ -307,7 +392,7 @@ def _patch_trim(region: RegionBatch, patch_size: int) -> str | None:
 
 
 def _shared_vertices(region: RegionBatch, patch_size: int) -> str | None:
-    """Sampling units of one species sharing a vertex in a region, or ``None``."""
+    """Names the sampling units of one species sharing a vertex in a region, or returns ``None``."""
     positions = np.asarray(region.grid_positions) // patch_size
     species = (None,) * len(positions) if region.species is None else region.species
     groups: dict[tuple[str | None, int, int], list[str]] = {}
@@ -333,12 +418,11 @@ _INTERNAL_FILES = tuple(
 
 
 def _check_regions(model: AbstractDistanceModel, regions: Iterable[RegionBatch]) -> None:
-    """Checks where a distance model first meets region batches.
+    """Checks region batches where a distance model first receives them.
 
     Raises a ``ValueError`` naming the trim each raster needs when ``patch_size``
     does not divide its rows and columns, and emits one ``UserWarning`` naming
-    the sampling units of each species that share a vertex, whose ecological
-    distances the model cannot tell apart.
+    the sampling units of each species that share a vertex.
     """
     regions = tuple({id(region): region for region in regions}.values())
     patch_size = model.patch_size
@@ -360,7 +444,7 @@ def _check_regions(model: AbstractDistanceModel, regions: Iterable[RegionBatch])
 
 
 def _model_species(model: AbstractDistanceModel) -> tuple[str | None, ...]:
-    """The distance model's species names in parameter order; ``None`` names one unnamed species."""
+    """Returns the species names in parameter order; ``None`` names one unnamed species."""
     return (None,) if model.species is None else model.species
 
 
@@ -375,7 +459,7 @@ class _SpeciesQuery:
 
 
 def _species_index(species: tuple[str, ...] | None, name: str | None) -> int:
-    """Parameter row of a named species; ``None`` names a single-species model's species."""
+    """Returns the parameter row of a named species, or of a single-species model's species."""
     if name is None:
         if species is not None and len(species) > 1:
             raise ValueError(f"Multispecies models require a species name from {species!r}")
@@ -386,7 +470,7 @@ def _species_index(species: tuple[str, ...] | None, name: str | None) -> int:
 
 
 def _query_pairs_or_all(pairs: object) -> tuple[tuple[str, str], ...] | None:
-    """One species' query pairs as a tuple, or ``None`` for every distinct pair."""
+    """Returns one species' query pairs as a tuple, or ``None`` for every distinct pair."""
     if pairs is None:
         return None
     if isinstance(pairs, (str, bytes)) or not isinstance(pairs, Sequence):
@@ -397,7 +481,7 @@ def _query_pairs_or_all(pairs: object) -> tuple[tuple[str, str], ...] | None:
 def _resolve_query(
     species: tuple[str, ...] | None, query: Mapping[str, _Pairs] | _Pairs
 ) -> tuple[tuple[_SpeciesQuery, ...], bool]:
-    """Queried species in query order, and whether results are keyed by species.
+    """Returns the queried species in query order, and whether results are keyed by species.
 
     A mapping names species from ``species`` and returns results by species. A
     sequence of pairs, or ``None``, queries the only species of a single-species
@@ -424,7 +508,7 @@ def _resolve_query(
 
 
 def _query_results[T](results: Mapping[str | None, T], by_species: bool) -> T | dict[str, T]:
-    """Results by species for a species query, or the single result otherwise."""
+    """Returns results by species for a species query, or the single result otherwise."""
     if by_species:
         return cast(dict[str, T], dict(results))
     (result,) = results.values()
@@ -432,7 +516,7 @@ def _query_results[T](results: Mapping[str | None, T], by_species: bool) -> T | 
 
 
 def _region_for_species(region: RegionBatch, name: str | None) -> RegionBatch:
-    """Region batch containing one species' sampling units."""
+    """Returns the region batch of one species' sampling units."""
     if region.species is None:
         return region
     indices = tuple(index for index, species in enumerate(region.species) if species == name)
@@ -449,6 +533,7 @@ def _region_for_species(region: RegionBatch, name: str | None) -> RegionBatch:
 def _query_pairs(
     region: RegionBatch, pairs: Sequence[tuple[str, str]] | None
 ) -> tuple[tuple[tuple[str, str], ...], tuple[jax.Array, jax.Array]]:
+    """Returns validated query pair labels and their sampling-unit indices in a region."""
     raw = tuple(combinations(region.sampling_unit_ids, 2)) if pairs is None else tuple(pairs)
     try:
         labels = _validate_pairs(raw)
@@ -467,9 +552,9 @@ def _species_distances(
     requests: tuple[_SpeciesQuery, ...],
     extra_pairs: Mapping[str | None, tuple[tuple[str, str], ...]] | None = None,
 ) -> dict[str | None, tuple[RegionBatch, tuple[tuple[str, str], ...], jax.Array]]:
-    """Each queried species' region batch, query pair labels, and ecological distances.
+    """Computes each queried species' region batch, pair labels and ecological distances.
 
-    Patch features and the resistance solver are prepared once, in inference
+    The backbone output and the resistance solver are prepared once, in inference
     mode. ``extra_pairs`` appends a species' additional pairs after its query
     pairs, in both the labels and the distances.
     """
@@ -494,7 +579,7 @@ def _species_distances(
 def _prepare_distance_context(
     model: AbstractDistanceModel, features: ArrayLike
 ) -> _ResistanceSolverContext | None:
-    """Reusable resistance solver for the region's conductance grid graph.
+    """Prepares a reusable resistance solver for a region's conductance grid graph.
 
     Conjugate gradient, with optional algebraic multigrid preconditioning prepared
     on a uniform conductance grid graph, follows the model's ``solver_config``.
@@ -532,7 +617,7 @@ def _query_distances_from_latent(
     species_index: int | jax.Array,
     context: _ResistanceSolverContext | None,
 ) -> tuple[tuple[tuple[str, str], ...], jax.Array]:
-    """Query pair labels and valid ecological distances for one species."""
+    """Returns query pair labels and checked ecological distances for one species."""
     labels, indices = _query_pairs(region, pairs)
     values = _distances_from_latent(
         model,
@@ -561,7 +646,7 @@ def _distances_from_latent(
     species_index: int | jax.Array = 0,
     context: _ResistanceSolverContext | None = None,
 ) -> jax.Array:
-    """Ecological distances from patch features for one species."""
+    """Computes one species' ecological distances from the backbone output."""
     nodes = _pixel_to_patch_nodes(
         pixel_nodes,
         raster_shape=raster_shape,

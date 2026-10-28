@@ -16,7 +16,7 @@ from .base import _DistancePairs, _species_names, AbstractDistanceModel
 
 @final
 class IBDModel(AbstractDistanceModel):
-    r"""An isolation-by-distance (IBD) model with one affine relationship per species.
+    r"""An isolation-by-distance (IBD) model with one affine map per species.
 
     The ecological distance between two sampling units is
 
@@ -27,17 +27,17 @@ class IBDModel(AbstractDistanceModel):
     species' non-negative slope and intercept, each the softplus of a trainable
     parameter. Each sampling unit sits at the vertex of its containing
     ``patch_size`` patch, as for the patch encoders, so with the same patch size
-    an IBD model and a patch encoder measure distances between the same vertices
-    and a comparison differs only in the distance model. Distances are in vertex
-    spacings, and the slope absorbs their units. The model ignores landscape
-    features: ``backbone`` returns a patch grid without patch features.
+    an IBD model and a patch encoder measure distances between the same vertices.
+    Distances are in vertex spacings, and the slope absorbs their units. The model
+    ignores landscape features: ``backbone`` returns a vertex grid with no
+    channels.
 
-    Train it like any distance model. ``train`` with ``Log1pLoss`` and
-    ``optax.lbfgs()`` fits the IBD model jointly across regions, and every target
-    transform, including ``"odds"``, is supported. An MLPE calibration head
-    standardizes distances, so the slope and intercept play no role there:
-    ``fit_calibration_head(..., loss=MLPELoss())`` on an untrained IBD model gives
-    the MLPE baseline on geographic distance.
+    ``train`` with ``Log1pLoss`` and ``optax.lbfgs()`` trains the IBD model
+    jointly across regions, with any target transform, including ``"odds"``. An
+    MLPE calibration head standardizes ecological distances, so its fit is the
+    same for every slope and intercept: ``fit_calibration_head(...,
+    loss=MLPELoss())`` on an untrained IBD model gives the MLPE baseline on
+    geographic distance.
 
     Args:
         species: Species names, one slope and intercept each in parameter order;
@@ -96,7 +96,15 @@ class IBDModel(AbstractDistanceModel):
         return jax.nn.softplus(self.raw_intercepts)
 
     def backbone(self, features: jax.Array) -> jax.Array:
-        """A patch grid without patch features, which only carries the vertex layout."""
+        """Returns a vertex grid with no channels, which carries only the vertex layout.
+
+        Args:
+            features: Landscape features with shape ``(rows, columns, features)``;
+                only their shape is read.
+
+        Returns:
+            An array of shape ``(rows // patch_size, columns // patch_size, 0)``.
+        """
         if features.ndim != 3:
             raise ValueError(f"Expected row, column, feature data, got shape {features.shape}")
         rows, columns = features.shape[0] // self.patch_size, features.shape[1] // self.patch_size
@@ -105,7 +113,19 @@ class IBDModel(AbstractDistanceModel):
     def ecological_distances(
         self, latent: jax.Array, pairs: _DistancePairs, species_index: int | jax.Array
     ) -> jax.Array:
-        """Affine straight-line distances between the vertices of the requested pairs."""
+        """Computes affine straight-line distances between the vertices of pairs of sampling units.
+
+        Args:
+            latent: Backbone output of the region.
+            pairs: ``(vertices, (left, right))``, as in
+                ``AbstractDistanceModel.ecological_distances``.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            The species' slope times the Euclidean vertex distance, plus its
+            intercept, aligned with ``left`` and ``right``.
+        """
         nodes, (left, right) = pairs
         graph = GridGraph(jnp.ones(latent.shape[:2], dtype=latent.dtype))
         # 64-bit vertex indices give float64 coordinate differences and distances.
@@ -114,5 +134,5 @@ class IBDModel(AbstractDistanceModel):
 
 
 def _inverse_softplus(value: float) -> float:
-    """The parameter whose softplus is a positive ``value``, computed stably."""
+    """Returns the parameter whose softplus is a positive ``value``, computed stably."""
     return value + math.log(-math.expm1(-value))

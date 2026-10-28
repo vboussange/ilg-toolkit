@@ -33,7 +33,7 @@ class _ResidualBlock(eqx.Module):
         self.norm2 = eqx.nn.GroupNorm(8, channels, dtype=jnp.float32)
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
-        """Residual convolutional features for one channel-first feature map."""
+        """Applies the residual block to one channel-first feature map."""
         residual = inputs
         outputs = jax.nn.relu(self.norm1(self.conv1(inputs)))
         outputs = self.norm2(self.conv2(outputs))
@@ -44,8 +44,9 @@ class _ResidualBlock(eqx.Module):
 class ResNet9Conductance(ConductanceModel):
     """A ResNet9 patch encoder mapping each raster patch to one vertex conductance.
 
-    Species-specific linear coefficients map each patch's features to positive
-    conductance through softplus and ``min_conductance``.
+    A backbone of convolutions, two residual blocks and spatial pooling encodes
+    each patch; a species-specific head maps the encoding to a positive
+    conductance through a linear map, softplus and ``min_conductance``.
 
     Args:
         in_channels:
@@ -58,26 +59,20 @@ class ResNet9Conductance(ConductanceModel):
             ``(rows // patch_size, columns // patch_size)``. Sampling units in the
             same patch share a vertex.
         channels: Widths of the three convolutional stages, default ``(64, 128, 256)``
-            as in the paper. Each width must be a positive multiple of 8 because
-            GroupNorm uses 8 groups; narrower widths suit small studies and CPU runs.
+            as in the paper. Each width is a positive multiple of 8, the GroupNorm
+            group count.
         min_conductance: Positive conductance floor added after softplus, default 1e-6.
-        patch_microbatch_size: Maximum patches processed together; ``None`` processes
-            all patches. Lower values trade throughput for peak activation memory
-            without changing the patch grid or the model's receptive field.
+        patch_microbatch_size: Maximum patches encoded together; ``None`` encodes
+            all patches at once. Lower values trade throughput for peak activation
+            memory; predictions stay the same.
         solver_config: Effective-resistance tolerances, iteration limit, and optional
             algebraic multigrid (AMG) preconditioner.
         key: JAX random key for reproducible parameter initialization.
 
     Notes:
-        Patch convolutions and GroupNorm use float32 parameters; effective resistance
-        uses float64. The network
-        encodes each patch through two residual blocks and spatial pooling, followed
-        by a species-specific linear map and softplus. It does not mix features across
-        neighboring patches; the conductance grid graph connects their conductances.
-
-        See the maximum-likelihood population effects (MLPE)
-        [workflow](../examples/mlpe_workflow.md) for training across regions,
-        solver choices, and practical patch/cropping guidance.
+        Convolutions and GroupNorm use float32 parameters; effective resistance
+        uses float64. Each patch is encoded on its own; the conductance grid graph
+        connects the conductances of neighboring patches.
     """
 
     conv1: eqx.nn.Conv2d
@@ -144,7 +139,7 @@ class ResNet9Conductance(ConductanceModel):
         self.solver_config = solver_config
 
     def _encode_patch(self, patch: jax.Array) -> jax.Array:
-        """Patch features for one raster patch."""
+        """Encodes one channel-first raster patch."""
         patch = jnp.asarray(patch, dtype=self.conv1.weight.dtype)
         values = jax.nn.relu(self.norm1(self.conv1(patch)))
         values = eqx.nn.MaxPool2d(2, stride=2)(values)
@@ -157,7 +152,15 @@ class ResNet9Conductance(ConductanceModel):
         return values
 
     def backbone(self, features: jax.Array) -> jax.Array:
-        """Patch features for each raster patch."""
+        """Encodes each raster patch with the convolutional backbone.
+
+        Args:
+            features: Landscape features with shape ``(rows, columns, in_channels)``.
+
+        Returns:
+            Patch encodings with shape ``(rows // patch_size, columns // patch_size,
+            channels[2])``.
+        """
         if features.ndim != 3 or features.shape[-1] != self.conv1.weight.shape[1]:
             raise ValueError(
                 f"Expected row, column, feature data with {self.conv1.weight.shape[1]} features"
@@ -165,7 +168,16 @@ class ResNet9Conductance(ConductanceModel):
         return _encode_patches(self, features, self._encode_patch)
 
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Positive conductance surface from patch features."""
+        """Computes one species' positive conductance surface from the backbone output.
+
+        Args:
+            latent: Patch encodings returned by ``backbone``.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            Conductances above ``min_conductance``, one per vertex.
+        """
         assert self.output.bias is not None
         logits = latent @ self.output.weight[species_index] + self.output.bias[species_index]
         return jax.nn.softplus(logits) + self.min_conductance

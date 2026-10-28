@@ -1,20 +1,15 @@
 # Wishart diagnostic (experimental)
 
-This research-only experiment scores a **fixed-parameter** Gaussian
-marker-contrast model through a conductance grid graph. It is not a toolkit loss
-or calibration method, and it performs no Wishart fitting.
+This experiment scores a Gaussian marker-contrast model whose covariance comes
+from the effective resistances of a conductance grid graph. It computes the
+Wishart log likelihood and a held-out log likelihood for a fixed covariance.
 
 ## Assumptions
 
 - Marker contrasts are independent and zero-mean Gaussian.
-- The squared-distance matrix is complete, with explicit scatter-versus-average
+- The squared-distance matrix is complete, with declared average or scatter
   scaling and a known marker count.
-- The ordinary Wishart diagnostic requires a positive-definite contrast scatter.
-
-Under these assumptions, the diagnostic provides a reproducible reference for
-comparing fixed covariance hypotheses. Missing pairs, insufficient marker rank,
-or unmodeled marker dependence violate them, and structural validation cannot
-establish them for real genetic observations.
+- The contrast scatter is positive definite.
 
 ## Run
 
@@ -25,6 +20,6 @@ JAX_ENABLE_X64=true uv run pytest experiments/wishart/test_diagnostic.py
 JAX_ENABLE_X64=true uv run python -m experiments.wishart
 ```
 
-The second command demonstrates known-parameter diagnostics through a real
-conductance grid graph and prints the reference and conditional held-out log
-likelihoods.
+The second command runs the diagnostic on a ResNet9 patch encoder with known
+parameters and prints the log likelihood and the conditional held-out log
+likelihood.
