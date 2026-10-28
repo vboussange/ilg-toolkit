@@ -323,7 +323,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     assert eqx.tree_equal(first.loss_state, second.loss_state)
     assert eqx.tree_equal(first.latest_model.calibration, second.latest_model.calibration)
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
-    assert first.rng_key.dtype == np.uint32
+    assert jnp.issubdtype(first.rng_key.dtype, jax.dtypes.prng_key)
     expected_losses = []
     for index, (name, observed) in enumerate(zip(order, observed_groups, strict=True)):
         distances = np.asarray(

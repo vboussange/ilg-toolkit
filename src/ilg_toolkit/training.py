@@ -449,7 +449,7 @@ def train(
         species=species,
     )
     random_key = (
-        jax.random.split(jax.random.PRNGKey(config.seed))[1] if state is None else state.rng_key
+        jax.random.split(jax.random.key(config.seed))[1] if state is None else state.rng_key
     )
     training_batches, validation_batches = _prepare_batches(
         prepared.training, prepared.validation, distance_model, config

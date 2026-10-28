@@ -30,8 +30,20 @@ class ArtifactError(ValueError):
     """An incompatible saved model, checkpoint, or loading template."""
 
 
+def _is_typed_key(leaf) -> bool:
+    return isinstance(leaf, jax.Array) and jnp.issubdtype(leaf.dtype, jax.dtypes.prng_key)
+
+
+def _key_data(tree):
+    """The tree with typed random keys replaced by their raw key data, which NumPy can store."""
+    return jax.tree.map(
+        lambda leaf: jax.random.key_data(leaf) if _is_typed_key(leaf) else leaf, tree
+    )
+
+
 def _write_native(path, tree, *, kind, metadata):
     """Atomic storage of metadata and model arrays, retaining the previous file if writing fails."""
+    tree = _key_data(tree)
     arrays = [
         (index, leaf)
         for index, leaf in enumerate(jax.tree.leaves(tree))
@@ -68,12 +80,21 @@ def _write_native(path, tree, *, kind, metadata):
 
 def _read_native(stream, template, weak_leaves):
     """Saved leaves loaded into a template, with the weak types recorded when saving."""
-    leaves, structure = jax.tree.flatten(eqx.tree_deserialise_leaves(stream, template))
+    loaded = eqx.tree_deserialise_leaves(stream, _key_data(template))
+    leaves, structure = jax.tree.flatten(loaded)
     for index in weak_leaves:
         if not 0 <= index < len(leaves) or not isinstance(leaves[index], jax.Array):
             raise ArtifactError(f"Recorded weakly typed leaf {index} is not a saved JAX array")
         leaves[index] = _weakly_typed(leaves[index])
-    return jax.tree.unflatten(structure, leaves)
+    return jax.tree.map(
+        lambda leaf, reference: (
+            jax.random.wrap_key_data(leaf, impl=jax.random.key_impl(reference))
+            if _is_typed_key(reference)
+            else leaf
+        ),
+        jax.tree.unflatten(structure, leaves),
+        template,
+    )
 
 
 def _weakly_typed(leaf):

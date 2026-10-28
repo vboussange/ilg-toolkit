@@ -99,7 +99,12 @@ def test_saved_weak_types_are_restored_whatever_the_template(
         restored = load_checkpoint(tmp_path / "checkpoint.eqx", distance_model=template)
 
         def weak_types(tree):
-            return [leaf.weak_type for leaf in jax.tree.leaves(eqx.filter(tree, eqx.is_array))]
+            # Typed random keys have no weak type.
+            return [
+                leaf.weak_type
+                for leaf in jax.tree.leaves(eqx.filter(tree, eqx.is_array))
+                if not jnp.issubdtype(leaf.dtype, jax.dtypes.prng_key)
+            ]
 
         assert weak_types(model) == weak_types(initial.selected_model) == [True]
         assert 0 < sum(weak_types(trained)) < len(weak_types(trained))

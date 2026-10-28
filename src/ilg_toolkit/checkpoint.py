@@ -4,7 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import equinox as eqx
-import jax.numpy as jnp
+import jax
 import optax
 
 from .config import TrainingConfig
@@ -116,7 +116,7 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
             template = TrainingState(
                 loss_state=loss_state,
                 optimizer_state=optimizer_state,
-                rng_key=jnp.zeros(2, dtype=jnp.uint32),
+                rng_key=jax.random.key(0),
                 config=config,
                 history=history,
                 latest_model=latest,
