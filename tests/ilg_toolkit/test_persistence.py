@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import (
     ArtifactError,
@@ -55,7 +56,9 @@ def test_saved_precision_is_preserved(
                 assert eqx.tree_equal(model, state.selected_model)
             else:
                 save_checkpoint(path, state)
-                restored = load_checkpoint(path, distance_model=distance_model)
+                restored = load_checkpoint(
+                    path, distance_model=distance_model, optimizer=state.config.optimizer
+                )
                 assert eqx.tree_equal(restored, state)
                 model = restored.selected_model
             query = None if species is None else dict.fromkeys(species)
@@ -68,9 +71,11 @@ def test_saved_precision_is_preserved(
                     lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,
                     distance_model,
                 )
-            load = load_model if kind == "model" else load_checkpoint
             with float64_required():
-                load(path, distance_model=narrow)
+                if kind == "model":
+                    load_model(path, distance_model=narrow)
+                else:
+                    load_checkpoint(path, distance_model=narrow, optimizer=state.config.optimizer)
 
 
 def test_species_names_round_trip_and_predictions_are_identical(tmp_path, training_problem):
@@ -87,7 +92,9 @@ def test_species_names_round_trip_and_predictions_are_identical(tmp_path, traini
     save_model(model_path, state.selected_model)
     save_checkpoint(checkpoint_path, state)
     model = load_model(model_path, distance_model=renamed)
-    checkpoint = load_checkpoint(checkpoint_path, distance_model=renamed)
+    checkpoint = load_checkpoint(
+        checkpoint_path, distance_model=renamed, optimizer=state.config.optimizer
+    )
     for restored in (model, checkpoint.selected_model, checkpoint.latest_model):
         assert restored.species == restored.distance_model.species == names
         assert eqx.tree_equal(restored.distance_model, state.selected_model.distance_model)
@@ -99,7 +106,7 @@ def test_species_names_round_trip_and_predictions_are_identical(tmp_path, traini
     with pytest.raises(ArtifactError, match="species"):
         load_model(model_path, distance_model=unnamed)
     with pytest.raises(ArtifactError, match="species"):
-        load_checkpoint(checkpoint_path, distance_model=unnamed)
+        load_checkpoint(checkpoint_path, distance_model=unnamed, optimizer=state.config.optimizer)
 
 
 # NumPy storage drops weak types, and eqx.tree_equal ignores them.
@@ -124,7 +131,9 @@ def test_saved_weak_types_are_restored_whatever_the_template(
         save_model(tmp_path / "model.eqx", initial.selected_model)
         save_checkpoint(tmp_path / "checkpoint.eqx", trained)
         model = load_model(tmp_path / "model.eqx", distance_model=template)
-        restored = load_checkpoint(tmp_path / "checkpoint.eqx", distance_model=template)
+        restored = load_checkpoint(
+            tmp_path / "checkpoint.eqx", distance_model=template, optimizer=trained.config.optimizer
+        )
 
         def weak_types(tree):
             # Typed random keys have no weak type.
@@ -177,7 +186,7 @@ def test_odds_target_model_reloads_and_predicts_in_original_units(
         region,
         observations,
         distance_model=distance_model,
-        config=TrainingConfig(loss=Log1pLoss(), steps=3, learning_rate=0.05),
+        config=TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optax.adam(0.05)),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     model = state.selected_model

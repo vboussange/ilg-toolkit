@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import (
     load_checkpoint,
@@ -49,7 +50,9 @@ def _two_regions(
     return (region, other), (observations, other_observations), model
 
 
-_CONFIG = TrainingConfig(loss=MLPELoss(), steps=2, eval_every=2, seed=21, learning_rate=1e-4)
+_CONFIG = TrainingConfig(
+    loss=MLPELoss(), steps=2, eval_every=2, seed=21, optimizer=optax.adam(1e-4)
+)
 
 
 def _conductance_region_batches(training_problem):
@@ -71,7 +74,7 @@ def _dropout_validation(training_problem):
         regions,
         targets,
         model,
-        replace(_CONFIG, loss=Log1pLoss(), learning_rate=0.002),
+        replace(_CONFIG, loss=Log1pLoss(), optimizer=optax.adam(0.002)),
         validation=(validation_regions, validation_targets),
     )
 
@@ -114,7 +117,9 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
         assert not eqx.tree_equal(partial.latest_model, partial.selected_model)
     path = tmp_path / "checkpoint.eqx"
     save_checkpoint(path, partial)
-    restored = load_checkpoint(path, distance_model=scenario.distance_model)
+    restored = load_checkpoint(
+        path, distance_model=scenario.distance_model, optimizer=scenario.config.optimizer
+    )
     assert eqx.tree_equal(restored, partial)
     # Reversing region order also checks restoration of the random trajectory.
     resumed = train(regions[::-1], targets[::-1], state=restored, validation=validation)
@@ -129,7 +134,9 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
     if validation is not None and scenario.distance_model.species is None:
         # A completed budget returns the saved state without further updates.
         save_checkpoint(path, resumed)
-        completed = load_checkpoint(path, distance_model=scenario.distance_model)
+        completed = load_checkpoint(
+            path, distance_model=scenario.distance_model, optimizer=scenario.config.optimizer
+        )
         callbacks = []
         unchanged = train(
             regions, targets, state=completed, validation=validation, on_step=callbacks.append
@@ -161,7 +168,7 @@ def test_checkpoint_restores_the_typed_random_key_and_its_stream(initial_state, 
     _, _, distance_model, state = initial_state
     path = tmp_path / "key.eqx"
     save_checkpoint(path, state)
-    restored = load_checkpoint(path, distance_model=distance_model)
+    restored = load_checkpoint(path, distance_model=distance_model, optimizer=optax.adam(1e-3))
     assert jnp.issubdtype(restored.rng_key.dtype, jax.dtypes.prng_key)
     np.testing.assert_array_equal(
         jax.random.uniform(restored.rng_key, (4,)), jax.random.uniform(state.rng_key, (4,))
@@ -188,7 +195,7 @@ def test_checkpoint_rejects_optimizer_precision_that_differs_from_model(training
         path = tmp_path / "mixed-precision.eqx"
         save_checkpoint(path, replace(result, optimizer_state=changed_optimizer))
         with pytest.raises(ValueError):
-            load_checkpoint(path, distance_model=model)
+            load_checkpoint(path, distance_model=model, optimizer=result.config.optimizer)
 
 
 def test_interrupted_replacement_retains_previous_complete_generation(
@@ -199,7 +206,7 @@ def test_interrupted_replacement_retains_previous_complete_generation(
 
     region, observations, model = training_problem("embedding")
     completed = []
-    config = TrainingConfig(loss=Log1pLoss(), steps=1, seed=21, learning_rate=0.002)
+    config = TrainingConfig(loss=Log1pLoss(), steps=1, seed=21, optimizer=optax.adam(0.002))
     result = train(
         region,
         observations,
@@ -224,7 +231,7 @@ def test_interrupted_replacement_retains_previous_complete_generation(
             save_checkpoint(path, result)
     assert path.read_bytes() == original
     assert list(tmp_path.iterdir()) == [path]
-    restored = load_checkpoint(path, distance_model=model)
+    restored = load_checkpoint(path, distance_model=model, optimizer=config.optimizer)
     assert eqx.tree_equal(restored, completed[0])
 
 
@@ -233,7 +240,7 @@ def test_disk_continuation_uses_caller_supplied_observations(initial_state, tmp_
     config = TrainingConfig(loss=Log1pLoss(), steps=0)
     path = tmp_path / "continuation.eqx"
     save_checkpoint(path, original)
-    restored = load_checkpoint(path, distance_model=distance_model)
+    restored = load_checkpoint(path, distance_model=distance_model, optimizer=config.optimizer)
     changed_region = replace(
         region,
         features=cx.field(
@@ -270,10 +277,11 @@ def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
         load_checkpoint(
             path,
             distance_model=WeightedEmbedding(jnp.zeros(3)),
+            optimizer=result.config.optimizer,
         )
     path.write_bytes(path.read_bytes()[:-20])
     with pytest.raises(ArtifactError):
-        load_checkpoint(path, distance_model=model)
+        load_checkpoint(path, distance_model=model, optimizer=result.config.optimizer)
 
 
 @pytest.mark.parametrize("boundary", ["save", "load", "resume"])
@@ -304,7 +312,9 @@ def test_checkpoint_enforces_progress_bounds(initial_state, tmp_path, boundary):
             if boundary == "save":
                 save_checkpoint(path, invalid)
             elif boundary == "load":
-                load_checkpoint(path, distance_model=distance_model)
+                load_checkpoint(
+                    path, distance_model=distance_model, optimizer=state.config.optimizer
+                )
             else:
                 train(region, observations, state=invalid)
 
@@ -314,4 +324,47 @@ def test_loading_requires_float64(initial_state, tmp_path, float64_required):
     path = tmp_path / "checkpoint.eqx"
     save_checkpoint(path, state)
     with float64_required():
-        load_checkpoint(path, distance_model=distance_model)
+        load_checkpoint(path, distance_model=distance_model, optimizer=state.config.optimizer)
+
+
+def test_checkpoints_resume_with_the_supplied_optimizer(
+    tmp_path, ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    config = TrainingConfig(
+        loss=Log1pLoss(), steps=100, optimizer=optax.lbfgs(), gradient_tolerance=1e-9
+    )
+    states = []
+    uninterrupted = train(
+        regions, observations, distance_model=model, config=config, on_step=states.append
+    )
+    assert uninterrupted.converged and uninterrupted.step > 2
+    path = tmp_path / "lbfgs.eqx"
+    save_checkpoint(path, states[2])
+    with path.open("rb") as stream:
+        assert "optimizer" not in json.loads(stream.readline())["metadata"]["config"]
+    # A fresh optimizer instance rebuilds the line-search state, as a template does.
+    restored = load_checkpoint(path, distance_model=model, optimizer=optax.lbfgs())
+    assert eqx.tree_equal(restored, states[2])
+    assert not restored.converged
+    resumed = train(regions, observations, state=restored)
+    assert eqx.tree_equal(resumed, uninterrupted)
+
+    save_checkpoint(path, uninterrupted)
+    converged = load_checkpoint(path, distance_model=model, optimizer=optax.lbfgs())
+    assert converged.converged
+    assert eqx.tree_equal(converged, uninterrupted)
+
+
+def test_checkpoints_reject_an_optimizer_with_a_different_state(initial_state, tmp_path):
+    from ilg_toolkit import ArtifactError
+
+    _, _, distance_model, state = initial_state
+    path = tmp_path / "adam.eqx"
+    save_checkpoint(path, state)
+    for optimizer in (optax.sgd(0.1), optax.lbfgs()):
+        with pytest.raises(ArtifactError, match="optimizer"):
+            load_checkpoint(path, distance_model=distance_model, optimizer=optimizer)
+    restored = load_checkpoint(path, distance_model=distance_model, optimizer=optax.adam(0.1))
+    assert eqx.tree_equal(restored, state)
