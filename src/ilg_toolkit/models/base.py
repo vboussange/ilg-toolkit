@@ -26,8 +26,6 @@ from ..resistance import _effective_resistance, _mean_conductance, _ResistanceSo
 from .common import _inference_model, _pixel_to_patch_nodes
 
 
-# Sampling-unit vertices, followed by the pairs indexing those sampling units.
-type _DistancePairs = tuple[jax.Array, tuple[jax.Array, jax.Array]]
 # Ordered sampling-unit pairs, or ``None`` for every distinct pair.
 type _Pairs = Sequence[tuple[str, str]] | None
 
@@ -119,7 +117,10 @@ class AbstractDistanceModel(eqx.Module):
 
     @abstractmethod
     def ecological_distances(
-        self, latent: jax.Array, pairs: _DistancePairs, species_index: int | jax.Array
+        self,
+        latent: jax.Array,
+        pairs: tuple[jax.Array, tuple[jax.Array, jax.Array]],
+        species_index: int | jax.Array,
     ) -> jax.Array:
         """Computes one species' ecological distances for pairs of sampling units.
 
@@ -218,7 +219,7 @@ class ConductanceModel(AbstractDistanceModel):
     def ecological_distances(
         self,
         latent: jax.Array,
-        pairs: _DistancePairs,
+        pairs: tuple[jax.Array, tuple[jax.Array, jax.Array]],
         species_index: int | jax.Array,
         *,
         context: _ResistanceSolverContext | None = None,
@@ -319,7 +320,10 @@ class EmbeddingDistanceModel(AbstractDistanceModel):
         """
 
     def ecological_distances(
-        self, latent: jax.Array, pairs: _DistancePairs, species_index: int | jax.Array
+        self,
+        latent: jax.Array,
+        pairs: tuple[jax.Array, tuple[jax.Array, jax.Array]],
+        species_index: int | jax.Array,
     ) -> jax.Array:
         """Computes squared embedding distances for pairs of sampling units.
 

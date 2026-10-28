@@ -1,7 +1,7 @@
 """Log-linear patch encoder from patch-averaged landscape features."""
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import partial
 from numbers import Real
 from typing import final
@@ -14,7 +14,7 @@ import numpy as np
 from .._checks import _positive_integer, _require_float64
 from .._training_utils import _prepare_training_inputs
 from ..config import ResistanceSolverConfig
-from ..data import _ObservationCollection, _RegionCollection, RegionBatch
+from ..data import PairwiseObservations, RegionBatch
 from ..losses import AbstractLoss
 from ..resistance import _effective_resistance
 from .base import (
@@ -162,8 +162,10 @@ class LogLinearConductance(ConductanceModel):
 
 def initialize_uniform_conductance(
     model: LogLinearConductance,
-    region: _RegionCollection,
-    observations: _ObservationCollection,
+    region: RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch],
+    observations: PairwiseObservations
+    | Sequence[PairwiseObservations | Sequence[PairwiseObservations]]
+    | Mapping[str, PairwiseObservations | Sequence[PairwiseObservations]],
     loss: AbstractLoss,
 ) -> LogLinearConductance:
     """Initializes a log-linear patch encoder at the best uniform conductance.
