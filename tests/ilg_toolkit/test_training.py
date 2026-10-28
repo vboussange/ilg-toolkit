@@ -566,7 +566,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
             np.testing.assert_allclose(
                 result.history[0].training_loss, independent_objective(initial), rtol=1e-8
             )
-            assert result.region_names == ("short", "wide")
+            assert set(result.history[0].training_by_region) == {"short", "wide"}
             for region in regions:
                 assert np.isfinite(
                     result.selected_model.predict(

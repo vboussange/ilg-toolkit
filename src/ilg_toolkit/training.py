@@ -71,11 +71,6 @@ class TrainingState(eqx.Module):
     validation_groups: tuple[RegionSpeciesKey, ...]
 
     @property
-    def region_names(self) -> tuple[str, ...]:
-        """Names of the regions represented in the training observations."""
-        return tuple(sorted({key[0] for key in self.training_groups}))
-
-    @property
     def selection(self) -> str:
         """Selection rule: minimum validation loss or the final training evaluation."""
         return "validation" if self.validation_groups else "final"

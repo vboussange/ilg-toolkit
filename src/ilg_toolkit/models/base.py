@@ -371,31 +371,6 @@ def query_distances_from_latent(
     return labels, values
 
 
-def distance_values(
-    model: AbstractDistanceModel,
-    features: jax.Array,
-    pixel_nodes: jax.Array,
-    indices: tuple[jax.Array, jax.Array],
-    *,
-    context: ResistanceSolverContext | None = None,
-    inference: bool = True,
-    key: jax.Array | None = None,
-    species_index: int | jax.Array = 0,
-) -> jax.Array:
-    """Ecological distances for located sampling-unit pairs."""
-    model = with_dropout_mode(model, inference=inference, key=key)
-    latent = model.backbone(features)
-    return distances_from_latent(
-        model,
-        latent,
-        pixel_nodes,
-        indices,
-        raster_shape=(features.shape[0], features.shape[1]),
-        species_index=species_index,
-        context=context,
-    )
-
-
 def distances_from_latent(
     model: AbstractDistanceModel,
     latent: jax.Array,

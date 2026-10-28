@@ -13,12 +13,11 @@ from jax.scipy.linalg import cho_solve
 MAX_ROUNDOFF_BOUND = 0.01
 
 
-def endpoint_sums(values, left, right, weights, n_populations):
+def endpoint_sums(values, left, right, n_populations):
     """Sums of pairwise values for each sampling unit."""
     values = jnp.asarray(values)
-    weighted = jnp.where(weights[:, None], values, 0)
     result = jnp.zeros((n_populations, values.shape[1]), dtype=values.dtype)
-    return result.at[left].add(weighted).at[right].add(weighted)
+    return result.at[left].add(values).at[right].add(values)
 
 
 class PopulationCovarianceFactor(NamedTuple):
@@ -34,7 +33,6 @@ class PopulationCovarianceFactor(NamedTuple):
 
     left: Array
     right: Array
-    weights: Array
     factor: Array
     unit: Array
     residual: Array
@@ -45,12 +43,9 @@ class PopulationCovarianceFactor(NamedTuple):
 
     def residual_components(self, values):
         """Positive representation for B.T V^-1 C; stable against subtraction."""
-        values = jnp.where(self.weights[:, None], values, 0)
-        sums = endpoint_sums(values, self.left, self.right, self.weights, len(self.factor))
+        sums = endpoint_sums(values, self.left, self.right, len(self.factor))
         effects = (self.unit / self.residual) * cho_solve((self.factor, True), sums)
-        remaining = jnp.where(
-            self.weights[:, None], values - effects[self.left] - effects[self.right], 0
-        )
+        remaining = values - effects[self.left] - effects[self.right]
         return remaining, effects
 
     def inner_products(self, values):
@@ -60,26 +55,21 @@ class PopulationCovarianceFactor(NamedTuple):
         return inner, remaining, effects
 
 
-def population_covariance_factor(left, right, *, n_populations, unit, residual, weights, dtype):
+def population_covariance_factor(left, right, *, n_populations, unit, residual, dtype):
     """Population covariance factor for observed unordered pairs.
 
     ``residual`` includes the configured jitter.
-    The observation mask selects the sampling-unit indices used in the calculation.
     """
     unit, residual = jnp.asarray(unit, dtype=dtype), jnp.asarray(residual, dtype=dtype)
     left, right = jnp.asarray(left, dtype=jnp.int32), jnp.asarray(right, dtype=jnp.int32)
     valid_endpoints = jnp.all(
-        (~weights)
-        | (
-            (left >= 0)
-            & (left < n_populations)
-            & (right >= 0)
-            & (right < n_populations)
-            & (left != right)
-        )
+        (left >= 0)
+        & (left < n_populations)
+        & (right >= 0)
+        & (right < n_populations)
+        & (left != right)
     )
-    left, right = jnp.where(weights, left, 0), jnp.where(weights, right, 0)
-    value = weights.astype(dtype)
+    value = jnp.ones(left.shape, dtype=dtype)
     gram = jnp.zeros((n_populations, n_populations), dtype=dtype)
     gram = gram.at[left, left].add(value).at[right, right].add(value)
     gram = gram.at[left, right].add(value).at[right, left].add(value)
@@ -101,7 +91,6 @@ def population_covariance_factor(left, right, *, n_populations, unit, residual, 
     return PopulationCovarianceFactor(
         left,
         right,
-        weights,
         factor,
         unit,
         residual,

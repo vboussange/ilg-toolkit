@@ -6,9 +6,6 @@ __pycache__/
 build/
 dist/
 .venv/
-experiments/**/results/
-benchmarks/results/
-*.ilg
 site/
 .cache/
 uv.lock

@@ -28,8 +28,8 @@ class ResidualBlock(eqx.Module):
         first, second = jax.random.split(key)
         self.conv1 = eqx.nn.Conv2d(channels, channels, 3, padding=1, dtype=jnp.float32, key=first)
         self.conv2 = eqx.nn.Conv2d(channels, channels, 3, padding=1, dtype=jnp.float32, key=second)
-        self.norm1 = eqx.nn.GroupNorm(min(8, channels), channels, dtype=jnp.float32)
-        self.norm2 = eqx.nn.GroupNorm(min(8, channels), channels, dtype=jnp.float32)
+        self.norm1 = eqx.nn.GroupNorm(8, channels, dtype=jnp.float32)
+        self.norm2 = eqx.nn.GroupNorm(8, channels, dtype=jnp.float32)
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
         """Residual convolutional features for one channel-first feature map."""
