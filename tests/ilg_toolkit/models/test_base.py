@@ -26,7 +26,9 @@ from jaxscape import GridGraph, ResistanceDistance
 def test_distance_models_carry_unique_species_names(PointConductance):
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
