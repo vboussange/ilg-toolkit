@@ -79,7 +79,7 @@ plt.show()
 
 > **Note:** Both regions receive equal weight, rather than weighting the region with more pairs more
 > heavily. Target units stay in index units and the target transform is the identity.
-> The slope's units are index units per meter. See the [IBD API](../api/ibd.md) for the
+> The slope's units are index units per meter. See the [IBD API](../api/models.md#ilg_toolkit.models.IBDModel) for the
 > criterion and input contracts.
 
 

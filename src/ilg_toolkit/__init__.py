@@ -10,7 +10,6 @@ from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 from .ensemble import Ensemble, EnsemblePrediction
-from .ibd import IBDModel
 from .losses import AbstractLoss, Log1pLoss, MLPELoss
 from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
@@ -25,7 +24,6 @@ __all__ = [
     "DirectCalibrationHead",
     "Ensemble",
     "EnsemblePrediction",
-    "IBDModel",
     "LandscapeGeneticsModel",
     "Log1pLoss",
     "MLPECalibrationHead",

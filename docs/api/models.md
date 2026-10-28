@@ -12,6 +12,8 @@
 
 ::: ilg_toolkit.models.ResNet9Conductance
 
+::: ilg_toolkit.models.IBDModel
+
 ::: ilg_toolkit.models.UNetEmbeddingDistance
 
 ::: ilg_toolkit.ResistanceSolverConfig
