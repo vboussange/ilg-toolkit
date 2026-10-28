@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import (
     LandscapeGeneticsModel,
@@ -108,7 +109,9 @@ def test_nonfinite_training_is_reported_at_evaluation(ScalarEmbedding, regions_a
             regions[0],
             observations[0],
             distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-            config=TrainingConfig(loss=Log1pLoss(), steps=3, eval_every=2, learning_rate=1e200),
+            config=TrainingConfig(
+                loss=Log1pLoss(), steps=3, eval_every=2, optimizer=optax.adam(1e200)
+            ),
             on_step=lambda state: completed.append(state.step),
         )
     assert completed == [0]
@@ -235,7 +238,7 @@ def test_mlpe_updates_match_dense_reference(
         config=TrainingConfig(
             loss=MLPELoss(),
             steps=2,
-            learning_rate=0.02,
+            optimizer=optax.adam(0.02),
             species_batch_size=species_batch_size,
         ),
     )
@@ -340,7 +343,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
             loss=MLPELoss(),
             steps=4,
             eval_every=3,
-            learning_rate=0.03,
+            optimizer=optax.adam(0.03),
         )
         runs = [
             train(
@@ -430,7 +433,7 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
             config=TrainingConfig(
                 loss=MLPELoss(),
                 steps=20,
-                learning_rate=0.08,
+                optimizer=optax.adam(0.08),
             ),
         )
 
@@ -483,8 +486,21 @@ def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_fit):
         mlpe_embedding_fit.state,
     )
     assert result.loss_state is not None
-    with pytest.raises(ValueError):
-        train(region, observations, state=result, config=replace(result.config, learning_rate=0.1))
+    # The optimizer may change while its state keeps the saved structure.
+    continued = train(
+        region,
+        observations,
+        state=result,
+        config=replace(result.config, steps=result.step + 1, optimizer=optax.adam(0.1)),
+    )
+    assert continued.step == result.step + 1
+    with pytest.raises(ValueError, match="optimizer"):
+        train(
+            region,
+            observations,
+            state=result,
+            config=replace(result.config, steps=result.step + 1, optimizer=optax.sgd(0.1)),
+        )
     with pytest.raises(ValueError):
         train(
             region, observations, state=result, config=replace(result.config, region_batch_size=1)
@@ -590,7 +606,7 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
                 config=TrainingConfig(
                     loss=Log1pLoss(),
                     steps=1,
-                    learning_rate=0.01,
+                    optimizer=optax.adam(0.01),
                     region_batch_size=region_batch_size,
                     species_batch_size=species_batch_size,
                 ),
@@ -796,7 +812,7 @@ def test_evaluation_cadence_selects_model_and_reports_every_step(
         region,
         observations,
         distance_model=model,
-        config=TrainingConfig(loss=Log1pLoss(), steps=5, eval_every=2, learning_rate=0.01),
+        config=TrainingConfig(loss=Log1pLoss(), steps=5, eval_every=2, optimizer=optax.adam(0.01)),
         validation=(validation_region, validation) if validation_used else None,
         on_step=callbacks.append,
     )
@@ -932,3 +948,108 @@ def test_training_requires_float64(observation_problem, float64_required):
             distance_model=model,
             config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
+
+
+def _scalar_region_losses(weight):
+    """Log1p criteria of the short and wide regions for a scalar embedding weight."""
+    predictions = [np.array([4]) * weight**2, np.array([1, 4, 1]) * weight**2]
+    targets = [np.array([15]), np.array([0.1, 0.1, 0.1])]
+    return [
+        np.mean((np.log1p(p) - np.log1p(t)) ** 2) for p, t in zip(predictions, targets, strict=True)
+    ]
+
+
+def test_adam_with_learning_rate_1e_3_remains_the_default_optimizer(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    config = TrainingConfig(loss=Log1pLoss(), steps=3)
+    default, explicit = (
+        train(regions, observations, distance_model=model, config=configured)
+        for configured in (config, replace(config, optimizer=optax.adam(1e-3)))
+    )
+    assert eqx.tree_equal(default, explicit)
+    assert not default.converged
+
+
+def test_lbfgs_trains_until_the_gradient_tolerance(ScalarEmbedding, regions_and_observations):
+    regions, observations = regions_and_observations()
+    config = TrainingConfig(
+        loss=Log1pLoss(), steps=100, optimizer=optax.lbfgs(), gradient_tolerance=1e-9
+    )
+    states = []
+    result = train(
+        regions,
+        observations,
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+        config=config,
+        on_step=states.append,
+    )
+    assert result.converged
+    assert 0 < result.step < config.steps
+    assert [state.step for state in states] == list(range(result.step + 1))
+    assert [state.converged for state in states] == [False] * result.step + [True]
+    assert eqx.tree_equal(states[-1], result)
+    # The final step is evaluated although it is not on the evaluation cadence.
+    assert result.history[-1].step == result.selected_step == result.step
+    weight = float(cast(Any, result.selected_model.distance_model).weight)
+
+    def objective(value):
+        return np.mean(_scalar_region_losses(value))
+
+    np.testing.assert_allclose(
+        (objective(weight + 1e-6) - objective(weight - 1e-6)) / 2e-6, 0, atol=1e-7
+    )
+    np.testing.assert_allclose(result.history[-1].training_loss, objective(weight), rtol=1e-12)
+    # Line searches are deterministic: the same configuration reproduces the run.
+    repeated = train(
+        regions,
+        observations,
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+        config=config,
+    )
+    assert eqx.tree_equal(repeated, result)
+
+    capped = train(
+        regions,
+        observations,
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+        config=replace(config, steps=1),
+    )
+    assert not capped.converged
+    assert capped.step == 1
+
+    callbacks = []
+    continued = train(
+        regions,
+        observations,
+        state=result,
+        config=replace(config, steps=200),
+        on_step=callbacks.append,
+    )
+    assert callbacks == []
+    assert continued.converged
+    assert continued.step == result.step
+    assert eqx.tree_equal(continued.latest_model, result.latest_model)
+
+
+def test_line_searches_evaluate_the_regions_sampled_for_the_update(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    result = train(
+        regions,
+        observations,
+        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+        config=TrainingConfig(
+            loss=Log1pLoss(), steps=1, optimizer=optax.lbfgs(), region_batch_size=1
+        ),
+    )
+    weight = float(cast(Any, result.latest_model.distance_model).weight)
+    # The line search's accepted objective value at the updated weight covers the one
+    # sampled region, reweighted to the full objective's scale.
+    value = float(cast(Any, optax.tree.get(result.optimizer_state, "value")))
+    losses = _scalar_region_losses(weight)
+    assert min(abs(value - loss) for loss in losses) < 1e-12
+    assert abs(value - np.mean(losses)) > 1e-3

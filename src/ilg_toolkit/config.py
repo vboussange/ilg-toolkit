@@ -1,8 +1,10 @@
 """Training and effective-resistance layer settings."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Real
+
+import optax
 
 from ._checks import _positive_integer
 from .losses import AbstractLoss
@@ -57,18 +59,30 @@ class ResistanceSolverConfig:
 class TrainingConfig:
     """Optimization budget and scientific settings for training a landscape genetics model.
 
-    Each Adam update samples up to ``region_batch_size`` regions and then
+    Each update samples up to ``region_batch_size`` regions and then
     ``species_batch_size`` species within each region; ``None`` uses all available.
     ``species_microbatch_size`` controls how many species are processed together
     before their gradients are combined into one update.
     Evaluation at step zero, every ``eval_every`` updates, and the final step
     determines model selection.
 
+    Any optax optimizer applies the updates. Each update also receives the step's
+    objective value, its gradient, and a function evaluating that objective for the
+    same regions, species and random key, so line-search optimizers such as
+    ``optax.lbfgs()`` work through ``train``; other optimizers ignore them.
+    Checkpoints store the optimizer state but not the optimizer, and configuration
+    equality ignores the optimizer.
+
     Attributes:
         loss: Statistical criterion and its numerical settings.
-        steps: Total update budget, including completed updates when resuming.
+        steps: Total update budget, including completed updates when resuming; with
+            ``gradient_tolerance``, the iteration cap.
         eval_every: Number of updates between evaluations.
-        learning_rate: Adam learning rate.
+        optimizer: Optax optimizer applying the updates; Adam with learning rate
+            1e-3 by default.
+        gradient_tolerance: Stop after the first update whose gradient norm (global
+            L2 norm over trainable parameters for that update's objective) is at or
+            below this value; ``None`` runs the full ``steps`` budget.
         region_batch_size: Maximum regions sampled per update; ``None`` uses all.
         species_batch_size: Maximum species sampled per region; ``None`` uses all.
         species_microbatch_size: Maximum species processed together before their
@@ -83,7 +97,8 @@ class TrainingConfig:
     loss: AbstractLoss
     steps: int = 100
     eval_every: int = 1
-    learning_rate: float = 0.001
+    optimizer: optax.GradientTransformation = field(default=optax.adam(1e-3), compare=False)
+    gradient_tolerance: float | None = None
     region_batch_size: int | None = None
     species_batch_size: int | None = None
     species_microbatch_size: int | None = None
@@ -105,11 +120,14 @@ class TrainingConfig:
             object.__setattr__(
                 self, name, _positive_integer(name, getattr(self, name), optional=True)
             )
-        if (
-            isinstance(self.learning_rate, bool)
-            or not isinstance(self.learning_rate, Real)
-            or not math.isfinite(self.learning_rate)
-            or self.learning_rate <= 0
-        ):
-            raise ValueError("learning_rate must be finite and positive")
-        object.__setattr__(self, "learning_rate", float(self.learning_rate))
+        if not isinstance(self.optimizer, optax.GradientTransformation):
+            raise ValueError("optimizer must be an optax.GradientTransformation")
+        if self.gradient_tolerance is not None:
+            if (
+                isinstance(self.gradient_tolerance, bool)
+                or not isinstance(self.gradient_tolerance, Real)
+                or not math.isfinite(self.gradient_tolerance)
+                or self.gradient_tolerance < 0
+            ):
+                raise ValueError("gradient_tolerance must be finite and nonnegative, or None")
+            object.__setattr__(self, "gradient_tolerance", float(self.gradient_tolerance))
