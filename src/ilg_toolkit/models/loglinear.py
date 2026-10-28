@@ -22,6 +22,7 @@ from .base import (
     _model_species,
     _prepare_distance_context,
     _species_names,
+    _species_rows,
     ConductanceModel,
 )
 from .common import _encode_patches, _pixel_to_patch_nodes
@@ -121,7 +122,7 @@ class LogLinearConductance(ConductanceModel):
         self.min_conductance = float(min_conductance)
         self.max_conductance = float(max_conductance)
         self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
-        count = 1 if species is None else len(species)
+        count = _species_rows(species)
         self.coefficients = jnp.zeros((count, in_channels))
         self.intercepts = jnp.zeros(count)
 
@@ -184,7 +185,7 @@ class LogLinearConductance(ConductanceModel):
             log-conductance coefficient for each species.
 
         Raises:
-            ValueError: The names are not unique, nonempty strings, one per feature.
+            ValueError: If the names are not unique, nonempty strings, one per feature.
 
         Examples:
             >>> effects = distance_model.feature_effects(region.feature_names)
@@ -309,7 +310,7 @@ def _unit_conductance_resistances(
     """Computes effective resistances among a region's sampling-unit vertices at unit conductance.
 
     Returns the resistance-matrix row of each sampling-unit pixel, shared by the
-    sampling units of every species, and the matrix in the model's parameter dtype.
+    sampling units of every species, and the float64 matrix.
     """
     context = _prepare_distance_context(model, region.feature_array)
     assert context is not None

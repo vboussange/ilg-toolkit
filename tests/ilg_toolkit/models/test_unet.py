@@ -116,3 +116,22 @@ def test_species_training_improves_predicts_without_query_targets_and_reloads(tm
         )
     with pytest.raises(ArtifactError):
         load_model(path, distance_model=_unet(7, species=species, dropout=0, embedding_dim=3))
+
+
+@pytest.mark.parametrize("base_channels", [3, 6, 12])
+def test_widths_that_are_not_multiples_of_eight_predict(base_channels):
+    model = UNetEmbeddingDistance(
+        1, patch_size=1, base_channels=base_channels, embedding_dim=2, key=jax.random.key(0)
+    )
+    region = RegionBatch(
+        "plot",
+        cx.field(
+            np.arange(16.0).reshape(4, 4, 1),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
+        ),
+        ("a", "b"),
+        np.array([[0, 0], [3, 3]]),
+    )
+    assert np.isfinite(model.predict(region).values).all()

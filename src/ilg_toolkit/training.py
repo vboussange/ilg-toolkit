@@ -1,7 +1,7 @@
 """Training of distance models and statistical parameters across regions and species."""
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast, final, NamedTuple
 
@@ -65,12 +65,14 @@ class StepRecord(eqx.Module):
 
 
 @final
-class TrainingState(eqx.Module):
+class TrainingState[DistanceModel: AbstractDistanceModel](eqx.Module):
     """Training state: progress, optimizer and random state, and the latest and selected models.
 
     [`train`][ilg_toolkit.train] returns a training state and continues from one.
     Continuation takes unchanged inputs and settings, apart from a larger step
-    budget and an optimizer whose state keeps the saved structure.
+    budget and an optimizer whose state keeps the saved structure. The class is
+    generic in its distance model type, like
+    [`LandscapeGeneticsModel`][ilg_toolkit.LandscapeGeneticsModel].
 
     Attributes:
         loss_state: Statistical parameter state after the latest update.
@@ -95,8 +97,8 @@ class TrainingState(eqx.Module):
     rng_key: jax.Array
     config: TrainingConfig
     history: tuple[StepRecord, ...]
-    latest_model: LandscapeGeneticsModel
-    selected_model: LandscapeGeneticsModel
+    latest_model: LandscapeGeneticsModel[DistanceModel]
+    selected_model: LandscapeGeneticsModel[DistanceModel]
     selected_step: int
     step: int
     converged: bool
@@ -127,14 +129,25 @@ def _validate_state(state: TrainingState) -> None:
         raise ValueError("Training convergence must be recorded as a boolean")
 
 
-def _optimizer_state_signature(optimizer_state: optax.OptState) -> list[list]:
-    """Returns the path, shape and dtype of every optimizer-state leaf."""
-    return [
-        [jax.tree_util.keystr(path), list(leaf.shape), str(leaf.dtype)]
-        if hasattr(leaf, "dtype")
-        else [jax.tree_util.keystr(path), type(leaf).__name__]
-        for path, leaf in jax.tree_util.tree_leaves_with_path(optimizer_state)
-    ]
+def _node_types(structure: Any) -> str:
+    """Returns the node type names of a tree structure, with ``*`` for each leaf."""
+    node = structure.node_data()
+    if node is None:
+        return "*"
+    return f"{node[0].__name__}({','.join(map(_node_types, structure.children()))})"
+
+
+def _optimizer_state_signature(optimizer_state: optax.OptState) -> dict[str, Any]:
+    """Returns the node types of an optimizer state and the path, shape and dtype of its leaves."""
+    return {
+        "nodes": _node_types(jax.tree.structure(optimizer_state)),
+        "leaves": [
+            [jax.tree_util.keystr(path), list(leaf.shape), str(leaf.dtype)]
+            if hasattr(leaf, "dtype")
+            else [jax.tree_util.keystr(path), type(leaf).__name__]
+            for path, leaf in jax.tree_util.tree_leaves_with_path(optimizer_state)
+        ],
+    }
 
 
 def _same_optimizer_state_structure(first: optax.OptState, second: optax.OptState) -> bool:
@@ -142,6 +155,45 @@ def _same_optimizer_state_structure(first: optax.OptState, second: optax.OptStat
     if jax.tree.structure(first) != jax.tree.structure(second):
         return False
     return _optimizer_state_signature(first) == _optimizer_state_signature(second)
+
+
+def _match_update_weak_types(
+    optimizer: optax.GradientTransformation,
+    optimizer_state: optax.OptState,
+    trainable: _Parameters,
+) -> optax.OptState:
+    """Returns the optimizer state with the weak types that one update gives its leaves.
+
+    Optimizers such as ``optax.lbfgs()`` initialize weakly typed scalars that their
+    update returns strongly typed; matching them lets every update share one
+    compiled program.
+    """
+
+    def update(state: optax.OptState) -> optax.OptState:
+        value = jnp.zeros((), jnp.float64)
+        return optax.with_extra_args_support(optimizer).update(
+            cast(optax.Updates, trainable),
+            state,
+            cast(optax.Params, trainable),
+            value=value,
+            grad=trainable,
+            value_fn=lambda _: value,
+        )[1]
+
+    updated = eqx.filter_eval_shape(update, optimizer_state)
+
+    def match(leaf: Any, shape: Any) -> Any:
+        if (
+            isinstance(leaf, jax.Array)
+            and isinstance(shape, jax.ShapeDtypeStruct)
+            and leaf.weak_type
+            and not shape.weak_type
+            and leaf.dtype == shape.dtype
+        ):
+            return jax.lax.convert_element_type(leaf, leaf.dtype)
+        return leaf
+
+    return jax.tree.map(match, optimizer_state, updated)
 
 
 class _TrainingPayload(NamedTuple):
@@ -152,6 +204,7 @@ class _TrainingPayload(NamedTuple):
     context: _LossContext
 
 
+@final
 @dataclass(frozen=True)
 class _RegionSpeciesTrainingBatch:
     """One region–species group's inputs, loss weight and distance context."""
@@ -162,7 +215,7 @@ class _RegionSpeciesTrainingBatch:
     species_index: int
     key: _RegionSpeciesKey
     loss_weight: float
-    context: _ResistanceSolverContext | None = None
+    context: _ResistanceSolverContext | None
 
 
 def _prepared(region, observations, loss, *, training):
@@ -191,7 +244,8 @@ def _group_distances(model, latent, payload, species_index, context):
 class _Contribution(NamedTuple):
     """One region–species group's arrays entering a compiled gradient.
 
-    The group's region name stays outside, so groups share compiled programs.
+    The group's region name stays outside these arrays; groups whose arrays share
+    shapes share compiled programs.
     """
 
     payload: _TrainingPayload
@@ -268,10 +322,10 @@ def _when(condition: jax.Array, value: Callable[[], jax.Array]) -> jax.Array:
 class _TrainingObjective(eqx.Module):
     """One update's training objective as a function of the parameters.
 
-    It evaluates the same regions, species and random keys as the update's gradient,
-    so line searches see one deterministic objective within an update. Every training
-    group is present, so the structure, and the compiled update, stay fixed across
-    updates; groups not sampled for the update carry zero weight and are skipped.
+    It evaluates the same regions, species and random keys as the update's gradient:
+    one deterministic objective within an update. It holds every training group and
+    skips the groups not sampled for the update, which carry zero weight; its
+    structure and the compiled update stay fixed across updates.
     """
 
     regions: tuple[tuple[_Contribution, ...], ...]
@@ -389,9 +443,9 @@ def _apply_update(
 ) -> tuple[_Parameters, optax.OptState]:
     """Applies one optimizer update, passing the objective's value, gradient and function.
 
-    The gradient comes from the memory-saving regional and microbatch programs. The
-    value comes from the objective itself, so it agrees exactly with line-search
-    evaluations; optimizers that ignore it leave it to dead-code elimination.
+    The gradient comes from the regional and microbatch programs, and the value from
+    the objective that line searches evaluate. XLA removes the value when the
+    optimizer ignores it.
     """
     trainable, fixed = eqx.partition(parameters, eqx.is_inexact_array)
 
@@ -491,13 +545,13 @@ def _evaluate_regions(
     )
 
 
-def train(
+def train[DistanceModel: AbstractDistanceModel](
     region: RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch],
     observations: PairwiseObservations
     | Sequence[PairwiseObservations | Sequence[PairwiseObservations]]
     | Mapping[str, PairwiseObservations | Sequence[PairwiseObservations]],
     *,
-    distance_model: AbstractDistanceModel | None = None,
+    distance_model: DistanceModel | None = None,
     config: TrainingConfig | None = None,
     validation: tuple[
         RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch],
@@ -506,9 +560,9 @@ def train(
         | Mapping[str, PairwiseObservations | Sequence[PairwiseObservations]],
     ]
     | None = None,
-    state: TrainingState | None = None,
-    on_step: Callable[[TrainingState], None] | None = None,
-) -> TrainingState:
+    state: TrainingState[DistanceModel] | None = None,
+    on_step: Callable[[TrainingState[DistanceModel]], None] | None = None,
+) -> TrainingState[DistanceModel]:
     """Trains a distance model and its statistical parameters jointly across regions.
 
     Training averages the losses of region–species groups over regions within each
@@ -599,8 +653,6 @@ def train(
     if on_step is not None and not callable(on_step):
         raise ValueError("on_step must be callable or None")
     if state is not None:
-        from dataclasses import replace
-
         if (
             replace(config, steps=state.config.steps) != state.config
             or config.steps < state.config.steps
@@ -645,6 +697,7 @@ def train(
                 "Continuation requires an optimizer whose state has the saved structure"
             )
         optimizer_state = state.optimizer_state
+    optimizer_state = _match_update_weak_types(config.optimizer, optimizer_state, trainable)
 
     regional_batches = tuple(
         tuple(b for b in training_batches if b.region.name == name)
@@ -662,7 +715,7 @@ def train(
     ):
         raise ValueError("Continuation requires unchanged training and validation groups")
 
-    def make_model(calibrations) -> LandscapeGeneticsModel:
+    def make_model(calibrations) -> LandscapeGeneticsModel[DistanceModel]:
         head = config.loss._calibration_head(
             first_observations.target, calibrations, parameters[0].species
         )

@@ -51,8 +51,9 @@ amg = ["jaxscape[amjax]==0.0.11"]
 examples = ["matplotlib>=3.10,<4", "pandas>=2.2,<4", "rioxarray>=0.19,<1"]
 
 [tool.pyright]
+exclude = ["scripts/build_example_data.py"] # Inline script dependencies (PEP 723).
 extraPaths = ["src", "tests"]
-include = ["src", "tests", "experiments"]
+include = ["src", "tests", "experiments", "scripts"]
 pythonVersion = "3.12"
 reportFunctionMemberAccess = false
 reportIncompatibleMethodOverride = true

@@ -1,5 +1,6 @@
 """Differentiable effective-resistance layer on conductance grid graphs using JAXScape."""
 
+import math
 from dataclasses import dataclass, field
 
 import equinox as eqx
@@ -7,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import lineax as lx
 from jaxscape import GridGraph, ResistanceDistance
-from jaxscape.solvers import AMJaxCGSolverState
+from jaxscape.solvers import AMJaxCGSolver, AMJaxCGSolverState
 
 from .config import ResistanceSolverConfig
 
@@ -17,17 +18,39 @@ from .config import ResistanceSolverConfig
 class _ResistanceSolverContext:
     """A resistance solver for one graph shape, with reusable preconditioner arrays."""
 
-    graph_shape: tuple[int, int] = field(metadata={"static": True})
+    graph_shape: tuple[int, ...] = field(metadata={"static": True})
     solver: lx.AbstractLinearSolver
     solver_state: AMJaxCGSolverState | None = None
-    config: ResistanceSolverConfig = field(
-        default=ResistanceSolverConfig(), metadata={"static": True}
-    )
 
 
 def _mean_conductance(left, right):
     """Returns the conductance of an edge: the mean of its two vertices' conductances."""
     return 0.5 * (left + right)
+
+
+def _resistance_context(
+    graph_shape: tuple[int, ...], config: ResistanceSolverConfig
+) -> _ResistanceSolverContext:
+    """Prepares a reusable resistance solver for a conductance grid graph of one shape.
+
+    Conjugate gradient, with optional algebraic multigrid preconditioning prepared
+    on a uniform conductance grid graph, follows ``config``. Preparation runs
+    eagerly, also inside traced functions.
+    """
+    if len(graph_shape) != 2 or math.prod(graph_shape) < 2:
+        raise ValueError("Effective resistance requires a 2D surface with at least two vertices")
+    if not config.use_amg:
+        return _ResistanceSolverContext(
+            graph_shape,
+            lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps),
+        )
+    solver = AMJaxCGSolver(
+        rtol=config.rtol, atol=config.atol, max_steps=config.max_steps, coarse_solver="pinv"
+    )
+    with jax.ensure_compile_time_eval():
+        template = GridGraph(jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance)
+        state = ResistanceDistance(solver=solver).init_preconditioner(template)
+    return _ResistanceSolverContext(graph_shape, solver, state)
 
 
 def _effective_resistance(
@@ -39,9 +62,8 @@ def _effective_resistance(
     """Computes effective resistances among vertices of a conductance grid graph.
 
     Each edge of the four-neighbor grid graph averages its two vertices'
-    conductances. The solve runs in float64 and returns the surface's floating
-    data type, with zero resistance between coincident vertices. Invalid inputs
-    and failed solves raise errors.
+    conductances. The solve runs and returns in float64, with zero resistance
+    between coincident vertices. Invalid inputs and failed solves raise errors.
 
     Args:
         conductance: Positive conductance surface with shape ``(rows, columns)``.
@@ -49,7 +71,7 @@ def _effective_resistance(
         context: Resistance solver prepared for the surface's shape.
 
     Returns:
-        The square matrix of effective resistances among ``terminal_nodes``.
+        The float64 square matrix of effective resistances among ``terminal_nodes``.
     """
     surface = jnp.asarray(conductance)
     if surface.ndim != 2 or surface.size < 2:
@@ -77,5 +99,4 @@ def _effective_resistance(
     resistances = ResistanceDistance(solver=context.solver).nodes_to_nodes_distance(
         graph, nodes, state=context.solver_state
     )
-    resistances = resistances.at[jnp.diag_indices(nodes.size)].set(0)
-    return resistances.astype(surface.dtype)
+    return resistances.at[jnp.diag_indices(nodes.size)].set(0)

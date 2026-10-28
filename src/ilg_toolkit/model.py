@@ -7,7 +7,7 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from ._checks import _require_float64
-from .calibration import AbstractCalibrationHead
+from .calibration import AbstractCalibrationHead, MLPECalibrationHead
 from .data import _feature_names, PairwiseObservations, RegionBatch, TargetSpec
 from .models import AbstractDistanceModel
 from .models.base import (
@@ -21,13 +21,14 @@ from .prediction import Prediction
 
 
 @final
-class LandscapeGeneticsModel(eqx.Module):
+class LandscapeGeneticsModel[DistanceModel: AbstractDistanceModel](eqx.Module):
     """Landscape genetics model: a distance model composed with a calibration head.
 
     The distance model maps landscape features to ecological distances, and the
     calibration head maps ecological distances to genetic predictions on the
     original scale. Species names come from the distance model, and the target
-    contract from the calibration head.
+    contract from the calibration head. The class is generic in its distance model
+    type, so ``model.distance_model`` keeps the type of the distance model it holds.
 
     Args:
         distance_model: Distance model giving ecological distances.
@@ -39,10 +40,11 @@ class LandscapeGeneticsModel(eqx.Module):
     Raises:
         TypeError: If ``distance_model`` or ``calibration_head`` has an unsupported
             type.
-        ValueError: If the feature names are empty or repeat a name.
+        ValueError: If the feature names are empty or repeat a name, or an MLPE
+            calibration head holds species that the distance model lacks.
     """
 
-    distance_model: AbstractDistanceModel
+    distance_model: DistanceModel
     calibration_head: AbstractCalibrationHead
     feature_names: tuple[str, ...]
 
@@ -51,6 +53,13 @@ class LandscapeGeneticsModel(eqx.Module):
             raise TypeError("distance_model must implement AbstractDistanceModel")
         if not isinstance(self.calibration_head, AbstractCalibrationHead):
             raise TypeError("calibration_head must implement AbstractCalibrationHead")
+        if isinstance(self.calibration_head, MLPECalibrationHead):
+            fitted = {species for _, species in self.calibration_head.calibrations}
+            if not fitted <= set(_model_species(self.distance_model)):
+                raise ValueError(
+                    f"MLPE calibration species {sorted(fitted, key=str)!r} must be species of "
+                    f"the distance model, {self.distance_model.species!r}"
+                )
         self.feature_names = _feature_names(self.feature_names)
 
     @property
@@ -64,6 +73,7 @@ class LandscapeGeneticsModel(eqx.Module):
         return self.calibration_head.target
 
     def _validate_region(self, region: RegionBatch):
+        """Raises a ``ValueError`` if a region's feature names differ from ``feature_names``."""
         if region.feature_names != self.feature_names:
             raise ValueError(
                 f"Query features {region.feature_names} must match the training features "
@@ -131,8 +141,9 @@ class LandscapeGeneticsModel(eqx.Module):
             known_effects: Whether to include the saved population-effect posterior
                 of the MLPE calibration.
             support: Support observations, one per queried species, that update the
-                saved population-effect posterior for this call. Support pairs are
-                disjoint from the calibration pairs and from explicit query pairs,
+                saved population-effect posterior for this call. Support requires
+                explicit query pairs for each queried species; support pairs are
+                disjoint from the calibration pairs and from the query pairs,
                 including reversals; shared sampling units are allowed.
 
         Returns:
@@ -142,16 +153,17 @@ class LandscapeGeneticsModel(eqx.Module):
         Raises:
             ValueError: If the region's feature names differ from ``feature_names``,
                 the query names an unknown species, a multispecies model receives a
-                sequence of pairs or ``None``, ``support`` does not match the queried
-                species, or the calibration head rejects the conditioning mode or the
-                region.
+                sequence of pairs or ``None``, the query pairs are empty, repeat a
+                pair or name an unknown sampling unit, ``support`` does not match the
+                queried species or comes without explicit query pairs, or the
+                calibration head rejects the conditioning mode or the region.
             MLPEError: If ``known_effects=True`` is combined with ``support``, or the
                 support observations or their pairs are invalid.
             RuntimeError: If float64 is disabled.
 
         Examples:
             Prepare one landscape with six located populations and fit an MLPE
-            calibration head from measurements among its first four populations::
+            calibration head from measurements among its first four populations:
 
                 import coordax as cx
                 import jax
@@ -182,7 +194,7 @@ class LandscapeGeneticsModel(eqx.Module):
                 query_pairs = [("p4", "p2"), ("p5", "p3")]
 
             Marginal predictions use the fitted intercept, slope and distance
-            standardization, with population effects averaged out::
+            standardization, with population effects averaged out:
 
                 marginal = model.predict(region, query_pairs)
                 marginal.values                 # Genetic means in original units.
@@ -192,7 +204,7 @@ class LandscapeGeneticsModel(eqx.Module):
             Saved-effect predictions add the posterior population effects estimated
             from the calibration observations. Populations without calibration
             observations keep a zero prior mean and the prior population variance;
-            query pairs may overlap calibration pairs::
+            query pairs may overlap calibration pairs:
 
                 saved = model.predict(region, query_pairs, known_effects=True)
                 saved.extras["effect_variance"] # Variance of the summed population effects.
@@ -201,7 +213,7 @@ class LandscapeGeneticsModel(eqx.Module):
             Support observations update the saved posterior for this call, including
             populations without calibration observations. The distance model,
             coefficients, distance standardization and variance components stay
-            fixed::
+            fixed:
 
                 support = PairwiseObservations.from_pairs(
                     [("p4", "p0"), ("p4", "p1")], [2.7, 2.2], target=model.target,
@@ -214,6 +226,8 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         _require_float64()
         self._validate_region(region)
+        if region.individual_based and isinstance(self.calibration_head, MLPECalibrationHead):
+            raise ValueError("MLPE calibration heads reject individual-based region batches")
         requests, by_species = _resolve_query(self.species, query)
         support_by_species = self._support_observations(support, requests)
         distances_by_species = _species_distances(
@@ -256,6 +270,8 @@ class LandscapeGeneticsModel(eqx.Module):
     ) -> dict[str | None, PairwiseObservations]:
         if support is None:
             return {}
+        if any(request.pairs is None for request in requests):
+            raise ValueError("Support requires explicit query pairs for each queried species")
         observations = (support,) if isinstance(support, PairwiseObservations) else support
         if (
             not isinstance(observations, Sequence)

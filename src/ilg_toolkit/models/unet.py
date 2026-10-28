@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import final
 
@@ -10,7 +11,7 @@ import jax
 import jax.numpy as jnp
 
 from .._checks import _positive_integer
-from .base import _species_names, EmbeddingDistanceModel
+from .base import _species_names, _species_rows, EmbeddingDistanceModel
 from .common import _encode_patches
 
 
@@ -55,8 +56,8 @@ class _ResidualConvBlock(eqx.Module):
             if inputs == outputs
             else eqx.nn.Conv2d(inputs, outputs, 1, dtype=jnp.float32, key=projection)
         )
-        self.norm1 = eqx.nn.GroupNorm(min(8, outputs), outputs, dtype=jnp.float32)
-        self.norm2 = eqx.nn.GroupNorm(min(8, outputs), outputs, dtype=jnp.float32)
+        self.norm1 = eqx.nn.GroupNorm(math.gcd(8, outputs), outputs, dtype=jnp.float32)
+        self.norm2 = eqx.nn.GroupNorm(math.gcd(8, outputs), outputs, dtype=jnp.float32)
         self.dropout = eqx.nn.Dropout(dropout, inference=True)
 
     def __call__(self, values: jax.Array) -> jax.Array:
@@ -85,7 +86,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         patch_size: Square raster patch side length, default 32. Both raster dimensions
             must be divisible by it; sampling units use their containing patch.
         base_channels: Width of the first U-Net stage, default 32. Later stages expand
-            this width.
+            this width, and group normalization uses ``gcd(8, width)`` groups.
         embedding_dim: Dimension of each species' embedding at a patch, default 16.
         dropout: Dropout probability during training, default 0.1. Inference mode
             disables it.
@@ -121,7 +122,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
     merge1_norm: eqx.nn.GroupNorm
     decoder1: _ResidualConvBlock
     embedding_head: eqx.nn.Conv2d
-    species: tuple[str, ...] | None = eqx.field(static=True, default=None, kw_only=True)
+    species: tuple[str, ...] | None = eqx.field(static=True)
     patch_microbatch_size: int | None = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
     base_channels: int = eqx.field(static=True)
@@ -157,7 +158,9 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             dtype=jnp.float32,
             key=keys[0],
         )
-        self.patch_norm = eqx.nn.GroupNorm(min(8, base_channels), base_channels, dtype=jnp.float32)
+        self.patch_norm = eqx.nn.GroupNorm(
+            math.gcd(8, base_channels), base_channels, dtype=jnp.float32
+        )
         self.encoder1 = _ResidualConvBlock(
             base_channels, base_channels, dropout=dropout, key=keys[1]
         )
@@ -170,7 +173,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             dtype=jnp.float32,
             key=keys[2],
         )
-        self.down1_norm = eqx.nn.GroupNorm(min(8, stage2), stage2, dtype=jnp.float32)
+        self.down1_norm = eqx.nn.GroupNorm(math.gcd(8, stage2), stage2, dtype=jnp.float32)
         self.encoder2 = _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[3])
         self.down2 = eqx.nn.Conv2d(
             stage2,
@@ -181,7 +184,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             dtype=jnp.float32,
             key=keys[4],
         )
-        self.down2_norm = eqx.nn.GroupNorm(min(8, bottleneck), bottleneck, dtype=jnp.float32)
+        self.down2_norm = eqx.nn.GroupNorm(math.gcd(8, bottleneck), bottleneck, dtype=jnp.float32)
         self.bottleneck = _ResidualConvBlock(bottleneck, bottleneck, dropout=dropout, key=keys[5])
         self.up2 = eqx.nn.ConvTranspose2d(
             bottleneck, stage2, 2, stride=2, dtype=jnp.float32, key=keys[6]
@@ -189,7 +192,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         self.merge2 = eqx.nn.Conv2d(
             2 * stage2, stage2, 3, padding=1, dtype=jnp.float32, key=keys[7]
         )
-        self.merge2_norm = eqx.nn.GroupNorm(min(8, stage2), stage2, dtype=jnp.float32)
+        self.merge2_norm = eqx.nn.GroupNorm(math.gcd(8, stage2), stage2, dtype=jnp.float32)
         self.decoder2 = _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[8])
         self.up1 = eqx.nn.ConvTranspose2d(
             stage2, base_channels, 2, stride=2, dtype=jnp.float32, key=keys[9]
@@ -202,13 +205,15 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             dtype=jnp.float32,
             key=keys[10],
         )
-        self.merge1_norm = eqx.nn.GroupNorm(min(8, base_channels), base_channels, dtype=jnp.float32)
+        self.merge1_norm = eqx.nn.GroupNorm(
+            math.gcd(8, base_channels), base_channels, dtype=jnp.float32
+        )
         self.decoder1 = _ResidualConvBlock(
             base_channels, base_channels, dropout=dropout, key=keys[11]
         )
         self.embedding_head = eqx.nn.Conv2d(
             base_channels,
-            (1 if species is None else len(species)) * embedding_dim,
+            _species_rows(species) * embedding_dim,
             1,
             dtype=jnp.float32,
             key=keys[12],

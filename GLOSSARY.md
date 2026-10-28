@@ -233,12 +233,12 @@ region–species group, retaining population dependence within each MLPE calibra
 _Avoid_: Unpooled genetic calibration; regional calibration, when describing this policy.
 
 **Ensemble**:
-An ordered collection of compatible fitted landscape genetics models whose genetic predictions are averaged on the original target scale.
+An ordered collection of compatible trained landscape genetics models whose genetic predictions are averaged on the original target scale.
 _Avoid_: Fold ensemble, when no particular training split is implied.
 
 **Ensemble member**:
-One fitted model at a given position in an ensemble.
-_Avoid_: Fold, when referring to the fitted model rather than the population partition.
+One trained model at a given position in an ensemble.
+_Avoid_: Fold, when referring to the trained model rather than the population partition.
 
 **Member spread**:
 Descriptive variability among ensemble members' predictions or conductance surfaces.
@@ -249,14 +249,14 @@ An unordered pair of distinct populations within a landscape, associated with an
 _Avoid_: Sample, when referring to a pair rather than an individual population or genetic specimen.
 
 **Selected model**:
-A fitted landscape genetics model retained for prediction from the evaluated
+A trained landscape genetics model retained for prediction from the evaluated
 training steps, chosen by the lowest validation loss when validation
 observations are supplied. Without validation observations, the final evaluated
 model is selected.
 _Avoid_: Best model; snapshot, when referring to the selected model.
 
 **Latest model**:
-The fitted landscape genetics model corresponding to the current training step's distance and statistical parameters.
+The trained landscape genetics model corresponding to the current training step's distance and statistical parameters.
 _Avoid_: Selected model, when referring to the state used for continued training.
 
 **Population-holdout evaluation**:

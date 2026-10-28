@@ -1,5 +1,6 @@
 """Tests of ensembles: original-scale averaging of ordered landscape genetics models."""
 
+import warnings
 from dataclasses import replace
 
 import coordax as cx
@@ -63,9 +64,18 @@ def test_species_queries_average_each_species_and_keep_member_predictions(known_
         ensemble.predict(region, {"frog": [("d", "a")]})["frog"].mean.values,
         results["frog"].mean.values,
     )
-    for invalid in (None, [("a", "b")], {"toad": None}, {}):
-        with pytest.raises(ValueError):
+    for invalid, message in (
+        (None, "Multispecies models require a query mapping"),
+        ([("a", "b")], "Multispecies models require a query mapping"),
+        ({"toad": None}, "Unknown species"),
+        ({}, "at least one species"),
+        ({"frog": [("a", "z")]}, "absent from region 'alpine': z"),
+        ({"frog": []}, "at least one sampling-unit pair"),
+        ({"frog": [("a", "b"), ("b", "a")]}, "reversed duplicates"),
+    ):
+        with pytest.raises(ValueError, match=message) as error:
             ensemble.predict(region, invalid)
+        assert not hasattr(error.value, "__notes__")
 
 
 def test_members_apply_target_inverse_before_averaging(known_ensemble, FeatureEmbedding):
@@ -157,13 +167,24 @@ def test_members_are_averaged_on_the_original_scale_not_through_their_surfaces(P
     )
 
 
-def test_feature_meanings_are_validated_for_every_member(known_ensemble):
+def test_feature_meanings_are_validated_once_for_the_ensemble(known_ensemble):
     region, ensemble, _ = known_ensemble()
     meaning = cx.LabeledAxis("feature", np.array(["different meaning"]))
     changed = replace(region, features=cx.field(region.feature_array, "row", "column", meaning))
     with pytest.raises(ValueError, match="feature") as error:
         ensemble.predict(changed)
-    assert error.value.__notes__ == ["Raised by ensemble member 0"]
+    assert not hasattr(error.value, "__notes__")
+
+
+def test_shared_vertices_warn_once_per_ensemble_prediction(known_ensemble):
+    region, ensemble, _ = known_ensemble()
+    shared = replace(region, grid_positions=np.array([[0, 0], [0, 0], [0, 2], [0, 3]]))
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        ensemble.predict(shared, [("a", "c")])
+    messages = [str(warning.message) for warning in record]
+    assert len(messages) == 1
+    assert messages[0].endswith("region 'alpine': (a, b)")
 
 
 def test_members_with_different_patch_sizes_align_genetic_predictions():

@@ -12,17 +12,14 @@ import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import lineax as lx
 import numpy as np
-from jaxscape import GridGraph, ResistanceDistance
-from jaxscape.solvers import AMJaxCGSolver
 from numpy.typing import ArrayLike
 
 from .._checks import _require_float64
 from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
-from ..resistance import _effective_resistance, _mean_conductance, _ResistanceSolverContext
+from ..resistance import _effective_resistance, _resistance_context, _ResistanceSolverContext
 from .common import _inference_model, _pixel_to_patch_nodes
 
 
@@ -75,8 +72,12 @@ class AbstractDistanceModel(eqx.Module):
     the model in Equinox inference mode (``eqx.nn.inference_mode``). Training clears
     every ``inference`` flag and binds its own random key to each
     inference-dependent layer whose call accepts ``key``, such as
-    ``eqx.nn.Dropout``, so call those layers without a key. Stateful layers
-    (Equinox state indices, such as ``eqx.nn.BatchNorm``) raise a ``TypeError``.
+    ``eqx.nn.Dropout``; the bound key applies when the caller passes no key or
+    ``None``, as ``eqx.nn.Sequential`` does. A bound key draws one dropout mask per
+    layer and update: repeated calls of the layer, and calls mapped over patches or
+    pixels with ``jax.vmap``, share it, so apply dropout to the whole grid for
+    independent masks. Stateful layers (Equinox state indices, such as
+    ``eqx.nn.BatchNorm``) raise a ``TypeError``.
 
     Examples:
         A single-species embedding-distance model with a trainable linear feature map:
@@ -175,8 +176,10 @@ class AbstractDistanceModel(eqx.Module):
             mapping query, or one ``Prediction`` otherwise.
 
         Raises:
-            ValueError: A species is unknown, a multispecies model receives a
-                sequence or ``None``, or a pair names an unknown sampling unit.
+            ValueError: If a species is unknown, a multispecies model receives a
+                sequence or ``None``, the query pairs are empty or repeat a pair,
+                or a pair names an unknown sampling unit.
+            RuntimeError: If float64 is disabled.
         """
         _require_float64()
         requests, by_species = _resolve_query(self.species, query)
@@ -221,10 +224,8 @@ class ConductanceModel(AbstractDistanceModel):
         latent: jax.Array,
         pairs: tuple[jax.Array, tuple[jax.Array, jax.Array]],
         species_index: int | jax.Array,
-        *,
-        context: _ResistanceSolverContext | None = None,
     ) -> jax.Array:
-        """Computes effective resistances for pairs of sampling units.
+        """Computes float64 effective resistances for pairs of sampling units.
 
         Args:
             latent: Backbone output of the region.
@@ -232,23 +233,11 @@ class ConductanceModel(AbstractDistanceModel):
                 ``AbstractDistanceModel.ecological_distances``.
             species_index: Parameter row of the species, an integer or a scalar
                 integer array.
-            context: Resistance solver prepared for this patch encoder and the
-                region's raster shape; training and prediction supply it.
 
         Returns:
             Effective resistances aligned with ``left`` and ``right``.
-
-        Raises:
-            ValueError: ``context`` is missing or was prepared for other solver
-                settings.
         """
-        nodes, indices = pairs
-        if context is None:
-            raise ValueError("Effective resistance requires a prepared resistance solver context")
-        if context.config != self.solver_config:
-            raise ValueError("Solver context policy does not match the conductance model settings")
-        surface = self.conductance(latent, species_index)
-        return _effective_resistance(surface, nodes, context=context)[indices]
+        return _resistance_distances(self, latent, pairs, species_index, context=None)
 
     def conductance_surface(self, region: RegionBatch, species: str | None = None) -> cx.Field:
         """Returns one species' positive conductance surface over a region.
@@ -271,12 +260,13 @@ class ConductanceModel(AbstractDistanceModel):
             ``column`` dimensions.
 
         Raises:
-            ValueError: The species is unknown or missing for a multispecies model,
-                or ``patch_size`` does not divide the raster.
+            ValueError: If the species is unknown or missing for a multispecies
+                model, or ``patch_size`` does not divide the raster.
+            RuntimeError: If float64 is disabled.
 
         Examples:
             Write a learned surface as a GeoTIFF with rioxarray, reattaching the
-            coordinate reference system of the raster the features came from::
+            coordinate reference system of the raster the features came from:
 
                 surface = distance_model.conductance_surface(region).to_xarray()
                 surface = surface.rename(row="y", column="x").rio.write_crs(raster.rio.crs)
@@ -358,6 +348,11 @@ def _species_names(species: Sequence[str] | None) -> tuple[str, ...] | None:
     return names
 
 
+def _species_rows(species: tuple[str, ...] | None) -> int:
+    """Returns the number of species-specific parameter rows: one per name, or one unnamed."""
+    return 1 if species is None else len(species)
+
+
 def _patch_axis(axis: cx.Coordinate | None, dimension: str, patch_size: int) -> cx.Coordinate | str:
     """Returns patch-center coordinates along one raster dimension, or the dimension name.
 
@@ -430,18 +425,18 @@ def _check_regions(model: AbstractDistanceModel, regions: Iterable[RegionBatch])
     """
     regions = tuple({id(region): region for region in regions}.values())
     patch_size = model.patch_size
-    trims = [trim for region in regions if (trim := _patch_trim(region, patch_size))]
+    trims = dict.fromkeys(trim for region in regions if (trim := _patch_trim(region, patch_size)))
     if trims:
         raise ValueError(
             f"Raster rows and columns must be multiples of the distance model's "
             f"patch_size={patch_size}. " + "; ".join(trims)
         )
-    shared = [found for region in regions if (found := _shared_vertices(region, patch_size))]
+    shared = dict.fromkeys(
+        found for region in regions if (found := _shared_vertices(region, patch_size))
+    )
     if shared:
         warnings.warn(
-            f"Sampling units share a vertex at patch_size={patch_size}, so the distance "
-            "model cannot tell their locations apart and their pairwise genetic "
-            "observations carry no landscape information: " + "; ".join(shared),
+            f"Sampling units share a vertex at patch_size={patch_size}: " + "; ".join(shared),
             UserWarning,
             skip_file_prefixes=_INTERNAL_FILES,
         )
@@ -477,6 +472,8 @@ def _query_pairs_or_all(pairs: object) -> tuple[tuple[str, str], ...] | None:
     """Returns one species' query pairs as a tuple, or ``None`` for every distinct pair."""
     if pairs is None:
         return None
+    if isinstance(pairs, np.ndarray):
+        pairs = [tuple(pair) for pair in pairs.tolist()] if pairs.ndim == 2 else pairs.tolist()
     if isinstance(pairs, (str, bytes)) or not isinstance(pairs, Sequence):
         raise ValueError("Query pairs must be a sequence of sampling-unit pairs or None")
     return tuple(cast(Sequence[tuple[str, str]], pairs))
@@ -519,6 +516,31 @@ def _query_results[T](results: Mapping[str | None, T], by_species: bool) -> T | 
     return result
 
 
+def _query_regions(
+    species: tuple[str | None, ...], region: RegionBatch, requests: tuple[_SpeciesQuery, ...]
+) -> dict[str | None, RegionBatch]:
+    """Returns the region batch of each queried species' sampling units.
+
+    ``species`` are the distance model's species in parameter order.
+    """
+    if len(species) > 1 and region.species is None:
+        raise ValueError("Multispecies queries require sampling-unit species labels")
+    if species == (None,) and region.species is not None:
+        raise ValueError(
+            "Named observations or sampling units require a distance model with species"
+        )
+    return {request.name: _region_for_species(region, request.name) for request in requests}
+
+
+def _check_query(
+    species: tuple[str | None, ...], region: RegionBatch, requests: tuple[_SpeciesQuery, ...]
+) -> None:
+    """Raises a ``ValueError`` if a query's species or pairs do not fit a region batch."""
+    regions = _query_regions(species, region, requests)
+    for request in requests:
+        _query_pairs(regions[request.name], request.pairs)
+
+
 def _region_for_species(region: RegionBatch, name: str | None) -> RegionBatch:
     """Returns the region batch of one species' sampling units."""
     if region.species is None:
@@ -539,14 +561,17 @@ def _query_pairs(
 ) -> tuple[tuple[tuple[str, str], ...], tuple[jax.Array, jax.Array]]:
     """Returns validated query pair labels and their sampling-unit indices in a region."""
     raw = tuple(combinations(region.sampling_unit_ids, 2)) if pairs is None else tuple(pairs)
-    try:
-        labels = _validate_pairs(raw)
-        lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
-        indices = jnp.asarray([(lookup[a], lookup[b]) for a, b in labels], dtype=jnp.int32)
-    except (TypeError, ValueError, KeyError) as error:
+    if not raw:
+        raise ValueError("A query requires at least one sampling-unit pair")
+    labels = _validate_pairs(raw)
+    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
+    unknown = dict.fromkeys(label for pair in labels for label in pair if label not in lookup)
+    if unknown:
         raise ValueError(
-            "Query pairs require unique distinct sampling units in the region"
-        ) from error
+            f"Query pairs name sampling units absent from region {region.name!r}: "
+            + ", ".join(unknown)
+        )
+    indices = jnp.asarray([(lookup[a], lookup[b]) for a, b in labels], dtype=jnp.int32)
     return labels, (indices[:, 0], indices[:, 1])
 
 
@@ -559,20 +584,22 @@ def _species_distances(
     """Computes each queried species' region batch, pair labels and ecological distances.
 
     The backbone output and the resistance solver are prepared once, in inference
-    mode. ``extra_pairs`` appends a species' additional pairs after its query
-    pairs, in both the labels and the distances.
+    mode. ``extra_pairs`` appends a species' additional pairs after its explicit
+    query pairs, in both the labels and the distances.
     """
-    if len(_model_species(model)) > 1 and region.species is None:
-        raise ValueError("Multispecies queries require sampling-unit species labels")
+    regions = _query_regions(_model_species(model), region, requests)
     _check_regions(model, (region,))
     model = _inference_model(model)
     context = _prepare_distance_context(model, region.feature_array)
     latent = model.backbone(region.feature_array)
     results = {}
     for request in requests:
-        prepared = _region_for_species(region, request.name)
+        prepared = regions[request.name]
         extra = () if extra_pairs is None else extra_pairs.get(request.name, ())
-        pairs = _query_pairs(prepared, request.pairs)[0] + extra if extra else request.pairs
+        pairs = request.pairs
+        if extra:
+            assert pairs is not None
+            pairs = (*pairs, *extra)
         labels, values = _query_distances_from_latent(
             model, latent, prepared, pairs, species_index=request.index, context=context
         )
@@ -585,8 +612,6 @@ def _prepare_distance_context(
 ) -> _ResistanceSolverContext | None:
     """Prepares a reusable resistance solver for a region's conductance grid graph.
 
-    Conjugate gradient, with optional algebraic multigrid preconditioning prepared
-    on a uniform conductance grid graph, follows the model's ``solver_config``.
     Distance models without a conductance grid graph need no solver.
     """
     if not isinstance(model, ConductanceModel):
@@ -595,21 +620,23 @@ def _prepare_distance_context(
     if len(shape) != 3 or shape[0] % model.patch_size or shape[1] % model.patch_size:
         raise ValueError("Raster dimensions must be divisible by model patch_size")
     graph_shape = (shape[0] // model.patch_size, shape[1] // model.patch_size)
-    if graph_shape[0] * graph_shape[1] < 2:
-        raise ValueError("Effective resistance requires at least two graph vertices")
-    config = model.solver_config
-    if not config.use_amg:
-        return _ResistanceSolverContext(
-            graph_shape,
-            lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps),
-            config=config,
-        )
-    solver = AMJaxCGSolver(
-        rtol=config.rtol, atol=config.atol, max_steps=config.max_steps, coarse_solver="pinv"
-    )
-    template = GridGraph(jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance)
-    state = ResistanceDistance(solver=solver).init_preconditioner(template)
-    return _ResistanceSolverContext(graph_shape, solver, state, config)
+    return _resistance_context(graph_shape, model.solver_config)
+
+
+def _resistance_distances(
+    model: ConductanceModel,
+    latent: jax.Array,
+    pairs: tuple[jax.Array, tuple[jax.Array, jax.Array]],
+    species_index: int | jax.Array,
+    *,
+    context: _ResistanceSolverContext | None,
+) -> jax.Array:
+    """Computes a patch encoder's effective resistances with a prepared or new solver."""
+    nodes, indices = pairs
+    surface = model.conductance(latent, species_index)
+    if context is None:
+        context = _resistance_context(surface.shape, model.solver_config)
+    return _effective_resistance(surface, nodes, context=context)[indices]
 
 
 def _query_distances_from_latent(
@@ -658,5 +685,5 @@ def _distances_from_latent(
     )
     pairs = (nodes, indices)
     if isinstance(model, ConductanceModel):
-        return model.ecological_distances(latent, pairs, species_index, context=context)
+        return _resistance_distances(model, latent, pairs, species_index, context=context)
     return model.ecological_distances(latent, pairs, species_index)

@@ -18,11 +18,9 @@ def _is_equinox_module(cls: griffe.Class) -> bool:
         for base in cls.bases
     ):
         return True
-    try:
-        bases = cls.resolved_bases
-    except ValueError:
-        return False
-    return any(_is_equinox_module(base) for base in bases)
+    return any(
+        _is_equinox_module(cast(griffe.Class, base)) for base in cls.resolved_bases if base.is_class
+    )
 
 
 def _field_arguments(attribute: griffe.Attribute) -> dict[str, Any] | None:

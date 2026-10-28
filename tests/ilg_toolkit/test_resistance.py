@@ -1,64 +1,66 @@
 """Tests of the effective-resistance layer and resistance solver settings."""
 
-import jax
+import coordax as cx
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from ilg_toolkit import ResistanceSolverConfig
-from ilg_toolkit.models import LogLinearConductance
-from ilg_toolkit.models.base import _prepare_distance_context
-from ilg_toolkit.resistance import _effective_resistance
+from ilg_toolkit import RegionBatch, ResistanceSolverConfig
 
 
-def _context(shape, config=None):
-    """Returns the effective-resistance context of a conductance grid graph of a shape."""
-    model = LogLinearConductance(1, patch_size=1, solver_config=config)
-    context = _prepare_distance_context(model, jnp.zeros((*shape, 1)))
-    assert context is not None
-    return context
+def _region(features, positions):
+    """Returns a region batch with one elevation feature and one sampling unit per position."""
+    return RegionBatch(
+        "plot",
+        cx.field(
+            jnp.asarray(features)[..., None],
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
+        ),
+        tuple(f"u{index}" for index in range(len(positions))),
+        np.asarray(positions),
+    )
 
 
-def test_amg_resistance_and_gradients_match_independent_laplacian(dense_resistance):
+@pytest.mark.filterwarnings("ignore:Sampling units share a vertex")
+def test_amg_resistances_and_gradients_match_dense_laplacian(FeatureConductance, dense_resistance):
     pytest.importorskip("amjax")
     pytest.importorskip("pyamg")
-    with jax.enable_x64():
-        surface = np.array([[1.0, 1.4], [0.8, 2.0]])
-        nodes = np.array([3, 0, 1, 1])
-        context = _context(surface.shape, ResistanceSolverConfig(use_amg=True))
-        actual = _effective_resistance(surface, nodes, context=context)
-        expected = dense_resistance(surface, nodes)
-        np.testing.assert_allclose(actual, expected, atol=1e-8, rtol=1e-8)
-        np.testing.assert_allclose(
-            _effective_resistance(surface.tolist(), nodes.tolist(), context=context),
-            expected,
-            atol=1e-8,
-            rtol=1e-8,
-        )
-        gradient = jax.grad(
-            lambda values: _effective_resistance(values, nodes, context=context).sum()
-        )(jnp.asarray(surface))
-        finite_difference = np.zeros_like(surface)
-        for index in np.ndindex(surface.shape):
-            offset = np.zeros_like(surface)
-            offset[index] = 1e-5
-            finite_difference[index] = (
-                dense_resistance(surface + offset, nodes).sum()
-                - dense_resistance(surface - offset, nodes).sum()
-            ) / 2e-5
-        np.testing.assert_allclose(gradient, finite_difference, atol=1e-7, rtol=1e-6)
+    log_surface = np.log([[1.0, 1.4], [0.8, 2.0]])
+    nodes = np.array([3, 0, 1, 1])
+    region = _region(np.ones((2, 2)), [[1, 1], [0, 0], [0, 1], [0, 1]])
+    model = FeatureConductance(
+        jnp.asarray(log_surface), solver_config=ResistanceSolverConfig(use_amg=True)
+    )
+    upper = np.triu_indices(nodes.size, 1)
+    prediction = model.predict(region)
+    np.testing.assert_allclose(
+        prediction.values,
+        dense_resistance(np.exp(log_surface), nodes)[upper],
+        atol=1e-8,
+        rtol=1e-8,
+    )
+    assert prediction.values.dtype == jnp.float64
+
+    gradient = eqx.filter_grad(lambda distance_model: distance_model.predict(region).values.sum())(
+        model
+    ).weight
+    finite_difference = np.zeros_like(log_surface)
+    for index in np.ndindex(log_surface.shape):
+        offset = np.zeros_like(log_surface)
+        offset[index] = 1e-6
+        finite_difference[index] = (
+            dense_resistance(np.exp(log_surface + offset), nodes)[upper].sum()
+            - dense_resistance(np.exp(log_surface - offset), nodes)[upper].sum()
+        ) / 2e-6
+    np.testing.assert_allclose(gradient, finite_difference, atol=1e-7, rtol=1e-6)
 
 
-def test_solver_rejects_invalid_terminals_conductances_and_mismatched_contexts():
-    with jax.enable_x64():
-        square, row = _context((2, 2)), _context((1, 2))
-        with pytest.raises(ValueError):
-            _effective_resistance(jnp.ones((2, 2)), np.array([0.0, 1.5]), context=square)
-        with pytest.raises(RuntimeError):
-            _effective_resistance(jnp.ones((2, 2)), np.array([0, 4]), context=square)
-        with pytest.raises(RuntimeError):
-            _effective_resistance(jnp.array([[1.0, 0.0]]), np.array([0, 1]), context=row)
-        with pytest.raises(ValueError, match="does not match surface"):
-            _effective_resistance(jnp.ones((2, 2)), np.array([0, 1]), context=row)
+def test_effective_resistance_rejects_nonpositive_conductances(PointConductance):
+    region = _region([[1.0, 0.0]], [[0, 0], [0, 1]])
+    with pytest.raises(RuntimeError, match="finite and strictly positive"):
+        PointConductance(jnp.asarray(0.0)).predict(region)
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,7 @@
 
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from numbers import Real
 from typing import Any, final, TYPE_CHECKING
@@ -11,6 +11,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from ._checks import _positive_integer
 from ._training_utils import _RegionSpeciesKey
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 
@@ -64,7 +65,16 @@ class AbstractLoss(ABC):
     ) -> "AbstractCalibrationHead": ...
 
     @abstractmethod
-    def _fit_group(self, distances, observations, *, max_iterations) -> Any: ...
+    def _iteration_budget(self, max_iterations: int | None) -> int | None: ...
+
+    @abstractmethod
+    def _fit_group(
+        self,
+        distances: Callable[[], jax.Array],
+        observations: PairwiseObservations,
+        *,
+        max_iterations: int | None,
+    ) -> Any: ...
 
     @abstractmethod
     def _state_metadata(self, state) -> Any: ...
@@ -131,9 +141,12 @@ class Log1pLoss(AbstractLoss):
 
         return DirectCalibrationHead(target)
 
-    def _fit_group(self, distances, observations, *, max_iterations):
+    def _iteration_budget(self, max_iterations):
         if max_iterations is not None:
             raise ValueError("A direct calibration head has no iteration budget")
+        return None
+
+    def _fit_group(self, distances, observations, *, max_iterations):
         return None
 
     def _state_metadata(self, state):
@@ -320,8 +333,8 @@ class MLPELoss(AbstractLoss):
         )
 
     def _fixed_parameters(self, fitted):
-        # Arrays keep compiled validation from retracing when the values change;
-        # the calibration stores Python floats, which compilation treats as static.
+        # JAX arrays are traced by compiled validation; the calibration's Python floats
+        # would be static.
         return _MLPEFixedParameters(
             jnp.asarray((fitted.intercept, fitted.slope)),
             jnp.asarray(fitted.distance_center),
@@ -339,15 +352,18 @@ class MLPELoss(AbstractLoss):
             },
         )
 
+    def _iteration_budget(self, max_iterations):
+        from .mlpe.fit import MLPEError
+
+        return _positive_integer(
+            "max_iterations", 2000 if max_iterations is None else max_iterations, error=MLPEError
+        )
+
     def _fit_group(self, distances, observations, *, max_iterations):
         from .mlpe.fit import _fit_mlpe
 
-        return _fit_mlpe(
-            distances,
-            observations,
-            loss=self,
-            max_iterations=2000 if max_iterations is None else max_iterations,
-        )
+        assert max_iterations is not None
+        return _fit_mlpe(distances(), observations, loss=self, max_iterations=max_iterations)
 
     def _state_metadata(self, state):
         return [

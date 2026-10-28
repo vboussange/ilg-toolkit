@@ -2,7 +2,7 @@
 
 import math
 from dataclasses import dataclass, field
-from numbers import Real
+from numbers import Integral, Real
 
 import optax
 
@@ -66,6 +66,9 @@ class TrainingConfig:
     a function evaluating the same objective (same regions, species and random key),
     so line-search optimizers such as ``optax.lbfgs()`` work through
     [`train`][ilg_toolkit.train]. Configuration equality ignores the optimizer.
+    Training compiles its update for each optimizer object, so reusing one
+    optimizer object across folds, runs and checkpoint loads reuses the compiled
+    update.
 
     Args:
         loss: Loss of every region–species group.
@@ -105,12 +108,14 @@ class TrainingConfig:
             raise ValueError("loss must be an AbstractLoss")
         if (
             isinstance(self.seed, bool)
-            or not isinstance(self.seed, int)
+            or not isinstance(self.seed, Integral)
             or not 0 <= self.seed < 2**32
         ):
             raise ValueError("seed must be an integer in [0, 2**32)")
-        if isinstance(self.steps, bool) or not isinstance(self.steps, int) or self.steps < 0:
+        object.__setattr__(self, "seed", int(self.seed))
+        if isinstance(self.steps, bool) or not isinstance(self.steps, Integral) or self.steps < 0:
             raise ValueError("steps must be a nonnegative integer")
+        object.__setattr__(self, "steps", int(self.steps))
         object.__setattr__(self, "eval_every", _positive_integer("eval_every", self.eval_every))
         for name in ("region_batch_size", "species_batch_size", "species_microbatch_size"):
             object.__setattr__(

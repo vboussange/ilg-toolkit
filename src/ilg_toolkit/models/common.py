@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import Protocol
+from typing import Any, final, Protocol
 
 import equinox as eqx
 import jax
@@ -62,11 +62,23 @@ def _takes_key(value: object) -> bool:
     return call is not None and "key" in inspect.signature(call).parameters
 
 
+@final
+class _KeyedLayer(eqx.Module):
+    """An inference-dependent layer with a bound random key, used when its caller passes none."""
+
+    layer: Callable[..., Any]
+    key: jax.Array
+
+    def __call__(self, *args: Any, key: jax.Array | None = None, **kwargs: Any) -> Any:
+        return self.layer(*args, key=self.key if key is None else key, **kwargs)
+
+
 def _training_model[Model](model: Model, key: jax.Array) -> Model:
     """Returns the distance model in training mode, with random keys bound to its layers.
 
     Every ``inference`` flag is cleared. Each inference-dependent layer whose call
-    accepts a ``key`` receives its own split of ``key``, in tree order.
+    accepts a ``key`` receives its own split of ``key``, in tree order, used
+    whenever its caller passes no key.
     """
     model = eqx.nn.inference_mode(model, value=False)
 
@@ -78,7 +90,7 @@ def _training_model[Model](model: Model, key: jax.Array) -> Model:
         return model
     keys = iter(jax.random.split(key, count))
     return jax.tree.map(
-        lambda layer: eqx.Partial(layer, key=next(keys)) if is_layer(layer) else layer,
+        lambda layer: _KeyedLayer(layer, next(keys)) if is_layer(layer) else layer,
         model,
         is_leaf=is_layer,
     )

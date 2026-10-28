@@ -62,8 +62,13 @@ def test_genetic_queries_use_distance_model_species_and_original_scale(observati
     np.testing.assert_array_equal(
         model.predict(partial, {"hare": None})["hare"].values, results["hare"].values
     )
-    for query in (None, [("unit/7", "unit/20")], {"missing": None}, {}):
-        with pytest.raises(ValueError):
+    for query, message in (
+        (None, "Multispecies models require a query mapping"),
+        ([("unit/7", "unit/20")], "Multispecies models require a query mapping"),
+        ({"missing": None}, "Unknown species"),
+        ({}, "at least one species"),
+    ):
+        with pytest.raises(ValueError, match=message):
             model.predict(region, query)
 
 
@@ -166,7 +171,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     region, observations, training = four_population_calibration
     calibration_pairs = training.observed_pairs
     model = mlpe_calibrated_model
-    head = cast(MLPECalibrationHead, model.calibration_head).for_region(region.name)
+    calibration = cast(MLPECalibrationHead, model.calibration_head).for_region(region.name)
     direct = replace(model, calibration_head=DirectCalibrationHead(observations.target))
     pairs = (("population-4", "population-2"), ("population-5", "population-3"))
     known = model.predict(region, pairs, known_effects=True)
@@ -177,7 +182,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
         return np.array([distances[lookup[a], lookup[b]] for a, b in selected])
 
     expected_mean, expected_variance = joint_gaussian_reference(
-        head,
+        calibration,
         calibration_pairs,
         selected_distances(calibration_pairs),
         observations.aligned_values(region)[
@@ -195,7 +200,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     )
     result = model.predict(region, pairs, support=support)
     expected_mean, expected_variance = joint_gaussian_reference(
-        head,
+        calibration,
         calibration_pairs + support.observed_pairs,
         np.r_[selected_distances(calibration_pairs), selected_distances(support.observed_pairs)],
         np.r_[
@@ -212,7 +217,7 @@ def test_model_conditions_real_ecological_distances_with_calibration_fixed(
     np.testing.assert_allclose(result.as_matrix()[[4, 5], [2, 3]], expected_mean, atol=1e-10)
     np.testing.assert_allclose(
         result.as_matrix("effect_variance")[[4, 5], [2, 3]],
-        expected_variance - head.residual_variance - head.loss.jitter,
+        expected_variance - calibration.residual_variance - calibration.loss.jitter,
         atol=1e-10,
     )
     reused = PairwiseObservations.from_pairs(
@@ -293,6 +298,53 @@ def test_mlpe_calibration_head_retains_target_scale_after_save_and_load(
     # A fitted (converged) MLPE calibration head round-trips with its optimizer diagnostics.
     assert eqx.tree_equal(restored.calibration_head, converted.calibration_head)
     np.testing.assert_array_equal(restored.predict(region).values, converted.predict(region).values)
+
+
+def test_mlpe_calibration_heads_match_the_distance_model_species(
+    ScalarEmbedding, four_population_calibration, mlpe_calibrated_head
+):
+    region, _, _ = four_population_calibration
+    for species in (("frog",), ("frog", "newt")):
+        with pytest.raises(ValueError, match="species"):
+            LandscapeGeneticsModel(
+                ScalarEmbedding(jnp.zeros(len(species)), species=species),
+                mlpe_calibrated_head,
+                region.feature_names,
+            )
+    frog = MLPECalibrationHead(
+        mlpe_calibrated_head.target,
+        {(region.name, "frog"): mlpe_calibrated_head.for_region(region.name)},
+    )
+    with pytest.raises(ValueError, match="species"):
+        LandscapeGeneticsModel(ScalarEmbedding(jnp.asarray(1.0)), frog, region.feature_names)
+    with pytest.raises(ValueError, match="species"):
+        LandscapeGeneticsModel(
+            ScalarEmbedding(jnp.zeros(1), species=("newt",)), frog, region.feature_names
+        )
+    named = LandscapeGeneticsModel(
+        ScalarEmbedding(jnp.ones(2), species=("frog", "newt")), frog, region.feature_names
+    )
+    assert named.species == ("frog", "newt")
+
+
+def test_mlpe_prediction_rejects_individuals_before_computing_distances(
+    PointConductance, four_population_calibration, mlpe_calibrated_head
+):
+    region, _, _ = four_population_calibration
+    model = LandscapeGeneticsModel(
+        PointConductance(jnp.asarray(0.0)), mlpe_calibrated_head, region.feature_names
+    )
+    # Zero conductance would fail the effective-resistance solve.
+    individuals = replace(region, features=region.features * 0.0, individual_based=True)
+    with pytest.raises(ValueError, match="individual-based"):
+        model.predict(individuals)
+
+
+def test_support_requires_explicit_query_pairs(four_population_calibration, mlpe_calibrated_model):
+    region, observations, _ = four_population_calibration
+    support = observations.select_pairs(observations.observed_pairs[-1:])
+    with pytest.raises(ValueError, match="Support requires explicit query pairs"):
+        mlpe_calibrated_model.predict(region, support=support)
 
 
 def test_prediction_rejects_stateful_layers(BatchNormConductance, observation_problem):

@@ -247,7 +247,7 @@ def test_mlpe_updates_match_dense_reference(
     )
     assert result.history[-1].training_loss < result.history[0].training_loss
     assert result.step == result.selected_step == 2
-    calibration = cast(MLPECalibrationHead, result.selected_model.calibration_head)
+    calibration_head = cast(MLPECalibrationHead, result.selected_model.calibration_head)
     for index, (region, observed) in enumerate(problems):
         embedding = np.asarray(region.feature_array).reshape(unit_count, 2) * np.exp(
             expected[2 * groups_species[index] : 2 * groups_species[index] + 2]
@@ -270,11 +270,11 @@ def test_mlpe_updates_match_dense_reference(
             np.logaddexp(0, expected[parameter_count + 2 * index : parameter_count + 2 * index + 2])
             + 1e-10
         )
-        head = calibration.for_region(
+        calibration = calibration_head.for_region(
             region.name, None if species is None else species[groups_species[index]]
         )
         np.testing.assert_allclose(
-            [head.unit_variance, head.residual_variance],
+            [calibration.unit_variance, calibration.residual_variance],
             variances,
             rtol=1e-8,
             atol=1e-10,
@@ -288,15 +288,21 @@ def test_mlpe_updates_match_dense_reference(
             unit_count,
             variances,
         )
-        np.testing.assert_allclose([head.intercept, head.slope], beta, rtol=1e-8, atol=1e-10)
-        np.testing.assert_allclose(head.effect_mean, effect_mean, atol=1e-9)
-        np.testing.assert_allclose(head.effect_covariance, effect_covariance, atol=1e-10)
-        np.testing.assert_allclose(-head.ml_log_likelihood, nll, atol=1e-8)
-        assert head.slope < 0
+        np.testing.assert_allclose(
+            [calibration.intercept, calibration.slope], beta, rtol=1e-8, atol=1e-10
+        )
+        np.testing.assert_allclose(calibration.effect_mean, effect_mean, atol=1e-9)
+        np.testing.assert_allclose(calibration.effect_covariance, effect_covariance, atol=1e-10)
+        np.testing.assert_allclose(-calibration.ml_log_likelihood, nll, atol=1e-8)
+        assert calibration.slope < 0
         assert not np.allclose(variances, variances_by_group[index])
         observed_distances = distances[left, right]
-        np.testing.assert_allclose(head.distance_center, observed_distances.mean(), atol=1e-12)
-        np.testing.assert_allclose(head.distance_scale, observed_distances.std(ddof=1), atol=1e-12)
+        np.testing.assert_allclose(
+            calibration.distance_center, observed_distances.mean(), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            calibration.distance_scale, observed_distances.std(ddof=1), atol=1e-12
+        )
         expected_values = beta[0] + beta[1] * (
             observed_distances - observed_distances.mean()
         ) / observed_distances.std(ddof=1)
@@ -379,21 +385,25 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         distances = np.asarray(
             first.latest_model.distance_model.predict(region, {name: None})[name].as_matrix()
         )
-        head = cast(MLPECalibrationHead, first.latest_model.calibration_head).for_region(
+        calibration = cast(MLPECalibrationHead, first.latest_model.calibration_head).for_region(
             region.name, name
         )
-        assert set(head.calibration_pairs) == set(train_pairs)
+        assert set(calibration.calibration_pairs) == set(train_pairs)
         (left, right), _ = observed.select_pairs(train_pairs).aligned_pairs(single_region)
-        np.testing.assert_allclose(head.distance_center, distances[left, right].mean(), atol=1e-12)
         np.testing.assert_allclose(
-            head.distance_scale, distances[left, right].std(ddof=1), atol=1e-12
+            calibration.distance_center, distances[left, right].mean(), atol=1e-12
+        )
+        np.testing.assert_allclose(
+            calibration.distance_scale, distances[left, right].std(ddof=1), atol=1e-12
         )
         (left, right), values = observed.select_pairs(query_pair).aligned_pairs(single_region)
         expected_mean = (
-            head.intercept
-            + head.slope * (distances[left, right] - head.distance_center) / head.distance_scale
+            calibration.intercept
+            + calibration.slope
+            * (distances[left, right] - calibration.distance_center)
+            / calibration.distance_scale
         )
-        variance = 2 * head.unit_variance + head.residual_variance
+        variance = 2 * calibration.unit_variance + calibration.residual_variance
         expected_losses.append(
             0.5 * (np.log(2 * np.pi * variance) + (values[0] - expected_mean[0]) ** 2 / variance)
         )
@@ -940,6 +950,72 @@ def test_training_passes_random_keys_to_custom_inference_layers(regions_and_obse
     )
 
 
+@final
+class _SequentialEmbedding(EmbeddingDistanceModel):
+    """A per-pixel embedding through a sequential network ending in dropout."""
+
+    network: eqx.nn.Sequential
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def backbone(self, features):
+        return jax.vmap(jax.vmap(self.network))(features)
+
+    def embedding(self, latent, species_index):
+        return latent
+
+
+def test_training_passes_keys_through_sequential_containers(regions_and_observations):
+    regions, observations = regions_and_observations()
+    network = eqx.nn.Sequential([eqx.nn.Linear(1, 1, key=jax.random.key(0)), eqx.nn.Dropout(0.2)])
+    model = _SequentialEmbedding(network=network)
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, seed=3),
+    )
+    assert state.step == 2
+    assert not eqx.tree_equal(state.latest_model.distance_model, model)
+
+
+@final
+class _DropoutEmbedding(EmbeddingDistanceModel):
+    """A scaled embedding of a constant field passed through dropout per pixel or per grid."""
+
+    weight: jax.Array
+    dropout: eqx.nn.Dropout
+    per_pixel: bool = eqx.field(static=True)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def backbone(self, features):
+        ones = jnp.ones_like(features[..., :1])
+        if self.per_pixel:
+            return jax.vmap(jax.vmap(self.dropout))(ones)
+        return self.dropout(ones)
+
+    def embedding(self, latent, species_index):
+        return self.weight * latent
+
+
+@pytest.mark.parametrize("per_pixel", [True, False])
+def test_bound_dropout_keys_draw_one_mask_per_layer_call(regions_and_observations, per_pixel):
+    # Mapped calls share one mask, so equal inputs stay equal and give zero distances.
+    regions, observations = regions_and_observations()
+    model = _DropoutEmbedding(
+        weight=jnp.asarray(1.0), dropout=eqx.nn.Dropout(0.5), per_pixel=per_pixel
+    )
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=1, seed=0, optimizer=optax.sgd(0.1)),
+    )
+    weight = cast(Any, state.latest_model.distance_model).weight
+    assert (weight == 1.0) == per_pixel
+
+
 def test_training_requires_float64(observation_problem, float64_required):
     region, target, model = observation_problem()
     observations = PairwiseObservations.from_pairs(
@@ -961,6 +1037,27 @@ def _scalar_region_losses(weight):
     return [
         np.mean((np.log1p(p) - np.log1p(t)) ** 2) for p, t in zip(predictions, targets, strict=True)
     ]
+
+
+@pytest.mark.parametrize("optimizer", [optax.adam(0.1), optax.lbfgs()], ids=["adam", "lbfgs"])
+def test_initial_optimizer_state_has_the_leaf_types_of_updated_states(
+    ScalarEmbedding, regions_and_observations, optimizer
+):
+    regions, observations = regions_and_observations()
+    config = TrainingConfig(loss=Log1pLoss(), steps=1, optimizer=optimizer)
+    states = []
+    train(
+        regions,
+        observations,
+        distance_model=ScalarEmbedding(jnp.asarray(1.0, dtype=jnp.float64)),
+        config=config,
+        on_step=states.append,
+    )
+    initial, updated = (
+        [(leaf.dtype, leaf.weak_type) for leaf in jax.tree.leaves(state.optimizer_state)]
+        for state in states
+    )
+    assert initial == updated
 
 
 def test_adam_with_learning_rate_1e_3_is_the_default_optimizer(
@@ -1089,3 +1186,12 @@ def test_training_checks_the_patch_grid_of_training_and_validation_regions(patch
             validation=(shared, observations.select_pairs(pairs[8:])),
         )
     assert np.isfinite(state.selected_loss)
+    # A rebuilt copy of the training region is reported once.
+    with problem.shared_vertices_warned():
+        train(
+            shared,
+            observations.select_pairs(pairs[:8]),
+            distance_model=problem.model,
+            config=replace(config, steps=0),
+            validation=(replace(shared), observations.select_pairs(pairs[8:])),
+        )

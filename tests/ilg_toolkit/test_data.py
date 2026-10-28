@@ -470,6 +470,45 @@ def test_points_outside_the_raster_extent_raise_naming_the_sampling_units(observ
         )
 
 
+def test_points_snap_to_irregularly_spaced_cells_and_rounded_outer_edges():
+    from ilg_toolkit import RegionBatch
+
+    # Edges lie at -0.5, 0.5, 2, 5 and 9 along columns.
+    features = _raster([5.0, 15.0], [0.0, 1.0, 3.0, 7.0])
+    points = {"a": (4.9, 5.0), "b": (5.0, 5.0), "c": (9.0, 5.0), "d": (-0.5, 5.0)}
+    region = RegionBatch.from_points("alps", features, tuple(points), list(points.values()))
+    np.testing.assert_array_equal(np.asarray(region.grid_positions)[:, 1], [2, 3, 3, 0])
+    with pytest.raises(ValueError, match="outside the raster extent: e"):
+        RegionBatch.from_points("alps", features, ("a", "e"), [[4.9, 5.0], [9.01, 5.0]])
+
+    # 30 m cells whose east bound rounds below the edge rebuilt from cell centers.
+    x0, columns = 482345.123, 500
+    x_centers = x0 + (np.arange(columns) + 0.5) * 30.0
+    features = _raster([5200015.0, 5199985.0], x_centers)
+    east = x0 + columns * 30.0
+    region = RegionBatch.from_points(
+        "plain", features, ("west", "east"), [[x0, 5200000.0], [east, 5200000.0]]
+    )
+    np.testing.assert_array_equal(np.asarray(region.grid_positions)[:, 1], [0, columns - 1])
+
+
+def test_points_need_two_cells_per_dimension_and_report_any_outside_identifier():
+    from ilg_toolkit import RegionBatch
+
+    with pytest.raises(ValueError, match="at least two cells"):
+        RegionBatch.from_points(
+            "alps", _raster([5.0], [5.0, 15.0]), ("a", "b"), [[5.0, 5.0], [15.0, 5.0]]
+        )
+    features = _raster([5.0, 15.0], [5.0, 15.0])
+    with pytest.raises(ValueError, match="outside the raster extent: 7"):
+        RegionBatch.from_points(
+            "alps",
+            features,
+            ("a", 7),  # type: ignore[arg-type]
+            [[5.0, 5.0], [50.0, 5.0]],
+        )
+
+
 def test_individual_based_regions_are_declared_once_for_all_sampling_units(observation_problem):
     from dataclasses import replace
 

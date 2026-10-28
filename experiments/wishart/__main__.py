@@ -3,7 +3,7 @@
 import coordax as cx
 import jax
 import numpy as np
-from ilg_toolkit.data import RegionBatch
+from ilg_toolkit import RegionBatch
 from ilg_toolkit.models import ResNet9Conductance
 from scipy.linalg import helmert
 

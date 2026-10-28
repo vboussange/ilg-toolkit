@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import minimize
 
-from .._checks import _positive_integer
 from ..data import PairwiseObservations
 from .likelihood import _finalize_mlpe_fit, _MLPEFit, _profiled_mlpe_ml_fit
 
@@ -57,8 +56,10 @@ class MLPECalibration(eqx.Module):
     two endpoints' population effects and a residual.
 
     Attributes:
-        population_ids: Sampling units of the calibration observations, in the
-            order of ``effect_mean`` and ``effect_covariance``.
+        population_ids: Sampling units of the population effects, in the order of
+            ``effect_mean`` and ``effect_covariance``: those of the calibration
+            observations from [`fit_calibration_head`][ilg_toolkit.fit_calibration_head],
+            or every sampling unit of the region from training.
         distance_center: Mean of the calibration's ecological distances.
         distance_scale: Sample standard deviation (ddof=1) of the calibration's
             ecological distances.
@@ -72,8 +73,9 @@ class MLPECalibration(eqx.Module):
         effect_covariance: Posterior covariance of the population effects.
         calibration_pairs: Sampling-unit pairs the posterior conditions on.
             Support observations are disjoint from them.
-        ml_log_likelihood: Maximum marginal log likelihood of the calibration
-            observations.
+        ml_log_likelihood: Marginal log likelihood of the calibration observations:
+            its maximum from [`fit_calibration_head`][ilg_toolkit.fit_calibration_head],
+            or its value at the trained variance components from training.
         loss: MLPE loss whose settings the calibration was fitted with.
         optimizer_iterations: Iterations of the variance optimizer of
             [`fit_calibration_head`][ilg_toolkit.fit_calibration_head], or the
@@ -182,7 +184,7 @@ def _fit_mlpe(
     profiled by generalized least squares, and both variance components are
     estimated by deterministic multistart L-BFGS-B, each start bounded by
     ``max_iterations``; the finite converged start with the highest marginal
-    likelihood is retained.
+    likelihood is retained. ``max_iterations`` is a positive integer.
 
     Covariance algebra is population-sized, with no dense pair-by-pair covariance
     matrix. For population variance u, residual variance e, jitter j and maximum
@@ -191,7 +193,6 @@ def _fit_mlpe(
     nonfinite inputs, constant distances and unsupported variance ratios raise
     ``MLPEError``.
     """
-    max_iterations = _positive_integer("max_iterations", max_iterations, error=MLPEError)
     distances = jnp.asarray(distances, dtype=jnp.float64)
     pairs = observations.observed_pairs
     targets = observations.target.forward(
