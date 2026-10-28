@@ -1,29 +1,24 @@
-# Experimental multispecies training
+# Multispecies training
 
 [View `multispecies.ipynb` on GitHub](https://github.com/vboussange/ilg-toolkit/blob/main/examples/multispecies.ipynb)
 
-Can species with different regional coverage share landscape features while retaining their
-own distance relationships? This notebook trains one neural network for two synthetic species
-under complete pooling. Each species has its own embedding parameters, and maximum-likelihood population effects (MLPE) genetic calibration remains
-separate for every observed region–species group.
-
-> **Note:** Multispecies support is experimental. The examples use population dissimilarities; species
-> labels do not turn the population MLPE model into a model for individual relatedness. Start
-> with the [quickstart](quickstart.md) and [MLPE workflow](mlpe_workflow.md) before extending an
-> analysis to several species.
+This notebook trains one narrow ResNet9 patch encoder for two synthetic species, newts
+and frogs, under complete pooling. Its backbone is shared by both species and feeds one
+species-specific head per species. Multispecies support is experimental.
 
 
 ```python
-from itertools import combinations
+import tempfile
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import coordax as cx
+import equinox as eqx
 import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+import optax
 from ilg_toolkit import (
-    calibrate,
     load_model,
     MLPELoss,
     PairwiseObservations,
@@ -33,72 +28,108 @@ from ilg_toolkit import (
     train,
     TrainingConfig,
 )
-from ilg_toolkit.models import UNetEmbeddingDistance
+from ilg_toolkit.models import LogLinearConductance, ResNet9Conductance
 from IPython.display import display, Markdown
+from scipy.ndimage import gaussian_filter
 
 
 jax.config.update("jax_enable_x64", True)
-species_order = ("newt", "frog")
-target = TargetSpec("synthetic genetic dissimilarity", units="index")
-plt.rcParams.update({"axes.spines.top": False, "axes.spines.right": False})
+
+SPECIES = ("newt", "frog")
+FEATURES = ("canopy", "moisture")
+CELLS = 48  # Raster side length in cells.
+PATCH_SIZE = 8  # Groups 8x8 cells into one vertex: a 6x6 conductance grid graph.
+UNITS = 12  # Sampling units per species and region, each at its own vertex.
+target = TargetSpec("genetic dissimilarity", units="index")
 ```
 
-## Label species and preserve irregular coverage
+## Simulate two regions
 
-Both species are observed in the valley, while only newts are observed in the upland. The
-same four location IDs can be reused by different species: identity is scoped by species.
-Each `PairwiseObservations` object describes one species, and each sampling-unit entry in
-the region carries the matching label.
+The valley and the upland each have two landscape features, canopy and moisture, on a
+48 × 48 raster. Both species are sampled in the valley; only newts are sampled in the
+upland. A log-linear patch encoder with the same species names simulates ecological
+distances: newts move more easily under canopy, frogs over moist ground. Genetic
+dissimilarities are an affine function of these distances with 2% multiplicative noise.
 
-The full species order is a modeling contract: index 0 means newt and index 1 means frog.
-The bare neural distance model records a species count, so retain its original order whenever
-transferring or saving the complete landscape genetics model.
+Each region batch carries a labeled feature axis naming its features and labels each
+sampling unit with its species.
 
 
 ```python
-def make_region(name, present, seed):
+simulator = eqx.tree_at(
+    lambda model: model.coefficients,
+    LogLinearConductance(2, species=SPECIES, patch_size=PATCH_SIZE),
+    jnp.array([[2.0, 0.0], [0.0, 2.0]]),  # One row of feature coefficients per species.
+)
+
+
+def simulate(name, present, seed):
     rng = np.random.default_rng(seed)
-    ids = tuple(f"{name}-{corner}" for corner in ("sw", "se", "nw", "ne"))
-    features = rng.uniform(0.8, 1.6, (3, 3, 2)).astype(np.float32)
-    region = RegionBatch(
-        name,
-        cx.field(features, "row", "column", "feature"),
-        ids * len(present),
-        np.tile([[0, 0], [0, 2], [2, 0], [2, 2]], (len(present), 1)),
-        feature_names=("canopy", "moisture"),
-        species=tuple(label for label in present for _ in ids),
+    values = np.stack(
+        [gaussian_filter(rng.normal(size=(CELLS, CELLS)), 4) for _ in FEATURES], axis=-1
     )
+    values = (values - values.mean((0, 1))) / values.std((0, 1))
+    features = cx.field(
+        values.astype(np.float32),
+        "row",
+        "column",
+        cx.LabeledAxis("feature", np.array(FEATURES)),
+    )
+    vertices = CELLS // PATCH_SIZE
+    ids, positions, labels = [], [], []
+    for species in present:
+        chosen = rng.choice(vertices**2, UNITS, replace=False)
+        positions += [
+            [
+                vertex // vertices * PATCH_SIZE + PATCH_SIZE // 2,
+                vertex % vertices * PATCH_SIZE + PATCH_SIZE // 2,
+            ]
+            for vertex in chosen
+        ]
+        ids += [f"{species}-{index}" for index in range(1, UNITS + 1)]
+        labels += [species] * UNITS
+    region = RegionBatch(name, features, tuple(ids), np.array(positions), species=tuple(labels))
+    distances = simulator.predict(region, {species: None for species in present})
     observations = tuple(
         PairwiseObservations.from_pairs(
-            tuple(combinations(ids, 2)),
-            np.array([0.4, 0.7, 1.4, 0.6, 0.9, 0.8]) * (1 + 0.2 * species_order.index(label))
-            + rng.normal(0, 0.01, 6),
+            distances[species].pairs,
+            (0.2 + 0.1 * np.asarray(distances[species].values))
+            * np.exp(rng.normal(0, 0.02, len(distances[species].pairs))),
             target=target,
-            species=label,
+            species=species,
         )
-        for label in present
+        for species in present
     )
     return region, observations
 
 
-coverage = (species_order, ("newt",))
-prepared = [make_region("valley", coverage[0], 14), make_region("upland", coverage[1], 15)]
-regions = tuple(item[0] for item in prepared)
-observations = tuple(item[1] for item in prepared)
+valley, valley_observations = simulate("valley", SPECIES, 1)
+upland, upland_observations = simulate("upland", ("newt",), 2)
+regions = (valley, upland)
+observations = (valley_observations, upland_observations)
 
-fig, axes = plt.subplots(1, 2, figsize=(8, 3))
-for ax, region in zip(axes, regions, strict=True):
-    image = ax.imshow(region.feature_array[..., 0], cmap="viridis")
-    ax.set(title=f"{region.name}: canopy", xlabel="column", ylabel="row")
-    fig.colorbar(image, ax=ax)
-fig.tight_layout()
+markers = {"newt": "o", "frog": "s"}
+figure, axes = plt.subplots(2, 2, figsize=(8, 7), sharex=True, sharey=True, layout="constrained")
+for row, region in zip(axes, regions, strict=True):
+    for axis, feature in zip(row, FEATURES, strict=True):
+        image = axis.imshow(region.features.data[..., FEATURES.index(feature)], cmap="viridis")
+        for species in markers:
+            units = np.asarray(region.species) == species
+            if units.any():
+                rows, columns = np.asarray(region.grid_positions)[units].T
+                axis.scatter(
+                    columns,
+                    rows,
+                    marker=markers[species],
+                    c="white",
+                    edgecolors="black",
+                    label=species,
+                )
+        axis.set(title=f"{region.name}: {feature}", xlabel="column", ylabel="row")
+        axis.label_outer()
+        figure.colorbar(image, ax=axis, shrink=0.8, label="standardized value")
+axes[0, 0].legend(loc="lower left", fontsize=8)
 plt.show()
-display(
-    Markdown(
-        "| Region | Newt pairs | Frog pairs |\n| --- | ---: | ---: |\n"
-        "| Valley | 6 | 6 |\n| Upland | 6 | 0 |"
-    )
-)
 ```
 
 
@@ -107,236 +138,180 @@ display(
     
 
 
+## Train the patch encoder
 
-| Region | Newt pairs | Frog pairs |
-| --- | ---: | ---: |
-| Valley | 6 | 6 |
-| Upland | 6 | 0 |
+`ResNet9Conductance` with `species=SPECIES` builds a backbone of three convolutional
+stages and two residual blocks, shared by both species, and one species-specific head per
+species: a linear map with softplus to the conductance of each vertex. The channel widths
+`(8, 16, 32)` keep the patch encoder narrow.
 
-
-## Train shared patch features and species-specific distances
-
-`UNetEmbeddingDistance` maps patch features to species-specific embeddings; squared
-embedding distances are ecological distances. Here a small U-Net keeps execution
-practical on a CPU. This is a different distance family from effective resistance through
-a conductance grid graph; see the [model API](../api/models.md) for both definitions.
-
-Species receive equal total influence, and regions receive equal influence within a species.
-Thus valley-newt and upland-newt each receive one quarter of the total weight, and valley-frog
-receives one half. Region-first sampling and species microbatches control execution without
-changing these intended weights. MLPE still evaluates each selected group's complete set of
-pairs, retaining population dependence.
+`train` reads the species names from the distance model. Each species has equal influence,
+and each region has equal influence within a species. The maximum-likelihood population
+effects (MLPE) loss fits one MLPE calibration per region–species group, and the selected
+model's MLPE calibration head holds them.
 
 
 ```python
-def model_template(seed):
-    return UNetEmbeddingDistance(
-        2,
-        num_species=2,
-        patch_size=1,
-        patch_microbatch_size=4,
-        base_channels=2,
-        embedding_dim=2,
-        dropout=0,
-        key=jax.random.key(seed),
-    )
-
-
-loss = MLPELoss()
+distance_model = ResNet9Conductance(
+    len(FEATURES),
+    species=SPECIES,
+    patch_size=PATCH_SIZE,
+    channels=(8, 16, 32),
+    key=jax.random.key(0),
+)
 state = train(
     regions,
     observations,
-    distance_model=model_template(8),
-    species=species_order,
-    config=TrainingConfig(
-        loss=loss,
-        steps=3,
-        eval_every=3,
-        region_batch_size=1,
-        species_batch_size=1,
-        species_microbatch_size=1,
-        seed=8,
-    ),
+    distance_model=distance_model,
+    config=TrainingConfig(loss=MLPELoss(), steps=300, eval_every=50, optimizer=optax.adam(1e-2)),
 )
 model = state.selected_model
-print("Retained species order:", model.species)
-print("Training criterion by species:", state.history[-1].training_by_species)
+print("Species:", model.species)
+for record in (state.history[0], state.history[-1]):
+    losses = ", ".join(f"{name} {value:.3f}" for name, value in record.training_by_species.items())
+    print(f"MLPE loss at step {record.step}: {losses}")
 
 rows = [
-    "| Region | Species | Signed slope | Population variance | Residual variance |",
+    "| Region | Species | Slope | Population-effect variance | Residual variance |",
     "| --- | --- | ---: | ---: | ---: |",
 ]
-for region, present in zip(regions, coverage, strict=True):
-    for name in present:
-        fitted = model.calibration.for_region(region.name, species_order.index(name))
+for region, region_observations in zip(regions, observations, strict=True):
+    for species_observations in region_observations:
+        name = species_observations.species
+        calibration = model.calibration_head.for_region(region.name, name)
         rows.append(
-            f"| {region.name} | {name} | {fitted.slope:.3f} | "
-            f"{fitted.unit_variance:.4f} | {fitted.residual_variance:.4f} |"
+            f"| {region.name} | {name} | {calibration.slope:.4f} | "
+            f"{calibration.unit_variance:.2e} | {calibration.residual_variance:.2e} |"
         )
 display(Markdown("\n".join(rows)))
 ```
 
-    Retained species order: ('newt', 'frog')
-    Training criterion by species: {'newt': 0.27509472449531724, 'frog': 0.15351942354090323}
+    Species: ('newt', 'frog')
+    MLPE loss at step 0: newt -1.751, frog -1.831
+    MLPE loss at step 300: newt -3.304, frog -3.343
 
 
 
-| Region | Species | Signed slope | Population variance | Residual variance |
+| Region | Species | Slope | Population-effect variance | Residual variance |
 | --- | --- | ---: | ---: | ---: |
-| valley | newt | 0.081 | 0.0309 | 0.0618 |
-| valley | frog | 0.368 | 0.0423 | 0.0847 |
-| upland | newt | -0.147 | 0.0289 | 0.0579 |
+| valley | newt | 0.0905 | 1.06e-04 | 2.12e-04 |
+| valley | frog | 0.0614 | 5.00e-05 | 1.07e-04 |
+| upland | newt | 0.0501 | 3.03e-05 | 7.37e-05 |
 
 
-> **Note:** The calibration parameters above belong to a fixed-budget joint training run. Three updates
-> are not a claim of variance convergence. Patch features and species parameters are estimated
-> under complete pooling, while coefficients, variances, and population effects stay group-specific
-> for each region–species group. Inspecting these training fits does not measure generalization.
+## Predict by species
 
-## Query one or several species
-
-A string selects one species and returns a `Prediction`; a sequence returns a mapping. The
-request order can differ from the original parameter order without reassigning parameters.
-Queries use each species' located sampling units and preserve the requested pair order.
-
-> **Note:** The distance-model calls below also require the retained species order because the bare model
-> has no species names. Genetic predictions additionally use the fitted group calibration.
+`predict` takes a query mapping each species to its pairs; `None` requests all of a
+species' pairs. A mapping query returns a mapping of predictions by species. Here each
+species' query lists its observed pairs, so predictions align with the observations.
 
 
 ```python
-valley = regions[0]
-ids = valley.sampling_unit_ids[:4]
-query_pairs = [(ids[3], ids[0]), (ids[1], ids[2])]
-query_species = ("frog", "newt")
-genetic = model.predict(valley, species=query_species, pairs=query_pairs)
-ecological = model.distance_model.predict(
-    valley, species=query_species, species_order=model.species, pairs=query_pairs
-)
-rows = [
-    "| Species | Requested pair | Ecological distance | Genetic prediction (index) |",
-    "| --- | --- | ---: | ---: |",
-]
-for name in query_species:
-    for pair, distance, predicted in zip(
-        genetic[name].pairs, ecological[name].values, genetic[name].values, strict=True
-    ):
-        rows.append(
-            f"| {name} | {' – '.join(pair)} | {float(distance):.4f} | {float(predicted):.3f} |"
+figure, axis = plt.subplots(figsize=(5, 4.5), layout="constrained")
+for region, region_observations in zip(regions, observations, strict=True):
+    query = {item.species: item.observed_pairs for item in region_observations}
+    predictions = model.predict(region, query)
+    for item in region_observations:
+        axis.scatter(
+            item.observed_values,
+            predictions[item.species].values,
+            marker=markers[item.species],
+            alpha=0.6,
+            label=f"{region.name}, {item.species}",
         )
-display(Markdown("\n".join(rows)))
-print("One-species result:", model.predict(valley, species="frog", pairs=query_pairs).pairs)
+limits = axis.get_xlim()
+axis.plot(limits, limits, linestyle="--", color="gray")
+axis.set(
+    xlabel="Observed genetic dissimilarity (index)",
+    ylabel="Predicted genetic dissimilarity (index)",
+)
+axis.legend(fontsize=8)
+plt.show()
+
+predictions = model.predict(
+    valley, {"frog": [("frog-1", "frog-2"), ("frog-3", "frog-4")], "newt": None}
+)
+print("Frog pairs:", predictions["frog"].pairs)
+print("Frog predictions:", np.round(np.asarray(predictions["frog"].values), 4))
+print("Newt pairs predicted:", len(predictions["newt"].pairs))
 ```
 
 
-| Species | Requested pair | Ecological distance | Genetic prediction (index) |
-| --- | --- | ---: | ---: |
-| frog | valley-ne – valley-sw | 0.3932 | 1.345 |
-| frog | valley-se – valley-nw | 0.0738 | 0.691 |
-| newt | valley-ne – valley-sw | 0.1565 | 0.770 |
-| newt | valley-se – valley-nw | 0.2978 | 0.864 |
+    
+![png](multispecies_files/multispecies_7_0.png)
+    
 
 
-    One-species result: (('valley-ne', 'valley-sw'), ('valley-se', 'valley-nw'))
+    Frog pairs: (('frog-1', 'frog-2'), ('frog-3', 'frog-4'))
+    Frog predictions: [0.4445 0.3122]
+    Newt pairs predicted: 66
 
 
-## Transfer only frogs without reordering parameters
+## Conductance surfaces
 
-> **Note:** We now create a separate marsh with frog observations. Its measurements were not used for
-> distance-model training or selection. `calibrate` freezes the complete distance model,
-> including both species' parameter sets, and estimates a fresh relationship only for the
-> supplied marsh–frog group.
-
-> **Note:** Pass `species=model.species`, the original full order. Inferring an order from the frog-only
-> observations would incorrectly associate the frog with the newt's parameter index. Fresh
-> calibration is needed for the new region; support conditioning cannot establish it.
+`conductance_surface` returns one species' learned conductance surface by name as a
+coordax field with `row` and `column` dimensions; `.data` holds its values. MLPE
+standardizes ecological distances, so the maps show log₁₀ conductance relative to its mean
+over the region, for the simulated and the learned conductance surfaces.
 
 
 ```python
-marsh, marsh_observations = make_region("marsh", ("frog",), 31)
-adapted = calibrate(
-    marsh,
-    marsh_observations[0],
-    model.distance_model,
-    species=model.species,
-    loss=loss,
-    max_iterations=2000,
-)
-marsh_fit = adapted.calibration.for_region("marsh", species_order.index("frog"))
-marsh_prediction = adapted.predict(
-    marsh, species="frog", pairs=marsh_observations[0].observed_pairs
-)
-print("Retained full species order:", adapted.species)
-print(
-    f"Marsh–frog slope={marsh_fit.slope:.3f}, population variance={marsh_fit.unit_variance:.5f}, "
-    f"residual variance={marsh_fit.residual_variance:.5f}, converged={marsh_fit.converged}"
-)
-print(
-    f"Calibration uses {len(marsh_fit.population_ids)} populations and "
-    f"{len(marsh_fit.calibration_pairs)} pairs."
-)
-fig, ax = plt.subplots(figsize=(6, 3.5))
-ax.scatter(marsh_observations[0].observed_values, marsh_prediction.values)
-ax.plot([0, 1.8], [0, 1.8], linestyle="--", color="gray")
-ax.set(
-    xlabel="Observed marsh–frog divergence (index)",
-    ylabel="Fitted marginal prediction (index)",
-    title="Fresh calibration of frozen distances",
-)
-fig.tight_layout()
+figure, axes = plt.subplots(2, 2, figsize=(8, 7), sharex=True, sharey=True, layout="constrained")
+for row, species in zip(axes, SPECIES, strict=True):
+    surfaces = {
+        "simulated": simulator.conductance_surface(valley, species),
+        "learned": model.distance_model.conductance_surface(valley, species),
+    }
+    for axis, (kind, surface) in zip(row, surfaces.items(), strict=True):
+        values = np.log10(np.asarray(surface.data))
+        image = axis.imshow(values - values.mean(), cmap="magma", vmin=-1.5, vmax=1.5)
+        axis.set(title=f"valley, {species}: {kind}", xlabel="column", ylabel="row")
+        axis.label_outer()
+figure.colorbar(image, ax=axes, shrink=0.6, label="log$_{10}$ conductance relative to mean")
 plt.show()
 ```
 
-    Retained full species order: ('newt', 'frog')
-    Marsh–frog slope=0.183, population variance=0.07079, residual variance=0.03684, converged=True
-    Calibration uses 4 populations and 6 pairs.
-
-
 
     
-![png](multispecies_files/multispecies_10_1.png)
+![png](multispecies_files/multispecies_9_0.png)
     
 
 
-> **Note:** This plot assesses a relationship fitted to the marsh observations themselves. It is not a
-> population-holdout evaluation of predictive transfer. The returned model has only marsh–frog calibration;
-> it does not merge the valley or upland relationships into the result. To assess explanatory
-> transfer, compare it with the matching geographic MLPE baseline and repeat population splits,
-> following the [MLPE workflow](mlpe_workflow.md).
+## Save and reload
 
-## Save target and species semantics together
-
-A saved landscape genetics model retains the full species order even if calibration covers one species.
-The template still needs two species and the same architecture and static settings. Neural
-weights may use float32 while MLPE uses float64; enable float64 before loading to preserve
-the statistical state. Keep feature meanings and order consistent at prediction time.
+`save_model` writes the distance model with its species names and the calibration head to
+one file. `load_model` restores them into a template with the same architecture and
+species count, replacing the template's parameter values. The reloaded model equals the
+trained model, and its predictions match to the relative tolerance of the
+effective-resistance solver, 1e-6.
 
 
 ```python
-with TemporaryDirectory() as directory:
-    path = Path(directory) / "marsh-frog.eqx"
-    save_model(path, adapted)
-    restored = load_model(path, distance_model=model_template(0))
-    print("Reloaded species order:", restored.species)
-    print("Reloaded target:", restored.target)
-    print(
-        "Reloaded frog predictions:",
-        np.asarray(restored.predict(marsh, species="frog", pairs=marsh_prediction.pairs).values),
+query = {"newt": None, "frog": None}
+with tempfile.TemporaryDirectory() as directory:
+    path = Path(directory) / "multispecies.eqx"
+    save_model(path, model)
+    template = ResNet9Conductance(
+        len(FEATURES),
+        species=SPECIES,
+        patch_size=PATCH_SIZE,
+        channels=(8, 16, 32),
+        key=jax.random.key(1),
     )
+    restored = load_model(path, distance_model=template)
+print("Species:", restored.species)
+print("Reloaded model equals the trained model:", bool(eqx.tree_equal(restored, model)))
+original = model.predict(valley, query)
+reloaded = restored.predict(valley, query)
+for species in SPECIES:
+    match = np.allclose(reloaded[species].values, original[species].values, rtol=1e-6, atol=0)
+    print(f"{species} predictions match: {match}")
 ```
 
-    Reloaded species order: ('newt', 'frog')
-    Reloaded target: TargetSpec(name='synthetic genetic dissimilarity', units='index', kind='dissimilarity', transform='identity')
-    Reloaded frog predictions: [0.75635694 0.93949019 1.02317104 1.08516458 1.19399237 0.73511307]
+    Species: ('newt', 'frog')
 
 
-## Limits and study choices
+    Reloaded model equals the trained model: True
+    newt predictions match: True
+    frog predictions match: True
 
-> **Note:** Complete pooling can share useful landscape structure but may also impose an unsuitable relationship
-> on a species with limited coverage. Equal species influence is a modeling policy, not a
-> substitute for sufficient observations or a check of biological compatibility. Genetic
-> calibration here is group-specific; the toolkit does not apply hierarchical shrinkage between groups.
-
-In a real analysis, retain population splits, species coverage, feature preprocessing,
-candidate-selection records, and numerical settings with the study. Assess each represented
-group and report signed slopes and variance diagnostics; an average across species can conceal
-a weak or reversed relationship for one of them.
