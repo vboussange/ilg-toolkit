@@ -940,6 +940,72 @@ def test_training_passes_random_keys_to_custom_inference_layers(regions_and_obse
     )
 
 
+@final
+class _SequentialEmbedding(EmbeddingDistanceModel):
+    """A per-pixel embedding through a sequential network ending in dropout."""
+
+    network: eqx.nn.Sequential
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def backbone(self, features):
+        return jax.vmap(jax.vmap(self.network))(features)
+
+    def embedding(self, latent, species_index):
+        return latent
+
+
+def test_training_passes_keys_through_sequential_containers(regions_and_observations):
+    regions, observations = regions_and_observations()
+    network = eqx.nn.Sequential([eqx.nn.Linear(1, 1, key=jax.random.key(0)), eqx.nn.Dropout(0.2)])
+    model = _SequentialEmbedding(network=network)
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, seed=3),
+    )
+    assert state.step == 2
+    assert not eqx.tree_equal(state.latest_model.distance_model, model)
+
+
+@final
+class _DropoutEmbedding(EmbeddingDistanceModel):
+    """A scaled embedding of a constant field passed through dropout per pixel or per grid."""
+
+    weight: jax.Array
+    dropout: eqx.nn.Dropout
+    per_pixel: bool = eqx.field(static=True)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def backbone(self, features):
+        ones = jnp.ones_like(features[..., :1])
+        if self.per_pixel:
+            return jax.vmap(jax.vmap(self.dropout))(ones)
+        return self.dropout(ones)
+
+    def embedding(self, latent, species_index):
+        return self.weight * latent
+
+
+@pytest.mark.parametrize("per_pixel", [True, False])
+def test_bound_dropout_keys_draw_one_mask_per_layer_call(regions_and_observations, per_pixel):
+    # Mapped calls share one mask, so equal inputs stay equal and give zero distances.
+    regions, observations = regions_and_observations()
+    model = _DropoutEmbedding(
+        weight=jnp.asarray(1.0), dropout=eqx.nn.Dropout(0.5), per_pixel=per_pixel
+    )
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=1, seed=0, optimizer=optax.sgd(0.1)),
+    )
+    weight = cast(Any, state.latest_model.distance_model).weight
+    assert (weight == 1.0) == per_pixel
+
+
 def test_training_requires_float64(observation_problem, float64_required):
     region, target, model = observation_problem()
     observations = PairwiseObservations.from_pairs(

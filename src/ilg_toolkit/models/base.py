@@ -72,8 +72,12 @@ class AbstractDistanceModel(eqx.Module):
     the model in Equinox inference mode (``eqx.nn.inference_mode``). Training clears
     every ``inference`` flag and binds its own random key to each
     inference-dependent layer whose call accepts ``key``, such as
-    ``eqx.nn.Dropout``, so call those layers without a key. Stateful layers
-    (Equinox state indices, such as ``eqx.nn.BatchNorm``) raise a ``TypeError``.
+    ``eqx.nn.Dropout``; the bound key applies when the caller passes no key or
+    ``None``, as ``eqx.nn.Sequential`` does. A bound key draws one dropout mask per
+    layer and update: repeated calls of the layer, and calls mapped over patches or
+    pixels with ``jax.vmap``, share it, so apply dropout to the whole grid for
+    independent masks. Stateful layers (Equinox state indices, such as
+    ``eqx.nn.BatchNorm``) raise a ``TypeError``.
 
     Examples:
         A single-species embedding-distance model with a trainable linear feature map:
