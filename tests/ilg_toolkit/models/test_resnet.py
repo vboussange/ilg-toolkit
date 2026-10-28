@@ -6,6 +6,7 @@ import coordax as cx
 import equinox as eqx
 import jax
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import (
     load_model,
@@ -100,7 +101,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
         region,
         observations,
         distance_model=model(6, ResistanceSolverConfig(rtol=1e-9, atol=1e-10)),
-        config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.01),
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.01)),
     )
     assert np.isfinite(result.history[-1].training_loss)
     assert result.history[-1].training_loss < result.history[0].training_loss

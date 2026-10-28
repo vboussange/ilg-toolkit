@@ -7,6 +7,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import (
     Log1pLoss,
@@ -195,7 +196,7 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
         regions,
         observations,
         distance_model=with_parameters(jnp.asarray(initial)),
-        config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.02),
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.02)),
     )
     np.testing.assert_allclose(state.history[0].training_loss, reference_loss(initial), atol=1e-10)
     np.testing.assert_allclose(

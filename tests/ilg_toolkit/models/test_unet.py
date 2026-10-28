@@ -4,6 +4,7 @@ import coordax as cx
 import equinox as eqx
 import jax
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import (
     ArtifactError,
@@ -85,7 +86,7 @@ def test_species_fit_improves_predicts_without_query_targets_and_reloads(tmp_pat
         region,
         observations,
         distance_model=_unet(3, species=order, dropout=0),
-        config=TrainingConfig(loss=Log1pLoss(), steps=2, learning_rate=0.01, seed=3),
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.01), seed=3),
     )
     assert result.history[-1].training_loss < result.history[0].training_loss * 0.75
     fitted = result.selected_model

@@ -5,6 +5,7 @@ Maximum-likelihood population effects (MLPE) calibration is fitted with the dist
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, cast, final, NamedTuple
 
 import equinox as eqx
@@ -21,7 +22,7 @@ from ._training_utils import (
 )
 from .config import TrainingConfig
 from .data import ObservationCollection, PairwiseObservations, RegionBatch, RegionCollection
-from .losses import _LossContext
+from .losses import _LossContext, AbstractLoss
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .models.base import _model_species, distances_from_latent, prepare_distance_context
@@ -55,8 +56,10 @@ class TrainingState(eqx.Module):
 
     ``latest_model`` and ``loss_state`` belong to the latest update, together with
     optimizer and random state. ``selected_model`` retains its own distance model
-    and fitted calibration from the selected evaluation. Continuation requires
-    unchanged inputs and settings, with only the total step budget allowed to increase.
+    and fitted calibration from the selected evaluation. ``converged`` records
+    whether an update reached the configured gradient tolerance. Continuation
+    requires unchanged inputs and settings, with only the total step budget and the
+    optimizer allowed to change; the optimizer must keep the state's structure.
     """
 
     loss_state: Any
@@ -68,6 +71,7 @@ class TrainingState(eqx.Module):
     selected_model: LandscapeGeneticsModel
     selected_step: int
     step: int
+    converged: bool
     training_groups: tuple[RegionSpeciesKey, ...]
     validation_groups: tuple[RegionSpeciesKey, ...]
 
@@ -90,6 +94,25 @@ def _validate_state(state: TrainingState) -> None:
         raise ValueError("Selected step must be within the completed training steps")
     if not 1 <= len(state.history) <= state.step + 1:
         raise ValueError("History length must be within the completed training steps plus one")
+    if not isinstance(state.converged, bool):
+        raise ValueError("Training convergence must be recorded as a boolean")
+
+
+def _optimizer_state_signature(optimizer_state: optax.OptState) -> list[list]:
+    """Path, shape and dtype of every optimizer-state leaf, identifying its structure."""
+    return [
+        [jax.tree_util.keystr(path), list(leaf.shape), str(leaf.dtype)]
+        if hasattr(leaf, "dtype")
+        else [jax.tree_util.keystr(path), type(leaf).__name__]
+        for path, leaf in jax.tree_util.tree_leaves_with_path(optimizer_state)
+    ]
+
+
+def _same_optimizer_state_structure(first: optax.OptState, second: optax.OptState) -> bool:
+    """Whether two optimizer states share their tree structure, leaf shapes and dtypes."""
+    if jax.tree.structure(first) != jax.tree.structure(second):
+        return False
+    return _optimizer_state_signature(first) == _optimizer_state_signature(second)
 
 
 class _TrainingPayload(NamedTuple):
@@ -170,6 +193,7 @@ def _backbone(model, features, key):
 
 
 def _regional_gradient(parameters, contributions, groups, config, context, key):
+    """One region's objective gradient, accumulated over species microbatches."""
     model, loss_state = parameters
     features = contributions[0].payload.features
     latent, backward = eqx.filter_vjp(lambda m: _backbone(m, features, key), model)
@@ -200,6 +224,62 @@ def _regional_gradient(parameters, contributions, groups, config, context, key):
     model_gradient, latent_gradient, state_gradient = accumulated
     model_gradient = jax.tree.map(lambda a, b: a + b, model_gradient, backward(latent_gradient)[0])
     return model_gradient, state_gradient
+
+
+def _when(condition: jax.Array, value: Callable[[], jax.Array]) -> jax.Array:
+    """``value()`` when ``condition`` holds and zero otherwise, running only the taken branch."""
+    result = jax.eval_shape(value)
+    return jax.lax.cond(condition, value, lambda: jnp.zeros(result.shape, result.dtype))
+
+
+@final
+class _TrainingObjective(eqx.Module):
+    """One update's training objective as a function of the parameters.
+
+    It evaluates the same regions, species and random keys as the update's gradient,
+    so line searches see one deterministic objective within an update. Every training
+    group is present, so the structure, and the compiled update, stay fixed across
+    updates; groups not sampled for the update carry zero weight and are skipped.
+    """
+
+    regions: tuple[tuple[_Contribution, ...], ...]
+    contexts: tuple[ResistanceSolverContext | None, ...]
+    keys: jax.Array
+    groups: tuple[tuple[RegionSpeciesKey, ...], ...] = eqx.field(static=True)
+    loss: AbstractLoss = eqx.field(static=True)
+
+    def __call__(self, parameters: Parameters) -> jax.Array:
+        model, loss_state = parameters
+
+        def group_value(index: int, item: _Contribution, group, latent) -> jax.Array:
+            states = (self.loss._group_state(loss_state, group),)
+            return cast(
+                jax.Array,
+                _microbatch_objective(
+                    (model, latent, states),
+                    (item,),
+                    self.loss,
+                    self.contexts[index],
+                    self.keys[index],
+                ),
+            )
+
+        def region_value(index: int) -> jax.Array:
+            latent = _backbone(model, self.regions[index][0].payload.features, self.keys[index])
+            values = [
+                _when(item.loss_weight > 0, partial(group_value, index, item, group, latent))
+                for item, group in zip(self.regions[index], self.groups[index], strict=True)
+            ]
+            return cast(jax.Array, sum(values))
+
+        values = [
+            _when(
+                jnp.any(jnp.stack([item.loss_weight for item in contributions]) > 0),
+                partial(region_value, index),
+            )
+            for index, contributions in enumerate(self.regions)
+        ]
+        return cast(jax.Array, sum(values))
 
 
 def _labelled_pairs(batch: _RegionSpeciesTrainingBatch) -> tuple[tuple[str, str], ...]:
@@ -267,20 +347,41 @@ def _prepare_batches(
 
 
 @eqx.filter_jit
-def _apply_gradient(
+def _apply_update(
     parameters: Parameters,
+    optimizer: optax.GradientTransformation,
     optimizer_state: optax.OptState,
     gradient: Parameters,
-    *,
-    learning_rate: jax.Array,
+    objective: _TrainingObjective,
 ) -> tuple[Parameters, optax.OptState]:
-    optimizer = optax.adam(learning_rate)
+    """One optimizer update, with the objective's value, gradient and function as extra args.
+
+    The gradient comes from the memory-saving regional and microbatch programs. The
+    value comes from the objective itself, so it agrees exactly with line-search
+    evaluations; optimizers that ignore it leave it to dead-code elimination.
+    """
+    trainable, fixed = eqx.partition(parameters, eqx.is_inexact_array)
+
+    def value_fn(candidate):
+        return objective(eqx.combine(candidate, fixed))
+
+    value = value_fn(trainable)
     # Optax accepts registered Equinox pytrees; its array-container alias omits Modules.
-    updates, optimizer_state = optimizer.update(
-        cast(optax.Updates, gradient), optimizer_state, cast(optax.Params, parameters)
+    updates, optimizer_state = optax.with_extra_args_support(optimizer).update(
+        cast(optax.Updates, gradient),
+        optimizer_state,
+        cast(optax.Params, trainable),
+        value=value,
+        grad=gradient,
+        value_fn=value_fn,
     )
     parameters = eqx.apply_updates(parameters, updates)
     return parameters, optimizer_state
+
+
+@eqx.filter_jit
+def _gradient_norm(gradient: Parameters) -> jax.Array:
+    return optax.tree.norm(gradient)
 
 
 @eqx.filter_jit
@@ -368,6 +469,13 @@ def train(
     the final model without validation. ``on_step`` receives resumable state after
     every update; supplied ``state`` continues the latest parameters and random state.
 
+    ``config.optimizer`` applies each update. It receives the update's objective
+    value, gradient and a function evaluating the same objective (same regions,
+    species and random key), so ``optax.lbfgs()`` line-searches deterministically
+    within an update. With ``config.gradient_tolerance``, training stops after the
+    first update whose gradient norm is at or below it, evaluates that final step,
+    and records ``converged=True``; a converged state continues without updates.
+
     Training always compiles its update and evaluation steps. To debug them
     eagerly, call ``train`` inside ``with jax.disable_jit():``.
 
@@ -377,8 +485,9 @@ def train(
             region may supply observations for several species.
         distance_model: Initial distance model for a new training run, carrying the
             species names; omit for continuation.
-        config: Loss and training settings. For continuation, only the total step
-            budget may increase; omitted settings use the saved configuration.
+        config: Loss, optimizer and training settings. For continuation, only the
+            total step budget may increase and the optimizer may change if its state
+            keeps the saved structure; omitted settings use the saved configuration.
         validation: Regions and disjoint observations used to select the model by
             validation loss, using calibration estimated from training observations.
         state: Saved training state to continue with unchanged inputs and settings.
@@ -395,6 +504,14 @@ def train(
         >>> fitted = state.selected_model
         >>> continued = train(region, observations.select_pairs(training_pairs), state=state,
         ...                   config=dataclasses.replace(state.config, steps=1000))
+
+        A low-dimensional distance model trains with L-BFGS until its gradient vanishes:
+
+        >>> config = TrainingConfig(loss=Log1pLoss(), optimizer=optax.lbfgs(),
+        ...                         steps=200, gradient_tolerance=1e-8)
+        >>> state = train(region, observations, distance_model=distance_model, config=config)
+        >>> state.converged
+        True
 
         Zero steps initializes statistical parameters and fits the coefficients at those
         parameters; use ``calibrate`` to optimize calibration on a frozen distance
@@ -457,12 +574,16 @@ def train(
         )
     )
     parameters = (distance_model, loss_state)
-    optimizer = optax.adam(config.learning_rate)
-    optimizer_state = (
-        state.optimizer_state
-        if state is not None
-        else optimizer.init(eqx.filter(parameters, eqx.is_inexact_array))
-    )
+    trainable = eqx.filter(parameters, eqx.is_inexact_array)
+    if state is None:
+        optimizer_state = config.optimizer.init(cast(optax.Params, trainable))
+    else:
+        expected = eqx.filter_eval_shape(config.optimizer.init, trainable)
+        if not _same_optimizer_state_structure(expected, state.optimizer_state):
+            raise ValueError(
+                "Continuation requires an optimizer whose state has the saved structure"
+            )
+        optimizer_state = state.optimizer_state
 
     regional_batches = tuple(
         tuple(b for b in training_batches if b.region.name == name)
@@ -470,6 +591,8 @@ def train(
     )
     region_count = len(regional_batches)
     selected_count = min(region_count, config.region_batch_size or region_count)
+    regional_contexts = tuple(groups[0].context for groups in regional_batches)
+    regional_groups = tuple(tuple(batch.key for batch in groups) for groups in regional_batches)
 
     training_groups = tuple(batch.key for batch in training_batches)
     validation_groups = tuple(batch.key for batch in validation_batches)
@@ -502,13 +625,15 @@ def train(
             selected_model=selected,
             selected_step=selected_step,
             step=step,
+            converged=converged,
             training_groups=training_groups,
             validation_groups=validation_groups,
         )
 
     step = state.step if state is not None else 0
+    converged = state.converged if state is not None else False
     start_step = state.step + 1 if state is not None else 0
-    for step in range(start_step, config.steps + 1):
+    for step in range(start_step, 0 if converged else config.steps + 1):
         if step:
             random_key, update_key = jax.random.split(random_key)
             keys = jax.random.split(update_key, region_count)
@@ -527,6 +652,7 @@ def train(
                 )
             )
             accumulated = None
+            weights = [[0.0] * len(groups) for groups in regional_batches]
             for index in indices:
                 groups = regional_batches[index]
                 species_count = len(groups)
@@ -546,6 +672,8 @@ def train(
                     )
                 )
                 correction = region_count / selected_count * species_count / sample_count
+                for i in chosen:
+                    weights[index][i] = groups[i].loss_weight * correction
                 contributions = tuple(
                     _Contribution(
                         groups[i].payload,
@@ -570,13 +698,29 @@ def train(
                     )
                 )
             assert accumulated is not None
-            parameters, optimizer_state = _apply_gradient(
-                parameters,
-                optimizer_state,
-                accumulated,
-                learning_rate=jnp.asarray(config.learning_rate),
+            objective = _TrainingObjective(
+                tuple(
+                    tuple(
+                        _Contribution(
+                            batch.payload,
+                            jnp.asarray(batch.species_index),
+                            jnp.asarray(weight),
+                        )
+                        for batch, weight in zip(groups, region_weights, strict=True)
+                    )
+                    for groups, region_weights in zip(regional_batches, weights, strict=True)
+                ),
+                regional_contexts,
+                keys,
+                regional_groups,
+                config.loss,
             )
-        if step == 0 or step % config.eval_every == 0 or step == config.steps:
+            if config.gradient_tolerance is not None:
+                converged = float(_gradient_norm(accumulated)) <= config.gradient_tolerance
+            parameters, optimizer_state = _apply_update(
+                parameters, config.optimizer, optimizer_state, accumulated, objective
+            )
+        if step == 0 or step % config.eval_every == 0 or step == config.steps or converged:
             training_loss, regional_training, calibrations, species_training = _evaluate_regions(
                 parameters, training_batches, config, step
             )
@@ -607,4 +751,6 @@ def train(
             latest = make_model(current_calibrations)
         if on_step is not None:
             on_step(continuation())
+        if converged:
+            break
     return continuation()

@@ -8,6 +8,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import lineax as lx
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import (
     load_model,
@@ -167,7 +168,7 @@ def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductan
         region,
         observations,
         distance_model=distance_model,
-        config=TrainingConfig(loss=Log1pLoss(), steps=3, learning_rate=0.1),
+        config=TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optax.adam(0.1)),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     np.testing.assert_allclose(
@@ -197,7 +198,7 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
         region,
         observations,
         distance_model=CustomDistance(jnp.array(1.0)),
-        config=TrainingConfig(loss=Log1pLoss(), steps=3, learning_rate=0.1),
+        config=TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optax.adam(0.1)),
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
     path = tmp_path / "custom.ilg"

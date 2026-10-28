@@ -1,6 +1,6 @@
 """Training checkpoints saved as Equinox files for continuing optimization."""
 
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 
 import equinox as eqx
@@ -19,7 +19,7 @@ from .persistence import (
     _write_native,
     ArtifactError,
 )
-from .training import _validate_state, StepRecord, TrainingState
+from .training import _optimizer_state_signature, _validate_state, StepRecord, TrainingState
 
 
 def save_checkpoint(path, state: TrainingState) -> None:
@@ -28,8 +28,10 @@ def save_checkpoint(path, state: TrainingState) -> None:
     ``train(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
     initialization and each update. Statistical parameters, optimizer/random state,
     and the selected model retain their respective training steps. History,
-    configuration, loss-specific state, and training/validation group identities
-    are included. The parent directory must exist; writes atomically replace the
+    configuration, convergence, loss-specific state, and training/validation group
+    identities are included. The optimizer itself is not stored, because optax
+    optimizers are functions; ``load_checkpoint`` takes it like the distance-model
+    template. The parent directory must exist; writes atomically replace the
     destination after flushing a temporary file.
 
     ``state.latest_model`` matches the current distance and statistical parameters;
@@ -50,17 +52,24 @@ def save_checkpoint(path, state: TrainingState) -> None:
 
     Examples:
         >>> save_checkpoint("training.eqx", state)
-        >>> restored = load_checkpoint("training.eqx", distance_model=distance_model_template)
+        >>> restored = load_checkpoint(
+        ...     "training.eqx", distance_model=distance_model_template, optimizer=optax.adam(1e-3)
+        ... )
         >>> continued = train(region, observations, state=restored,
         ...                   config=dataclasses.replace(restored.config, steps=1000))
     """
     if not isinstance(state, TrainingState):
         raise ArtifactError("save_checkpoint requires a TrainingState returned by train")
     _validate_state(state)
-    options = asdict(state.config)
+    options = {
+        field.name: getattr(state.config, field.name)
+        for field in fields(state.config)
+        if field.name != "optimizer"
+    }
     options["loss"] = _loss_metadata(state.config.loss)
     metadata = {
         "config": options,
+        "optimizer_state": _optimizer_state_signature(state.optimizer_state),
         "loss_state": state.config.loss._state_metadata(state.loss_state),
         "history": [asdict(record) for record in state.history],
         "training_groups": state.training_groups,
@@ -71,15 +80,20 @@ def save_checkpoint(path, state: TrainingState) -> None:
     _write_native(path, state, kind="training_checkpoint", metadata=metadata)
 
 
-def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingState:
-    """A saved training state restored with a caller-constructed distance model template.
+def load_checkpoint(
+    path, *, distance_model: AbstractDistanceModel, optimizer: optax.GradientTransformation
+) -> TrainingState:
+    """A saved training state restored with caller-supplied distance model and optimizer.
 
-    The template supplies the model class, static settings, numerical shapes, and
-    dtypes. Continuation
-    uses unchanged inputs and execution settings, allowing only the total step
-    budget to increase. The built-in loss reconstructs its own statistical-state
-    template from checkpoint metadata. Checkpoint persistence supports built-in
-    losses; custom distance models still use caller-constructed templates.
+    The distance-model template supplies the model class, static settings, numerical
+    shapes, and dtypes. The optimizer rebuilds the optimizer-state template, which must
+    have the saved state's structure (leaf paths, shapes and dtypes); it becomes the
+    restored configuration's optimizer. Continuation uses unchanged inputs and
+    execution settings, allowing only the total step budget to increase and the
+    optimizer to change while keeping its state's structure. The built-in loss
+    reconstructs its own statistical-state template from checkpoint metadata.
+    Checkpoint persistence supports built-in losses; custom distance models still use
+    caller-constructed templates.
 
     Match the original model's static settings (including patch size, species count,
     dropout, and patch microbatch size). Reproducible continuation also requires
@@ -92,6 +106,8 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
         path (str | Path): Checkpoint file previously written by ``save_checkpoint``.
         distance_model: Template matching the saved model's class, static settings,
             array shapes, and dtypes.
+        optimizer: Optax optimizer whose state matches the saved optimizer state,
+            usually the optimizer the checkpoint was trained with.
 
     Returns:
         Training state containing its latest parameters, selected model, and history.
@@ -106,13 +122,19 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
             metadata, weak_leaves = _read_header(stream, kind="training_checkpoint")
             options = dict(metadata["config"])
             options["loss"] = _loss_from_metadata(options["loss"])
-            config = TrainingConfig(**options)
+            config = TrainingConfig(**options, optimizer=optimizer)
             latest = _model_template(metadata["latest_model"], distance_model)
             selected = _model_template(metadata["selected_model"], distance_model)
             loss_state = config.loss._state_template(metadata["loss_state"])
-            optimizer_state = optax.adam(config.learning_rate).init(
+            optimizer_state = optimizer.init(
                 eqx.filter((latest.distance_model, loss_state), eqx.is_inexact_array)
             )
+            if _optimizer_state_signature(optimizer_state) != metadata["optimizer_state"]:
+                raise ArtifactError(
+                    "The supplied optimizer's state does not match the checkpoint's optimizer "
+                    "state (leaf paths, shapes and dtypes); supply an optimizer with the same "
+                    "state structure, such as the one the checkpoint was trained with"
+                )
             history = tuple(StepRecord(**record) for record in metadata["history"])
             if not 1 <= len(history) <= config.steps + 1:
                 raise ArtifactError("Checkpoint history length must be within the step budget")
@@ -126,6 +148,7 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
                 selected_model=selected,
                 selected_step=0,
                 step=0,
+                converged=False,
                 training_groups=tuple(tuple(group) for group in metadata["training_groups"]),
                 validation_groups=tuple(tuple(group) for group in metadata["validation_groups"]),
             )
@@ -136,5 +159,6 @@ def load_checkpoint(path, *, distance_model: AbstractDistanceModel) -> TrainingS
         if isinstance(error, ArtifactError):
             raise
         raise ArtifactError(
-            f"Cannot load checkpoint with the supplied distance_model template: {error}"
+            f"Cannot load checkpoint with the supplied distance_model template and optimizer: "
+            f"{error}"
         ) from error
