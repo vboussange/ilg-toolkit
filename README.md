@@ -59,7 +59,7 @@ Pygmy-possum sampling units in the Victorian Alps, kindly provided by
 cover (CC BY 4.0). It finishes in about a minute on a CPU.
 
 <p align="center">
-  <img src="https://vboussange.github.io/ilg-toolkit/examples/quickstart.png" width="720" alt="Land cover and sampling units next to the trained log10 resistance surface.">
+  <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/examples/quickstart_files/quickstart.png" width="720" alt="Land cover and sampling units next to the trained log10 resistance surface.">
 </p>
 
 After turning land-cover fractions into landscape `features` and sampling-unit

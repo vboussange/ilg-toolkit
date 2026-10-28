@@ -4,7 +4,10 @@ site_description = "Inverse landscape genetics in JAX"
 site_url = "https://vboussange.github.io/ilg-toolkit/"
 repo_url = "https://github.com/vboussange/ilg-toolkit"
 repo_name = "vboussange/ilg-toolkit"
-docs_dir = "build/docs"
+docs_dir = "docs"
+exclude_docs = """
+agents/
+"""
 site_dir = "site"
 strict = true
 nav = [

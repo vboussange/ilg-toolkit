@@ -34,3 +34,7 @@ jobs:
       - name: Test with pytest
         run: |
           uv run pytest -n auto
+
+      - name: Build the documentation strictly
+        run: |
+          uv run zensical build --strict
