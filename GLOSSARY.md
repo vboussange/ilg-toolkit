@@ -50,17 +50,23 @@ _Avoid_: Dataset, when referring to one region within a multi-region study.
 **Region batch**:
 The prepared landscape features, sampling-unit identifiers, and grid positions
 for one region, independent of genetic observations.
+A grid position is the raster cell, as a row and column index, that contains a
+sampling unit. `RegionBatch.from_points` snaps projected sampling-unit coordinates
+to grid positions; synthetic studies give grid positions directly.
 An optional species column labels each sampling unit; when omitted, all sampling
 units belong to one species.
 _Avoid_: Prepared region, when naming this input boundary.
 
 **Individual-based region batch**:
-A region batch whose sampling units are individuals.
+A region batch whose sampling units are individuals
+(`RegionBatch(..., individual_based=True)`).
 MLPE losses and MLPE calibration heads reject individual-based region batches;
 the log1p loss accepts them.
 
 **Landscape features**:
 Named raster layers describing a region's landscape, with row, column, and feature dimensions.
+A labeled feature axis names the layers (`RegionBatch.feature_names`); row and column
+coordinates, when present, locate the raster cells in a projected coordinate reference system.
 Their meanings and order are shared by every region a distance model is trained on.
 _Paper_: covariates.
 
