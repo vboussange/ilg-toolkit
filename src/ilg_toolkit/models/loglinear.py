@@ -14,7 +14,7 @@ import numpy as np
 from .._checks import _positive_integer, _require_float64
 from .._training_utils import _prepare_training_inputs
 from ..config import ResistanceSolverConfig
-from ..data import ObservationCollection, RegionBatch, RegionCollection
+from ..data import _feature_names, ObservationCollection, RegionBatch, RegionCollection
 from ..losses import AbstractLoss
 from ..resistance import effective_resistance
 from .base import (
@@ -139,6 +139,46 @@ class LogLinearConductance(ConductanceModel):
             self.min_conductance,
             self.max_conductance,
         )
+
+    def feature_effects(self, feature_names: Sequence[str]) -> dict[str, tuple[float, ...]]:
+        """Log-conductance coefficients by feature name, one per species.
+
+        Each feature's effect is its coefficient in the linear predictor: the change
+        in log conductance, before the floor and cap, when the feature's patch mean
+        increases by one. Effects follow the model's ``species`` order; a model with
+        one unnamed species gives one effect per feature.
+
+        When the features are the fractions of a categorical raster's classes with
+        one class omitted, the omitted class is the reference class. A feature's
+        effect then compares a patch covered by that class with a patch covered by
+        the reference class: ``exp(effect)`` is the ratio of their conductances in
+        excess of ``min_conductance``, below the cap. The difference of two effects
+        compares their two classes. A positive effect marks a class more conductive
+        than the reference class.
+
+        Args:
+            feature_names: Names of the landscape features in channel order, such as
+                ``region.feature_names`` of the training regions.
+
+        Returns:
+            A mapping from feature name, in channel order, to that feature's
+            log-conductance coefficient for each species.
+
+        Raises:
+            ValueError: The names are not unique, nonempty strings, one per feature.
+
+        Examples:
+            >>> effects = distance_model.feature_effects(region.feature_names)
+            >>> effects["grassland"]
+            (-0.08,)
+        """
+        names = _feature_names(feature_names)
+        if len(names) != self.in_channels:
+            raise ValueError(
+                f"Expected {self.in_channels} feature names, one per feature, got {len(names)}"
+            )
+        coefficients = np.asarray(self.coefficients, dtype=np.float64).T.tolist()
+        return {name: tuple(values) for name, values in zip(names, coefficients, strict=True)}
 
 
 def initialize_uniform_conductance(

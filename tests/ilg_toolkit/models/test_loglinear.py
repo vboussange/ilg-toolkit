@@ -393,3 +393,37 @@ def test_uniform_initialization_checks_the_patch_grid(patch_check_problem):
         initialize_uniform_conductance(
             problem.model, shared, problem.observations(shared), Log1pLoss()
         )
+
+
+def test_feature_effects_map_feature_names_to_per_species_coefficients():
+    model = eqx.tree_at(
+        lambda model: (model.coefficients, model.intercepts),
+        LogLinearConductance(3, species=("frog", "newt")),
+        (jnp.array([[-0.25, 1.5, 0.0], [2.0, -3.0, 0.125]]), jnp.array([0.4, -0.2])),
+    )
+
+    effects = model.feature_effects(("grassland", "permanent water", "other"))
+
+    assert effects == {
+        "grassland": (-0.25, 2.0),
+        "permanent water": (1.5, -3.0),
+        "other": (0.0, 0.125),
+    }
+    assert list(effects) == ["grassland", "permanent water", "other"]
+    assert all(type(value) is float for values in effects.values() for value in values)
+    single = eqx.tree_at(
+        lambda model: model.coefficients, LogLinearConductance(2), jnp.array([[0.75, -1.25]])
+    )
+    assert single.feature_effects(["elevation", "canopy"]) == {
+        "elevation": (0.75,),
+        "canopy": (-1.25,),
+    }
+
+
+@pytest.mark.parametrize(
+    "feature_names",
+    [("elevation",), ("elevation", "canopy", "water"), ("canopy", "canopy"), ("", "canopy")],
+)
+def test_feature_effects_require_one_unique_name_per_feature(feature_names):
+    with pytest.raises(ValueError):
+        LogLinearConductance(2).feature_effects(feature_names)
