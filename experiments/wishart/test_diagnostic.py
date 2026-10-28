@@ -1,4 +1,4 @@
-"""Experimental diagnostic seam; independent Gaussian and SciPy references."""
+"""Tests of the Wishart diagnostic against independent Gaussian and SciPy references."""
 
 from typing import cast, final
 
@@ -8,17 +8,17 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from ilg_toolkit import PairwiseObservations, RegionBatch, ResistanceSolverConfig, TargetSpec
+from ilg_toolkit.models import ConductanceModel
 from scipy.linalg import helmert
 from scipy.stats import matrix_normal, wishart
 
 from experiments.wishart import (
-    GaussianMarkerDistances,
     diagnose_wishart,
+    GaussianMarkerDistances,
     heldout_log_likelihood,
     wishart_log_likelihood,
 )
-from ilg_toolkit import PairwiseObservations, RegionBatch, ResistanceSolverConfig, TargetSpec
-from ilg_toolkit.models import ConductanceModel
 
 
 def gaussian_example(populations=4, markers=11):
@@ -65,7 +65,7 @@ def test_population_holdout_matches_independent_gaussian_regression_decompositio
     observations = GaussianMarkerDistances(
         "synthetic", labels, distances, markers, "average", "squared_gaussian_marker_distance"
     )
-    # Use a non-first anchor and a different training order to exercise identities.
+    # A non-first anchor and a permuted training order.
     anchor = 2
     training = (labels[2], labels[4], labels[0])
     order = [4, 0, 1, 3]
@@ -137,7 +137,7 @@ def test_population_holdout_matches_independent_gaussian_regression_decompositio
 @final
 class UniformConductance(ConductanceModel):
     scale: jax.Array
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()
@@ -153,11 +153,13 @@ class UniformConductance(ConductanceModel):
         return self.scale * latent[..., 0]
 
 
-def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
+def test_graph_diagnostic_builds_the_covariance_from_effective_resistances():
     labels = ("west", "east", "north", "south")
     region = RegionBatch(
         "valley",
-        cx.Field(np.ones((2, 2, 1)), dims=("row", "column", "feature")),
+        cx.field(
+            np.ones((2, 2, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["cover"]))
+        ),
         labels,
         np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
     )
@@ -175,7 +177,7 @@ def test_actual_graph_diagnostic_connects_covariance_and_retains_no_go_gate():
         report = diagnose_wishart(
             region,
             observations,
-            encoder=UniformConductance(jnp.array(1.0)),
+            patch_encoder=UniformConductance(jnp.array(1.0)),
             scale=1.3,
             nugget=0.2,
             training_unit_ids=labels[:2],
@@ -214,7 +216,7 @@ def test_unspecified_marker_scaling_is_rejected(marker_scaling):
         )
 
 
-def test_missing_indefinite_and_singular_inputs_are_rejected_without_repair():
+def test_missing_indefinite_and_singular_inputs_are_rejected():
     labels, raw, distances, _ = gaussian_example()
     missing = distances.copy()
     missing[0, 1] = missing[1, 0] = np.nan
@@ -242,13 +244,13 @@ def test_missing_indefinite_and_singular_inputs_are_rejected_without_repair():
                 "synthetic",
                 labels,
                 distances,
-                cast(int, marker_count),  # Deliberately invalid inputs exercise runtime validation.
+                cast(int, marker_count),  # Invalid marker counts.
                 "average",
                 "squared_gaussian_marker_distance",
             )
 
 
-def test_holdout_rejects_unknown_anchors_empty_partitions_and_target_fitted_parameters():
+def test_holdout_rejects_unknown_anchors_empty_partitions_and_undeclared_parameters():
     labels, raw, distances, covariance = gaussian_example()
     data = GaussianMarkerDistances(
         "synthetic", labels, distances, raw.shape[1], "average", "squared_gaussian_marker_distance"
@@ -275,21 +277,24 @@ def test_holdout_rejects_unknown_anchors_empty_partitions_and_target_fitted_para
         )
 
 
-def test_generic_genetic_targets_are_not_silently_promoted_to_marker_observations():
+def test_pairwise_genetic_observations_are_rejected_as_marker_observations():
     labels, _, distances, _ = gaussian_example()
-    generic = PairwiseObservations.from_matrix(labels, distances, target=TargetSpec("FST"))
+    fst = PairwiseObservations(labels, distances, target=TargetSpec("FST"))
     with pytest.raises(TypeError, match="GaussianMarkerDistances"):
-        wishart_log_likelihood(cast(GaussianMarkerDistances, generic), np.eye(len(labels) - 1))
+        wishart_log_likelihood(cast(GaussianMarkerDistances, fst), np.eye(len(labels) - 1))
 
 
-def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible():
+@pytest.mark.filterwarnings("ignore:Sampling units share a vertex")
+def test_nugget_constraints_and_scale_nugget_confounding_are_reported():
     labels, raw, distances, _ = gaussian_example(populations=3)
     observations = GaussianMarkerDistances(
         "coincident", labels, distances, raw.shape[1], "average", "squared_gaussian_marker_distance"
     )
     region = RegionBatch(
         "coincident",
-        cx.Field(np.ones((2, 2, 1)), dims=("row", "column", "feature")),
+        cx.field(
+            np.ones((2, 2, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["cover"]))
+        ),
         labels,
         np.zeros((3, 2), dtype=int),
     )
@@ -300,7 +305,7 @@ def test_scientific_nugget_constraints_and_fixed_encoder_confounding_are_visible
             observations,
             scale=scale,
             nugget=nugget,
-            encoder=UniformConductance(jnp.array(1.0)),
+            patch_encoder=UniformConductance(jnp.array(1.0)),
             training_unit_ids=labels[:2],
             anchor_id=labels[0],
             parameter_source="fixed",

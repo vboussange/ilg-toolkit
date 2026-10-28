@@ -1,242 +1,129 @@
 # ILG Toolkit
 
-**Inverse landscape genetics in JAX.**
+**Differentiable, GPU-accelerated utilities for inverse landscape genetics in JAX.**
 
-[![Checks](https://github.com/vboussange/ilg-toolkit/actions/workflows/checks.yml/badge.svg)](https://github.com/vboussange/ilg-toolkit/actions/workflows/checks.yml)
+[![Run tests](https://github.com/vboussange/ilg-toolkit/actions/workflows/run_tests.yml/badge.svg)](https://github.com/vboussange/ilg-toolkit/actions/workflows/run_tests.yml)
+[![Documentation](https://github.com/vboussange/ilg-toolkit/actions/workflows/docs.yml/badge.svg)](https://github.com/vboussange/ilg-toolkit/actions/workflows/docs.yml)
 
-ILG Toolkit learns how landscape features relate to pairwise genetic observations
-among populations or individuals. Start with one species: supply a raster, located
-sampling units, and genetic observations to `fit`, then request genetic predictions
-with `predict`. Multispecies support is experimental.
+Inverse landscape genetics (ILG) infers spatial ecological networks from
+geolocated genetic data by learning a conductance grid graph whose edge weights
+encode local landscape permeability to movement, so that the effective
+resistances it induces between sampled populations predict their genetic
+dissimilarity.
+
+ILG Toolkit provides differentiable, GPU-accelerated utilities for ILG in JAX.
+A patch encoder maps patches of landscape features to the vertex conductances of
+the conductance grid graph, and is trained end-to-end through a differentiable
+effective-resistance layer.
 
 <p align="center">
-  <img src="docs/assets/ilg-overview.webp" width="420" alt="Landscape features pass through a pooled backbone to a conductance grid graph; effective resistance between sampling units is calibrated to genetic dissimilarity.">
+  <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/assets/ilg-overview.webp" width="420" alt="Landscape features become conductance, effective resistance, and genetic predictions.">
 </p>
 
-**Conductance model illustration.** A pooled backbone maps landscape features to a
-conductance surface. Effective resistance through its grid graph is the ecological
-distance between sampling units. Genetic calibration relates that distance to the
-observed genetic dissimilarity.
+- Log-linear and ResNet9 patch encoders, and a U-Net embedding-distance model.
+- Effective resistance with gradients on the GPU, optionally preconditioned by
+  algebraic multigrid.
+- Training under complete pooling across regions, with a log1p loss or
+  maximum-likelihood population effects (MLPE) for population dependence.
+- Genetic calibration, conditional prediction, and ensembles on the target's
+  original scale, with experimental multispecies support.
 
-## Concepts
+## Installation
 
-Landscape genetics studies how landscapes shape gene flow through dispersal and
-mating. Inverse landscape genetics learns these relationships from genetic
-observations and landscape features. Different conductance surfaces can produce
-similar ecological distances between sampled locations, so a fitted surface
-requires ecological interpretation alongside predictive evaluation.
-
-- **Region batch:** a raster and sampling-unit identifiers with integer
-  `(row, column)` locations. Features use a [Coordax](https://coordax.readthedocs.io/)
-  field with `row`, `column`, and `feature` dimensions; named features retain their
-  meanings and order across regions. Prepare aligned, normalized rasters before
-  constructing a batch.
-- **Pairwise genetic observations:** measurements between sampling units, supplied
-  as labeled pairs or a matrix with missing measurements represented by not-a-number
-  (`NaN`) values.
-  `TargetSpec` defines their meaning, units, kind, and transform.
-- **Distance model:** derives ecological distances from the landscape.
-  `distance_model.predict(region)` returns a `Prediction` aligned with query pairs.
-- **Landscape genetics model:** combines a distance model and genetic calibration.
-  `model.predict(region)` returns genetic predictions on the target's original scale.
-  `prediction.as_matrix()` arranges values symmetrically, with `NaN` for the
-  diagonal and unrequested pairs.
-
-The distance-model hierarchy has three abstract classes and three concrete models:
-
-```text
-AbstractDistanceModel — ecological distances from landscape features
-├── ConductanceModel — effective resistance through a conductance surface
-│   ├── LogLinearConductance — log-linear conductance from patch-averaged covariates
-│   └── ResNet9Conductance — a residual network producing patch conductances
-└── EmbeddingModel — squared embedding distance
-    └── UNet — a U-Net producing landscape embeddings
-```
-
-## Install
+Requires Python 3.12 or newer. Add the development version and the quickstart's
+dependencies to a [uv](https://docs.astral.sh/uv/) project with:
 
 ```bash
-uv add "ilg-toolkit @ git+https://github.com/vboussange/ilg-toolkit@v0.0.3"
+uv add "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit"
 ```
 
-Python 3.12 or newer is required. `pip install` accepts the same requirement string.
-Optional extras use `ilg-toolkit[amg] @ git+...`:
+The `examples` extra installs rioxarray, pandas and Matplotlib for the examples,
+and the `amg` extra installs algebraic-multigrid preconditioning.
 
-- `geo`: GeoPandas and Rasterio for preparing geospatial inputs;
-- `amg`: algebraic multigrid preconditioning for resistance calculations;
-- `gpu`: CUDA-enabled JAX on Linux x86-64.
+ILG Toolkit runs on the device JAX selects. To run it on an NVIDIA GPU, install
+JAX with CUDA support:
 
-The quickstart uses the base install and runs on a central processing unit (CPU).
+```bash
+uv add "jax[cuda12]"
+```
+
+The [JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
+lists the CUDA versions and platforms JAX supports.
 
 ## Quickstart
 
-Fit a conductance model to three synthetic populations, inspect its predictions,
-and save and reload it. This is [examples/quickstart.py](examples/quickstart.py).
+The [quickstart](https://vboussange.github.io/ilg-toolkit/examples/quickstart/)
+trains a log-linear patch encoder on pairwise Fst between 12 Mountain
+Pygmy-possum sampling units in the Victorian Alps, kindly provided by
+[Cesar Australia](https://cesaraustralia.com), and ESA WorldCover 2021 land
+cover (CC BY 4.0). Run it on an NVIDIA GPU with uv, the `examples` extra and
+JAX with CUDA support:
+
+```bash
+curl -O https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/examples/quickstart.py
+uv run --with "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit" \
+  --with "jax[cuda12]" python quickstart.py
+```
+
+Without an NVIDIA GPU, omit `--with "jax[cuda12]"` to run it on the CPU.
+
+The script reads the land-cover GeoTIFF with rioxarray, turns it into land-cover
+fractions, places the sampling units by their coordinates, and trains the patch
+encoder from the best uniform conductance:
 
 ```python
-"""Fit a conductance model to synthetic genetic dissimilarities, then save and reload it."""
-
-from typing import cast
-
-import coordax as cx
-import jax
-import jax.numpy as jnp
-
-from ilg_toolkit import (
-    PairwiseObservations,
-    RegionBatch,
-    TargetSpec,
-    TrainingConfig,
-    fit,
-    load_model,
-    save_model,
+region = RegionBatch.from_points(
+    "victorian-alps",
+    cx.from_xarray(features),
+    sampling_unit_ids=tuple(sites.index),
+    coordinates=sites[["x", "y"]].to_numpy(),
 )
-from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
-
-# Effective resistance needs float64: enable x64 before creating any inputs.
-jax.config.update("jax_enable_x64", True)
-
-# An 8x8 raster with two covariates, and three sampling units at (row, column) cells.
-region = RegionBatch(
-    name="synthetic-valley",
-    features=cx.field(
-        jax.random.normal(jax.random.key(4), (8, 8, 2), dtype=jnp.float32),
-        "row",
-        "column",
-        cx.LabeledAxis("feature", ["elevation", "habitat"]),
-    ),
-    sampling_unit_ids=("south", "north", "east"),
-    grid_positions=[[0, 0], [0, 7], [7, 7]],
+observations = PairwiseObservations(
+    tuple(fst.index),
+    fst.to_numpy(),
+    target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
-# Pairwise genetic observations with their meaning, units, and transform.
-observations = PairwiseObservations.from_matrix(
-    region.sampling_unit_ids,
-    [[0, 0.375, 0.5], [0.375, 0, 0.375], [0.5, 0.375, 0]],
-    target=TargetSpec("synthetic genetic dissimilarity", units="index", transform="identity"),
+loss = Log1pLoss()
+distance_model = initialize_uniform_conductance(
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE), region, observations, loss
 )
-# patch_size=4 coarsens the 8x8 raster into a 2x2 conductance grid graph.
-distance_model = ResNet9Conductance(
-    in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(6)
-)
-result = fit(
+state = train(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(objective="direct_log1p", steps=4, learning_rate=0.001),
+    config=TrainingConfig(loss=loss, steps=2000, eval_every=100),
 )
-model = result.model  # The selected landscape genetics model.
-
-print(
-    "Conductance surface:\n",
-    cast(ConductanceModel, model.distance_model).conductance_surface(region),
-)
-print(
-    "Ecological distances (effective resistance):\n",
-    model.distance_model.predict(region).as_matrix(),
-)
-# predict returns one genetic prediction per distinct pair, in the target's units;
-# as_matrix lays them out symmetrically in sampling-unit order.
-prediction = model.predict(region)
-print("Genetic predictions:", prediction.pairs, prediction.values)
-print("Genetic prediction matrix:\n", prediction.as_matrix())
-
-# Loading needs a template distance model with the same configuration.
-save_model("model.eqx", model)
-template = ResNet9Conductance(
-    in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(0)
-)
-restored = load_model("model.eqx", distance_model=template)
-print("Restored predictions:\n", restored.predict(region).as_matrix())
+conductance = state.selected_model.distance_model.conductance_surface(region)
+resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 ```
 
-## Training
+<p align="center">
+  <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/examples/quickstart_files/quickstart.png" width="720" alt="Land cover and sampling units next to the learned log10 resistance surface.">
+</p>
 
-`fit` returns a training state whose `.model` is the selected landscape genetics
-model. Validation selects the evaluated step with the lowest loss; without
-validation, the final evaluated model is retained.
+The quickstart runs in about a minute on an NVIDIA RTX 3090.
 
-| `TrainingConfig` field | Meaning | Default |
-| --- | --- | --- |
-| `objective` | `"direct_log1p"` regression or maximum-likelihood population effects (`"mlpe"`) | Required |
-| `steps` | Total optimizer updates; zero fits calibration with a frozen distance model | `100` |
-| `eval_every` | Full evaluation interval; step zero and the final step are also evaluated | `1` |
-| `learning_rate` | Adam learning rate | `0.001` |
-| `region_batch_size` | Regions sampled per update | `None` (all) |
-| `seed` | Training random seed | `0` |
-| `jit` | Enable just-in-time compilation | `True` |
-| `mlpe` | `MLPEConfig` variance, jitter, and numerical settings | `MLPEConfig()` |
-
-Experimental multispecies training also accepts `species_batch_size` (species
-sampled per selected region) and `species_microbatch_size` (species processed
-together). Both default to `None`. The [performance guide](docs/performance.md)
-explains sampling and memory controls, and the [statistics guide](docs/statistics.md)
-defines the objectives and prediction modes.
-
-## Examples
-
-All examples use one species except `multispecies.py`.
-
-- [quickstart.py](examples/quickstart.py): fit, predict, save, and load.
-- [resnet9conductance.py](examples/resnet9conductance.py): a ResNet9 conductance
-  model with configured resistance-solver tolerance.
-- [shared_regions.py](examples/shared_regions.py): a U-Net distance model fitted
-  to regions of different extents.
-- [mlpe_calibration.py](examples/mlpe_calibration.py): maximum-likelihood population
-  effects (MLPE) calibration for a frozen distance model.
-- [region_transfer.py](examples/region_transfer.py): fit genetic calibration in a
-  new region with zero optimizer steps.
-- [ensemble.py](examples/ensemble.py): fold ensembles, out-of-fold evaluation,
-  support conditioning, and checkpoint continuation.
-- [ibd.py](examples/ibd.py): an isolation-by-distance (IBD) reference from geographic
-  separation.
-- [multispecies.py](examples/multispecies.py): experimental multispecies inputs,
-  neural fitting, predictions, and MLPE calibration.
-
-From a clone, run an example with
-`JAX_PLATFORMS=cpu JAX_ENABLE_X64=true uv run python examples/<name>.py`.
+Swap in `ResNet9Conductance` as a deep patch encoder that maps raw patches of
+landscape features to vertex conductances.
 
 ## Documentation
 
-- [README](README.md): overview, installation, quickstart, and training controls.
-- [Glossary](GLOSSARY.md): domain vocabulary.
-- [Models](docs/models.md): model settings, custom distance models, and experimental
-  multispecies queries.
-- [Statistics](docs/statistics.md): objectives, genetic calibration, and MLPE conditioning.
-- [Evaluation](docs/evaluation.md): fold ensembles, holdouts, coverage, and scoring.
-- [Persistence](docs/persistence.md): model templates, precision, and continuation.
-- [Performance](docs/performance.md): requested pairs, memory controls, resistance,
-  and MLPE calculations.
-- [Wishart reference](docs/statistics/wishart.md): experimental fixed-parameter
-  likelihood scoring.
-- [Agent instructions](AGENTS.md): repository and authoring conventions.
-- [Domain documentation guidance](docs/agents/domain.md): glossary and architectural decisions.
-- [Issue tracker guidance](docs/agents/issue-tracker.md): specs, tickets, and dependencies.
-- [Triage labels](docs/agents/triage-labels.md): issue readiness roles.
+See the [documentation](https://vboussange.github.io/ilg-toolkit/) for the
+examples, the glossary, and the API reference.
 
-## Development
+## Contributing
 
-```bash
-git clone https://github.com/vboussange/ilg-toolkit.git
-cd ilg-toolkit
-uv sync --extra dev
-export JAX_PLATFORMS=cpu JAX_ENABLE_X64=true
-uv run --no-sync ruff format --check .
-uv run --no-sync ruff check .
-uv run --no-sync pyright
-uv run --no-sync pytest
-for example in examples/*.py; do uv run --no-sync python "$example"; done
-uv run --no-sync python -m experiments.wishart
-uv run --no-sync python -m build
-```
+See [CONTRIBUTING.md](https://github.com/vboussange/ilg-toolkit/blob/main/CONTRIBUTING.md)
+for development checks and documentation conventions.
 
-To release, update `project.version` in `pyproject.toml` and merge into `main`.
-The Release workflow tests the built wheel and source archive, tags `v<version>`,
-and publishes a GitHub release. Retry a failed release from
-Actions → Release → Run workflow on `main`.
+## Interpreting results
 
-Note: Releases are distributed through GitHub; they are not published to PyPI.
+Interpret learned resistance surfaces, ecological distances and genetic
+predictions with care, in light of each study's design and data. The authors and
+contributors of ILG Toolkit accept no responsibility for results obtained with it
+or for decisions based on them.
 
 ## License
 
 Developed by Victor Boussange and contributors. Licensed under the
-[Apache License 2.0](LICENSE).
+[Apache License 2.0](https://github.com/vboussange/ilg-toolkit/blob/main/LICENSE).

@@ -1,7 +1,9 @@
-"""Shared scientific data and numerical reference fixtures."""
+"""Fixtures of synthetic regions, distance models and numerical references for the tests."""
 
+import contextlib
 import itertools
-from collections.abc import Callable, Iterator
+import re
+from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import final
@@ -12,41 +14,32 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from ilg_toolkit import (
-    DirectCalibrationModule,
+    DirectCalibrationHead,
     Ensemble,
-    EnsembleMember,
+    fit_calibration_head,
     LandscapeGeneticsModel,
-    ObservationPartition,
+    MLPELoss,
     PairwiseObservations,
-    PopulationFold,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
-    TrainingConfig,
-    TrainingState,
-    ensemble_member_identity,
-    fit_ensemble,
-    generate_population_folds,
 )
-from ilg_toolkit.ensemble import FoldKey
-from ilg_toolkit.mlpe import MLPEConfig, calibrate_mlpe
 from ilg_toolkit.models import (
     AbstractDistanceModel,
     ConductanceModel,
-    EmbeddingModel,
-    ResNet9Conductance,
-    UNet,
+    EmbeddingDistanceModel,
+    LogLinearConductance,
 )
 
 
-@pytest.fixture(scope="module", autouse=True)
-def release_neural_compilations(request) -> Iterator[None]:
-    """Compilation-cache cleanup after canonical neural-model checks."""
-    yield
-    if request.path.name in {"test_common.py", "test_checkpoint.py", "test_persistence.py"}:
-        jax.clear_caches()
+# The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
+jax.config.update("jax_enable_x64", True)
+
+
+def _feature_field(values, names: tuple[str, ...]) -> cx.Field:
+    """Returns row, column and feature data whose feature axis names each landscape feature."""
+    return cx.field(values, "row", "column", cx.LabeledAxis("feature", np.asarray(names)))
 
 
 _R_DISTANCES = np.array(
@@ -124,6 +117,10 @@ _R_VARIANCES = np.array([0.23562746377731067, 0.02879401793899513])
 
 
 _R_DISTANCE_CENTER = -0.14328369260805038
+
+# The shift makes the R distances non-negative ecological distances. MLPE
+# standardizes distances, so the shift changes only the fitted distance center.
+_R_DISTANCE_SHIFT = 2.0
 _R_DISTANCE_SCALE = 1.012896471531856
 
 
@@ -144,41 +141,8 @@ _R_BLUPS = np.array(
 )
 
 
-def _checkpoint_problem(name="alpine", seed=14):
-    rng = np.random.default_rng(seed)
-    features = rng.normal(size=(3, 3, 2)).astype(np.float32)
-    positions = np.array([[0, 0], [0, 2], [1, 0], [1, 1], [2, 0], [2, 2]])
-    ids = tuple(f"population-{i}" for i in range(len(positions)))
-    region = RegionBatch(
-        name,
-        cx.field(features, "row", "column", "feature"),
-        ids,
-        positions,
-        feature_names=("elevation", "canopy"),
-    )
-    pairs = [(ids[i], ids[j]) for i, j in zip(*np.triu_indices(len(ids), 1), strict=True)]
-    observations = PairwiseObservations.from_pairs(
-        pairs,
-        rng.uniform(0.2, 1.5, size=len(pairs)),
-        target=TargetSpec("synthetic divergence", units="index"),
-        sampling_unit_ids=ids,
-    )
-    return region, observations
-
-
-def _checkpoint_model(seed=8):
-    return UNet(
-        2,
-        patch_size=1,
-        base_channels=2,
-        embedding_dim=2,
-        dropout=0.2,
-        key=jax.random.PRNGKey(seed),
-    )
-
-
 def _dense_resistance(surface, nodes):
-    """Dense Laplacian reference for effective resistance, constructed with NumPy."""
+    """Returns dense-Laplacian reference effective resistances between vertices, using NumPy."""
     rows, columns = surface.shape
     laplacian = np.zeros((surface.size, surface.size))
     for row in range(rows):
@@ -199,18 +163,18 @@ def _dense_resistance(surface, nodes):
 
 @final
 class _PointConductance(ConductanceModel):
-    """Distance model that scales one landscape feature into a conductance surface."""
+    """A distance model that scales one landscape feature into a conductance surface."""
 
     log_scale: jax.Array
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()
     )
 
-    def __init__(self, log_scale: jax.Array, *, solver_config=None, num_species=1):
+    def __init__(self, log_scale: jax.Array, *, solver_config=None, species=None):
         self.log_scale = log_scale
-        self.num_species = num_species
+        self.species = species
         self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
 
     def backbone(self, features):
@@ -224,14 +188,10 @@ class _PointConductance(ConductanceModel):
 @final
 class _CustomDistance(AbstractDistanceModel):
     scale: jax.Array
-    numpy_preprocessing: bool = eqx.field(static=True, default=False)
-
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
 
     def backbone(self, features):
-        if self.numpy_preprocessing:
-            features = jnp.asarray(np.asarray(features))
         return features.reshape(-1) * self.scale
 
     def ecological_distances(self, latent, pairs, species_index):
@@ -240,22 +200,11 @@ class _CustomDistance(AbstractDistanceModel):
         return (values[left] - values[right]) ** 2
 
 
-def _model_factory(key):
-    return _WeightedEmbedding(log_weights=jax.random.normal(key, (2,)) * 0.1)
-
-
-def _completed_fit(member: EnsembleMember) -> tuple[LandscapeGeneticsModel, TrainingState]:
-    assert member.status == "completed"
-    assert member.model is not None
-    assert member.training_state is not None
-    return member.model, member.training_state
-
-
 @final
 class _DropoutConductance(ConductanceModel):
     dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
     conductance_dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
 
@@ -271,83 +220,69 @@ def dropout_conductance_class():
     return _DropoutConductance
 
 
-def _completed_model(member: EnsembleMember) -> LandscapeGeneticsModel:
-    assert member.model is not None
-    return member.model
+@final
+class _BatchNormConductance(ConductanceModel):
+    """A point conductance model whose backbone output passes through a stateful batch norm."""
+
+    distance_model: _PointConductance
+    norm: eqx.nn.BatchNorm
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
+
+    def __init__(self):
+        self.distance_model = _PointConductance(jnp.asarray(0.0))
+        self.norm = eqx.nn.BatchNorm(1, "batch", mode="batch")
+
+    def backbone(self, features):
+        pixels = features[..., :1].reshape(-1, 1)
+        normalized, _ = jax.vmap(
+            self.norm, in_axes=(0, None), out_axes=(0, None), axis_name="batch"
+        )(pixels, eqx.nn.State(self.norm))
+        return normalized.reshape(*features.shape[:-1], 1)
+
+    def conductance(self, latent, species_index):
+        return jnp.exp(self.distance_model.conductance(latent, species_index))
 
 
-def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec]:
+@pytest.fixture(name="BatchNormConductance", scope="session")
+def batch_norm_conductance_class():
+    return _BatchNormConductance
+
+
+def _known_ensemble(
+    *, species: tuple[str, ...] | None = None
+) -> tuple[RegionBatch, Ensemble, TargetSpec]:
     region = RegionBatch(
         "alpine",
-        cx.field(np.arange(4).reshape(1, 4, 1), "row", "column", "feature"),
+        _feature_field(np.arange(4).reshape(1, 4, 1), ("elevation",)),
         ("a", "b", "c", "d"),
         np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
     )
     target = TargetSpec("divergence", units="index")
-    if num_species == 2:
+    if species is not None:
         region = replace(
             region,
-            sampling_unit_ids=region.sampling_unit_ids * 2,
-            grid_positions=np.tile(region.grid_positions, (2, 1)),
-            sampling_unit_kinds=None,
-            species=("frog",) * 4 + ("newt",) * 4,
+            sampling_unit_ids=region.sampling_unit_ids * len(species),
+            grid_positions=np.tile(region.grid_positions, (len(species), 1)),
+            species=tuple(name for name in species for _ in range(4)),
         )
-    members = []
-    for index, weight in enumerate((1.0, 2.0)):
-        fold = PopulationFold(
-            f"fold-{index}",
-            {"alpine": ("c", "d")},
-            {"alpine": ObservationPartition("alpine", (("a", "b"),), "training")},
-            {"alpine": ObservationPartition("alpine", (("c", "d"),), "query")},
+    members = [
+        LandscapeGeneticsModel(
+            _ScalarEmbedding(
+                jnp.asarray(
+                    weight
+                    if species is None
+                    else [weight + 2 * index for index in range(len(species))]
+                ),
+                species=species,
+            ),
+            DirectCalibrationHead(target),
+            ("elevation",),
         )
-        model = LandscapeGeneticsModel(
-            _ScalarEmbedding(jnp.asarray(weight)),
-            DirectCalibrationModule(target),
-            1,
-            training_pairs={"alpine": (("a", "b"),)},
-            training_objective="direct_log1p",
-        )
-        if num_species == 2:
-            held: dict[FoldKey, tuple[str, ...]] = {
-                ("alpine", "frog"): ("c", "d"),
-                ("alpine", "newt"): ("a", "b") if index == 0 else ("c", "d"),
-            }
-            training = {
-                identity: ObservationPartition(
-                    "alpine", (("c", "d"),) if units == ("a", "b") else (("a", "b"),), "training"
-                )
-                for identity, units in held.items()
-            }
-            fold = PopulationFold(fold.fold_id, held, training)
-            model = LandscapeGeneticsModel(
-                _ScalarEmbedding(jnp.asarray([weight, weight + 2]), num_species=2),
-                DirectCalibrationModule(target),
-                1,
-                species=("frog", "newt"),
-                training_pairs={
-                    ("alpine", i): training["alpine", name].pairs
-                    for i, name in enumerate(("frog", "newt"))
-                },
-            )
-        members.append(
-            EnsembleMember(ensemble_member_identity(fold.fold_id, 0), fold, "completed", model)
-        )
-    return region, Ensemble(tuple(members)), target
-
-
-def _fitted_member_problem():
-    region, observations = _embedding_problem()
-    fold = generate_population_folds(region, observations, n_folds=1, holdout_size=2, seed=47)[0]
-    ensemble = fit_ensemble(
-        region,
-        observations,
-        folds=[fold],
-        initialization_seeds=(13,),
-        config=TrainingConfig(objective="mlpe", steps=1),
-        model_factory=_model_factory,
-    )
-    assert ensemble.members[0].status == "completed"
-    return region, observations, ensemble
+        for weight in (1.0, 2.0)
+    ]
+    return region, Ensemble(members), target
 
 
 def _reference_observations():
@@ -358,26 +293,69 @@ def _reference_observations():
     )
 
 
+@final
+class _TabulatedDistance(AbstractDistanceModel):
+    """Distance model reading ecological distances from a vertex-by-vertex table."""
+
+    table: jax.Array
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, table: jax.Array):
+        self.table = table
+
+    def backbone(self, features):
+        return self.table
+
+    def ecological_distances(self, latent, pairs, species_index):
+        nodes, (left, right) = pairs
+        return latent[nodes[left], nodes[right]]
+
+
+def _reference_problem(pairs, distances) -> tuple[RegionBatch, _TabulatedDistance]:
+    """Returns a one-row region of the reference populations and a distance model.
+
+    The distance model gives ``distances``, aligned with ``pairs``. Each sampling
+    unit has its own vertex.
+    """
+    ids = tuple(sorted({label for pair in pairs for label in pair}))
+    region = RegionBatch(
+        "alpine",
+        _feature_field(np.zeros((1, len(ids), 1)), ("elevation",)),
+        ids,
+        np.array([[0, index] for index in range(len(ids))]),
+    )
+    lookup = {label: index for index, label in enumerate(ids)}
+    table = np.zeros((len(ids), len(ids)))
+    for (a, b), value in zip(pairs, np.asarray(distances, dtype=np.float64), strict=True):
+        table[lookup[a], lookup[b]] = table[lookup[b], lookup[a]] = value
+    return region, _TabulatedDistance(jnp.asarray(table))
+
+
 def _calibrated():
     observations = _reference_observations()
-    head = calibrate_mlpe(
-        _R_DISTANCES, observations, region_name="alpine", config=MLPEConfig(jitter=1e-7)
+    region, distance_model = _reference_problem(
+        observations.observed_pairs, _R_DISTANCES + _R_DISTANCE_SHIFT
     )
+    head = fit_calibration_head(region, observations, distance_model, loss=MLPELoss(jitter=1e-7))
     return head, observations
 
 
 def _joint_gaussian_reference(
-    head, observed_pairs, observed_distances, targets, query_pairs, distances
+    calibration, observed_pairs, observed_distances, targets, query_pairs, distances
 ):
-    """Gaussian conditioning reference built from the joint observation covariance."""
+    """Returns Gaussian conditional means and variances from the joint observation covariance."""
     all_pairs = tuple(observed_pairs) + tuple(query_pairs)
     labels = sorted({label for pair in all_pairs for label in pair})
     incidence = np.array([[float(label in pair) for label in labels] for pair in all_pairs])
-    covariance = head.unit_variance * incidence @ incidence.T
-    covariance += (head.residual_variance + head.config.jitter) * np.eye(len(all_pairs))
+    covariance = calibration.unit_variance * incidence @ incidence.T
+    covariance += (calibration.residual_variance + calibration.loss.jitter) * np.eye(len(all_pairs))
     all_distances = np.r_[observed_distances, distances]
     fixed = (
-        head.intercept + head.slope * (all_distances - head.distance_center) / head.distance_scale
+        calibration.intercept
+        + calibration.slope
+        * (all_distances - calibration.distance_center)
+        / calibration.distance_scale
     )
     n = len(observed_pairs)
     cross = covariance[n:, :n]
@@ -389,7 +367,7 @@ def _joint_gaussian_reference(
 def _frozen_r_conditional_reference(
     observed_pairs, observed_distances, targets, query_pairs, distances, *, jitter
 ):
-    """NumPy conditional expectations derived from frozen R calibration results.
+    """Returns NumPy conditional expectations derived from frozen R calibration results.
 
     Coefficients, variance components and distance moments come from the R
     reference; conditioning uses the supplied observation inputs. Residual
@@ -418,16 +396,16 @@ def _frozen_r_conditional_reference(
 
 
 @final
-class _WeightedEmbedding(EmbeddingModel):
-    """Distance model with a learned scale for each embedding feature."""
+class _WeightedEmbedding(EmbeddingDistanceModel):
+    """A distance model with a trainable scale for each embedding feature."""
 
     log_weights: jax.Array
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
 
-    def __init__(self, log_weights: jax.Array, *, num_species=1):
+    def __init__(self, log_weights: jax.Array, *, species=None):
         self.log_weights = log_weights
-        self.num_species = num_species
+        self.species = species
 
     def backbone(self, features):
         return features
@@ -446,10 +424,9 @@ def _embedding_problem(name="alpine", offset=0.0, seed=14, *, columns=3):
     ids = tuple(f"unit-{i}" for i in range(unit_count))
     region = RegionBatch(
         name,
-        cx.field(features, "row", "column", "feature"),
+        _feature_field(features, ("elevation", "canopy")),
         ids,
         np.array(list(np.ndindex(2, columns))),
-        feature_names=("elevation", "canopy"),
     )
     embedding = features.reshape(unit_count, 2) * np.array([0.3, 1.5])
     matrix = ((embedding[:, None] - embedding[None, :]) ** 2).sum(axis=-1)
@@ -474,7 +451,7 @@ def _embedding_problem(name="alpine", offset=0.0, seed=14, *, columns=3):
 
 
 def _dense_profile(distances, targets, left, right, n_populations, variances, *, jitter: float = 0):
-    """Dense Gaussian likelihood reference for fitted calibration parameters."""
+    """Returns the dense Gaussian likelihood reference for MLPE calibration variances."""
     distances = np.asarray(distances, dtype=np.float64)
     z = np.zeros((len(distances), n_populations))
     for row, (a, b) in enumerate(zip(left, right, strict=True)):
@@ -498,16 +475,17 @@ def _dense_profile(distances, targets, left, right, n_populations, variances, *,
 
 
 @final
-class _CovariateConductance(ConductanceModel):
+class _FeatureConductance(ConductanceModel):
     weight: jax.Array
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
         static=True, kw_only=True, default=ResistanceSolverConfig()
     )
 
-    def __init__(self, weight: jax.Array):
+    def __init__(self, weight: jax.Array, *, solver_config=None):
         self.weight = weight
+        self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
 
     def backbone(self, features):
         return features
@@ -517,14 +495,14 @@ class _CovariateConductance(ConductanceModel):
 
 
 @final
-class _ScalarEmbedding(EmbeddingModel):
+class _ScalarEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
 
-    def __init__(self, weight: jax.Array, *, num_species=1):
+    def __init__(self, weight: jax.Array, *, species=None):
         self.weight = weight
-        self.num_species = num_species
+        self.species = species
 
     def backbone(self, features):
         return features
@@ -535,16 +513,16 @@ class _ScalarEmbedding(EmbeddingModel):
 
 
 @final
-class _SharedParameterEmbedding(EmbeddingModel):
+class _SharedParameterEmbedding(EmbeddingDistanceModel):
     weights: jax.Array
-    num_species: int = eqx.field(static=True)
+    species: tuple[str, ...] = eqx.field(static=True)
     patch_size: int = eqx.field(static=True, default=1)
 
     on_embedding: Callable[[], None] | None = eqx.field(static=True, default=None)
 
-    def __init__(self, weights, *, on_embedding=None):
+    def __init__(self, weights, species, *, on_embedding=None):
         self.weights = weights
-        self.num_species = len(weights)
+        self.species = species
         self.on_embedding = on_embedding
 
     def backbone(self, features):
@@ -560,22 +538,20 @@ def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObserva
     regions = [
         RegionBatch(
             "wide",
-            cx.field(np.array([[[0.0], [1.0], [2.0]]]), "row", "column", "feature"),
+            _feature_field(np.array([[[0.0], [1.0], [2.0]]]), ("elevation",)),
             ("a", "b", "c"),
             np.array([[0, 0], [0, 1], [0, 2]]),
-            feature_names=("elevation",),
         ),
         RegionBatch(
             "short",
-            cx.field(np.array([[[0.0], [2.0]]]), "row", "column", "feature"),
+            _feature_field(np.array([[[0.0], [2.0]]]), ("elevation",)),
             ("x", "y"),
             np.array([[0, 0], [0, 1]]),
-            feature_names=("elevation",),
         ),
     ]
     target = TargetSpec("synthetic divergence", units="index")
     observations = [
-        PairwiseObservations.from_matrix(
+        PairwiseObservations(
             ("a", "b", "c"), [[0, 0.1, 0.1], [0.1, 0, 0.1], [0.1, 0.1, 0]], target=target
         ),
         PairwiseObservations.from_pairs([("x", "y")], [15], target=target),
@@ -584,10 +560,10 @@ def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObserva
 
 
 @final
-class _StochasticEmbedding(EmbeddingModel):
+class _StochasticEmbedding(EmbeddingDistanceModel):
     distance_model: _ScalarEmbedding
     dropout: eqx.nn.Dropout
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
 
     def __init__(self, weight: jax.Array):
@@ -608,7 +584,7 @@ class _StochasticEmbedding(EmbeddingModel):
 def _observation_problem() -> tuple[RegionBatch, TargetSpec, _ScalarEmbedding]:
     region = RegionBatch(
         "anywhere",
-        cx.field(np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]), "row", "column", "feature"),
+        _feature_field(np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]), ("elevation", "canopy")),
         ("unit/7", "unit/20", "unit/99"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
@@ -624,10 +600,9 @@ def _population_effect_problem(
     labels = tuple(f"population-{index}" for index in range(6))
     region = RegionBatch(
         name,
-        cx.Field(jnp.asarray(features), dims=("row", "column", "feature")),
+        _feature_field(jnp.asarray(features), ("easting", "canopy")),
         labels,
         np.array(list(np.ndindex(2, 3))),
-        feature_names=("east_covariate", "canopy_covariate"),
     )
     distances = (coordinates[:, None] - coordinates[None, :]) ** 2
     effects = np.array([0.2, -0.15, 0.1, 0.3, -0.2, 0.05])
@@ -635,7 +610,7 @@ def _population_effect_problem(
     noise = np.random.default_rng(17).normal(scale=0.12, size=(6, 6))
     observed += (noise + noise.T) / 2
     np.fill_diagonal(observed, 0)
-    observations = PairwiseObservations.from_matrix(labels, observed, target=target)
+    observations = PairwiseObservations(labels, observed, target=target)
     return region, observations
 
 
@@ -647,57 +622,17 @@ def _persistence_problem(name="inference"):
 
 def _calibration_problem(
     name: str = "original",
-) -> tuple[RegionBatch, PairwiseObservations, ObservationPartition, ObservationPartition]:
+) -> tuple[RegionBatch, PairwiseObservations, PairwiseObservations, PairwiseObservations]:
     region, observations = _population_effect_problem(
         name, TargetSpec("synthetic divergence", units="index")
     )
-    training = ObservationPartition(name, observations.observed_pairs[:10], role="training")
-    validation = ObservationPartition(name, observations.observed_pairs[10:], role="validation")
+    training = observations.select_pairs(observations.observed_pairs[:10])
+    validation = observations.select_pairs(observations.observed_pairs[10:])
     return region, observations, training, validation
 
 
-def _synthetic_problem(*, num_species=1):
-    features = np.arange(18, dtype=np.float32).reshape(3, 3, 2) / 18
-    region = RegionBatch(
-        name="arbitrary-catchment",
-        features=cx.field(features, "row", "column", "feature"),
-        sampling_unit_ids=("north", "east", "south", "west"),
-        grid_positions=np.array([[0, 0], [0, 2], [2, 0], [2, 2]]),
-        feature_names=("gradient", "texture"),
-    )
-    # Synthetic dissimilarity values in target units.
-    targets = np.array(
-        [[0, 0.2, 0.4, 0.6], [0.2, 0, 0.2, 0.4], [0.4, 0.2, 0, 0.2], [0.6, 0.4, 0.2, 0]]
-    )
-    observations = PairwiseObservations.from_matrix(
-        region.sampling_unit_ids, targets, target=TargetSpec("synthetic divergence", units="index")
-    )
-    model = UNet(
-        2,
-        num_species=num_species,
-        patch_size=1,
-        base_channels=2,
-        embedding_dim=2,
-        dropout=0,
-        key=jax.random.key(3),
-    )
-    if num_species > 1:
-        region = replace(
-            region,
-            sampling_unit_ids=region.sampling_unit_ids * 2,
-            grid_positions=np.tile(region.grid_positions, (2, 1)),
-            sampling_unit_kinds=None,
-            species=("frog",) * 4 + ("newt",) * 4,
-        )
-        observations = tuple(
-            replace(observations, species=name, values=observations.values * (i + 1))
-            for i, name in enumerate(("frog", "newt"))
-        )
-    return region, observations, model
-
-
 def _dense_jax_profile(distances, targets, left, right, n_populations, raw_variances):
-    """Dense Gaussian likelihood and gradient reference using automatic differentiation."""
+    """Returns the dense Gaussian likelihood and coefficients in JAX, for reference gradients."""
     import jax
     import jax.numpy as jnp
     from jax.scipy.linalg import cho_solve
@@ -724,9 +659,9 @@ def _dense_jax_profile(distances, targets, left, right, n_populations, raw_varia
 
 
 def _decimal_dense_profile_and_gradients(distances, targets, left, right, raw_variances):
-    """60-digit dense Gaussian reference for covariance gradients.
+    """Returns a 60-digit dense Gaussian likelihood, coefficients and gradients.
 
-    Uses standard-library Decimal Gaussian elimination.
+    Uses standard-library Decimal Gauss-Jordan elimination.
     """
     import math
     from collections.abc import Iterable
@@ -826,16 +761,6 @@ def _decimal_dense_profile_and_gradients(distances, targets, left, right, raw_va
         )
 
 
-@pytest.fixture(name="checkpoint_problem", scope="session")
-def checkpoint_problem_fixture():
-    return _checkpoint_problem
-
-
-@pytest.fixture(name="checkpoint_model", scope="session")
-def checkpoint_model_fixture():
-    return _checkpoint_model
-
-
 @pytest.fixture(name="dense_resistance", scope="session")
 def dense_resistance_fixture():
     return _dense_resistance
@@ -851,35 +776,14 @@ def custom_distance_fixture():
     return _CustomDistance
 
 
-@pytest.fixture(name="model_factory", scope="session")
-def model_factory_fixture():
-    return _model_factory
-
-
-@pytest.fixture(name="completed_fit", scope="session")
-def completed_fit_fixture():
-    return _completed_fit
-
-
 @pytest.fixture(name="FeatureEmbedding", scope="session")
 def feature_embedding_fixture():
     return _ScalarEmbedding
 
 
-@pytest.fixture(name="completed_model", scope="session")
-def completed_model_fixture():
-    return _completed_model
-
-
 @pytest.fixture(name="known_ensemble", scope="session")
 def known_ensemble_fixture():
     return _known_ensemble
-
-
-@pytest.fixture(name="fitted_member_problem", scope="session")
-def fitted_member_problem_fixture():
-    with jax.enable_x64():
-        return _fitted_member_problem()
 
 
 @pytest.fixture(name="reference_observations", scope="session")
@@ -917,9 +821,9 @@ def dense_profile_fixture():
     return _dense_profile
 
 
-@pytest.fixture(name="CovariateConductance", scope="session")
-def covariate_conductance_fixture():
-    return _CovariateConductance
+@pytest.fixture(name="FeatureConductance", scope="session")
+def feature_conductance_fixture():
+    return _FeatureConductance
 
 
 @pytest.fixture(name="ScalarEmbedding", scope="session")
@@ -942,6 +846,77 @@ def stochastic_embedding_fixture():
     return _StochasticEmbedding
 
 
+@contextlib.contextmanager
+def _float64_required():
+    """Disables float64 and expects the toolkit's precision error from the enclosed call."""
+    with jax.enable_x64(False), pytest.raises(RuntimeError, match="jax_enable_x64"):
+        yield
+
+
+@pytest.fixture(name="float64_required", scope="session")
+def float64_required_fixture():
+    return _float64_required
+
+
+def _patch_check_problem() -> SimpleNamespace:
+    """Returns a patch_size=2 log-linear patch encoder and regions that break its patch grid.
+
+    ``misaligned`` has 5 x 3 raster cells, which 2 x 2 patches do not tile. In
+    ``shared``, sampling units ``a`` and ``b``, and ``c`` and ``d``, share vertices.
+    """
+    names = ("elevation",)
+    misaligned = RegionBatch(
+        "ridge",
+        _feature_field(np.linspace(0, 1, 15).reshape(5, 3, 1), names),
+        ("a", "b", "c"),
+        np.array([[0, 0], [2, 1], [4, 2]]),
+    )
+    shared = RegionBatch(
+        "valley",
+        _feature_field(np.linspace(0, 1, 16).reshape(4, 4, 1), names),
+        ("a", "b", "c", "d", "e", "f"),
+        np.array([[0, 0], [1, 1], [2, 2], [3, 3], [0, 3], [3, 0]]),
+    )
+    target = TargetSpec("divergence", transform="log1p")
+
+    def observations(region: RegionBatch) -> PairwiseObservations:
+        pairs = tuple(itertools.combinations(region.sampling_unit_ids, 2))
+        return PairwiseObservations.from_pairs(
+            pairs, np.linspace(0.1, 0.9, len(pairs)), target=target
+        )
+
+    @contextlib.contextmanager
+    def trim_required():
+        message = "Region 'ridge' (5 x 3 cells): drop 1 row and 1 column to get 4 x 2 cells"
+        with pytest.raises(ValueError, match=re.escape(message)):
+            yield
+
+    @contextlib.contextmanager
+    def shared_vertices_warned():
+        with pytest.warns(UserWarning) as record:
+            yield
+        messages = [
+            str(warning.message) for warning in record if "share a vertex" in str(warning.message)
+        ]
+        assert len(messages) == 1
+        assert messages[0].endswith("region 'valley': (a, b), (c, d)")
+
+    return SimpleNamespace(
+        model=LogLinearConductance(1, patch_size=2),
+        misaligned=misaligned,
+        shared=shared,
+        target=target,
+        observations=observations,
+        trim_required=trim_required,
+        shared_vertices_warned=shared_vertices_warned,
+    )
+
+
+@pytest.fixture(name="patch_check_problem", scope="session")
+def patch_check_problem_fixture():
+    return _patch_check_problem()
+
+
 @pytest.fixture(name="observation_problem", scope="session")
 def observation_problem_fixture():
     return _observation_problem
@@ -957,11 +932,6 @@ def calibration_problem_fixture():
     return _calibration_problem
 
 
-@pytest.fixture(name="synthetic_problem", scope="session")
-def synthetic_problem_fixture():
-    return _synthetic_problem
-
-
 @pytest.fixture(name="dense_jax_profile", scope="session")
 def dense_jax_profile_fixture():
     return _dense_jax_profile
@@ -974,13 +944,17 @@ def decimal_dense_profile_and_gradients_fixture():
 
 @pytest.fixture(scope="session")
 def mlpe_reference():
-    """Frozen maximum-likelihood population effects (MLPE) reference values.
+    """Returns frozen maximum-likelihood population effects (MLPE) reference values.
 
     Computed with R 4.1.2, lme4 1.1-28 and ResistanceGA2 1.1.20, using full
-    maximum likelihood and sample standard deviation scaling.
+    maximum likelihood and sample standard deviation scaling. ``problem(pairs,
+    distances)`` builds a region and a distance model giving those distances;
+    MLPE calibrations use the R distances plus ``shift``.
     """
     return SimpleNamespace(
         distances=_R_DISTANCES,
+        shift=_R_DISTANCE_SHIFT,
+        problem=_reference_problem,
         targets=_R_TARGETS,
         fixed=_R_FIXED,
         variances=_R_VARIANCES,
@@ -991,63 +965,47 @@ def mlpe_reference():
 
 @pytest.fixture(scope="session")
 def training_problem():
-    """Build the same identifiable observations for each distance-model family."""
+    """Returns a builder of the same identifiable observations for each distance-model family.
 
-    def build(family, *, name="alpine", num_species=1):
-        side = {"embedding": 2, "conductance": 2, "unet": 3, "resnet": 8}[family]
-        features = (
-            np.random.default_rng(14).uniform(0.8, 1.6, size=(side, side, 2)).astype(np.float32)
-        )
+    Families are ``"embedding"``, ``"conductance"`` and the single-species
+    ``"dropout"`` embedding, whose backbone applies dropout during training.
+    With ``species`` names, each species gets its own copy of the sampling units
+    and observations scaled by its position.
+    """
+
+    def build(family, *, name="alpine", species: tuple[str, ...] | None = None):
+        features = np.random.default_rng(14).uniform(0.8, 1.6, size=(2, 2, 2)).astype(np.float32)
         region = RegionBatch(
             name,
-            cx.field(features, "row", "column", "feature"),
+            _feature_field(features, ("elevation", "canopy")),
             ("south", "north", "west", "east"),
-            np.array([[0, 0], [0, side - 1], [side - 1, 0], [side - 1, side - 1]]),
-            feature_names=("elevation", "canopy"),
+            np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
         )
         observations = PairwiseObservations.from_pairs(
             tuple(itertools.combinations(region.sampling_unit_ids, 2)),
             [0.4, 0.7, 1.4, 0.6, 0.9, 0.8],
             target=TargetSpec("synthetic divergence", units="index"),
         )
-        if family == "unet":
-            model = UNet(
-                2,
-                num_species=num_species,
-                patch_size=1,
-                base_channels=2,
-                embedding_dim=2,
-                dropout=0.2,
-                key=jax.random.key(8),
-            )
-        elif family == "resnet":
-            model = ResNet9Conductance(
-                2,
-                num_species=num_species,
-                patch_size=4,
-                patch_microbatch_size=3,
-                key=jax.random.key(6),
-            )
-        elif family == "embedding":
-            weights = jnp.zeros(2) if num_species == 1 else jnp.array([[0.0, 0.0], [0.2, -0.3]])
-            model = _WeightedEmbedding(weights, num_species=num_species)
+        if family == "embedding":
+            weights = jnp.zeros(2) if species is None else jnp.array([[0.0, 0.0], [0.2, -0.3]])
+            model = _WeightedEmbedding(weights, species=species)
         elif family == "conductance":
-            scales = jnp.array(0.0) if num_species == 1 else jnp.arange(num_species) * 0.2
-            model = _PointConductance(scales, num_species=num_species)
+            scales = jnp.array(0.0) if species is None else jnp.arange(len(species)) * 0.2
+            model = _PointConductance(scales, species=species)
+        elif family == "dropout" and species is None:
+            model = _StochasticEmbedding(jnp.asarray(1.0))
         else:
-            raise ValueError(f"Unknown test model family: {family}")
-        if num_species > 1:
-            names = tuple(f"species-{index}" for index in range(num_species))
+            raise ValueError(f"Unknown test model family: {family} with species {species}")
+        if species is not None:
             region = replace(
                 region,
-                sampling_unit_ids=region.sampling_unit_ids * num_species,
-                grid_positions=np.tile(region.grid_positions, (num_species, 1)),
-                sampling_unit_kinds=None,
-                species=tuple(name for name in names for _ in range(4)),
+                sampling_unit_ids=region.sampling_unit_ids * len(species),
+                grid_positions=np.tile(region.grid_positions, (len(species), 1)),
+                species=tuple(label for label in species for _ in range(4)),
             )
             observations = tuple(
-                replace(observations, species=name, values=observations.values * (index + 1))
-                for index, name in enumerate(names)
+                replace(observations, species=label, values=observations.values * (index + 1))
+                for index, label in enumerate(species)
             )
         return region, observations, model
 

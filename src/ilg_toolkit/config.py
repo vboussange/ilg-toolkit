@@ -1,26 +1,33 @@
-"""Training and resistance calculation settings."""
+"""Training configuration and effective-resistance solver settings."""
 
 import math
 from dataclasses import dataclass, field
 from numbers import Integral, Real
 
-from .mlpe import MLPEConfig
+import optax
 
-
-def validate_patch_microbatch_size(value: int | None) -> None:
-    """Validation of the optional number of raster patches processed together."""
-    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
-        raise ValueError("patch_microbatch_size must be a positive integer or None")
+from ._checks import _positive_integer
+from .losses import AbstractLoss
 
 
 @dataclass(frozen=True)
 class ResistanceSolverConfig:
-    """Float64 settings for resistance calculation.
+    """Settings of the float64 solver in the effective-resistance layer.
 
-    Conjugate gradient is the default solver; ``use_amg=True`` enables algebraic
-    multigrid preconditioning through the optional ``amg`` extra.
-    The preconditioner is prepared before resistance calculation.
-    Exhausting ``max_steps`` raises an error.
+    The solver runs conjugate gradient, optionally preconditioned with algebraic
+    multigrid (AMG) through the ``amg`` extra, and raises an error when it reaches
+    ``max_steps`` before either tolerance. A conductance model carries its solver
+    settings.
+
+    Args:
+        rtol: Relative residual tolerance, finite and nonnegative.
+        atol: Absolute residual tolerance, finite and nonnegative; at least one of
+            ``rtol`` and ``atol`` is positive.
+        max_steps: Maximum number of conjugate-gradient iterations.
+        use_amg: Whether to precondition with AMG.
+
+    Raises:
+        ValueError: If a setting is invalid.
     """
 
     rtol: float = 1e-6
@@ -40,72 +47,88 @@ class ResistanceSolverConfig:
             object.__setattr__(self, name, float(value))
         if self.rtol == 0 and self.atol == 0:
             raise ValueError("At least one solver tolerance must be positive")
-        if (
-            isinstance(self.max_steps, bool)
-            or not isinstance(self.max_steps, Integral)
-            or self.max_steps <= 0
-        ):
-            raise ValueError("solver max_steps must be a positive integer")
+        object.__setattr__(self, "max_steps", _positive_integer("solver max_steps", self.max_steps))
         if not isinstance(self.use_amg, bool):
             raise ValueError("solver use_amg must be a boolean")
-        object.__setattr__(self, "max_steps", int(self.max_steps))
 
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Optimization budget and numerical settings for a landscape genetics model.
+    """Training configuration: loss, optimizer, update budget and batching settings.
 
-    Each Adam update samples up to ``region_batch_size`` regions and then
-    ``species_batch_size`` species within each region; ``None`` uses all available.
-    ``species_microbatch_size`` controls how many species are processed together
-    before their gradients are combined into one update.
-    Evaluation at step zero, every ``eval_every`` updates, and the final step
-    determines model selection.
+    Each update samples up to ``region_batch_size`` regions, then up to
+    ``species_batch_size`` species within each sampled region, and processes
+    ``species_microbatch_size`` species at a time before combining their gradients.
+    Training evaluates at step zero, every ``eval_every`` updates and at the final
+    step, and selects the model among these evaluations.
+
+    The optimizer receives, with each update, the objective value, its gradient and
+    a function evaluating the same objective (same regions, species and random key),
+    so line-search optimizers such as ``optax.lbfgs()`` work through
+    [`train`][ilg_toolkit.train]. Configuration equality ignores the optimizer.
+    Training compiles its update for each optimizer object, so reusing one
+    optimizer object across folds, runs and checkpoint loads reuses the compiled
+    update.
+
+    Args:
+        loss: Loss of every region–species group.
+        steps: Total number of updates, including completed updates when continuing;
+            with ``gradient_tolerance``, the maximum number of updates.
+        eval_every: Number of updates between evaluations.
+        optimizer: Optax optimizer applying the updates; Adam with learning rate
+            1e-3 by default.
+        gradient_tolerance: Gradient-norm threshold ending training: training stops
+            after the first update whose gradient norm (global L2 norm over the
+            trainable parameters for that update's objective) is at or below it;
+            ``None`` runs all ``steps``.
+        region_batch_size: Maximum number of regions sampled per update; ``None``
+            samples every region.
+        species_batch_size: Maximum number of species sampled per region; ``None``
+            samples every species.
+        species_microbatch_size: Maximum number of species processed together;
+            ``None`` processes all sampled species of a region together.
+        seed: Seed of the random sampling and random layers, in ``[0, 2**32)``.
+
+    Raises:
+        ValueError: If a setting is invalid.
     """
 
-    objective: str
+    loss: AbstractLoss
     steps: int = 100
     eval_every: int = 1
-    learning_rate: float = 0.001
+    optimizer: optax.GradientTransformation = field(default=optax.adam(1e-3), compare=False)
+    gradient_tolerance: float | None = None
     region_batch_size: int | None = None
     species_batch_size: int | None = None
     species_microbatch_size: int | None = None
     seed: int = 0
-    jit: bool = True
-    mlpe: MLPEConfig = field(default_factory=MLPEConfig)
 
     def __post_init__(self):
-        if self.objective not in {"direct_log1p", "mlpe"}:
-            raise ValueError("objective must be direct_log1p or mlpe")
-        if not isinstance(self.mlpe, MLPEConfig):
-            raise ValueError("mlpe must be an MLPEConfig")
-        if not isinstance(self.jit, bool):
-            raise ValueError("jit must be a boolean")
+        if not isinstance(self.loss, AbstractLoss):
+            raise ValueError("loss must be an AbstractLoss")
         if (
             isinstance(self.seed, bool)
-            or not isinstance(self.seed, int)
+            or not isinstance(self.seed, Integral)
             or not 0 <= self.seed < 2**32
         ):
             raise ValueError("seed must be an integer in [0, 2**32)")
-        if isinstance(self.steps, bool) or not isinstance(self.steps, int) or self.steps < 0:
+        object.__setattr__(self, "seed", int(self.seed))
+        if isinstance(self.steps, bool) or not isinstance(self.steps, Integral) or self.steps < 0:
             raise ValueError("steps must be a nonnegative integer")
-        if (
-            isinstance(self.eval_every, bool)
-            or not isinstance(self.eval_every, int)
-            or self.eval_every < 1
-        ):
-            raise ValueError("eval_every must be a positive integer")
+        object.__setattr__(self, "steps", int(self.steps))
+        object.__setattr__(self, "eval_every", _positive_integer("eval_every", self.eval_every))
         for name in ("region_batch_size", "species_batch_size", "species_microbatch_size"):
-            value = getattr(self, name)
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            object.__setattr__(
+                self, name, _positive_integer(name, getattr(self, name), optional=True)
+            )
+        if not isinstance(self.optimizer, optax.GradientTransformation):
+            raise ValueError("optimizer must be an optax.GradientTransformation")
+        if self.gradient_tolerance is not None:
+            if (
+                isinstance(self.gradient_tolerance, bool)
+                or not isinstance(self.gradient_tolerance, Real)
+                or not math.isfinite(self.gradient_tolerance)
+                or self.gradient_tolerance < 0
             ):
-                raise ValueError(f"{name} must be a positive integer or None")
-        if (
-            isinstance(self.learning_rate, bool)
-            or not isinstance(self.learning_rate, Real)
-            or not math.isfinite(self.learning_rate)
-            or self.learning_rate <= 0
-        ):
-            raise ValueError("learning_rate must be finite and positive")
-        object.__setattr__(self, "learning_rate", float(self.learning_rate))
+                raise ValueError("gradient_tolerance must be finite and nonnegative, or None")
+            object.__setattr__(self, "gradient_tolerance", float(self.gradient_tolerance))

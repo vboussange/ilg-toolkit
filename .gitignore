@@ -6,6 +6,9 @@ __pycache__/
 build/
 dist/
 .venv/
-experiments/**/results/
-benchmarks/results/
-*.ilg
+site/
+.cache/
+uv.lock
+examples/data/
+/quickstart.png
+/examples/quickstart.png

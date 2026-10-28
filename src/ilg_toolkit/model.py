@@ -1,215 +1,289 @@
-"""Landscape genetics models combining ecological distances and genetic calibration."""
+"""Landscape genetics models composing a distance model and a calibration head."""
 
-from collections.abc import Sequence
-from typing import cast, final, overload
+from collections.abc import Mapping, Sequence
+from typing import final, overload
 
 import equinox as eqx
 import jax.numpy as jnp
 
-from .calibration import AbstractCalibrationModule, GroupKey, MLPECalibrationModule
-from .data import PairwiseObservations, RegionBatch, TargetSpec
-from .mlpe import RegionalMLPECalibration
+from ._checks import _require_float64
+from .calibration import AbstractCalibrationHead, MLPECalibrationHead
+from .data import _feature_names, PairwiseObservations, RegionBatch, TargetSpec
 from .models import AbstractDistanceModel
 from .models.base import (
-    _query_pairs,
-    prepare_distance_context,
-    query_distances_from_latent,
-    region_for_species,
-    select_species,
-    validate_species_order,
+    _model_species,
+    _query_results,
+    _resolve_query,
+    _species_distances,
+    _SpeciesQuery,
 )
-from .models.common import with_dropout_mode
 from .prediction import Prediction
 
 
 @final
-class LandscapeGeneticsModel(eqx.Module):
-    """A distance model composed with genetic calibration and observation-use records.
+class LandscapeGeneticsModel[DistanceModel: AbstractDistanceModel](eqx.Module):
+    """Landscape genetics model: a distance model composed with a calibration head.
 
-    ``species`` associates names with the distance model's parameter rows.
-    The calibration owns the target contract and returns genetic predictions
-    on the original scale. Training and validation pairs record observation use
-    for each region–species group.
+    The distance model maps landscape features to ecological distances, and the
+    calibration head maps ecological distances to genetic predictions on the
+    original scale. Species names come from the distance model, and the target
+    contract from the calibration head. The class is generic in its distance model
+    type, so ``model.distance_model`` keeps the type of the distance model it holds.
+
+    Args:
+        distance_model: Distance model giving ecological distances.
+        calibration_head: Calibration head from training or
+            [`fit_calibration_head`][ilg_toolkit.fit_calibration_head].
+        feature_names: Feature names of the training regions, which query regions
+            match in meaning and order.
+
+    Raises:
+        TypeError: If ``distance_model`` or ``calibration_head`` has an unsupported
+            type.
+        ValueError: If the feature names are empty or repeat a name, or an MLPE
+            calibration head holds species that the distance model lacks.
     """
 
-    distance_model: AbstractDistanceModel
-    calibration: AbstractCalibrationModule
-    feature_count: int
-    feature_names: tuple[str, ...] | None = None
-    species: tuple[str, ...] | None = eqx.field(default=None, kw_only=True)
-    training_objective: str | None = eqx.field(default=None, kw_only=True)
-    training_pairs: dict[GroupKey, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
-    validation_pairs: dict[GroupKey, tuple[tuple[str, str], ...]] = eqx.field(default_factory=dict)
+    distance_model: DistanceModel
+    calibration_head: AbstractCalibrationHead
+    feature_names: tuple[str, ...]
 
     def __post_init__(self):
         if not isinstance(self.distance_model, AbstractDistanceModel):
             raise TypeError("distance_model must implement AbstractDistanceModel")
-        if not isinstance(self.calibration, AbstractCalibrationModule):
-            raise TypeError("calibration must implement AbstractCalibrationModule")
-        self.species = validate_species_order(self.species, self.distance_model.num_species)
-        if self.training_objective not in {None, "direct_log1p", "mlpe"}:
-            raise ValueError("Training objective provenance must be direct_log1p, mlpe or None")
-        for name in ("training_pairs", "validation_pairs"):
-            access = {
-                region: tuple(tuple(sorted(pair)) for pair in pairs)
-                for region, pairs in getattr(self, name).items()
-            }
-            setattr(self, name, access)
+        if not isinstance(self.calibration_head, AbstractCalibrationHead):
+            raise TypeError("calibration_head must implement AbstractCalibrationHead")
+        if isinstance(self.calibration_head, MLPECalibrationHead):
+            fitted = {species for _, species in self.calibration_head.calibrations}
+            if not fitted <= set(_model_species(self.distance_model)):
+                raise ValueError(
+                    f"MLPE calibration species {sorted(fitted, key=str)!r} must be species of "
+                    f"the distance model, {self.distance_model.species!r}"
+                )
+        self.feature_names = _feature_names(self.feature_names)
+
+    @property
+    def species(self) -> tuple[str, ...] | None:
+        """Species names of the distance model, or ``None`` for one unnamed species."""
+        return self.distance_model.species
 
     @property
     def target(self) -> TargetSpec:
-        """The target contract owned by the calibration module."""
-        return self.calibration.target
+        """Target contract of the calibration head."""
+        return self.calibration_head.target
 
     def _validate_region(self, region: RegionBatch):
-        if region.feature_array.shape[-1] != self.feature_count:
-            raise ValueError(f"Expected {self.feature_count} feature channels")
+        """Raises a ``ValueError`` if a region's feature names differ from ``feature_names``."""
         if region.feature_names != self.feature_names:
             raise ValueError(
-                "Query feature contract must match training feature meanings and order"
+                f"Query features {region.feature_names} must match the training features "
+                f"{self.feature_names} in meaning and order"
             )
 
-    def _regional_head(self, region: RegionBatch, species_index: int) -> RegionalMLPECalibration:
-        self._validate_region(region)
-        if not isinstance(self.calibration, MLPECalibrationModule):
-            raise ValueError("This operation requires an MLPE model")
-        index = species_index if self.distance_model.num_species > 1 else None
-        head = self.calibration.for_region(region.name, index)
-        kinds = region.sampling_unit_kinds
-        assert kinds is not None
-        if any(kind != "population" for kind in kinds):
-            raise ValueError("Population MLPE prediction requires population sampling units")
-        return head
-
     @overload
     def predict(
         self,
         region: RegionBatch,
+        query: Mapping[str, Sequence[tuple[str, str]] | None],
         *,
-        species: str | None = None,
-        pairs: Sequence[tuple[str, str]] | None = None,
-        known_effects: bool = False,
-        support: PairwiseObservations | Sequence[PairwiseObservations] | None = None,
-    ) -> Prediction: ...
-
-    @overload
-    def predict(
-        self,
-        region: RegionBatch,
-        *,
-        species: Sequence[str],
-        pairs: Sequence[tuple[str, str]] | None = None,
         known_effects: bool = False,
         support: PairwiseObservations | Sequence[PairwiseObservations] | None = None,
     ) -> dict[str, Prediction]: ...
 
+    @overload
     def predict(
         self,
         region: RegionBatch,
+        query: Sequence[tuple[str, str]] | None = None,
         *,
-        species: str | Sequence[str] | None = None,
-        pairs: Sequence[tuple[str, str]] | None = None,
+        known_effects: bool = False,
+        support: PairwiseObservations | Sequence[PairwiseObservations] | None = None,
+    ) -> Prediction: ...
+
+    def predict(
+        self,
+        region: RegionBatch,
+        query: Mapping[str, Sequence[tuple[str, str]] | None]
+        | Sequence[tuple[str, str]]
+        | None = None,
+        *,
         known_effects: bool = False,
         support: PairwiseObservations | Sequence[PairwiseObservations] | None = None,
     ) -> Prediction | dict[str, Prediction]:
-        """Genetic predictions on the original scale, mapped by species for a species sequence.
+        """Returns genetic predictions on the original scale for query pairs.
 
-        Maximum-likelihood population effects (MLPE) modes ``known_effects=True``
-        and ``support=observations`` are mutually exclusive, require MLPE
-        calibration, and use saved or support-conditioned population effects.
-        Their extras are ``model_values`` (model-scale values), ``model_variance``
-        (effect variance plus residual variance and jitter), and ``effect_variance``
-        (population-effect variance); residual variance and jitter remain on the
-        model's calibration, and support pairs must be disjoint from calibration
-        and query pairs.
-        Values inverse-transform model means, variances stay on the model scale,
-        and the distance model, calibration coefficients and variance parameters
-        are held fixed.
+        The distance model computes ecological distances, and the calibration head
+        converts them into genetic predictions. ``query`` maps species names of the
+        distance model to query pairs, or to ``None`` for every distinct pair, and
+        returns predictions by species in query order. A single-species model also
+        accepts a sequence of pairs, or ``None`` for every distinct pair, and returns
+        one ``Prediction``. Query pairs keep their order and orientation.
+
+        An MLPE calibration head gives marginal predictions by default;
+        ``known_effects=True`` and ``support=...`` condition population effects.
+        A direct calibration head supports neither conditional mode.
+
+        | Mode | Population effects | Extras |
+        | --- | --- | --- |
+        | Default | Marginal mean | `model_values` |
+        | `known_effects=True` | Saved posterior from calibration | Mean and variances |
+        | `support=observations` | Saved posterior updated with support | Mean and variances |
+
+        Point predictions are inverse-transformed model-scale means, and the
+        ``model_variance`` and ``effect_variance`` extras stay on the model scale.
+
+        Args:
+            region: Region batch with the landscape features and the query pairs'
+                sampling units.
+            query: Mapping from species name to query pairs, or to ``None`` for
+                every distinct pair; for a single-species model, a sequence of query
+                pairs, or ``None`` for every distinct pair.
+            known_effects: Whether to include the saved population-effect posterior
+                of the MLPE calibration.
+            support: Support observations, one per queried species, that update the
+                saved population-effect posterior for this call. Support requires
+                explicit query pairs for each queried species; support pairs are
+                disjoint from the calibration pairs and from the query pairs,
+                including reversals; shared sampling units are allowed.
+
+        Returns:
+            Genetic predictions by species for a mapping query, or one
+            ``Prediction`` for a sequence of pairs or ``None``.
+
+        Raises:
+            ValueError: If the region's feature names differ from ``feature_names``,
+                the query names an unknown species, a multispecies model receives a
+                sequence of pairs or ``None``, the query pairs are empty, repeat a
+                pair or name an unknown sampling unit, ``support`` does not match the
+                queried species or comes without explicit query pairs, or the
+                calibration head rejects the conditioning mode or the region.
+            MLPEError: If ``known_effects=True`` is combined with ``support``, or the
+                support observations or their pairs are invalid.
+            RuntimeError: If float64 is disabled.
+
+        Examples:
+            Prepare one landscape with six located populations and fit an MLPE
+            calibration head from measurements among its first four populations:
+
+                import coordax as cx
+                import jax
+                import jax.numpy as jnp
+                import numpy as np
+
+                jax.config.update("jax_enable_x64", True)
+                from ilg_toolkit import (
+                    LandscapeGeneticsModel, MLPELoss, PairwiseObservations, RegionBatch,
+                    TargetSpec, fit_calibration_head,
+                )
+                from ilg_toolkit.models import LogLinearConductance
+
+                features = cx.field(jnp.arange(6.0).reshape(1, 6, 1), "row", "column",
+                                    cx.LabeledAxis("feature", np.array(["elevation"])))
+                region = RegionBatch("valley", features, tuple(f"p{i}" for i in range(6)),
+                                     [[0, i] for i in range(6)])
+                observations = PairwiseObservations.from_pairs(
+                    [("p0", "p1"), ("p0", "p2"), ("p0", "p3"),
+                     ("p1", "p2"), ("p1", "p3"), ("p2", "p3")],
+                    [1.2, 1.6, 2.9, 1.7, 2.0, 1.3],
+                    target=TargetSpec("genetic divergence", units="index"),
+                )
+                distance_model = LogLinearConductance(1, patch_size=1)
+                head = fit_calibration_head(region, observations, distance_model,
+                                            loss=MLPELoss())
+                model = LandscapeGeneticsModel(distance_model, head, region.feature_names)
+                query_pairs = [("p4", "p2"), ("p5", "p3")]
+
+            Marginal predictions use the fitted intercept, slope and distance
+            standardization, with population effects averaged out:
+
+                marginal = model.predict(region, query_pairs)
+                marginal.values                 # Genetic means in original units.
+                marginal.extras["model_values"] # Means before the inverse target transform.
+                marginal.pairs                  # Same alignment as query_pairs.
+
+            Saved-effect predictions add the posterior population effects estimated
+            from the calibration observations. Populations without calibration
+            observations keep a zero prior mean and the prior population variance;
+            query pairs may overlap calibration pairs:
+
+                saved = model.predict(region, query_pairs, known_effects=True)
+                saved.extras["effect_variance"] # Variance of the summed population effects.
+                saved.extras["model_variance"]  # Effect, residual and jitter variance.
+
+            Support observations update the saved posterior for this call, including
+            populations without calibration observations. The distance model,
+            coefficients, distance standardization and variance components stay
+            fixed:
+
+                support = PairwiseObservations.from_pairs(
+                    [("p4", "p0"), ("p4", "p1")], [2.7, 2.2], target=model.target,
+                )
+                conditioned = model.predict(region, query_pairs, support=support)
+                conditioned.extras["model_variance"]
+
+            ``as_matrix()`` and ``as_matrix("effect_variance")`` arrange the values by
+            sampling unit.
         """
-        if known_effects and support is not None:
-            raise ValueError("known_effects and support are mutually exclusive")
+        _require_float64()
         self._validate_region(region)
-        selected = select_species(self.species, species)
-        if self.distance_model.num_species > 1 and region.species is None:
-            raise ValueError("Multispecies queries require sampling-unit species labels")
-        support_by_species = self._support_observations(support, selected)
-        distance_model = with_dropout_mode(self.distance_model, inference=True, key=None)
-        latent = distance_model.backbone(region.feature_array)
-        context = prepare_distance_context(distance_model, region.feature_array)
+        if region.individual_based and isinstance(self.calibration_head, MLPECalibrationHead):
+            raise ValueError("MLPE calibration heads reject individual-based region batches")
+        requests, by_species = _resolve_query(self.species, query)
+        support_by_species = self._support_observations(support, requests)
+        distances_by_species = _species_distances(
+            self.distance_model,
+            region,
+            requests,
+            {name: value.observed_pairs for name, value in support_by_species.items()},
+        )
         results = {}
-        for name, index in selected:
-            prepared = region_for_species(region, name)
-            head = None
-            if (
-                known_effects
-                or support is not None
-                or isinstance(self.calibration, MLPECalibrationModule)
-            ):
-                head = self._regional_head(prepared, index)
-            observations = support_by_species.get(name)
-            query_pairs = pairs
-            if observations is not None:
-                labels, _ = _query_pairs(prepared, pairs)
-                query_pairs = labels + observations.observed_pairs
-            labels, distances = query_distances_from_latent(
-                distance_model,
-                latent,
-                prepared,
-                query_pairs,
-                species_index=index,
-                context=context,
+        for request in requests:
+            prepared, labels, distances = distances_by_species[request.name]
+            observations = support_by_species.get(request.name)
+            query_count = len(labels) - (
+                0 if observations is None else len(observations.observed_pairs)
             )
-            if observations is not None:
-                labels = labels[: len(labels) - len(observations.observed_pairs)]
-            extras = {}
-            if known_effects or observations is not None:
-                assert head is not None
-                result = head.predict(
-                    distances[: len(labels)],
-                    labels,
-                    known_effects=known_effects,
-                    support=observations,
-                    support_distances=None if observations is None else distances[len(labels) :],
-                )
-                values, extras = result.values, result.extras
-            else:
-                values = self.calibration.predict(
-                    distances,
-                    labels,
-                    region_name=region.name,
-                    species_index=index if distance_model.num_species > 1 else None,
-                )
-            results[name] = Prediction(
-                jnp.asarray(values),
-                labels,
+            result = self.calibration_head.predict(
+                distances[:query_count],
+                labels[:query_count],
+                region_name=region.name,
+                species=request.name,
+                individual_based=prepared.individual_based,
+                known_effects=known_effects,
+                support=observations,
+                support_distances=None if observations is None else distances[query_count:],
+            )
+            results[request.name] = Prediction(
+                jnp.asarray(result.values),
+                labels[:query_count],
                 region.name,
                 prepared.sampling_unit_ids,
-                species=name,
-                extras=extras,
+                species=request.name,
+                extras=result.extras,
             )
-        if isinstance(species, str) or species is None:
-            return results[selected[0][0]]
-        return cast(dict[str, Prediction], results)
+        return _query_results(results, by_species)
 
     def _support_observations(
         self,
         support: PairwiseObservations | Sequence[PairwiseObservations] | None,
-        selected: tuple[tuple[str | None, int], ...],
+        requests: tuple[_SpeciesQuery, ...],
     ) -> dict[str | None, PairwiseObservations]:
         if support is None:
             return {}
+        if any(request.pairs is None for request in requests):
+            raise ValueError("Support requires explicit query pairs for each queried species")
         observations = (support,) if isinstance(support, PairwiseObservations) else support
         if (
             not isinstance(observations, Sequence)
             or not observations
             or any(not isinstance(value, PairwiseObservations) for value in observations)
         ):
-            raise ValueError("Support requires observations for each selected species")
+            raise ValueError("Support requires observations for each queried species")
         by_species = {value.species: value for value in observations}
         if len(by_species) != len(observations):
             raise ValueError("Support requires one observations object per species")
-        if self.distance_model.num_species == 1 and set(by_species) == {None}:
-            by_species = {selected[0][0]: observations[0]}
-        if set(by_species) != {name for name, _ in selected}:
-            raise ValueError("Support observations must match the selected species")
+        if len(_model_species(self.distance_model)) == 1 and set(by_species) == {None}:
+            by_species = {requests[0].name: observations[0]}
+        if set(by_species) != {request.name for request in requests}:
+            raise ValueError("Support observations must match the queried species")
         return by_species

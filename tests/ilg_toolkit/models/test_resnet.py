@@ -1,87 +1,167 @@
-"""Scientific behavior of models.resnet."""
+"""Tests of the ResNet9 patch encoder at tiny width."""
 
 from dataclasses import replace
-from typing import cast
 
 import coordax as cx
+import equinox as eqx
 import jax
 import numpy as np
+import optax
 import pytest
-
 from ilg_toolkit import (
+    load_model,
+    Log1pLoss,
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
+    save_model,
     TargetSpec,
+    train,
     TrainingConfig,
-    fit,
 )
-from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
+from ilg_toolkit.models import ResNet9Conductance
 
 
-@pytest.mark.parametrize("num_species", [1, 2])
-def test_resnet_fit_exposes_surface_and_label_free_target_predictions(
-    dense_resistance, num_species
-):
-    with jax.enable_x64():
-        features = np.random.default_rng(4).normal(size=(8, 8, 2)).astype(np.float32)
-        region = RegionBatch(
-            "small-valley",
-            cx.field(features, "row", "column", "feature"),
-            ("south", "north", "east"),
-            np.array([[0, 0], [0, 7], [7, 7]]),
-        )
-        observations = PairwiseObservations.from_matrix(
-            region.sampling_unit_ids,
-            dense_resistance(np.full((2, 2), 2.0), np.array([0, 1, 3])),
-            target=TargetSpec("synthetic dissimilarity", units="index"),
-        )
-        model = ResNet9Conductance(
-            in_channels=2,
-            num_species=num_species,
-            patch_size=4,
-            patch_microbatch_size=3,
-            solver_config=ResistanceSolverConfig(rtol=1e-8),
-            key=jax.random.key(6),
-        )
-        species = None if num_species == 1 else ("frog", "newt")
-        if species is not None:
-            region = replace(
-                region,
-                sampling_unit_ids=region.sampling_unit_ids * 2,
-                grid_positions=np.tile(region.grid_positions, (2, 1)),
-                sampling_unit_kinds=None,
-                species=("frog",) * 3 + ("newt",) * 3,
-            )
-            observations = tuple(
-                replace(observations, species=name, values=observations.values * (i + 1))
-                for i, name in enumerate(species)
-            )
-        result = fit(
-            region,
-            observations,
-            distance_model=model,
-            species=species,
-            config=TrainingConfig(
-                objective="direct_log1p",
-                steps=2,
-                learning_rate=0.001,
+_TINY = (8, 8, 8)
+# Parameter count of ResNet9Conductance(3) at its default channel widths.
+_DEFAULT_PARAMETER_COUNT = 741_761
+
+
+def _region(shape=(8, 12, 3)):
+    features = np.random.default_rng(4).normal(size=shape).astype(np.float32)
+    return RegionBatch(
+        "small-valley",
+        cx.field(
+            features,
+            "row",
+            "column",
+            cx.LabeledAxis(
+                "feature", np.array(tuple(f"feature-{index}" for index in range(shape[2])))
             ),
+        ),
+        ("south", "north", "east"),
+        np.array([[0, 0], [0, shape[1] - 1], [shape[0] - 1, shape[1] - 1]]),
+    )
+
+
+def test_default_widths_keep_the_paper_architecture_parameter_count_and_float32_weights():
+    # Shapes only: the default-width patch encoder is neither initialized nor compiled.
+    model = eqx.filter_eval_shape(ResNet9Conductance, 3, key=jax.random.key(0))
+    leaves = [leaf for leaf in jax.tree.leaves(model) if isinstance(leaf, jax.ShapeDtypeStruct)]
+    assert model.channels == (64, 128, 256)
+    assert sum(leaf.size for leaf in leaves) == _DEFAULT_PARAMETER_COUNT
+    # Float64 is enabled, and the patch encoder layers hold float32 weights.
+    assert jax.enable_x64.value
+    assert {leaf.dtype for leaf in leaves} == {np.dtype("float32")}
+
+
+def test_patch_microbatches_preserve_surfaces_predictions_and_gradients(
+    assert_patch_microbatches_match,
+):
+    # Six patches in batches of four exercise a final batch smaller than four.
+    key = jax.random.key(19)
+    surface = assert_patch_microbatches_match(
+        ResNet9Conductance(3, patch_size=4, channels=_TINY, key=key),
+        ResNet9Conductance(3, patch_size=4, channels=_TINY, patch_microbatch_size=4, key=key),
+        _region(),
+        rtol=1e-6,
+    )
+    assert surface is not None and surface.shape == (2, 3)
+
+
+def test_species_training_matches_dense_resistance_and_reloads(dense_resistance, tmp_path):
+    region = _region((8, 8, 2))
+    species = ("frog", "newt")
+    region = replace(
+        region,
+        sampling_unit_ids=region.sampling_unit_ids * 2,
+        grid_positions=np.tile(region.grid_positions, (2, 1)),
+        species=("frog",) * 3 + ("newt",) * 3,
+    )
+    nodes = np.array([0, 1, 3])
+    target = TargetSpec("synthetic dissimilarity", units="index")
+    observations = tuple(
+        PairwiseObservations(
+            ("south", "north", "east"),
+            dense_resistance(np.full((2, 2), 2.0 * scale), nodes),
+            target=target,
+            species=name,
         )
-        assert result.history[-1].training_loss < result.history[0].training_loss
-        for name in (None,) if species is None else species:
-            surface = cast(ConductanceModel, result.model.distance_model).conductance_surface(
-                region, species=name, species_order=species
-            )
-            prediction = result.model.predict(region, species=name)
-            assert surface.shape == (2, 2)
-            assert np.all(np.isfinite(surface) & (surface > 0))
-            expected = dense_resistance(surface, np.array([0, 1, 3]))
-            np.fill_diagonal(expected, np.nan)
-            np.testing.assert_allclose(prediction.as_matrix(), expected, atol=2e-6, rtol=2e-6)
-            np.testing.assert_allclose(
-                result.model.distance_model.predict(
-                    region, species=name, species_order=species
-                ).as_matrix(),
-                prediction.as_matrix(),
-            )
+        for scale, name in ((1, "frog"), (0.5, "newt"))
+    )
+
+    def model(seed, solver_config=None):
+        return ResNet9Conductance(
+            2,
+            species=species,
+            patch_size=4,
+            channels=_TINY,
+            min_conductance=0.02,
+            patch_microbatch_size=3,
+            solver_config=solver_config,
+            key=jax.random.key(seed),
+        )
+
+    result = train(
+        region,
+        observations,
+        distance_model=model(6, ResistanceSolverConfig(rtol=1e-9, atol=1e-10)),
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.01)),
+    )
+    assert np.isfinite(result.history[-1].training_loss)
+    assert result.history[-1].training_loss < result.history[0].training_loss
+    trained = result.selected_model
+    distance_model = trained.distance_model
+    assert isinstance(distance_model, ResNet9Conductance)
+    surfaces = {
+        name: np.asarray(distance_model.conductance_surface(region, name).data) for name in species
+    }
+    assert not np.allclose(surfaces["frog"], surfaces["newt"])
+    for name in species:
+        surface = np.asarray(surfaces[name])
+        assert surface.shape == (2, 2)
+        assert np.all(np.isfinite(surface) & (surface > 0))
+        expected = dense_resistance(surface, nodes)
+        np.fill_diagonal(expected, np.nan)
+        prediction = trained.predict(region, {name: None})[name].as_matrix()
+        np.testing.assert_allclose(prediction, expected, rtol=2e-6)
+        np.testing.assert_allclose(
+            distance_model.predict(region, {name: None})[name].as_matrix(),
+            prediction,
+        )
+
+    path = tmp_path / "resnet.eqx"
+    save_model(path, trained)
+    restored = load_model(path, distance_model=model(9))
+    restored_model = restored.distance_model
+    assert isinstance(restored_model, ResNet9Conductance)
+    restored_surfaces = {
+        name: restored_model.conductance_surface(region, name).data for name in species
+    }
+    for name in species:
+        np.testing.assert_array_equal(restored_surfaces[name], surfaces[name])
+        np.testing.assert_array_equal(
+            restored.predict(region, {name: None})[name].values,
+            trained.predict(region, {name: None})[name].values,
+        )
+    assert restored_model.solver_config == distance_model.solver_config
+    assert restored_model.solver_config != ResistanceSolverConfig()
+    assert restored_model.channels == _TINY
+    assert restored_model.patch_microbatch_size == 3
+    assert restored_model.min_conductance == 0.02
+
+
+@pytest.mark.parametrize("channels", [(8, 8), (8, 12, 16), (0, 8, 8), (8, 8, -8), (8.0, 8, 8)])
+def test_widths_must_be_three_positive_multiples_of_eight(channels):
+    with pytest.raises(ValueError):
+        ResNet9Conductance(2, channels=channels, key=jax.random.key(0))
+
+
+@pytest.mark.parametrize("min_conductance", [True, 0.0, -1.0, float("nan"), "1e-6"])
+def test_min_conductance_must_be_a_finite_positive_real(min_conductance):
+    with pytest.raises(ValueError, match="min_conductance"):
+        ResNet9Conductance(
+            2, channels=(8, 8, 8), min_conductance=min_conductance, key=jax.random.key(0)
+        )
+    model = ResNet9Conductance(2, channels=(8, 8, 8), min_conductance=1, key=jax.random.key(0))
+    assert type(model.min_conductance) is float

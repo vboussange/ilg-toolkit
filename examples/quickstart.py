@@ -1,73 +1,157 @@
-"""Fit a conductance model to synthetic genetic dissimilarities, then save and reload it."""
+"""A Mountain Pygmy-possum resistance surface learned from land cover and genetic data.
 
-from typing import cast
+Pairwise Fst between 12 Mountain Pygmy-possum (Burramys parvus) sampling units in
+the Victorian Alps, kindly provided by Cesar Australia, is related to ESA WorldCover
+2021 land cover (CC BY 4.0). A log-linear patch encoder maps land-cover fractions to
+the vertex conductances of a conductance grid graph, whose effective resistances
+predict the odds of Fst. Install the ``examples`` extra and run this script: it
+downloads 0.25 MB of example data on first use and writes ``quickstart.png``.
+"""
+
+import urllib.request
+import zipfile
+from pathlib import Path
 
 import coordax as cx
 import jax
-import jax.numpy as jnp
-
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import rioxarray
+import xarray as xr
 from ilg_toolkit import (
+    Log1pLoss,
     PairwiseObservations,
     RegionBatch,
     TargetSpec,
+    train,
     TrainingConfig,
-    fit,
-    load_model,
-    save_model,
 )
-from ilg_toolkit.models import ConductanceModel, ResNet9Conductance
+from ilg_toolkit.models import initialize_uniform_conductance, LogLinearConductance
+from matplotlib.colors import ListedColormap
+from matplotlib.patches import Patch
+
 
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
 
-# An 8x8 raster with two covariates, and three sampling units at (row, column) cells.
-region = RegionBatch(
-    name="synthetic-valley",
-    features=cx.field(
-        jax.random.normal(jax.random.key(4), (8, 8, 2), dtype=jnp.float32),
-        "row",
-        "column",
-        cx.LabeledAxis("feature", ["elevation", "habitat"]),
-    ),
-    sampling_unit_ids=("south", "north", "east"),
-    grid_positions=[[0, 0], [0, 7], [7, 7]],
+DATA_URL = (
+    "https://github.com/vboussange/ilg-toolkit/releases/download/"
+    "example-data-v1/mountain-pygmy-possum.zip"
 )
-# Pairwise genetic observations with their meaning, units, and transform.
-observations = PairwiseObservations.from_matrix(
-    region.sampling_unit_ids,
-    [[0, 0.375, 0.5], [0.375, 0, 0.375], [0.5, 0.375, 0]],
-    target=TargetSpec("synthetic genetic dissimilarity", units="index", transform="identity"),
+CACHE = Path(__file__).resolve().parent / "data" / "example-data-v1"
+COARSENING = 10  # Averages 8.36 m land-cover pixels into cells of about 84 m.
+PATCH_SIZE = 8  # Groups 8x8 cells into one vertex of about 669 m.
+# ESA WorldCover classes merged into landscape features; tree cover is the reference.
+FEATURE_CLASSES = {
+    "grassland": [30],
+    "permanent water": [80],
+    "other": [20, 40, 50, 60, 90],  # Shrubland, cropland, built-up, bare, herbaceous wetland.
+}
+
+# Download the example data once and cache it next to this script.
+data = CACHE / "mountain-pygmy-possum"
+if not data.is_dir():
+    CACHE.mkdir(parents=True, exist_ok=True)
+    archive, _ = urllib.request.urlretrieve(DATA_URL, CACHE / "mountain-pygmy-possum.zip")
+    with zipfile.ZipFile(archive) as contents:
+        contents.extractall(CACHE)
+    Path(archive).unlink()
+landcover = rioxarray.open_rasterio(data / "landcover.tif").squeeze("band", drop=True).load()
+sites = pd.read_csv(data / "sites.csv", index_col="site")
+fst = pd.read_csv(data / "fst.csv", index_col="site")
+
+# Land-cover fractions per coarse cell, trimmed to whole patches.
+fractions = (
+    xr.concat(
+        [landcover.isin(codes) for codes in FEATURE_CLASSES.values()],
+        dim=pd.Index(list(FEATURE_CLASSES), name="feature"),
+    )
+    .astype(np.float32)
+    .coarsen(y=COARSENING, x=COARSENING, boundary="trim")
+    .mean()
 )
-# patch_size=4 coarsens the 8x8 raster into a 2x2 conductance grid graph.
-distance_model = ResNet9Conductance(
-    in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(6)
+fractions = fractions.isel(
+    y=slice(fractions.sizes["y"] // PATCH_SIZE * PATCH_SIZE),
+    x=slice(fractions.sizes["x"] // PATCH_SIZE * PATCH_SIZE),
 )
-result = fit(
+features = fractions.rename(y="row", x="column").transpose("row", "column", "feature")
+
+region = RegionBatch.from_points(
+    "victorian-alps",
+    cx.from_xarray(features),
+    sampling_unit_ids=tuple(sites.index),
+    coordinates=sites[["x", "y"]].to_numpy(),
+)
+observations = PairwiseObservations(
+    tuple(fst.index),
+    fst.to_numpy(),
+    target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
+)
+loss = Log1pLoss()
+distance_model = initialize_uniform_conductance(
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE), region, observations, loss
+)
+state = train(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(objective="direct_log1p", steps=4, learning_rate=0.001),
+    config=TrainingConfig(loss=loss, steps=2000, eval_every=100),
 )
-model = result.model  # The selected landscape genetics model.
+conductance = state.selected_model.distance_model.conductance_surface(region)
+resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 
 print(
-    "Conductance surface:\n",
-    cast(ConductanceModel, model.distance_model).conductance_surface(region),
+    f"Log1p loss: {state.history[0].training_loss:.5f} at step 0, "
+    f"{state.selected_loss:.5f} at step {state.selected_step}"
 )
-print(
-    "Ecological distances (effective resistance):\n",
-    model.distance_model.predict(region).as_matrix(),
-)
-# predict returns one genetic prediction per distinct pair, in the target's units;
-# as_matrix lays them out symmetrically in sampling-unit order.
-prediction = model.predict(region)
-print("Genetic predictions:", prediction.pairs, prediction.values)
-print("Genetic prediction matrix:\n", prediction.as_matrix())
+print("Log-linear coefficients relative to tree cover:")
+for name, value in zip(
+    FEATURE_CLASSES, state.selected_model.distance_model.coefficients[0].tolist(), strict=True
+):
+    print(f"  {name}: {value:+.3f}")
+prediction = state.selected_model.predict(region, observations.observed_pairs)
+for pair, predicted, observed in list(
+    zip(prediction.pairs, prediction.values, observations.observed_values, strict=True)
+)[:3]:
+    print(f"Fst {pair[0]} - {pair[1]}: predicted {predicted:.3f}, observed {observed:.3f}")
 
-# Loading needs a template distance model with the same configuration.
-save_model("model.eqx", model)
-template = ResNet9Conductance(
-    in_channels=2, patch_size=4, min_conductance=1e-6, key=jax.random.key(0)
+# Land cover and sampling units next to the learned resistance surface.
+classes = xr.zeros_like(landcover, dtype=np.uint8)
+for index, codes in enumerate(FEATURE_CLASSES.values(), start=1):
+    classes = classes.where(~landcover.isin(codes), index)
+colors = ["#006400", "#ffff4c", "#0064c8", "#b4b4b4"]
+figure, (cover, surface) = plt.subplots(
+    1, 2, figsize=(10, 6.4), sharex=True, sharey=True, layout="constrained"
 )
-restored = load_model("model.eqx", distance_model=template)
-print("Restored predictions:\n", restored.predict(region).as_matrix())
+classes.plot.imshow(ax=cover, cmap=ListedColormap(colors), vmin=-0.5, vmax=3.5, add_colorbar=False)
+cover.legend(
+    handles=[
+        Patch(color=color, label=label)
+        for color, label in zip(colors, ["tree cover", *FEATURE_CLASSES], strict=True)
+    ],
+    loc="upper left",
+    fontsize=8,
+)
+cover.set(title="ESA WorldCover 2021 land cover", ylabel="Northing (km)")
+image = np.log10(resistance.to_xarray()).plot.imshow(
+    ax=surface,
+    x="column",
+    y="row",
+    cmap="magma",
+    cbar_kwargs={"shrink": 0.8, "label": "log$_{10}$ local resistance Q = 1/C"},
+)
+surface.set(title="Learned resistance surface", ylabel="")
+surface.axis(image.get_extent())
+for axis in (cover, surface):
+    axis.scatter(sites["x"], sites["y"], s=30, c="white", edgecolors="black")
+    axis.set(xlabel="Easting (km)", aspect="equal")
+    axis.xaxis.set_major_formatter(lambda value, _: f"{value / 1e3:.0f}")
+    axis.yaxis.set_major_formatter(lambda value, _: f"{value / 1e3:.0f}")
+figure.supxlabel(
+    "Mountain Pygmy-possum sampling units (white). Genetic data: Cesar Australia. "
+    "Land cover: ESA WorldCover 2021 (CC BY 4.0).",
+    fontsize=8,
+)
+figure.savefig("quickstart.png", dpi=150)
+print("Saved quickstart.png")

@@ -1,15 +1,19 @@
-"""Distance models with pooled backbones and species-specific ecological distances."""
+"""Distance models: patch encoders, the IBD model and embedding-distance models."""
 
-from .base import AbstractDistanceModel, ConductanceModel, EmbeddingModel
-from .loglinear import LogLinearConductance
+from .base import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
+from .ibd import IBDModel
+from .loglinear import initialize_uniform_conductance, LogLinearConductance
 from .resnet import ResNet9Conductance
-from .unet import UNet
+from .unet import UNetEmbeddingDistance
+
 
 __all__ = [
     "AbstractDistanceModel",
     "ConductanceModel",
-    "EmbeddingModel",
+    "EmbeddingDistanceModel",
+    "IBDModel",
     "LogLinearConductance",
     "ResNet9Conductance",
-    "UNet",
+    "UNetEmbeddingDistance",
+    "initialize_uniform_conductance",
 ]
