@@ -269,7 +269,7 @@ def _unit_conductance_resistances(
     """Computes effective resistances among a region's sampling-unit vertices at unit conductance.
 
     Returns the resistance-matrix row of each sampling-unit pixel, shared by the
-    sampling units of every species, and the matrix in the model's parameter dtype.
+    sampling units of every species, and the float64 matrix.
     """
     context = _prepare_distance_context(model, region.feature_array)
     assert context is not None

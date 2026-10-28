@@ -12,17 +12,14 @@ import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import lineax as lx
 import numpy as np
-from jaxscape import GridGraph, ResistanceDistance
-from jaxscape.solvers import AMJaxCGSolver
 from numpy.typing import ArrayLike
 
 from .._checks import _require_float64
 from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
-from ..resistance import _effective_resistance, _mean_conductance, _ResistanceSolverContext
+from ..resistance import _effective_resistance, _resistance_context, _ResistanceSolverContext
 from .common import _inference_model, _pixel_to_patch_nodes
 
 
@@ -221,10 +218,8 @@ class ConductanceModel(AbstractDistanceModel):
         latent: jax.Array,
         pairs: tuple[jax.Array, tuple[jax.Array, jax.Array]],
         species_index: int | jax.Array,
-        *,
-        context: _ResistanceSolverContext | None = None,
     ) -> jax.Array:
-        """Computes effective resistances for pairs of sampling units.
+        """Computes float64 effective resistances for pairs of sampling units.
 
         Args:
             latent: Backbone output of the region.
@@ -232,23 +227,11 @@ class ConductanceModel(AbstractDistanceModel):
                 ``AbstractDistanceModel.ecological_distances``.
             species_index: Parameter row of the species, an integer or a scalar
                 integer array.
-            context: Resistance solver prepared for this patch encoder and the
-                region's raster shape; training and prediction supply it.
 
         Returns:
             Effective resistances aligned with ``left`` and ``right``.
-
-        Raises:
-            ValueError: ``context`` is missing or was prepared for other solver
-                settings.
         """
-        nodes, indices = pairs
-        if context is None:
-            raise ValueError("Effective resistance requires a prepared resistance solver context")
-        if context.config != self.solver_config:
-            raise ValueError("Solver context policy does not match the conductance model settings")
-        surface = self.conductance(latent, species_index)
-        return _effective_resistance(surface, nodes, context=context)[indices]
+        return _resistance_distances(self, latent, pairs, species_index, context=None)
 
     def conductance_surface(self, region: RegionBatch, species: str | None = None) -> cx.Field:
         """Returns one species' positive conductance surface over a region.
@@ -585,8 +568,6 @@ def _prepare_distance_context(
 ) -> _ResistanceSolverContext | None:
     """Prepares a reusable resistance solver for a region's conductance grid graph.
 
-    Conjugate gradient, with optional algebraic multigrid preconditioning prepared
-    on a uniform conductance grid graph, follows the model's ``solver_config``.
     Distance models without a conductance grid graph need no solver.
     """
     if not isinstance(model, ConductanceModel):
@@ -595,21 +576,23 @@ def _prepare_distance_context(
     if len(shape) != 3 or shape[0] % model.patch_size or shape[1] % model.patch_size:
         raise ValueError("Raster dimensions must be divisible by model patch_size")
     graph_shape = (shape[0] // model.patch_size, shape[1] // model.patch_size)
-    if graph_shape[0] * graph_shape[1] < 2:
-        raise ValueError("Effective resistance requires at least two graph vertices")
-    config = model.solver_config
-    if not config.use_amg:
-        return _ResistanceSolverContext(
-            graph_shape,
-            lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps),
-            config=config,
-        )
-    solver = AMJaxCGSolver(
-        rtol=config.rtol, atol=config.atol, max_steps=config.max_steps, coarse_solver="pinv"
-    )
-    template = GridGraph(jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance)
-    state = ResistanceDistance(solver=solver).init_preconditioner(template)
-    return _ResistanceSolverContext(graph_shape, solver, state, config)
+    return _resistance_context(graph_shape, model.solver_config)
+
+
+def _resistance_distances(
+    model: ConductanceModel,
+    latent: jax.Array,
+    pairs: tuple[jax.Array, tuple[jax.Array, jax.Array]],
+    species_index: int | jax.Array,
+    *,
+    context: _ResistanceSolverContext | None,
+) -> jax.Array:
+    """Computes a patch encoder's effective resistances with a prepared or new solver."""
+    nodes, indices = pairs
+    surface = model.conductance(latent, species_index)
+    if context is None:
+        context = _resistance_context(surface.shape, model.solver_config)
+    return _effective_resistance(surface, nodes, context=context)[indices]
 
 
 def _query_distances_from_latent(
@@ -658,5 +641,5 @@ def _distances_from_latent(
     )
     pairs = (nodes, indices)
     if isinstance(model, ConductanceModel):
-        return model.ecological_distances(latent, pairs, species_index, context=context)
+        return _resistance_distances(model, latent, pairs, species_index, context=context)
     return model.ecological_distances(latent, pairs, species_index)

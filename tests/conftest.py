@@ -480,8 +480,9 @@ class _FeatureConductance(ConductanceModel):
         static=True, kw_only=True, default=ResistanceSolverConfig()
     )
 
-    def __init__(self, weight: jax.Array):
+    def __init__(self, weight: jax.Array, *, solver_config=None):
         self.weight = weight
+        self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
 
     def backbone(self, features):
         return features

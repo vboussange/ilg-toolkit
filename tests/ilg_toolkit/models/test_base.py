@@ -1,7 +1,7 @@
 """Tests of distance models: species queries, conductance surfaces and custom distance models."""
 
 from dataclasses import replace
-from typing import cast
+from typing import cast, final
 
 import coordax as cx
 import equinox as eqx
@@ -16,12 +16,18 @@ from ilg_toolkit import (
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
+    ResistanceSolverConfig,
     save_model,
     TargetSpec,
     train,
     TrainingConfig,
 )
-from ilg_toolkit.models import ConductanceModel, LogLinearConductance
+from ilg_toolkit.models import (
+    AbstractDistanceModel,
+    ConductanceModel,
+    IBDModel,
+    LogLinearConductance,
+)
 from jaxscape import GridGraph, ResistanceDistance
 
 
@@ -126,8 +132,8 @@ def test_single_species_queries_return_one_prediction(PointConductance):
 
 
 @pytest.mark.filterwarnings("ignore:Sampling units share a vertex")
-def test_requested_float32_resistances_and_gradients_match_jaxscape(FeatureConductance):
-    # Float32 features exercise the float64 solve and cast back.
+def test_float32_patch_encoders_give_float64_resistances_matching_jaxscape(FeatureConductance):
+    # Float32 features and weights exercise the float64 solve.
     # Sampling units c and d share a vertex, so their resistance is exactly zero.
     dtype = jnp.float32
     region = RegionBatch(
@@ -154,7 +160,7 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(FeatureCondu
             matrix = ResistanceDistance(solver=solver).nodes_to_nodes_distance(
                 graph, jnp.array([5, 0, 2, 2, 3])
             )
-            values = matrix[jnp.array([4, 2, 2]), jnp.array([0, 1, 3])].astype(dtype)
+            values = matrix[jnp.array([4, 2, 2]), jnp.array([0, 1, 3])]
         else:
             values = distance_model.predict(region, pairs).values
         return weights @ values, values
@@ -168,7 +174,8 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(FeatureCondu
         actual_gradient.weight, expected_gradient.weight, rtol=tolerance, atol=tolerance
     )
     assert np.linalg.norm(expected_gradient.weight) > 0
-    assert actual.dtype == dtype
+    assert actual.dtype == jnp.float64
+    assert actual_gradient.weight.dtype == dtype
     assert actual[2] == 0
 
 
@@ -229,6 +236,62 @@ def test_custom_conductance_hooks_train_and_predict_requested_pairs(PointConduct
         )
         > 0
     )
+
+
+@final
+class _ResistancePlusDistance(AbstractDistanceModel):
+    """Effective resistance of a log-linear patch encoder plus IBD distance."""
+
+    encoder: LogLinearConductance
+    ibd: IBDModel
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def backbone(self, features):
+        return self.encoder.backbone(features)
+
+    def ecological_distances(self, latent, pairs, species_index):
+        return self.encoder.ecological_distances(
+            latent, pairs, species_index
+        ) + self.ibd.ecological_distances(latent, pairs, species_index)
+
+
+@pytest.mark.parametrize("use_amg", [False, True])
+def test_composed_patch_encoders_compute_their_own_resistances(use_amg):
+    if use_amg:
+        pytest.importorskip("amjax")
+    region = RegionBatch(
+        "river",
+        cx.field(
+            np.arange(9.0).reshape(3, 3, 1),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
+        ),
+        ("a", "b", "c"),
+        np.array([[0, 0], [2, 2], [0, 2]]),
+    )
+    encoder = LogLinearConductance(
+        1, patch_size=1, solver_config=ResistanceSolverConfig(use_amg=use_amg)
+    )
+    encoder = eqx.tree_at(lambda model: model.coefficients, encoder, jnp.array([[0.3]]))
+    ibd = IBDModel(patch_size=1)
+    model = _ResistancePlusDistance(encoder=encoder, ibd=ibd)
+    np.testing.assert_allclose(
+        model.predict(region).values,
+        encoder.predict(region).values + ibd.predict(region).values,
+        rtol=1e-6,
+    )
+    observations = PairwiseObservations.from_pairs(
+        [("a", "b"), ("a", "c"), ("b", "c")], [3.0, 1.0, 2.0], target=TargetSpec("divergence")
+    )
+    state = train(
+        region,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.1)),
+    )
+    assert state.history[-1].training_loss < state.history[0].training_loss
 
 
 def test_custom_distance_model_trains_and_reloads_without_genetic_labels(CustomDistance, tmp_path):
