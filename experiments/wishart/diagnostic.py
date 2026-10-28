@@ -329,12 +329,8 @@ def diagnose_wishart(
         observations.sampling_unit_ids
     ):
         raise ValueError("Region identity and sampling-unit labels must match the observations")
-    kinds = region.sampling_unit_kinds
-    assert kinds is not None  # RegionBatch normalizes this optional constructor input.
-    if any(kind != "population" for kind in kinds):
-        raise ValueError(
-            "This experimental contract supports declared population sampling units only"
-        )
+    if region.individual_based:
+        raise ValueError("This experimental contract supports population sampling units only")
     for name, value, lower_inclusive in (("scale", scale, False), ("nugget", nugget, True)):
         if (
             isinstance(value, bool)

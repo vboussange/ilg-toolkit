@@ -33,7 +33,9 @@ def test_patch_mean_predictor_obeys_conductance_bounds(patch_microbatch_size):
     )
     region = RegionBatch(
         "valley",
-        cx.field(features, "row", "column", "feature"),
+        cx.field(
+            features, "row", "column", cx.LabeledAxis("feature", np.array(["elevation", "canopy"]))
+        ),
         ("a", "b"),
         np.array([[0, 0], [0, 3]]),
     )
@@ -95,17 +97,25 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
     regions = (
         RegionBatch(
             "valley",
-            cx.field(valley.repeat(2, axis=0).repeat(2, axis=1), "row", "column", "feature"),
+            cx.field(
+                valley.repeat(2, axis=0).repeat(2, axis=1),
+                "row",
+                "column",
+                cx.LabeledAxis("feature", np.array(("elevation", "habitat"))),
+            ),
             regional_ids[0],
             np.array([[0, 0], [0, 2], [2, 0], [2, 2]]),
-            feature_names=("elevation", "habitat"),
         ),
         RegionBatch(
             "ridge",
-            cx.field(ridge.repeat(2, axis=0).repeat(2, axis=1), "row", "column", "feature"),
+            cx.field(
+                ridge.repeat(2, axis=0).repeat(2, axis=1),
+                "row",
+                "column",
+                cx.LabeledAxis("feature", np.array(("elevation", "habitat"))),
+            ),
             regional_ids[1],
             np.array([[0, 0], [0, 2], [1, 5]]),
-            feature_names=("elevation", "habitat"),
         ),
     )
     observations = tuple(
@@ -226,10 +236,14 @@ def _uniform_problem(dense_resistance, conductance, *, name="valley", seed=3, no
     rng = np.random.default_rng(seed)
     region = RegionBatch(
         name,
-        cx.field(rng.normal(size=(8, 8, 2)), "row", "column", "feature"),
+        cx.field(
+            rng.normal(size=(8, 8, 2)),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(("grassland", "water"))),
+        ),
         tuple(f"population-{index}" for index in range(len(_UNIFORM_POSITIONS))),
         _UNIFORM_POSITIONS,
-        feature_names=("grassland", "water"),
     )
     vertices = (_UNIFORM_POSITIONS[:, 0] // 2) * 4 + _UNIFORM_POSITIONS[:, 1] // 2
     resistance = dense_resistance(np.full((4, 4), conductance), vertices)
@@ -323,7 +337,6 @@ def test_uniform_initialization_sets_one_intercept_per_species(dense_resistance)
         region,
         sampling_unit_ids=region.sampling_unit_ids * 2,
         grid_positions=np.tile(region.grid_positions, (2, 1)),
-        sampling_unit_kinds=None,
         species=("frog",) * count + ("newt",) * count,
     )
     model = initialize_uniform_conductance(
@@ -332,9 +345,8 @@ def test_uniform_initialization_sets_one_intercept_per_species(dense_resistance)
         (frog, newt),
         Log1pLoss(),
     )
-    surfaces = model.conductance_surface(region, species=("newt", "frog"))
-    np.testing.assert_allclose(surfaces["frog"], 0.5, rtol=1e-6)
-    np.testing.assert_allclose(surfaces["newt"], 3.0, rtol=1e-6)
+    np.testing.assert_allclose(model.conductance_surface(region, "frog"), 0.5, rtol=1e-6)
+    np.testing.assert_allclose(model.conductance_surface(region, "newt"), 3.0, rtol=1e-6)
 
 
 def test_standardized_mlpe_does_not_move_the_uniform_conductance(dense_resistance):

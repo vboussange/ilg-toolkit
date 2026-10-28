@@ -31,10 +31,16 @@ def _region(shape=(8, 12, 3)):
     features = np.random.default_rng(4).normal(size=shape).astype(np.float32)
     return RegionBatch(
         "small-valley",
-        cx.field(features, "row", "column", "feature"),
+        cx.field(
+            features,
+            "row",
+            "column",
+            cx.LabeledAxis(
+                "feature", np.array(tuple(f"feature-{index}" for index in range(shape[2])))
+            ),
+        ),
         ("south", "north", "east"),
         np.array([[0, 0], [0, shape[1] - 1], [shape[0] - 1, shape[1] - 1]]),
-        feature_names=tuple(f"feature-{index}" for index in range(shape[2])),
     )
 
 
@@ -70,7 +76,6 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
         region,
         sampling_unit_ids=region.sampling_unit_ids * 2,
         grid_positions=np.tile(region.grid_positions, (2, 1)),
-        sampling_unit_kinds=None,
         species=("frog",) * 3 + ("newt",) * 3,
     )
     nodes = np.array([0, 1, 3])
@@ -108,7 +113,7 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     fitted = result.selected_model
     distance_model = fitted.distance_model
     assert isinstance(distance_model, ResNet9Conductance)
-    surfaces = distance_model.conductance_surface(region, species=species)
+    surfaces = {name: distance_model.conductance_surface(region, name) for name in species}
     assert not np.allclose(surfaces["frog"], surfaces["newt"])
     for name in species:
         surface = np.asarray(surfaces[name])
@@ -116,10 +121,10 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
         assert np.all(np.isfinite(surface) & (surface > 0))
         expected = dense_resistance(surface, nodes)
         np.fill_diagonal(expected, np.nan)
-        prediction = fitted.predict(region, species=name).as_matrix()
+        prediction = fitted.predict(region, {name: None})[name].as_matrix()
         np.testing.assert_allclose(prediction, expected, rtol=2e-6)
         np.testing.assert_allclose(
-            distance_model.predict(region, species=name).as_matrix(),
+            distance_model.predict(region, {name: None})[name].as_matrix(),
             prediction,
         )
 
@@ -128,12 +133,12 @@ def test_species_fit_matches_dense_resistance_and_reloads(dense_resistance, tmp_
     restored = load_model(path, distance_model=model(9))
     restored_model = restored.distance_model
     assert isinstance(restored_model, ResNet9Conductance)
-    restored_surfaces = restored_model.conductance_surface(region, species=species)
+    restored_surfaces = {name: restored_model.conductance_surface(region, name) for name in species}
     for name in species:
         np.testing.assert_array_equal(restored_surfaces[name], surfaces[name])
         np.testing.assert_array_equal(
-            restored.predict(region, species=name).values,
-            fitted.predict(region, species=name).values,
+            restored.predict(region, {name: None})[name].values,
+            fitted.predict(region, {name: None})[name].values,
         )
     assert restored_model.solver_config == distance_model.solver_config
     assert restored_model.solver_config != ResistanceSolverConfig()

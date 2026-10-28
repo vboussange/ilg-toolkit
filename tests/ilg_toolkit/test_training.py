@@ -12,17 +12,31 @@ import numpy as np
 import optax
 import pytest
 from ilg_toolkit import (
+    LandscapeGeneticsModel,
     Log1pLoss,
     MLPECalibrationModule,
     MLPELoss,
     PairwiseObservations,
+    Prediction,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
     train,
     TrainingConfig,
 )
-from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
+from ilg_toolkit.models import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
+
+
+def _single_species_prediction(
+    model: LandscapeGeneticsModel | AbstractDistanceModel,
+    region: RegionBatch,
+    name: str | None,
+    pairs: Sequence[tuple[str, str]] | None = None,
+) -> Prediction:
+    """A named species' prediction, or the prediction of an unnamed single-species model."""
+    if name is None:
+        return model.predict(region, pairs)
+    return model.predict(region, {name: pairs})[name]
 
 
 class _Jitter(eqx.Module):
@@ -60,7 +74,12 @@ def test_failed_solver_preserves_solver_failure(PointConductance):
     with jax.enable_x64():
         region = RegionBatch(
             "bad-solve",
-            cx.field(np.linspace(0.1, 2, 12).reshape(3, 4, 1), "row", "column", "feature"),
+            cx.field(
+                np.linspace(0.1, 2, 12).reshape(3, 4, 1),
+                "row",
+                "column",
+                cx.LabeledAxis("feature", np.array(["elevation"])),
+            ),
             ("first", "last"),
             np.array([[0, 0], [2, 3]]),
         )
@@ -142,7 +161,6 @@ def test_mlpe_updates_match_dense_reference(
                 regions[0],
                 sampling_unit_ids=regions[0].sampling_unit_ids * 2,
                 grid_positions=np.tile(regions[0].grid_positions, (2, 1)),
-                sampling_unit_kinds=None,
                 species=(species[0],) * unit_count + (species[1],) * unit_count,
             ),
         )
@@ -236,11 +254,12 @@ def test_mlpe_updates_match_dense_reference(
         distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)
         np.fill_diagonal(distances, np.nan)
         np.testing.assert_allclose(
-            result.selected_model.distance_model.predict(
+            _single_species_prediction(
+                result.selected_model.distance_model,
                 region
                 if species is None
                 else replace(region, species=(species[groups_species[index]],) * unit_count),
-                species=None if species is None else species[groups_species[index]],
+                None if species is None else species[groups_species[index]],
             ).as_matrix(),
             distances,
             rtol=1e-8,
@@ -281,10 +300,11 @@ def test_mlpe_updates_match_dense_reference(
         query = (
             region if species is None else replace(region, species=(species[index],) * unit_count)
         )
-        predicted = result.selected_model.predict(
+        predicted = _single_species_prediction(
+            result.selected_model,
             query,
-            species=None if species is None else species[index],
-            pairs=observed.observed_pairs,
+            None if species is None else species[index],
+            observed.observed_pairs,
         )
         np.testing.assert_allclose(predicted.values, expected_values, atol=1e-8)
 
@@ -296,13 +316,10 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
         region, observations = embedding_problem(columns=2)
         single_region = region
         order = ("stoat", "hare")
-        kinds = region.sampling_unit_kinds
-        assert kinds is not None
         region = replace(
             region,
             sampling_unit_ids=region.sampling_unit_ids * 2,
             grid_positions=jnp.tile(jnp.asarray(region.grid_positions), (2, 1)),
-            sampling_unit_kinds=kinds * 2,
             species=tuple(name for name in order for _ in region.sampling_unit_ids),
         )
         observed_groups = tuple(
@@ -357,7 +374,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     expected_losses = []
     for index, (name, observed) in enumerate(zip(order, observed_groups, strict=True)):
         distances = np.asarray(
-            first.latest_model.distance_model.predict(region, species=name).as_matrix()
+            first.latest_model.distance_model.predict(region, {name: None})[name].as_matrix()
         )
         head = cast(MLPECalibrationModule, first.latest_model.calibration).for_region(
             region.name, index
@@ -393,10 +410,9 @@ def test_public_mlpe_conductance_fit_improves_with_actual_graph_solver(
         ids = tuple(f"population-{i}" for i in range(4))
         region = RegionBatch(
             "graph",
-            cx.field(features, "row", "column", "feature"),
+            cx.field(features, "row", "column", cx.LabeledAxis("feature", np.array(("habitat",)))),
             ids,
             np.array([[0, 0], [0, 2], [1, 0], [1, 2]]),
-            feature_names=("habitat",),
         )
         left, right = np.triu_indices(4, 1)
         distances = dense_resistance(
@@ -450,12 +466,14 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
         )
         with pytest.raises(ValueError):
             train(six_units, disjoint, distance_model=model, config=config)
-        individual = replace(region, sampling_unit_kinds=("individual",) * 4)
-        with pytest.raises(ValueError):
-            train(individual, observations, distance_model=model, config=config)
         constant_region = replace(
             region,
-            features=cx.field(np.ones_like(region.feature_array), "row", "column", "feature"),
+            features=cx.field(
+                np.ones_like(region.feature_array),
+                "row",
+                "column",
+                region.features.axes["feature"],
+            ),
         )
         with pytest.raises(FloatingPointError):
             train(constant_region, observations, distance_model=model, config=config)
@@ -526,7 +544,6 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
                     regions[1],
                     sampling_unit_ids=regions[1].sampling_unit_ids * 2,
                     grid_positions=np.tile(regions[1].grid_positions, (2, 1)),
-                    sampling_unit_kinds=None,
                     species=("frog", "frog", "newt", "newt"),
                 ),
             ]
@@ -607,8 +624,8 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
             assert set(result.history[0].training_by_region) == {"short", "wide"}
             for region in regions:
                 assert np.isfinite(
-                    result.selected_model.predict(
-                        region, species=None if species is None else "frog"
+                    _single_species_prediction(
+                        result.selected_model, region, None if species is None else "frog"
                     ).values
                 ).all()
         np.testing.assert_allclose(np.dot(probabilities, gradients), dense_gradient, rtol=1e-8)
@@ -733,22 +750,15 @@ def test_incompatible_regional_inputs_fail_before_optimization(
         ([regions[0], regions[0]], observations),
         (
             [
-                replace(
-                    region,
-                    features=cx.field(region.feature_array, "row", "column", "feature"),
-                    feature_names=None,
-                )
-                for region in regions
-            ],
-            observations,
-        ),
-        (
-            [
                 regions[0],
                 replace(
                     regions[1],
-                    features=cx.field(regions[1].feature_array, "row", "column", "feature"),
-                    feature_names=("canopy",),
+                    features=cx.field(
+                        regions[1].feature_array,
+                        "row",
+                        "column",
+                        cx.LabeledAxis("feature", np.array(["canopy"])),
+                    ),
                 ),
             ],
             observations,
@@ -766,19 +776,15 @@ def test_incompatible_regional_inputs_fail_before_optimization(
             )
 
 
-def test_validation_on_another_region_requires_declared_feature_meanings(
+def test_validation_on_another_region_requires_matching_feature_names(
     ScalarEmbedding, regions_and_observations
 ):
     regions, observations = regions_and_observations()
-    regions = [
-        replace(
-            region,
-            features=cx.field(region.feature_array, "row", "column", "feature"),
-            feature_names=None,
-        )
-        for region in regions
-    ]
-    with pytest.raises(ValueError):
+    canopy = cx.LabeledAxis("feature", np.array(["canopy"]))
+    regions[1] = replace(
+        regions[1], features=cx.field(regions[1].feature_array, "row", "column", canopy)
+    )
+    with pytest.raises(ValueError, match="feature"):
         train(
             regions[0],
             observations[0],
@@ -836,7 +842,7 @@ def test_training_reads_species_names_from_the_distance_model(
     assert set(cast(dict, result.history[0].training_by_species)) == set(names)
     continued = train(region, observations, state=result, config=replace(config, steps=2))
     assert continued.selected_model.species == names
-    predictions = continued.selected_model.predict(region, species=names)
+    predictions = continued.selected_model.predict(region, dict.fromkeys(names))
     assert [prediction.species for prediction in predictions.values()] == list(names)
     with pytest.raises(ValueError, match="species"):
         train(
@@ -872,7 +878,7 @@ def test_training_reads_species_names_from_the_distance_model(
     assert named.history[0].training_by_species is None
     np.testing.assert_array_equal(
         named.selected_model.predict(labeled).values,
-        named.selected_model.predict(labeled, species="a").values,
+        named.selected_model.predict(labeled, {"a": None})["a"].values,
     )
 
 
@@ -885,7 +891,7 @@ def test_callback_models_keep_matching_distance_and_calibration_state(
     (left, right), targets = observations.aligned_pairs(region)
     for current in mlpe_embedding_fit.callbacks:
         model = current.latest_model
-        distances = model.distance_model.predict(region, pairs=observations.observed_pairs).values
+        distances = model.distance_model.predict(region, observations.observed_pairs).values
         calibration = cast(MLPECalibrationModule, model.calibration).for_region(region.name)
         nll, beta, effects, covariance = dense_profile(
             distances,

@@ -34,6 +34,12 @@ from ilg_toolkit.models import (
 # The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
 jax.config.update("jax_enable_x64", True)
 
+
+def _feature_field(values, names: tuple[str, ...]) -> cx.Field:
+    """Row, column and feature data whose feature axis names each channel."""
+    return cx.field(values, "row", "column", cx.LabeledAxis("feature", np.asarray(names)))
+
+
 _R_DISTANCES = np.array(
     [
         -1.0847845325555074,
@@ -241,7 +247,7 @@ def batch_norm_conductance_class():
 def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec]:
     region = RegionBatch(
         "alpine",
-        cx.field(np.arange(4).reshape(1, 4, 1), "row", "column", "feature"),
+        _feature_field(np.arange(4).reshape(1, 4, 1), ("elevation",)),
         ("a", "b", "c", "d"),
         np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
     )
@@ -251,7 +257,6 @@ def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec
             region,
             sampling_unit_ids=region.sampling_unit_ids * 2,
             grid_positions=np.tile(region.grid_positions, (2, 1)),
-            sampling_unit_kinds=None,
             species=("frog",) * 4 + ("newt",) * 4,
         )
     members = [
@@ -261,7 +266,7 @@ def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec
                 species=None if num_species == 1 else ("frog", "newt"),
             ),
             DirectCalibrationModule(target),
-            1,
+            ("elevation",),
         )
         for weight in (1.0, 2.0)
     ]
@@ -364,10 +369,9 @@ def _embedding_problem(name="alpine", offset=0.0, seed=14, *, columns=3):
     ids = tuple(f"unit-{i}" for i in range(unit_count))
     region = RegionBatch(
         name,
-        cx.field(features, "row", "column", "feature"),
+        _feature_field(features, ("elevation", "canopy")),
         ids,
         np.array(list(np.ndindex(2, columns))),
-        feature_names=("elevation", "canopy"),
     )
     embedding = features.reshape(unit_count, 2) * np.array([0.3, 1.5])
     matrix = ((embedding[:, None] - embedding[None, :]) ** 2).sum(axis=-1)
@@ -478,17 +482,15 @@ def _regions_and_observations() -> tuple[list[RegionBatch], list[PairwiseObserva
     regions = [
         RegionBatch(
             "wide",
-            cx.field(np.array([[[0.0], [1.0], [2.0]]]), "row", "column", "feature"),
+            _feature_field(np.array([[[0.0], [1.0], [2.0]]]), ("elevation",)),
             ("a", "b", "c"),
             np.array([[0, 0], [0, 1], [0, 2]]),
-            feature_names=("elevation",),
         ),
         RegionBatch(
             "short",
-            cx.field(np.array([[[0.0], [2.0]]]), "row", "column", "feature"),
+            _feature_field(np.array([[[0.0], [2.0]]]), ("elevation",)),
             ("x", "y"),
             np.array([[0, 0], [0, 1]]),
-            feature_names=("elevation",),
         ),
     ]
     target = TargetSpec("synthetic divergence", units="index")
@@ -526,7 +528,7 @@ class _StochasticEmbedding(EmbeddingDistanceModel):
 def _observation_problem() -> tuple[RegionBatch, TargetSpec, _ScalarEmbedding]:
     region = RegionBatch(
         "anywhere",
-        cx.field(np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]), "row", "column", "feature"),
+        _feature_field(np.array([[[0.0, 2.0], [1.0, 3.0], [2.0, 4.0]]]), ("elevation", "canopy")),
         ("unit/7", "unit/20", "unit/99"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
@@ -542,10 +544,9 @@ def _population_effect_problem(
     labels = tuple(f"population-{index}" for index in range(6))
     region = RegionBatch(
         name,
-        cx.Field(jnp.asarray(features), dims=("row", "column", "feature")),
+        _feature_field(jnp.asarray(features), ("east_covariate", "canopy_covariate")),
         labels,
         np.array(list(np.ndindex(2, 3))),
-        feature_names=("east_covariate", "canopy_covariate"),
     )
     distances = (coordinates[:, None] - coordinates[None, :]) ** 2
     effects = np.array([0.2, -0.15, 0.1, 0.3, -0.2, 0.05])
@@ -855,10 +856,9 @@ def training_problem():
         features = np.random.default_rng(14).uniform(0.8, 1.6, size=(2, 2, 2)).astype(np.float32)
         region = RegionBatch(
             name,
-            cx.field(features, "row", "column", "feature"),
+            _feature_field(features, ("elevation", "canopy")),
             ("south", "north", "west", "east"),
             np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
-            feature_names=("elevation", "canopy"),
         )
         observations = PairwiseObservations.from_pairs(
             tuple(itertools.combinations(region.sampling_unit_ids, 2)),
@@ -881,7 +881,6 @@ def training_problem():
                 region,
                 sampling_unit_ids=region.sampling_unit_ids * num_species,
                 grid_positions=np.tile(region.grid_positions, (num_species, 1)),
-                sampling_unit_kinds=None,
                 species=tuple(name for name in names for _ in range(4)),
             )
             observations = tuple(

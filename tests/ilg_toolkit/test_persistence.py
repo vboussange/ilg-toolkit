@@ -61,12 +61,11 @@ def test_saved_precision_is_preserved(
                 )
                 assert eqx.tree_equal(restored, state)
                 model = restored.selected_model
-            for name in species or (None,):
-                predictions = state.selected_model.predict(region, species=name).values
-                np.testing.assert_array_equal(
-                    model.predict(region, species=name).values, predictions
-                )
-                assert predictions.dtype == jnp.float64
+            query = None if species is None else dict.fromkeys(species)
+            expected = state.selected_model.predict(region, query)
+            assert eqx.tree_equal(model.predict(region, query), expected)
+            for values in jax.tree.leaves(eqx.filter(expected, eqx.is_inexact_array)):
+                assert values.dtype == jnp.float64
             with jax.enable_x64(False):
                 narrow = jax.tree.map(
                     lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,
@@ -99,11 +98,10 @@ def test_species_names_round_trip_and_predictions_are_identical(tmp_path, traini
     for restored in (model, checkpoint.selected_model, checkpoint.latest_model):
         assert restored.species == restored.distance_model.species == names
         assert eqx.tree_equal(restored.distance_model, state.selected_model.distance_model)
-        for name, prediction in restored.predict(region, species=names).items():
+        expected = state.selected_model.predict(region, dict.fromkeys(names))
+        for name, prediction in restored.predict(region, dict.fromkeys(names)).items():
             assert prediction.species == name
-            np.testing.assert_array_equal(
-                prediction.values, state.selected_model.predict(region, species=name).values
-            )
+            np.testing.assert_array_equal(prediction.values, expected[name].values)
     unnamed = type(distance_model)(jnp.zeros(2))
     with pytest.raises(ArtifactError, match="species"):
         load_model(model_path, distance_model=unnamed)
@@ -258,15 +256,15 @@ def test_custom_mlpe_reload_preserves_regional_posteriors_and_conditioning(
             cast(MLPECalibrationModule, model.calibration).regions[(prepared.name, 0)],
         )
     query = (("population-4", "population-2"), ("population-5", "population-3"))
-    before = model.predict(region, pairs=query, known_effects=True)
-    after = restored.predict(region, pairs=query, known_effects=True)
+    before = model.predict(region, query, known_effects=True)
+    after = restored.predict(region, query, known_effects=True)
     np.testing.assert_array_equal(after.values, before.values)
     np.testing.assert_array_equal(after.extras["model_variance"], before.extras["model_variance"])
     support = PairwiseObservations.from_pairs(
         [("population-4", "population-0")], [1.5], target=model.target
     )
-    before = model.predict(region, pairs=query, support=support)
-    after = restored.predict(region, pairs=query, support=support)
+    before = model.predict(region, query, support=support)
+    after = restored.predict(region, query, support=support)
     np.testing.assert_array_equal(after.values, before.values)
     np.testing.assert_array_equal(after.extras["model_variance"], before.extras["model_variance"])
     assert (
@@ -281,18 +279,21 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(
     features = np.random.default_rng(1).uniform(0.5, 1.5, size=(8, 8, 2))
     region = RegionBatch(
         "graph-reload",
-        cx.Field(jnp.asarray(features), dims=("row", "column", "feature")),
+        cx.field(
+            jnp.asarray(features),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation", "canopy"])),
+        ),
         ("west", "north", "east"),
         np.array([[0, 0], [0, 7], [7, 7]]),
-        feature_names=("elevation", "canopy"),
     )
     solver_config = ResistanceSolverConfig(rtol=1e-9, atol=1e-10)
     assert solver_config != ResistanceSolverConfig()
     model = LandscapeGeneticsModel(
         PointConductance(jnp.asarray(0.3), solver_config=solver_config),
         DirectCalibrationModule(TargetSpec("divergence")),
-        feature_count=2,
-        feature_names=region.feature_names,
+        region.feature_names,
     )
     path = tmp_path / "conductance.eqx"
     save_model(path, model)
@@ -314,7 +315,9 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(WeightedEmbeddin
     with jax.enable_x64():
         distance_model = WeightedEmbedding(jnp.asarray([0.2, -0.4], dtype=jnp.float32))
         model = LandscapeGeneticsModel(
-            distance_model, DirectCalibrationModule(TargetSpec("divergence")), 2
+            distance_model,
+            DirectCalibrationModule(TargetSpec("divergence")),
+            ("elevation", "canopy"),
         )
         path = tmp_path / "model.eqx"
         save_model(path, model)
@@ -341,8 +344,7 @@ def test_interrupted_model_replacement_preserves_previous_predictions(
         return LandscapeGeneticsModel(
             WeightedEmbedding(jnp.asarray(log_weights)),
             DirectCalibrationModule(TargetSpec("divergence")),
-            2,
-            feature_names=region.feature_names,
+            region.feature_names,
         )
 
     first, replacement = model([0.2, -0.7]), model([1.0, 0.5])
@@ -364,6 +366,11 @@ def test_interrupted_model_replacement_preserves_previous_predictions(
 def test_loading_requires_float64(tmp_path, observation_problem, float64_required):
     region, target, distance_model = observation_problem()
     path = tmp_path / "model.eqx"
-    save_model(path, LandscapeGeneticsModel(distance_model, DirectCalibrationModule(target), 2))
+    save_model(
+        path,
+        LandscapeGeneticsModel(
+            distance_model, DirectCalibrationModule(target), region.feature_names
+        ),
+    )
     with float64_required():
         load_model(path, distance_model=distance_model)

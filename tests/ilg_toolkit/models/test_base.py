@@ -27,7 +27,9 @@ from jaxscape import GridGraph, ResistanceDistance
 def test_distance_models_carry_unique_species_names(PointConductance):
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
@@ -48,38 +50,78 @@ def test_distance_models_carry_unique_species_names(PointConductance):
 def test_species_queries_follow_the_model_species_with_reused_sampling_unit_ids():
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
-        ("a", "b", "a", "b"),
-        np.array([[0, 0], [0, 2], [0, 0], [0, 1]]),
-        species=("hare", "hare", "stoat", "stoat"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
+        ("a", "b", "c", "a", "b"),
+        np.array([[0, 0], [0, 2], [0, 1], [0, 0], [0, 1]]),
+        species=("hare", "hare", "hare", "stoat", "stoat"),
     )
     model = LogLinearConductance(1, species=("stoat", "hare"), patch_size=1)
     model = eqx.tree_at(lambda value: value.intercepts, model, jnp.log(jnp.array([1.99, 0.99])))
-    results = model.predict(region, species=("hare", "stoat"))
+    results = model.predict(region, {"hare": [("b", "a")], "stoat": None})
+    assert tuple(results) == ("hare", "stoat")
+    assert results["hare"].pairs == (("b", "a"),)
+    assert results["stoat"].pairs == (("a", "b"),)
     np.testing.assert_allclose(results["hare"].values, [2.0], rtol=1e-6)
     np.testing.assert_allclose(results["stoat"].values, [0.5], rtol=1e-6)
+    assert results["hare"].sampling_unit_ids == ("a", "b", "c")
+    assert results["stoat"].sampling_unit_ids == ("a", "b")
     for name, result in results.items():
         assert result.species == name
-        assert result.sampling_unit_ids == ("a", "b")
-        np.testing.assert_array_equal(model.predict(region, species=name).values, result.values)
-    surfaces = model.conductance_surface(region, species=("hare", "stoat"))
-    np.testing.assert_allclose(surfaces["hare"], np.ones((1, 3)), rtol=1e-6)
-    np.testing.assert_allclose(surfaces["stoat"], np.full((1, 3), 2), rtol=1e-6)
-    unlabeled = replace(region, sampling_unit_ids=("a", "b", "c", "d"), species=None)
+    every_hare_pair = model.predict(region, {"hare": None})
+    assert tuple(every_hare_pair) == ("hare",)
+    assert every_hare_pair["hare"].pairs == (("a", "b"), ("a", "c"), ("b", "c"))
+    np.testing.assert_allclose(every_hare_pair["hare"].values, [2.0, 1.0, 1.0], rtol=1e-6)
+    np.testing.assert_allclose(model.conductance_surface(region, "hare"), np.ones((1, 3)))
     np.testing.assert_allclose(
-        model.conductance_surface(unlabeled, species="hare"),
-        surfaces["hare"],
+        model.conductance_surface(region, species="stoat"), np.full((1, 3), 2), rtol=1e-6
     )
-    partial = replace(unlabeled, species=("stoat",) * 4)
-    np.testing.assert_allclose(
-        model.conductance_surface(partial, species="hare"),
-        surfaces["hare"],
-    )
-    for species in (None, "missing", ("hare", "hare")):
+    unlabeled = replace(region, sampling_unit_ids=("a", "b", "c", "d", "e"), species=None)
+    for query in (None, [("a", "b")], {"missing": None}, {"hare": [("a", "missing")]}):
         with pytest.raises(ValueError):
-            model.predict(region, species=species)
+            model.predict(region, query)
+    for species in (None, "missing"):
+        with pytest.raises(ValueError, match="species"):
+            model.conductance_surface(region, species)
     with pytest.raises(ValueError, match="sampling-unit species labels"):
-        model.predict(unlabeled, species="hare")
+        model.predict(unlabeled, {"hare": None})
+
+
+def test_single_species_queries_return_one_prediction(PointConductance):
+    region = RegionBatch(
+        "river",
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
+        ("a", "b", "c"),
+        np.array([[0, 0], [0, 1], [0, 2]]),
+    )
+    unnamed = PointConductance(jnp.asarray(0.0))
+    every_pair = unnamed.predict(region)
+    assert every_pair.pairs == (("a", "b"), ("a", "c"), ("b", "c"))
+    np.testing.assert_allclose(every_pair.values, [1.0, 2.0, 1.0], atol=1e-6)
+    selected = unnamed.predict(region, [("c", "a")])
+    assert selected.pairs == (("c", "a"),)
+    np.testing.assert_allclose(selected.values, [2.0], atol=1e-6)
+    np.testing.assert_array_equal(
+        unnamed.predict(region, query=[("c", "a")]).values, selected.values
+    )
+    with pytest.raises(ValueError, match="species"):
+        unnamed.predict(region, {"frog": None})
+    with pytest.raises(ValueError, match="species"):
+        unnamed.conductance_surface(region, "frog")
+    named = PointConductance(jnp.asarray(0.0), species=("frog",))
+    assert named.predict(region, [("c", "a")]).species == "frog"
+    by_species = named.predict(region, {"frog": [("c", "a")]})
+    assert tuple(by_species) == ("frog",)
+    np.testing.assert_array_equal(by_species["frog"].values, selected.values)
+    np.testing.assert_array_equal(
+        named.conductance_surface(region), named.conductance_surface(region, "frog")
+    )
+    for query in ({}, {"toad": None}, 3):
+        with pytest.raises(ValueError):
+            named.predict(region, query)  # pyright: ignore[reportArgumentType]
 
 
 def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateConductance):
@@ -92,7 +134,7 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateCon
             jnp.array([[[0.3], [0.8], [0.2]], [[0.5], [0.1], [0.7]]], dtype=dtype),
             "row",
             "column",
-            "feature",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
         ),
         ("a", "b", "c", "d", "e"),
         np.array([[1, 2], [0, 0], [0, 2], [0, 2], [1, 0]]),
@@ -112,7 +154,7 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateCon
             )
             values = matrix[jnp.array([4, 2, 2]), jnp.array([0, 1, 3])].astype(dtype)
         else:
-            values = distance_model.predict(region, pairs=pairs).values
+            values = distance_model.predict(region, pairs).values
         return weights @ values, values
 
     evaluate = eqx.filter_jit(eqx.filter_value_and_grad(objective, has_aux=True))
@@ -135,7 +177,7 @@ def test_conductance_surface_uses_prediction_mode_for_custom_dropout(
     model = DropoutConductance()
     np.testing.assert_allclose(model.conductance_surface(region), [[1.0, np.e, np.e**2]])
     np.testing.assert_allclose(
-        model.predict(region, pairs=[("unit/7", "unit/99")]).values,
+        model.predict(region, [("unit/7", "unit/99")]).values,
         [2 / (1 + np.e) + 2 / (np.e + np.e**2)],
     )
 
@@ -152,12 +194,14 @@ def test_prediction_and_conductance_surfaces_reject_stateful_layers(
 def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductance):
     region = RegionBatch(
         "river",
-        cx.field(np.ones((1, 3, 1)), "row", "column", "feature"),
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
         ("a", "b", "c"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
     distance_model = PointConductance(jnp.log(jnp.array(2.0)))
-    prediction = distance_model.predict(region, pairs=[("c", "a"), ("b", "a")])
+    prediction = distance_model.predict(region, [("c", "a"), ("b", "a")])
     np.testing.assert_allclose(prediction.values, [1.0, 0.5], atol=1e-6)
     observations = PairwiseObservations.from_pairs(
         [("a", "b"), ("a", "c"), ("b", "c")],
@@ -185,7 +229,12 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
 ):
     region = RegionBatch(
         "custom",
-        cx.field(np.array([[[0.0], [1.0], [3.0]]]), "row", "column", "feature"),
+        cx.field(
+            np.array([[[0.0], [1.0], [3.0]]]),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
+        ),
         ("west", "middle", "east"),
         np.array([[0, 0], [0, 1], [0, 2]]),
     )
