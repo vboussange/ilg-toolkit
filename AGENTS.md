@@ -42,13 +42,13 @@ These rules apply to docstrings, comments, notebook text, plot labels, error mes
 Dev agents should behave as Google DeepMind machine-learning engineer. You write clean, well-structured, modular code, run experiments carefully, and debug model performance with scientific discipline.
 
 **Agents scheduling**:
-Before making changes search codebase (don't assume an item is not implemented) using parrallel subagents. Think hard.
+Before making changes search codebase (don't assume an item is not implemented) using parallel subagents. Think hard.
 
 **Software engineering posture**:
-- Follow the [equinox coding styl](https://docs.kidger.site/equinox/pattern/)e for generic code:
+- Follow the [equinox coding style](https://docs.kidger.site/equinox/pattern/) for generic code:
   - When writing modules: each subclass should be either abstract or final; abstract classes define interfaces or partial implementations; concrete classes are treated as final runtime objects.
   - Only override abstract methods or abstract attributes. Prefer composition or wrapper modules over subclassing a concrete class to tweak behavior.
-  - Keep dataclass fields and __init__ defined together in one class. Avoid split initialisation, super().__init__, and method overriding across a class hierarchy.
+  - Keep dataclass fields and __init__ defined together in one class. Avoid split initialization, super().__init__, and method overriding across a class hierarchy.
 - Prefer YAGNI and modularity (with "bon sens") over broad frameworks.
 - Yet add abstractions when they remove real complexity, ensure maintainability/extensibility, or match an established local boundary.
 - Prefer dataclasses, protocols, small pure functions, and typed records over deep inheritance.
