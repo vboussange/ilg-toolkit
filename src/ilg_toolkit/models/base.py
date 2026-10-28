@@ -1,7 +1,7 @@
 """Abstract distance models deriving ecological distances from patch features."""
 
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from itertools import combinations
 from numbers import Integral
@@ -133,25 +133,12 @@ class AbstractDistanceModel(eqx.Module):
         """
         order = validate_species_order(species_order, self.num_species)
         selected = select_species(order, species)
-        if self.num_species > 1 and region.species is None:
-            raise ValueError("Multispecies queries require sampling-unit species labels")
-        model = with_dropout_mode(self, inference=True, key=None)
-        context = prepare_distance_context(model, region.feature_array)
-        latent = model.backbone(region.feature_array)
-        results = {}
-        for name, index in selected:
-            prepared = region_for_species(region, name)
-            labels, values = query_distances_from_latent(
-                model,
-                latent,
-                prepared,
-                pairs,
-                species_index=index,
-                context=context,
-            )
-            results[name] = Prediction(
-                values, labels, region.name, prepared.sampling_unit_ids, name
-            )
+        results = {
+            name: Prediction(values, labels, region.name, prepared.sampling_unit_ids, name)
+            for name, (prepared, labels, values) in _species_distances(
+                self, region, selected, pairs
+            ).items()
+        }
         if isinstance(species, str) or species is None:
             return results[selected[0][0]]
         return cast(dict[str, Prediction], results)
@@ -327,6 +314,36 @@ def _query_pairs(
             "Query pairs require unique distinct sampling units in the region"
         ) from error
     return labels, (indices[:, 0], indices[:, 1])
+
+
+def _species_distances(
+    model: AbstractDistanceModel,
+    region: RegionBatch,
+    selected: tuple[tuple[str | None, int], ...],
+    pairs: Sequence[tuple[str, str]] | None,
+    extra_pairs: Mapping[str | None, tuple[tuple[str, str], ...]] | None = None,
+) -> dict[str | None, tuple[RegionBatch, tuple[tuple[str, str], ...], jax.Array]]:
+    """Each selected species' region batch, query pair labels, and ecological distances.
+
+    Patch features and the resistance solver are prepared once, with dropout
+    disabled. ``extra_pairs`` appends a species' additional pairs after its query
+    pairs, in both the labels and the distances.
+    """
+    if model.num_species > 1 and region.species is None:
+        raise ValueError("Multispecies queries require sampling-unit species labels")
+    model = with_dropout_mode(model, inference=True, key=None)
+    context = prepare_distance_context(model, region.feature_array)
+    latent = model.backbone(region.feature_array)
+    results = {}
+    for name, index in selected:
+        prepared = region_for_species(region, name)
+        extra = () if extra_pairs is None else extra_pairs.get(name, ())
+        query = _query_pairs(prepared, pairs)[0] + extra if extra else pairs
+        labels, values = query_distances_from_latent(
+            model, latent, prepared, query, species_index=index, context=context
+        )
+        results[name] = (prepared, labels, values)
+    return results
 
 
 def prepare_distance_context(

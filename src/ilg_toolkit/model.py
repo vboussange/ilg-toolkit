@@ -9,15 +9,7 @@ import jax.numpy as jnp
 from .calibration import AbstractCalibrationModule
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 from .models import AbstractDistanceModel
-from .models.base import (
-    _query_pairs,
-    prepare_distance_context,
-    query_distances_from_latent,
-    region_for_species,
-    select_species,
-    validate_species_order,
-)
-from .models.common import with_dropout_mode
+from .models.base import _species_distances, select_species, validate_species_order
 from .prediction import Prediction
 
 
@@ -201,43 +193,34 @@ class LandscapeGeneticsModel(eqx.Module):
         """
         self._validate_region(region)
         selected = select_species(self.species, species)
-        if self.distance_model.num_species > 1 and region.species is None:
-            raise ValueError("Multispecies queries require sampling-unit species labels")
         support_by_species = self._support_observations(support, selected)
-        distance_model = with_dropout_mode(self.distance_model, inference=True, key=None)
-        latent = distance_model.backbone(region.feature_array)
-        context = prepare_distance_context(distance_model, region.feature_array)
+        distances_by_species = _species_distances(
+            self.distance_model,
+            region,
+            selected,
+            pairs,
+            {name: value.observed_pairs for name, value in support_by_species.items()},
+        )
         results = {}
         for name, index in selected:
-            prepared = region_for_species(region, name)
+            prepared, labels, distances = distances_by_species[name]
             observations = support_by_species.get(name)
-            query_pairs = pairs
-            if observations is not None:
-                labels, _ = _query_pairs(prepared, pairs)
-                query_pairs = labels + observations.observed_pairs
-            labels, distances = query_distances_from_latent(
-                distance_model,
-                latent,
-                prepared,
-                query_pairs,
-                species_index=index,
-                context=context,
+            query_count = len(labels) - (
+                0 if observations is None else len(observations.observed_pairs)
             )
-            if observations is not None:
-                labels = labels[: len(labels) - len(observations.observed_pairs)]
             result = self.calibration.predict(
-                distances[: len(labels)],
-                labels,
+                distances[:query_count],
+                labels[:query_count],
                 region_name=region.name,
                 species_index=index,
                 sampling_unit_kinds=prepared.sampling_unit_kinds,
                 known_effects=known_effects,
                 support=observations,
-                support_distances=None if observations is None else distances[len(labels) :],
+                support_distances=None if observations is None else distances[query_count:],
             )
             results[name] = Prediction(
                 jnp.asarray(result.values),
-                labels,
+                labels[:query_count],
                 region.name,
                 prepared.sampling_unit_ids,
                 species=name,

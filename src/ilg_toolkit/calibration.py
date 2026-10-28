@@ -9,6 +9,7 @@ import equinox as eqx
 from ._training_utils import RegionSpeciesKey
 from .data import ObservationCollection, PairwiseObservations, RegionCollection, TargetSpec
 from .mlpe import RegionalMLPECalibration
+from .mlpe.prediction import _predict_mlpe
 from .prediction import Prediction
 
 
@@ -126,12 +127,19 @@ class MLPECalibrationModule(AbstractCalibrationModule):
         support: PairwiseObservations | None = None,
         support_distances=None,
     ) -> Prediction:
-        """Genetic predictions from the requested region–species MLPE calibration."""
+        """Genetic predictions from the requested region–species MLPE calibration.
+
+        The ``model_values`` extra gives model-scale values; conditional modes
+        also give ``model_variance`` and ``effect_variance`` on that scale.
+        ``known_effects`` uses saved population effects, while ``support`` uses
+        disjoint observations and aligned ``support_distances`` to condition them.
+        """
         if sampling_unit_kinds is not None and any(
             kind != "population" for kind in sampling_unit_kinds
         ):
             raise ValueError("Population MLPE prediction requires population sampling units")
-        return self.for_region(region_name, species_index).predict(
+        return _predict_mlpe(
+            self.for_region(region_name, species_index),
             distances,
             pairs,
             known_effects=known_effects,

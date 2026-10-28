@@ -11,7 +11,6 @@ import numpy as np
 from scipy.optimize import minimize
 
 from ..data import PairwiseObservations, TargetSpec
-from ..prediction import Prediction
 from .likelihood import finalize_mlpe_fit, MLPEFit, profiled_mlpe_ml_fit
 
 
@@ -157,34 +156,6 @@ class RegionalMLPECalibration(eqx.Module):
             )
         if not self.region_name or len(set(self.population_ids)) != n:
             raise MLPEError("MLPE calibration region and sampling-unit identities must align")
-
-    def predict(
-        self,
-        distances,
-        pairs,
-        *,
-        known_effects: bool = False,
-        support: PairwiseObservations | None = None,
-        support_distances=None,
-    ) -> Prediction:
-        """Genetic predictions from ecological distances aligned with query pairs.
-
-        The ``model_values`` extra gives model-scale values; conditional modes
-        also give ``model_variance`` and ``effect_variance`` on that scale.
-        ``known_effects`` uses saved population effects, while ``support`` uses
-        disjoint observations and aligned ``support_distances`` to condition them.
-        Residual variance and jitter remain on this calibration.
-        """
-        from .prediction import predict
-
-        return predict(
-            self,
-            distances,
-            pairs,
-            known_effects=known_effects,
-            support=support,
-            support_distances=support_distances,
-        )
 
 
 @jax.enable_x64()
