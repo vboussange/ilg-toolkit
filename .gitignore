@@ -13,4 +13,5 @@ site/
 .cache/
 uv.lock
 examples/data/
-quickstart.png
+/quickstart.png
+/examples/quickstart.png
