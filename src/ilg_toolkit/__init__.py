@@ -1,106 +1,45 @@
-"""Independent inverse landscape genetics toolkit."""
+"""ILG Toolkit: inverse landscape genetics (ILG) in JAX."""
 
 from .calibration import (
-    AbstractCalibrationModule,
-    DirectCalibrationModule,
-    MLPECalibrationModule,
-    calibrate,
+    AbstractCalibrationHead,
+    DirectCalibrationHead,
+    fit_calibration_head,
+    MLPECalibrationHead,
 )
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
-from .data import ObservationPartition, PairwiseObservations, RegionBatch, TargetSpec
-from .ensemble import (
-    Ensemble,
-    EnsembleMember,
-    EnsemblePrediction,
-    EnsembleSurface,
-    MemberFailure,
-    MemberIdentity,
-    PopulationFold,
-    aggregate_predictions,
-    ensemble_member_identity,
-    fit_ensemble,
-    fit_ensemble_member,
-    generate_population_folds,
-)
-from .evaluation import (
-    EvaluationAccess,
-    EvaluationRegime,
-    EvaluationSupport,
-    OOFEvaluation,
-    OOFPrediction,
-    evaluate_ensemble,
-    predict_out_of_fold,
-    score_out_of_fold,
-)
-from .ibd import IBDModel
-from .mlpe import (
-    MLPEConditionalPrediction,
-    MLPEConfig,
-    MLPEError,
-    MLPEPrediction,
-    MLPEPredictionProvenance,
-    MLPESupportConditioner,
-    RegionalMLPECalibration,
-    calibrate_mlpe,
-    condition_on_support,
-    predict_known_effects,
-)
+from .data import PairwiseObservations, RegionBatch, TargetSpec
+from .ensemble import Ensemble, EnsemblePrediction
+from .losses import AbstractLoss, Log1pLoss, MLPELoss
 from .model import LandscapeGeneticsModel
 from .persistence import ArtifactError, load_model, save_model
 from .prediction import Prediction
-from .training import EpochRecord, TrainingState, fit
+from .training import StepRecord, train, TrainingState
+
 
 __all__ = [
-    "AbstractCalibrationModule",
-    "DirectCalibrationModule",
-    "MLPECalibrationModule",
-    "IBDModel",
-    "EvaluationAccess",
-    "EvaluationRegime",
-    "EvaluationSupport",
-    "OOFEvaluation",
-    "OOFPrediction",
-    "evaluate_ensemble",
-    "predict_out_of_fold",
-    "score_out_of_fold",
-    "Ensemble",
-    "EnsembleMember",
-    "EnsemblePrediction",
-    "EnsembleSurface",
-    "MemberFailure",
-    "MemberIdentity",
-    "PopulationFold",
-    "aggregate_predictions",
-    "ensemble_member_identity",
-    "fit_ensemble",
-    "fit_ensemble_member",
-    "generate_population_folds",
+    "AbstractCalibrationHead",
+    "AbstractLoss",
     "ArtifactError",
-    "load_model",
-    "save_model",
-    "MLPEConfig",
-    "MLPEConditionalPrediction",
-    "MLPEError",
-    "RegionalMLPECalibration",
-    "MLPEPrediction",
-    "MLPEPredictionProvenance",
-    "MLPESupportConditioner",
-    "calibrate_mlpe",
-    "condition_on_support",
-    "predict_known_effects",
-    "EpochRecord",
-    "TrainingConfig",
-    "TrainingState",
-    "PairwiseObservations",
-    "ObservationPartition",
-    "Prediction",
+    "DirectCalibrationHead",
+    "Ensemble",
+    "EnsemblePrediction",
     "LandscapeGeneticsModel",
+    "Log1pLoss",
+    "MLPECalibrationHead",
+    "MLPELoss",
+    "PairwiseObservations",
+    "Prediction",
     "RegionBatch",
     "ResistanceSolverConfig",
+    "StepRecord",
     "TargetSpec",
-    "fit",
-    "calibrate",
+    "TrainingConfig",
+    "TrainingState",
+    "fit_calibration_head",
     "load_checkpoint",
+    "load_model",
     "save_checkpoint",
+    "save_model",
+    "train",
 ]

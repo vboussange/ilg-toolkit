@@ -2,95 +2,34 @@ name: Release
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: release
-  cancel-in-progress: false
+    branches:
+      - main
 
 jobs:
-  release:
-    if: github.ref == 'refs/heads/main'
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
     permissions:
       contents: write
     env:
-      GH_TOKEN: ${{ github.token }}
-      JAX_PLATFORMS: cpu
-      JAX_ENABLE_X64: "true"
+      PYPI_TOKEN: ${{ secrets.pypi_token }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: Check for an existing release
-        id: version
-        run: |
-          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName > "$RUNNER_TEMP/releases.json"
-          python - <<'PY'
-          import json
-          import os
-          import tomllib
-          from pathlib import Path
+      # The first PyPI upload is manual; publication starts once `pypi_token` exists.
+      - name: Skip publication without a PyPI token
+        if: env.PYPI_TOKEN == ''
+        run: echo "::notice::Publication skipped until the pypi_token secret exists."
 
-          project = tomllib.loads(Path('pyproject.toml').read_text())['project']
-          tag = f"v{project['version']}"
-          releases = json.loads((Path(os.environ['RUNNER_TEMP']) / 'releases.json').read_text())
-          exists = any(release['tagName'] == tag for release in releases)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              print(f"name={project['name']}", file=output)
-              print(f"version={project['version']}", file=output)
-              print(f'tag={tag}', file=output)
-              print(f'needed={str(not exists).lower()}', file=output)
-          print(f'{tag}: ' + ('already released' if exists else 'release required'))
-          PY
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
-        if: steps.version.outputs.needed == 'true'
+      - name: Release
+        if: env.PYPI_TOKEN != ''
+        uses: patrick-kidger/action_update_python_project@v8
         with:
-          enable-cache: true
-      - name: Select the release source
-        if: steps.version.outputs.needed == 'true'
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          cp .github/scripts/test-release.sh "$RUNNER_TEMP/test-release.sh"
-          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
-            git checkout --detach "$RELEASE_TAG"
-          fi
-          python - <<'PY'
-          import os
-          import tomllib
-          from pathlib import Path
-
-          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
-          assert version == os.environ['RELEASE_VERSION'], 'Tag and project versions disagree'
-          PY
-      - name: Build source distribution and wheel
-        if: steps.version.outputs.needed == 'true'
-        run: uv build --out-dir "$RUNNER_TEMP/release-dist"
-      - name: Test the installed source distribution and wheel
-        if: steps.version.outputs.needed == 'true'
-        run: bash "$RUNNER_TEMP/test-release.sh" "$RUNNER_TEMP/release-dist"
-      - name: Tag and publish the GitHub release
-        if: steps.version.outputs.needed == 'true'
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          PROJECT_NAME: ${{ steps.version.outputs.name }}
-        run: |
-          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git tag -a "$RELEASE_TAG" -m "$PROJECT_NAME $RELEASE_TAG"
-            git push origin "refs/tags/$RELEASE_TAG"
-          fi
-          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/release-dist/"* \
-            --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --title "$PROJECT_NAME $RELEASE_TAG" --generate-notes
+            python-version: "3.12"
+            # Uninstall and reinstall pytest to work around the fact that it doesn't get put into `bin` otherwise.
+            test-script: |
+                cp -r ${{ github.workspace }}/tests ./tests
+                cp ${{ github.workspace }}/pyproject.toml ./pyproject.toml
+                uv pip uninstall pytest
+                uv sync --no-install-project --inexact
+                uv run --no-sync pytest -n auto
+            pypi-token: ${{ secrets.pypi_token }}
+            github-user: vboussange
+            github-token: ${{ github.token }}

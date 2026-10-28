@@ -1,0 +1,40 @@
+name: Run tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  run-test:
+    strategy:
+      matrix:
+        python-version: [ "3.12" ]
+        os: [ ubuntu-latest ]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          uv run echo done
+
+      - name: Checks with pre-commit
+        run: |
+          uv run prek run --all-files
+
+      - name: Test with pytest
+        run: |
+          uv run pytest -n auto
+
+      - name: Build the documentation strictly
+        run: |
+          uv run zensical build --strict

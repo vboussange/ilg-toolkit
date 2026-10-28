@@ -1,9 +1,7 @@
-"""Strict Gaussian-marker Wishart references; this module enables no training.
+"""Wishart log likelihoods of Gaussian-marker distances under fixed graph covariances.
 
-The contract and conditional-score derivation live in
-``docs/statistics/wishart.md``. Inputs declare known-zero-mean,
-independent Gaussian marker contrasts; structural validation cannot establish
-that scientific assumption for real genetic observations.
+Inputs declare complete squared distances between independent, zero-mean Gaussian
+marker contrasts. ``README.md`` beside this module lists the assumptions.
 """
 
 import math
@@ -11,24 +9,13 @@ from dataclasses import dataclass
 from numbers import Integral, Real
 
 import numpy as np
-
-from ilg_toolkit.config import ResistanceSolverConfig
-from ilg_toolkit.data import RegionBatch
+from ilg_toolkit import RegionBatch
 from ilg_toolkit.models import ConductanceModel
-from ilg_toolkit.resistance import build_resistance_context
-
-
-def _helmert(populations):
-    basis = np.zeros((populations - 1, populations), dtype=np.float64)
-    for row in range(populations - 1):
-        count = row + 1
-        denominator = math.sqrt(count * (count + 1))
-        basis[row, :count] = 1 / denominator
-        basis[row, count] = -count / denominator
-    return basis
+from scipy.linalg import helmert
 
 
 def _positive_definite(matrix, name, *, shape=None):
+    """Checks that a matrix is real, symmetric and positive definite, and returns its factor."""
     if np.iscomplexobj(matrix):
         raise ValueError(f"{name} must be real")
     matrix = np.asarray(matrix, dtype=np.float64)
@@ -45,29 +32,22 @@ def _positive_definite(matrix, name, *, shape=None):
     eigenvalues = np.linalg.eigvalsh(matrix)
     numerical_rank_floor = np.finfo(np.float64).eps * matrix.shape[0] * np.max(np.abs(eigenvalues))
     if eigenvalues[0] <= numerical_rank_floor:
-        raise ValueError(
-            f"{name} must be strictly positive definite at float64 precision; "
-            "singular/indefinite matrices are unsupported and are never repaired"
-        )
+        raise ValueError(f"{name} must be strictly positive definite at float64 precision")
     try:
         factor = np.linalg.cholesky(matrix)
     except np.linalg.LinAlgError as error:
-        raise ValueError(
-            f"{name} must be strictly positive definite; singular/indefinite matrices "
-            "are unsupported and are never repaired"
-        ) from error
+        raise ValueError(f"{name} must be strictly positive definite") from error
     return matrix, factor
 
 
 @dataclass(frozen=True)
 class GaussianMarkerDistances:
-    """Complete squared Gaussian-marker distances with explicit scatter scaling.
+    """Complete squared Gaussian-marker distances with declared marker scaling.
 
-    ``marker_count`` counts independent, known-zero-mean Gaussian marker contrast
-    replicates, not sampling units. ``marker_scaling`` is explicitly ``average``
-    or ``scatter``. The only admitted ``interpretation`` is
-    ``squared_gaussian_marker_distance``. These declarations are assumptions,
-    not statistical validation of Gaussianity or marker independence.
+    ``marker_count`` counts independent, zero-mean Gaussian marker contrast
+    replicates. ``marker_scaling`` is ``"average"`` for marker-averaged squared
+    distances or ``"scatter"`` for summed ones. ``interpretation`` is
+    ``"squared_gaussian_marker_distance"``.
     """
 
     region_name: str
@@ -91,20 +71,20 @@ class GaussianMarkerDistances:
             )
         if self.interpretation != "squared_gaussian_marker_distance":
             raise ValueError(
-                "Wishart diagnostics support only explicitly declared "
+                "Wishart diagnostics require the interpretation "
                 "squared_gaussian_marker_distance; "
-                "FST, relatedness and generic dissimilarities are unsupported"
+                "FST, relatedness and other dissimilarities are unsupported"
             )
         if self.marker_scaling not in {"average", "scatter"}:
-            raise ValueError("marker_scaling must explicitly declare average or scatter")
+            raise ValueError("marker_scaling must be average or scatter")
         if (
             isinstance(self.marker_count, bool)
             or not isinstance(self.marker_count, Integral)
             or self.marker_count < len(labels) - 1
         ):
             raise ValueError(
-                "marker_count must be an explicit integer >= population count - 1; "
-                "it counts independent Gaussian markers and is never inferred from populations"
+                "marker_count must be an integer of at least the population count - 1, "
+                "counting independent Gaussian markers"
             )
         if np.iscomplexobj(self.distances):
             raise ValueError("Squared Gaussian-marker distances must be real")
@@ -119,7 +99,7 @@ class GaussianMarkerDistances:
             or np.any(np.diag(distances) != 0)
         ):
             raise ValueError("Squared distances must be nonnegative, symmetric, with zero diagonal")
-        basis = _helmert(len(labels))
+        basis = helmert(len(labels))
         centered = -0.5 * basis @ distances @ basis.T
         _positive_definite(centered, "Centered empirical covariance")
         distances.setflags(write=False)
@@ -128,18 +108,19 @@ class GaussianMarkerDistances:
 
     @property
     def contrast_basis(self):
-        """Return row-orthonormal Helmert population contrasts in labelled order."""
-        return _helmert(len(self.sampling_unit_ids))
+        """The row-orthonormal Helmert population contrasts, in sampling-unit order."""
+        return helmert(len(self.sampling_unit_ids))
 
     @property
     def centered_scatter(self):
-        """Return scatter in the declared orthonormal contrast coordinates."""
+        """The marker scatter in the orthonormal contrast coordinates."""
         basis = self.contrast_basis
         scatter = -0.5 * basis @ self.distances @ basis.T
         return scatter * self.marker_count if self.marker_scaling == "average" else scatter
 
 
 def _wishart_logpdf(scatter, covariance, marker_count):
+    """Returns the normalized Wishart log density of a scatter matrix."""
     scatter, scatter_factor = _positive_definite(scatter, "Empirical scatter")
     covariance, covariance_factor = _positive_definite(
         covariance, "Model covariance", shape=scatter.shape
@@ -165,21 +146,26 @@ def _wishart_logpdf(scatter, covariance, marker_count):
 
 
 def _require_marker_observations(observations):
+    """Raises a ``TypeError`` unless the observations are Gaussian-marker distances."""
     if not isinstance(observations, GaussianMarkerDistances):
         raise TypeError(
-            "Expected GaussianMarkerDistances with explicit interpretation, "
-            "marker count and scaling; "
-            "generic genetic targets are not automatically Wishart observations"
+            "Expected GaussianMarkerDistances with a declared interpretation, "
+            "marker count and marker scaling"
         )
 
 
 def wishart_log_likelihood(observations: GaussianMarkerDistances, covariance) -> float:
-    """Normalized log density in the input's declared Helmert-coordinate scale.
+    """Computes the normalized Wishart log density of the observations' contrast scatter.
 
-    ``covariance`` is the per-marker covariance in ``observations.contrast_basis``.
-    Average inputs include the Jacobian from scatter to marker-average covariance;
-    constants are retained so dimensions and marker scaling remain meaningful.
-    This is a dense NumPy diagnostic, without gradients or optimizer integration.
+    Marker-averaged observations include the Jacobian from scatter to
+    marker-average covariance entries. The computation uses dense NumPy algebra.
+
+    Args:
+        observations: Gaussian-marker distances.
+        covariance: Per-marker covariance in ``observations.contrast_basis``.
+
+    Returns:
+        The log density, in the coordinates of the declared marker scaling.
     """
     _require_marker_observations(observations)
     result = _wishart_logpdf(observations.centered_scatter, covariance, observations.marker_count)
@@ -191,12 +177,12 @@ def wishart_log_likelihood(observations: GaussianMarkerDistances, covariance) ->
 
 @dataclass(frozen=True)
 class HeldoutWishartScore:
-    """Conditional density of held-out scatter blocks in explicit anchor coordinates.
+    """A conditional log density of held-out scatter blocks in anchored contrast coordinates.
 
-    The score includes cross-population and held-out/held-out blocks, given the
-    training/training block. It is not a mean pairwise loss or a density of raw
-    marker measurements. ``parameter_source`` records the caller's declaration;
-    this reference operation performs no fitting or historical leakage audit.
+    The score is the log density of the training–held-out and held-out–held-out
+    blocks of the anchored scatter, given its training–training block.
+    ``parameter_source`` records the caller's declaration of how the covariance
+    was obtained.
     """
 
     log_likelihood: float
@@ -218,14 +204,28 @@ def heldout_log_likelihood(
     anchor_id: str,
     parameter_source: str,
 ) -> HeldoutWishartScore:
-    """Score held-out populations using a normalized joint/marginal density ratio.
+    """Scores held-out populations by the ratio of the joint to the training density.
 
-    Choose a training anchor before fitting. Fix ``covariance`` from training
-    observations only, or supply known fixed parameters. The training block uses
-    training distances only; all remaining blocks are scored jointly. Shared
-    marker count, scaling and anchor coordinates are preserved. Arbitrary pair
-    masks, fitting with held-out targets, and changing markers by block are not
-    supported protocols.
+    Contrasts against the anchor define the coordinates. The training block reads
+    training distances only, and every remaining block is scored jointly, with
+    the same marker count and marker scaling.
+
+    Args:
+        observations: Gaussian-marker distances of every population.
+        covariance: Per-marker covariance in ``observations.contrast_basis``, known
+            or estimated from training observations only.
+        training_unit_ids: At least two training sampling units, leaving at least
+            one held out.
+        anchor_id: The training sampling unit whose contrasts define the
+            coordinates.
+        parameter_source: ``"fixed"`` for known parameters, or ``"training_only"``
+            for parameters estimated from training observations.
+
+    Returns:
+        The held-out score with its training and full log densities.
+
+    Raises:
+        ValueError: The partition, anchor, covariance or parameter source is invalid.
     """
     _require_marker_observations(observations)
     if parameter_source not in {"fixed", "training_only"}:
@@ -240,8 +240,8 @@ def heldout_log_likelihood(
         or anchor_id not in training
     ):
         raise ValueError(
-            "Holdout requires >=2 unique known training units including the anchor, "
-            "and at least one held-out population"
+            "Holdout requires at least two unique known training units, including the "
+            "anchor, and at least one held-out population"
         )
     covariance, _ = _positive_definite(
         covariance, "Model covariance", shape=(len(labels) - 1, len(labels) - 1)
@@ -251,8 +251,8 @@ def heldout_log_likelihood(
     anchor_index = labels.index(anchor_id)
     contrast = np.eye(len(labels))[[labels.index(label) for label in order]]
     contrast[:, anchor_index] -= 1
-    # Direct anchored contrasts ensure the training principal block reads only
-    # training distances, rather than recentering all observations together.
+    # Contrasts against the anchor make the training block depend on training
+    # distances only.
     full_scatter = -0.5 * contrast @ observations.distances @ contrast.T
     if observations.marker_scaling == "average":
         full_scatter *= observations.marker_count
@@ -290,7 +290,7 @@ def heldout_log_likelihood(
 
 @dataclass(frozen=True)
 class WishartDiagnostic:
-    """Fixed-parameter reference evidence, including an explicit training gate."""
+    """A fixed-parameter Wishart diagnostic of a conductance grid graph, with its training gate."""
 
     region_name: str
     resistances: np.ndarray
@@ -307,35 +307,47 @@ def diagnose_wishart(
     region: RegionBatch,
     observations: GaussianMarkerDistances,
     *,
-    encoder: ConductanceModel,
+    patch_encoder: ConductanceModel,
     scale: float,
     nugget: float,
     training_unit_ids,
     anchor_id: str,
     parameter_source: str,
-    solver_config: ResistanceSolverConfig | None = None,
 ) -> WishartDiagnostic:
-    """Connect an actual resistance graph to a frozen Gaussian-marker covariance.
+    """Scores a Gaussian-marker covariance built from a patch encoder's effective resistances.
 
-    In orthonormal population contrasts H, Sigma = scale*(-H R H.T/2)+nugget*I.
-    Scale is positive; nugget is nonnegative scientific variance, not numerical
-    jitter. No target repair, parameter estimation, gradient or training switch
-    is provided. The scale/nugget rank describes fixed-encoder algebra only;
-    shared scale identification during encoder training remains unresolved.
+    In orthonormal population contrasts H, the per-marker covariance is
+    Sigma = scale * (-H R H.T / 2) + nugget * I, where R holds the effective
+    resistances between sampling units. The rank and condition number of the
+    scale–nugget design tell whether the fixed patch encoder separates scale and
+    nugget.
+
+    Args:
+        region: Region batch of population sampling units.
+        observations: Gaussian-marker distances of the region's sampling units.
+        patch_encoder: Single-species patch encoder giving the effective
+            resistances.
+        scale: Positive scale of the resistance kernel.
+        nugget: Nonnegative marker variance added to every contrast.
+        training_unit_ids: Training sampling units of the held-out score.
+        anchor_id: Training sampling unit whose contrasts define the coordinates
+            of the held-out score.
+        parameter_source: ``"fixed"`` or ``"training_only"``, as in
+            ``heldout_log_likelihood``.
+
+    Returns:
+        The resistances, covariance, log likelihood, held-out score, scale–nugget
+        design diagnostics and the ``"no_go"`` training gate with its reasons.
     """
     _require_marker_observations(observations)
-    if not isinstance(encoder, ConductanceModel):
-        raise TypeError("Wishart graph diagnostics require a conductance encoder")
+    if not isinstance(patch_encoder, ConductanceModel):
+        raise TypeError("Wishart graph diagnostics require a patch encoder")
     if region.name != observations.region_name or set(region.sampling_unit_ids) != set(
         observations.sampling_unit_ids
     ):
         raise ValueError("Region identity and sampling-unit labels must match the observations")
-    kinds = region.sampling_unit_kinds
-    assert kinds is not None  # RegionBatch normalizes this optional constructor input.
-    if any(kind != "population" for kind in kinds):
-        raise ValueError(
-            "This experimental contract supports declared population sampling units only"
-        )
+    if region.individual_based:
+        raise ValueError("Wishart diagnostics require population sampling units")
     for name, value, lower_inclusive in (("scale", scale, False), ("nugget", nugget, True)):
         if (
             isinstance(value, bool)
@@ -346,17 +358,11 @@ def diagnose_wishart(
             raise ValueError(
                 f"{name} must be finite and {'nonnegative' if lower_inclusive else 'positive'}"
             )
-    height, width = region.feature_array.shape[:2]
-    if height % encoder.patch_size or width % encoder.patch_size:
-        raise ValueError("Raster dimensions must be divisible by encoder patch_size")
-    context = build_resistance_context(
-        (height // encoder.patch_size, width // encoder.patch_size), solver_config
-    )
-    resistances = np.asarray(
-        encoder.predict_distances(region.feature_array, region.pixel_nodes, context=context)
-    )
-    order = [region.sampling_unit_ids.index(label) for label in observations.sampling_unit_ids]
-    resistances = np.array(resistances[np.ix_(order, order)], dtype=np.float64)
+    prediction = patch_encoder.predict(region)
+    resistances = np.array(prediction.as_matrix(), dtype=np.float64)
+    np.fill_diagonal(resistances, 0)
+    order = [prediction.sampling_unit_ids.index(label) for label in observations.sampling_unit_ids]
+    resistances = resistances[np.ix_(order, order)]
     if not np.isfinite(resistances).all() or np.any(resistances < 0):
         raise FloatingPointError("The graph produced nonfinite or negative effective resistances")
     basis = observations.contrast_basis
@@ -385,11 +391,10 @@ def diagnose_wishart(
         condition,
         "no_go",
         (
-            "Joint encoder/regional scale fitting requires an explicit "
-            "normalization or fixed scale.",
-            "Empirical marker validity and effective counts for "
-            "dependent/non-Gaussian markers are unresolved.",
-            "A reviewed go contract for experimental training and provenance "
-            "has not been established.",
+            "Joint training of a patch encoder and regional scales requires an "
+            "explicit normalization or a fixed scale.",
+            "Training requires validated marker independence, Gaussianity and "
+            "effective marker counts.",
+            "Training requires a reviewed contract for experimental training and provenance.",
         ),
     )

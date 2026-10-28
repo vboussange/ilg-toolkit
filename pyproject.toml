@@ -1,59 +1,101 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=81,<82"]
+
+[dependency-groups]
+dev = [
+  "prek==0.5.7",
+  "pyright[nodejs]==1.1.414",
+  "ruff==0.17.3",
+  "toml-sort==0.25.0"
+]
+docs = [
+  "ipykernel==7.4.0",
+  "jupyter-client==8.10.0",
+  "mkdocstrings==1.0.8",
+  "mkdocstrings-python==2.0.10",
+  "nbconvert==7.17.2",
+  "nbformat==5.11.1",
+  "pymdown-extensions==12.3",
+  "zensical==0.0.73"
+]
+tests = [
+  "jaxscape[amjax]==0.0.11",
+  "pytest==9.2.0",
+  "pytest-xdist==3.8.0",
+  "xarray==2026.9.0"
+]
+
 [project]
-name = "ilg-toolkit"
-version = "0.0.2"
-description = "Reusable inverse landscape genetics training and prediction"
-authors = [{name = "Victor Boussange"}]
-readme = "README.md"
-requires-python = ">=3.12"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
+authors = [{ name = "Victor Boussange" }]
 dependencies = [
-  # Coordax imports coordax.testing at runtime, which imports Chex.
-  "chex>=0.1.92,<0.2",
-  "coordax>=0.2.8,<0.3",
+  "coordax>=0.2.9,<0.3",
   "equinox>=0.13.2,<0.14",
   "jax>=0.10.0,<0.11",
-  "jaxscape==0.0.10",
+  "jaxscape==0.0.11",
   "lineax>=0.1.0,<0.2",
   "numpy>=2.2.6,<3",
-  "scipy>=1.15,<2",
   "optax>=0.2.8,<0.3",
+  "scipy>=1.15,<2"
 ]
+description = "Utilities for inverse landscape genetics"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+name = "ilg-toolkit"
+readme = "README.md"
+requires-python = ">=3.12"
+version = "0.0.3"
 
 [project.optional-dependencies]
-amg = ["jaxscape[amjax]==0.0.10"]
-geo = ["geopandas>=1.1.1,<2", "rasterio>=1.4,<2"]
-gpu = ["jax[cuda]>=0.10.0,<0.11; platform_system == 'Linux' and platform_machine == 'x86_64'"]
-dev = [
-  "build>=1.3,<2",
-  "pyright[nodejs]>=1.1.406,<2",
-  "pytest>=8.4,<10",
-  "ruff>=0.15,<0.16",
-  # CI builds and checks the distributions.
-  "setuptools>=81,<82",
-]
+amg = ["jaxscape[amjax]==0.0.11"]
+examples = ["matplotlib>=3.10,<4", "pandas>=2.2,<4", "rioxarray>=0.19,<1"]
 
-[build-system]
-requires = ["setuptools>=81,<82"]
-build-backend = "setuptools.build_meta"
+[tool.pyright]
+exclude = ["scripts/build_example_data.py"] # Inline script dependencies (PEP 723).
+extraPaths = ["src", "tests"]
+include = ["src", "tests", "experiments", "scripts"]
+pythonVersion = "3.12"
+reportFunctionMemberAccess = false
+reportIncompatibleMethodOverride = true
+reportIncompatibleVariableOverride = false # Incompatible with eqx.AbstractVar
+
+[tool.pytest.ini_options]
+addopts = "-ra --import-mode=importlib"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+extend-include = ["*.ipynb"]
+line-length = 100
+src = []
+
+[tool.ruff.lint]
+fixable = ["I001", "F401", "UP"]
+ignore = ["D105", "D107", "E402", "E721", "E731", "E741", "F722"]
+select = ["D", "E", "F", "I001", "UP"]
+
+[tool.ruff.lint.flake8-import-conventions.extend-aliases]
+"collections" = "co"
+"functools" = "ft"
+"itertools" = "it"
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+extra-standard-library = ["typing_extensions"]
+lines-after-imports = 2
+order-by-type = false
+
+[tool.ruff.lint.per-file-ignores]
+"examples/**" = ["D1"]
+"experiments/**" = ["D1"]
+"scripts/**" = ["D1"]
+"tests/**" = ["D1"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-ra --import-mode=importlib"
-pythonpath = ["."]
-
-[tool.pyright]
-include = ["src", "tests", "experiments", "examples", "benchmarks"]
-extraPaths = ["src", "tests"]
-pythonVersion = "3.12"
-reportIncompatibleMethodOverride = true
-
-[tool.ruff]
-line-length = 100
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+[tool.uv]
+default-groups = ["dev", "docs", "tests"]

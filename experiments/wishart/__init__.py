@@ -1,13 +1,14 @@
-"""Explicitly experimental diagnostic references, separate from stable fitting."""
+"""Experimental Wishart diagnostics of conductance grid graphs on Gaussian-marker distances."""
 
 from .diagnostic import (
-    GaussianMarkerDistances,
-    HeldoutWishartScore,
-    WishartDiagnostic,
     diagnose_wishart,
+    GaussianMarkerDistances,
     heldout_log_likelihood,
+    HeldoutWishartScore,
     wishart_log_likelihood,
+    WishartDiagnostic,
 )
+
 
 __all__ = [
     "GaussianMarkerDistances",

@@ -1,28 +1,24 @@
-"""ResNet-9 patch encoder for positive graph conductances."""
+"""A ResNet9 patch encoder mapping raster patches to vertex conductances."""
 
 from __future__ import annotations
 
 import math
-from numbers import Integral
+from collections.abc import Sequence
+from numbers import Real
 from typing import final
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ..config import ResistanceSolverConfig, validate_patch_batch_size
-from .base import ConductanceModel
-from .common import patchify
-
-
-@eqx.filter_checkpoint
-def _encode_patch(model: ResNet9Conductance, patch: jax.Array) -> jax.Array:
-    """Recompute CNN activations in the backward pass instead of retaining them."""
-    return model.encode_patch(patch)
+from .._checks import _positive_integer
+from ..config import ResistanceSolverConfig
+from .base import _species_names, _species_rows, ConductanceModel
+from .common import _encode_patches
 
 
 @final
-class ResidualBlock(eqx.Module):
+class _ResidualBlock(eqx.Module):
     """Two convolutions with GroupNorm and an identity skip connection."""
 
     conv1: eqx.nn.Conv2d
@@ -34,11 +30,11 @@ class ResidualBlock(eqx.Module):
         first, second = jax.random.split(key)
         self.conv1 = eqx.nn.Conv2d(channels, channels, 3, padding=1, dtype=jnp.float32, key=first)
         self.conv2 = eqx.nn.Conv2d(channels, channels, 3, padding=1, dtype=jnp.float32, key=second)
-        self.norm1 = eqx.nn.GroupNorm(min(8, channels), channels, dtype=jnp.float32)
-        self.norm2 = eqx.nn.GroupNorm(min(8, channels), channels, dtype=jnp.float32)
+        self.norm1 = eqx.nn.GroupNorm(8, channels, dtype=jnp.float32)
+        self.norm2 = eqx.nn.GroupNorm(8, channels, dtype=jnp.float32)
 
     def __call__(self, inputs: jax.Array) -> jax.Array:
-        """Encode one channel-first feature map."""
+        """Applies the residual block to one channel-first feature map."""
         residual = inputs
         outputs = jax.nn.relu(self.norm1(self.conv1(inputs)))
         outputs = self.norm2(self.conv2(outputs))
@@ -47,7 +43,38 @@ class ResidualBlock(eqx.Module):
 
 @final
 class ResNet9Conductance(ConductanceModel):
-    """Map each native-resolution raster patch to one positive conductance."""
+    """A ResNet9 patch encoder mapping each raster patch to one vertex conductance.
+
+    A backbone of convolutions, two residual blocks and spatial pooling encodes
+    each patch; a species-specific head maps the encoding to a positive
+    conductance through a linear map, softplus and ``min_conductance``.
+
+    Args:
+        in_channels:
+            Number of landscape features, in their retained feature order.
+        species: Species names, one output row each in parameter order; ``None``
+            (default) models one unnamed species. The convolutional layers are
+            shared by all regions and species.
+        patch_size: Square patch side length, at least 4 (default 4). Raster dimensions
+            must be divisible by it; output shape is
+            ``(rows // patch_size, columns // patch_size)``. Sampling units in the
+            same patch share a vertex.
+        channels: Widths of the three convolutional stages, default ``(64, 128, 256)``
+            as in the paper. Each width is a positive multiple of 8, the GroupNorm
+            group count.
+        min_conductance: Positive conductance floor added after softplus, default 1e-6.
+        patch_microbatch_size: Maximum patches encoded together; ``None`` encodes
+            all patches at once. Lower values trade throughput for peak activation
+            memory; predictions stay the same.
+        solver_config: Effective-resistance tolerances, iteration limit, and optional
+            algebraic multigrid (AMG) preconditioner.
+        key: JAX random key for reproducible parameter initialization.
+
+    Notes:
+        Convolutions and GroupNorm use float32 parameters; effective resistance
+        uses float64. Each patch is encoded on its own; the conductance grid graph
+        connects the conductances of neighboring patches.
+    """
 
     conv1: eqx.nn.Conv2d
     conv2: eqx.nn.Conv2d
@@ -55,55 +82,70 @@ class ResNet9Conductance(ConductanceModel):
     norm1: eqx.nn.GroupNorm
     norm2: eqx.nn.GroupNorm
     norm3: eqx.nn.GroupNorm
-    residual1: ResidualBlock
-    residual2: ResidualBlock
+    residual1: _ResidualBlock
+    residual2: _ResidualBlock
     output: eqx.nn.Linear
+    species: tuple[str, ...] | None = eqx.field(static=True)
+    channels: tuple[int, int, int] = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
-    patch_batch_size: int | None = eqx.field(static=True)
+    patch_microbatch_size: int | None = eqx.field(static=True)
     solver_config: ResistanceSolverConfig = eqx.field(static=True)
 
     def __init__(
         self,
         in_channels: int,
         *,
+        species: Sequence[str] | None = None,
         patch_size: int = 4,
+        channels: tuple[int, int, int] = (64, 128, 256),
         min_conductance: float = 1e-6,
-        patch_batch_size: int | None = None,
+        patch_microbatch_size: int | None = None,
         solver_config: ResistanceSolverConfig | None = None,
         key: jax.Array,
     ):
-        if (
-            isinstance(in_channels, bool)
-            or not isinstance(in_channels, Integral)
-            or in_channels < 1
-        ):
-            raise ValueError("in_channels must be a positive integer")
-        if isinstance(patch_size, bool) or not isinstance(patch_size, Integral) or patch_size < 4:
+        species = _species_names(species)
+        in_channels = _positive_integer("in_channels", in_channels)
+        patch_size = _positive_integer("patch_size", patch_size)
+        if patch_size < 4:
             raise ValueError("ResNet9Conductance requires integer patch_size >= 4")
-        if not math.isfinite(min_conductance) or min_conductance <= 0:
-            raise ValueError("min_conductance must be finite and positive")
-        validate_patch_batch_size(patch_batch_size)
+        widths = tuple(_positive_integer("channels", width) for width in channels)
+        if len(widths) != 3 or any(width % 8 for width in widths):
+            raise ValueError("ResNet9Conductance channels must be three positive multiples of 8")
+        if (
+            isinstance(min_conductance, bool)
+            or not isinstance(min_conductance, Real)
+            or not math.isfinite(min_conductance)
+            or min_conductance <= 0
+        ):
+            raise ValueError("min_conductance must be a finite positive real number")
+        patch_microbatch_size = _positive_integer(
+            "patch_microbatch_size", patch_microbatch_size, optional=True
+        )
         solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
         if not isinstance(solver_config, ResistanceSolverConfig):
             raise TypeError("solver_config must be a ResistanceSolverConfig")
+        first, second, third = widths
         keys = jax.random.split(key, 8)
-        self.conv1 = eqx.nn.Conv2d(in_channels, 64, 3, padding=1, dtype=jnp.float32, key=keys[0])
-        self.norm1 = eqx.nn.GroupNorm(8, 64, dtype=jnp.float32)
-        self.residual1 = ResidualBlock(64, key=keys[1])
-        self.conv2 = eqx.nn.Conv2d(64, 128, 3, padding=1, dtype=jnp.float32, key=keys[2])
-        self.norm2 = eqx.nn.GroupNorm(8, 128, dtype=jnp.float32)
-        self.residual2 = ResidualBlock(128, key=keys[3])
-        self.conv3 = eqx.nn.Conv2d(128, 256, 3, padding=1, dtype=jnp.float32, key=keys[4])
-        self.norm3 = eqx.nn.GroupNorm(8, 256, dtype=jnp.float32)
-        self.output = eqx.nn.Linear(256, 1, dtype=jnp.float32, key=keys[5])
+        self.conv1 = eqx.nn.Conv2d(in_channels, first, 3, padding=1, dtype=jnp.float32, key=keys[0])
+        self.norm1 = eqx.nn.GroupNorm(8, first, dtype=jnp.float32)
+        self.residual1 = _ResidualBlock(first, key=keys[1])
+        self.conv2 = eqx.nn.Conv2d(first, second, 3, padding=1, dtype=jnp.float32, key=keys[2])
+        self.norm2 = eqx.nn.GroupNorm(8, second, dtype=jnp.float32)
+        self.residual2 = _ResidualBlock(second, key=keys[3])
+        self.conv3 = eqx.nn.Conv2d(second, third, 3, padding=1, dtype=jnp.float32, key=keys[4])
+        self.norm3 = eqx.nn.GroupNorm(8, third, dtype=jnp.float32)
+        count = _species_rows(species)
+        self.output = eqx.nn.Linear(third, count, dtype=jnp.float32, key=keys[5])
+        self.species = species
+        self.channels = (first, second, third)
         self.patch_size = patch_size
-        self.min_conductance = min_conductance
-        self.patch_batch_size = patch_batch_size
+        self.min_conductance = float(min_conductance)
+        self.patch_microbatch_size = patch_microbatch_size
         self.solver_config = solver_config
 
-    def encode_patch(self, patch: jax.Array) -> jax.Array:
-        """Return softplus(logit) plus the explicit positive conductance floor."""
+    def _encode_patch(self, patch: jax.Array) -> jax.Array:
+        """Encodes one channel-first raster patch."""
         patch = jnp.asarray(patch, dtype=self.conv1.weight.dtype)
         values = jax.nn.relu(self.norm1(self.conv1(patch)))
         values = eqx.nn.MaxPool2d(2, stride=2)(values)
@@ -113,33 +155,35 @@ class ResNet9Conductance(ConductanceModel):
         values = self.residual2(values)
         values = jax.nn.relu(self.norm3(self.conv3(values)))
         values = jnp.mean(values, axis=(1, 2))
-        return jax.nn.softplus(self.output(values).squeeze()) + self.min_conductance
+        return values
 
-    def conductance(self, features: jax.Array, *, patch_batch_size: int | None = None) -> jax.Array:
-        """Return the patch-grid conductance surface from row, column, feature data.
+    def backbone(self, features: jax.Array) -> jax.Array:
+        """Encodes each raster patch with the convolutional backbone.
 
-        An omitted override uses the constructor's patch_batch_size. None at
-        construction encodes the complete region without checkpointing. A positive
-        integer checkpoints every encoder chunk, even if all patches fit in one
-        chunk, trading backward recomputation for lower activation memory.
+        Args:
+            features: Landscape features with shape ``(rows, columns, in_channels)``.
+
+        Returns:
+            Patch encodings with shape ``(rows // patch_size, columns // patch_size,
+            channels[2])``.
         """
-        if patch_batch_size is None:
-            patch_batch_size = self.patch_batch_size
-        validate_patch_batch_size(patch_batch_size)
         if features.ndim != 3 or features.shape[-1] != self.conv1.weight.shape[1]:
             raise ValueError(
                 f"Expected row, column, feature data with {self.conv1.weight.shape[1]} features"
             )
-        patches, grid_shape = patchify(features, self.patch_size)
-        if patch_batch_size is None:
-            return eqx.filter_vmap(self.encode_patch)(patches).reshape(grid_shape)
-        # lax.map batches with vmap inside a compiled loop, including a ragged
-        # final chunk. This avoids unrolling one CNN graph per chunk under JIT.
-        conductance = jax.lax.map(
-            lambda patch: _encode_patch(self, patch), patches, batch_size=patch_batch_size
-        )
-        return conductance.reshape(grid_shape)
+        return _encode_patches(self, features, self._encode_patch)
 
-    def __call__(self, features: jax.Array, *, patch_batch_size: int | None = None) -> jax.Array:
-        """Alias for :meth:`conductance`."""
-        return self.conductance(features, patch_batch_size=patch_batch_size)
+    def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
+        """Computes one species' positive conductance surface from the backbone output.
+
+        Args:
+            latent: Patch encodings returned by ``backbone``.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            Conductances above ``min_conductance``, one per vertex.
+        """
+        assert self.output.bias is not None
+        logits = latent @ self.output.weight[species_index] + self.output.bias[species_index]
+        return jax.nn.softplus(logits) + self.min_conductance

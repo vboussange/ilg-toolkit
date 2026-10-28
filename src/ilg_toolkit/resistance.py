@@ -1,7 +1,7 @@
-"""Differentiable resistance through JAXScape, with explicit solver failures."""
+"""Differentiable effective-resistance layer on conductance grid graphs using JAXScape."""
 
+import math
 from dataclasses import dataclass, field
-from numbers import Integral
 
 import equinox as eqx
 import jax
@@ -15,76 +15,64 @@ from .config import ResistanceSolverConfig
 
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
-class ResistanceSolverContext:
-    """A shape-specific solver with dynamic, reusable preconditioner arrays."""
+class _ResistanceSolverContext:
+    """A resistance solver for one graph shape, with reusable preconditioner arrays."""
 
-    graph_shape: tuple[int, int] = field(metadata={"static": True})
+    graph_shape: tuple[int, ...] = field(metadata={"static": True})
     solver: lx.AbstractLinearSolver
     solver_state: AMJaxCGSolverState | None = None
-    config: ResistanceSolverConfig = field(
-        default=ResistanceSolverConfig(), metadata={"static": True}
-    )
-
-
-def _require_x64():
-    if not jax.config.read("jax_enable_x64"):
-        raise RuntimeError(
-            "Effective resistance requires float64: set JAX_ENABLE_X64=true before Python"
-        )
 
 
 def _mean_conductance(left, right):
+    """Returns the conductance of an edge: the mean of its two vertices' conductances."""
     return 0.5 * (left + right)
 
 
-def build_resistance_context(
-    graph_shape: tuple[int, int], config: ResistanceSolverConfig | None = None
-) -> ResistanceSolverContext:
-    """Build CG or an optional AMG hierarchy outside JIT/gradient transforms.
+def _resistance_context(
+    graph_shape: tuple[int, ...], config: ResistanceSolverConfig
+) -> _ResistanceSolverContext:
+    """Prepares a reusable resistance solver for a conductance grid graph of one shape.
 
-    The all-ones hierarchy is reused as a preconditioner only. Every resistance
-    calculation retains the learned conductances as its differentiable operator.
+    Conjugate gradient, with optional algebraic multigrid preconditioning prepared
+    on a uniform conductance grid graph, follows ``config``. Preparation runs
+    eagerly, also inside traced functions.
     """
-    _require_x64()
-    if len(graph_shape) != 2 or any(
-        isinstance(size, bool) or not isinstance(size, Integral) or size <= 0
-        for size in graph_shape
-    ):
-        raise ValueError("graph_shape must contain two positive integer dimensions")
-    shape = (int(graph_shape[0]), int(graph_shape[1]))
-    if shape[0] * shape[1] < 2:
-        raise ValueError("Effective resistance requires at least two graph vertices")
-    config = config or ResistanceSolverConfig()
+    if len(graph_shape) != 2 or math.prod(graph_shape) < 2:
+        raise ValueError("Effective resistance requires a 2D surface with at least two vertices")
     if not config.use_amg:
-        return ResistanceSolverContext(
-            shape,
+        return _ResistanceSolverContext(
+            graph_shape,
             lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps),
-            config=config,
         )
     solver = AMJaxCGSolver(
         rtol=config.rtol, atol=config.atol, max_steps=config.max_steps, coarse_solver="pinv"
     )
-    template = GridGraph(jnp.ones(shape, dtype=jnp.float64), fun=_mean_conductance)
-    state = ResistanceDistance(solver=solver).init_preconditioner(template)
-    return ResistanceSolverContext(shape, solver, state, config)
+    with jax.ensure_compile_time_eval():
+        template = GridGraph(jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance)
+        state = ResistanceDistance(solver=solver).init_preconditioner(template)
+    return _ResistanceSolverContext(graph_shape, solver, state)
 
 
-def effective_resistance(
+def _effective_resistance(
     conductance,
     terminal_nodes,
     *,
-    context: ResistanceSolverContext | None = None,
-    config: ResistanceSolverConfig | None = None,
+    context: _ResistanceSolverContext,
 ) -> jax.Array:
-    """Return terminal effective resistances for a positive four-neighbour grid.
+    """Computes effective resistances among vertices of a conductance grid graph.
 
-    Edge conductance is the arithmetic mean of its endpoints. Graph solves use
-    float64; resistances and their gradients retain the surface's floating dtype.
-    The last graph vertex is grounded and may be a terminal. Coincident terminal
-    nodes have zero resistance. Invalid inputs or failed solves raise, including
-    under JIT; numerical failure never triggers an implicit solver replacement.
+    Each edge of the four-neighbor grid graph averages its two vertices'
+    conductances. The solve runs and returns in float64, with zero resistance
+    between coincident vertices. Invalid inputs and failed solves raise errors.
+
+    Args:
+        conductance: Positive conductance surface with shape ``(rows, columns)``.
+        terminal_nodes: Row-major vertex indices of the sampling units.
+        context: Resistance solver prepared for the surface's shape.
+
+    Returns:
+        The float64 square matrix of effective resistances among ``terminal_nodes``.
     """
-    _require_x64()
     surface = jnp.asarray(conductance)
     if surface.ndim != 2 or surface.size < 2:
         raise ValueError("conductance must be a 2D surface with at least two graph vertices")
@@ -103,9 +91,6 @@ def effective_resistance(
         jnp.any((nodes < 0) | (nodes >= surface.size)),
         "terminal_nodes fall outside the conductance grid",
     ).astype(jnp.int32)
-    if context is not None and config is not None:
-        raise ValueError("Supply either a solver context or a solver configuration")
-    context = context or build_resistance_context(surface.shape, config)
     if context.graph_shape != surface.shape:
         raise ValueError(
             f"Solver context shape {context.graph_shape} does not match surface {surface.shape}"
@@ -114,5 +99,4 @@ def effective_resistance(
     resistances = ResistanceDistance(solver=context.solver).nodes_to_nodes_distance(
         graph, nodes, state=context.solver_state
     )
-    resistances = resistances.at[jnp.diag_indices(nodes.size)].set(0)
-    return resistances.astype(surface.dtype)
+    return resistances.at[jnp.diag_indices(nodes.size)].set(0)

@@ -1,19 +1,107 @@
-"""Shared raster-to-patch utilities."""
+"""Raster-to-patch and inference-mode utilities shared by distance models."""
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable
+from typing import Any, final, Protocol
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from numpy.typing import ArrayLike
 
+from .._checks import _positive_integer
 
-def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
-    """Partition row, column, feature data into non-overlapping feature-first patches."""
+
+class _PatchModel(Protocol):
+    """A distance model encoding raster patches in optional microbatches."""
+
+    patch_size: int
+    patch_microbatch_size: int | None
+
+
+def _encode_patches(
+    model: _PatchModel, features: jax.Array, encode: Callable[[jax.Array], jax.Array]
+) -> jax.Array:
+    """Encodes non-overlapping raster patches into a grid with one encoding per vertex."""
+    patches, shape = _patchify(features, model.patch_size)
+    batch_size = model.patch_microbatch_size
+    if batch_size is None:
+        values = eqx.filter_vmap(encode)(patches)
+    else:
+        values = jax.lax.map(eqx.filter_checkpoint(encode), patches, batch_size=batch_size)
+    return values.reshape(*shape, -1)
+
+
+def _is_stateful(value: object) -> bool:
+    """Returns whether a pytree node is an Equinox state index."""
+    return isinstance(value, eqx.nn.StateIndex)
+
+
+def _reject_stateful_layers(model: object) -> None:
+    """Raises a ``TypeError`` when the distance model holds Equinox state indices."""
+    if any(_is_stateful(leaf) for leaf in jax.tree.leaves(model, is_leaf=_is_stateful)):
+        raise TypeError(
+            "Distance models with stateful layers (Equinox state indices, such as "
+            "eqx.nn.BatchNorm) are not supported; use stateless layers such as eqx.nn.GroupNorm"
+        )
+
+
+def _inference_model[Model](model: Model) -> Model:
+    """Returns the stateless distance model with every ``inference`` flag set."""
+    _reject_stateful_layers(model)
+    return eqx.nn.inference_mode(model, value=True)
+
+
+def _takes_key(value: object) -> bool:
+    """Returns whether a value is an inference-dependent layer whose call accepts ``key``."""
+    if not isinstance(value, eqx.Module) or not hasattr(value, "inference"):
+        return False
+    call = getattr(type(value), "__call__", None)
+    return call is not None and "key" in inspect.signature(call).parameters
+
+
+@final
+class _KeyedLayer(eqx.Module):
+    """An inference-dependent layer with a bound random key, used when its caller passes none."""
+
+    layer: Callable[..., Any]
+    key: jax.Array
+
+    def __call__(self, *args: Any, key: jax.Array | None = None, **kwargs: Any) -> Any:
+        return self.layer(*args, key=self.key if key is None else key, **kwargs)
+
+
+def _training_model[Model](model: Model, key: jax.Array) -> Model:
+    """Returns the distance model in training mode, with random keys bound to its layers.
+
+    Every ``inference`` flag is cleared. Each inference-dependent layer whose call
+    accepts a ``key`` receives its own split of ``key``, in tree order, used
+    whenever its caller passes no key.
+    """
+    model = eqx.nn.inference_mode(model, value=False)
+
+    def is_layer(value: object) -> bool:
+        return value is not model and _takes_key(value)
+
+    count = sum(map(is_layer, jax.tree.leaves(model, is_leaf=is_layer)))
+    if not count:
+        return model
+    keys = iter(jax.random.split(key, count))
+    return jax.tree.map(
+        lambda layer: _KeyedLayer(layer, next(keys)) if is_layer(layer) else layer,
+        model,
+        is_leaf=is_layer,
+    )
+
+
+def _patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
+    """Splits row, column, feature data into non-overlapping, feature-first patches."""
     raster = jnp.asarray(features)
     if raster.ndim != 3:
         raise ValueError(f"Expected features with shape (row, column, feature), got {raster.shape}")
-    if patch_size <= 0:
-        raise ValueError("patch_size must be positive")
+    patch_size = _positive_integer("patch_size", patch_size)
     height, width, channels = raster.shape
     if height % patch_size or width % patch_size:
         raise ValueError(
@@ -25,13 +113,13 @@ def patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int
     return patches.reshape(rows * columns, channels, patch_size, patch_size), (rows, columns)
 
 
-def pixel_to_patch_nodes(
+def _pixel_to_patch_nodes(
     pixel_nodes: ArrayLike,
     *,
     raster_shape: tuple[int, int],
     patch_size: int,
 ) -> jax.Array:
-    """Map row-major native-resolution pixels to row-major patch vertices."""
+    """Maps row-major raster pixel indices to the row-major vertices of their patches."""
     height, width = raster_shape
     if height % patch_size or width % patch_size:
         raise ValueError("Raster dimensions must be divisible by patch_size")
@@ -39,13 +127,3 @@ def pixel_to_patch_nodes(
     rows = (nodes // width) // patch_size
     columns = (nodes % width) // patch_size
     return rows * (width // patch_size) + columns
-
-
-def squared_embedding_distances(embeddings: ArrayLike) -> jax.Array:
-    """Compute a stable matrix of squared Euclidean embedding distances."""
-    embeddings = jnp.asarray(embeddings)
-    squared_norm = jnp.sum(jnp.square(embeddings), axis=-1)
-    distances = squared_norm[:, None] + squared_norm[None, :] - 2.0 * embeddings @ embeddings.T
-    distances = jnp.maximum(distances, 0.0)
-    diagonal = jnp.diag_indices(distances.shape[0])
-    return distances.at[diagonal].set(0.0)
