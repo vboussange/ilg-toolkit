@@ -26,6 +26,7 @@ term and the public identifier that implements it.
 | Initialization at the best uniform conductance | Patch encoder | `initialize_uniform_conductance` |
 | ILG pipeline | Distance model | `AbstractDistanceModel` |
 | Population | Sampling unit | `RegionBatch.sampling_unit_ids` |
+| Species | Species | `AbstractDistanceModel.species`, `RegionBatch.species`, `PairwiseObservations.species` |
 | Genetic dissimilarity | Pairwise genetic observation | `PairwiseObservations` |
 | Covariates | Landscape features | `RegionBatch.features` |
 | Geographic region | Region | `RegionBatch` |
@@ -71,10 +72,12 @@ _Avoid_: Population, when the sampling unit represents an individual.
 
 **Species**:
 The ordered, unique species names a distance model carries, one for each
-species-specific head. A single-species distance model may leave its species
-unnamed. Species names select a species' parameters, genetic predictions and
-conductance surface.
-_Avoid_: Species order; registry.
+species-specific head, given once with `species=` when the distance model is
+built. A single-species distance model may leave its species unnamed
+(`species=None`). Training, calibration, prediction and saved models read the
+names from the distance model. Species names select a species' parameters,
+genetic predictions and conductance surface.
+_Avoid_: Species order; species count; registry.
 
 **Pairwise genetic observation**:
 A measured genetic relationship between two sampling units, whose meaning and scale are defined by the chosen target. Genetic dissimilarity and individual relatedness are different kinds of pairwise genetic observation.
