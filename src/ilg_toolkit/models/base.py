@@ -10,12 +10,15 @@ from typing import cast, overload
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
+from jaxscape import GridGraph, ResistanceDistance
+from jaxscape.solvers import AMJaxCGSolver
 from numpy.typing import ArrayLike
 
 from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
-from ..resistance import build_resistance_context, effective_resistance, ResistanceSolverContext
+from ..resistance import _mean_conductance, effective_resistance, ResistanceSolverContext
 from .common import pixel_to_patch_nodes, with_dropout_mode
 
 
@@ -166,16 +169,17 @@ class ConductanceModel(AbstractDistanceModel):
         pairs: DistancePairs,
         species_index: int | jax.Array,
         *,
-        context: ResistanceSolverContext | None = None,
+        context: ResistanceSolverContext,
     ) -> jax.Array:
-        """Effective resistance aligned with the requested sampling-unit pairs."""
+        """Effective resistance aligned with the requested sampling-unit pairs.
+
+        ``context`` is the solver that ``prepare_distance_context`` prepares for
+        this model and region.
+        """
         nodes, indices = pairs
-        surface = self.conductance(latent, species_index)
-        if context is not None and context.config != self.solver_config:
+        if context.config != self.solver_config:
             raise ValueError("Solver context policy does not match the conductance model settings")
-        context = context or build_resistance_context(
-            (surface.shape[0], surface.shape[1]), self.solver_config
-        )
+        surface = self.conductance(latent, species_index)
         return effective_resistance(surface, nodes, context=context)[indices]
 
     @overload
@@ -349,15 +353,33 @@ def _species_distances(
 def prepare_distance_context(
     model: AbstractDistanceModel, features: ArrayLike
 ) -> ResistanceSolverContext | None:
-    """Reusable resistance solver for the region's conductance grid graph."""
+    """Reusable resistance solver for the region's conductance grid graph.
+
+    Conjugate gradient, with optional algebraic multigrid preconditioning prepared
+    on a uniform conductance grid graph, follows the model's ``solver_config``.
+    Distance models without a conductance grid graph need no solver.
+    """
     if not isinstance(model, ConductanceModel):
         return None
     shape = jnp.asarray(features).shape
     if len(shape) != 3 or shape[0] % model.patch_size or shape[1] % model.patch_size:
         raise ValueError("Raster dimensions must be divisible by model patch_size")
-    return build_resistance_context(
-        (shape[0] // model.patch_size, shape[1] // model.patch_size), model.solver_config
+    graph_shape = (shape[0] // model.patch_size, shape[1] // model.patch_size)
+    if graph_shape[0] * graph_shape[1] < 2:
+        raise ValueError("Effective resistance requires at least two graph vertices")
+    config = model.solver_config
+    if not config.use_amg:
+        return ResistanceSolverContext(
+            graph_shape,
+            lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps),
+            config=config,
+        )
+    solver = AMJaxCGSolver(
+        rtol=config.rtol, atol=config.atol, max_steps=config.max_steps, coarse_solver="pinv"
     )
+    template = GridGraph(jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance)
+    state = ResistanceDistance(solver=solver).init_preconditioner(template)
+    return ResistanceSolverContext(graph_shape, solver, state, config)
 
 
 def query_distances_from_latent(
@@ -406,5 +428,7 @@ def distances_from_latent(
     )
     pairs = (nodes, indices)
     if isinstance(model, ConductanceModel):
+        if context is None:
+            raise ValueError("Conductance models require a prepared resistance solver context")
         return model.ecological_distances(latent, pairs, species_index, context=context)
     return model.ecological_distances(latent, pairs, species_index)
