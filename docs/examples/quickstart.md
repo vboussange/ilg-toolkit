@@ -21,6 +21,7 @@ import coordax as cx
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
+import optax
 import pandas as pd
 import rioxarray
 import xarray as xr
@@ -109,7 +110,7 @@ state = train(
     region,
     observations,
     distance_model=distance_model,
-    config=TrainingConfig(loss=loss, steps=100, learning_rate=0.1),
+    config=TrainingConfig(loss=loss, steps=100, optimizer=optax.adam(0.1)),
 )
 conductance = state.selected_model.distance_model.conductance_surface(region)
 resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
