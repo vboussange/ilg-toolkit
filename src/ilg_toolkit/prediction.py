@@ -12,11 +12,23 @@ from .data import _validate_pairs
 
 @final
 class Prediction(eqx.Module):
-    """Values and named results aligned with query pairs in one region.
+    """Prediction: values aligned with query pairs in one region.
 
-    Sampling-unit identifiers define the matrix order, and species optionally
-    identifies the species being predicted. Each extra is a vector with one
-    value per query pair.
+    Landscape genetics models return genetic predictions on the original scale;
+    distance models return ecological distances.
+
+    Args:
+        values: Floating-point value of each pair, without infinities.
+        pairs: Query pairs, with their order and orientation.
+        region_name: Name of the region holding the pairs.
+        sampling_unit_ids: Unique sampling-unit identifiers ordering
+            [`as_matrix`][ilg_toolkit.Prediction.as_matrix], including every
+            sampling unit of ``pairs``.
+        species: Predicted species, or ``None`` for one unnamed species.
+        extras: Named real vectors with one value per query pair.
+
+    Raises:
+        ValueError: If the values, pairs, identifiers, species or extras are invalid.
     """
 
     values: jax.Array
@@ -60,9 +72,14 @@ class Prediction(eqx.Module):
                 raise ValueError("Each named extra must be a real array aligned with query pairs")
 
     def as_matrix(self, name: str | None = None) -> jax.Array:
-        """Symmetric matrix of stored values or a named extra in sampling-unit order.
+        """Returns the values, or a named extra, as a symmetric matrix.
 
-        The diagonal and unrequested pairs are not-a-number (NaN).
+        Args:
+            name: Name of an extra; ``None`` selects ``values``.
+
+        Returns:
+            Symmetric matrix in ``sampling_unit_ids`` order, with not-a-number (NaN)
+            entries on the diagonal and for pairs not in ``pairs``.
         """
         values = self.values if name is None else self.extras[name]
         lookup = {label: index for index, label in enumerate(self.sampling_unit_ids)}

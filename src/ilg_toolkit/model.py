@@ -22,19 +22,24 @@ from .prediction import Prediction
 
 @final
 class LandscapeGeneticsModel(eqx.Module):
-    """A distance model composed with a calibration head.
+    """Landscape genetics model: a distance model composed with a calibration head.
 
     The distance model maps landscape features to ecological distances, and the
     calibration head maps ecological distances to genetic predictions on the
     original scale. Species names come from the distance model, and the target
-    contract from the calibration head. ``feature_names`` are the training regions'
-    feature names, which query regions must match in meaning and order.
+    contract from the calibration head.
 
     Args:
         distance_model: Distance model giving ecological distances.
         calibration_head: Calibration head from training or
             [`fit_calibration_head`][ilg_toolkit.fit_calibration_head].
-        feature_names: Feature names of the training regions.
+        feature_names: Feature names of the training regions, which query regions
+            match in meaning and order.
+
+    Raises:
+        TypeError: If ``distance_model`` or ``calibration_head`` has an unsupported
+            type.
+        ValueError: If the feature names are empty or repeat a name.
     """
 
     distance_model: AbstractDistanceModel
@@ -50,12 +55,12 @@ class LandscapeGeneticsModel(eqx.Module):
 
     @property
     def species(self) -> tuple[str, ...] | None:
-        """The distance model's species names, or ``None`` for one unnamed species."""
+        """Species names of the distance model, or ``None`` for one unnamed species."""
         return self.distance_model.species
 
     @property
     def target(self) -> TargetSpec:
-        """The target contract owned by the calibration head."""
+        """Target contract of the calibration head."""
         return self.calibration_head.target
 
     def _validate_region(self, region: RegionBatch):
@@ -95,44 +100,57 @@ class LandscapeGeneticsModel(eqx.Module):
         known_effects: bool = False,
         support: PairwiseObservations | Sequence[PairwiseObservations] | None = None,
     ) -> Prediction | dict[str, Prediction]:
-        """Predict genetic relationships on the target's original scale.
+        """Returns genetic predictions on the original scale for query pairs.
 
-        ``query`` maps species names from the distance model's ``species`` to
-        ordered pairs, or to ``None`` for every distinct pair, and returns a mapping
-        of predictions by species in query order. A single-species model also
-        accepts a sequence of pairs, or ``None`` for every distinct pair, and
-        returns one ``Prediction``. Requested pairs retain their order and
-        orientation. The distance model computes ecological distances, and the calibration
-        head converts these into genetic predictions. Maximum-likelihood population effects
-        (MLPE) defaults to marginal means;
+        The distance model computes ecological distances, and the calibration head
+        converts them into genetic predictions. ``query`` maps species names of the
+        distance model to query pairs, or to ``None`` for every distinct pair, and
+        returns predictions by species in query order. A single-species model also
+        accepts a sequence of pairs, or ``None`` for every distinct pair, and returns
+        one ``Prediction``. Query pairs keep their order and orientation.
+
+        An MLPE calibration head gives marginal predictions by default;
         ``known_effects=True`` and ``support=...`` condition population effects.
+        A direct calibration head supports neither conditional mode.
 
-        | Mode | Population effects | Statistical extras |
+        | Mode | Population effects | Extras |
         | --- | --- | --- |
-        | Default | Marginal mean, without fitted effects | `model_values` |
-        | `known_effects=True` | Saved posterior from calibration | Mean + variances |
-        | `support=observations` | Saved posterior updated with support | Mean + variances |
+        | Default | Marginal mean | `model_values` |
+        | `known_effects=True` | Saved posterior from calibration | Mean and variances |
+        | `support=observations` | Saved posterior updated with support | Mean and variances |
+
+        Point predictions are inverse-transformed model-scale means, and the
+        ``model_variance`` and ``effect_variance`` extras stay on the model scale.
 
         Args:
-            region: Landscape features and located sampling units for prediction.
-            query: Mapping from species name to ordered sampling-unit pairs, or to
-                ``None`` for every distinct pair; for a single-species model, a
-                sequence of pairs, or ``None`` for every distinct pair.
-            known_effects: Include the saved MLPE population-effect posterior.
-            support: Additional genetic observations that update the saved MLPE
-                population-effect posterior for this call, one per queried species.
-                Support pairs must be disjoint from calibration and query pairs.
+            region: Region batch with the landscape features and the query pairs'
+                sampling units.
+            query: Mapping from species name to query pairs, or to ``None`` for
+                every distinct pair; for a single-species model, a sequence of query
+                pairs, or ``None`` for every distinct pair.
+            known_effects: Whether to include the saved population-effect posterior
+                of the MLPE calibration.
+            support: Support observations, one per queried species, that update the
+                saved population-effect posterior for this call. Support pairs are
+                disjoint from the calibration pairs and from explicit query pairs,
+                including reversals; shared sampling units are allowed.
 
         Returns:
-            Pair-aligned genetic predictions by species for a mapping query, or one
+            Genetic predictions by species for a mapping query, or one
             ``Prediction`` for a sequence of pairs or ``None``.
 
         Raises:
-            ValueError: The query names an unknown species, or a multispecies model
-                receives a sequence of pairs or ``None``.
+            ValueError: If the region's feature names differ from ``feature_names``,
+                the query names an unknown species, a multispecies model receives a
+                sequence of pairs or ``None``, ``support`` does not match the queried
+                species, or the calibration head rejects the conditioning mode or the
+                region.
+            MLPEError: If ``known_effects=True`` is combined with ``support``, or the
+                support observations or their pairs are invalid.
+            RuntimeError: If float64 is disabled.
 
         Examples:
-            Prepare one landscape containing six located populations and fit an MLPE
+            Prepare one landscape with six located populations and fit an MLPE
             calibration head from measurements among its first four populations::
 
                 import coordax as cx
@@ -163,57 +181,36 @@ class LandscapeGeneticsModel(eqx.Module):
                 model = LandscapeGeneticsModel(distance_model, head, region.feature_names)
                 query_pairs = [("p4", "p2"), ("p5", "p3")]
 
-            Marginal predictions use only fitted intercept, slope, and distance
-            standardization. Population identities do not add saved effects::
+            Marginal predictions use the fitted intercept, slope and distance
+            standardization, with population effects averaged out::
 
                 marginal = model.predict(region, query_pairs)
                 marginal.values                 # Genetic means in original units.
-                marginal.extras["model_values"] # Means before the target inverse transform.
+                marginal.extras["model_values"] # Means before the inverse target transform.
                 marginal.pairs                  # Same alignment as query_pairs.
 
-            Saved-effect predictions add posterior population means estimated from the
-            calibration observations. Unobserved populations retain zero prior mean
-            and prior population variance; calibration/query overlap is allowed::
+            Saved-effect predictions add the posterior population effects estimated
+            from the calibration observations. Populations without calibration
+            observations keep a zero prior mean and the prior population variance;
+            query pairs may overlap calibration pairs::
 
                 saved = model.predict(region, query_pairs, known_effects=True)
-                saved.extras["effect_variance"] # Uncertainty in the summed population effects.
-                saved.extras["model_variance"]  # Effect + residual variance + fixed jitter.
+                saved.extras["effect_variance"] # Variance of the summed population effects.
+                saved.extras["model_variance"]  # Effect, residual and jitter variance.
 
-            Additional support observations update that saved posterior, including
-            newly observed populations, for this prediction only. The landscape
-            parameters, coefficients, standardization, and variance components remain
-            fixed; the model itself is unchanged::
+            Support observations update the saved posterior for this call, including
+            populations without calibration observations. The distance model,
+            coefficients, distance standardization and variance components stay
+            fixed::
 
                 support = PairwiseObservations.from_pairs(
                     [("p4", "p0"), ("p4", "p1")], [2.7, 2.2], target=model.target,
                 )
                 conditioned = model.predict(region, query_pairs, support=support)
-                conditioned.values
-                conditioned.extras["model_values"]
                 conditioned.extras["model_variance"]
-                conditioned.extras["effect_variance"]
 
-            All point predictions inverse-transform model-scale means. Conditional
-            variances stay on the model scale. Use ``as_matrix()`` or
-            ``as_matrix("effect_variance")`` to arrange the corresponding values by
-            sampling-unit identity.
-
-        Notes:
-            With nonlinear target transforms, conditional variances are not original-scale
-            variances, and inverse-transformed means are not bias-corrected expectations.
-
-            Support must have matching target/species metadata and located sampling
-            units, with pairs disjoint from both calibration and query pairs, including
-            reversals. Shared population identities are allowed. Querying every pair
-            with support requests all pairs and consequently creates invalid overlap.
-            Passing both ``known_effects=True`` and support is invalid; a direct
-            calibration head supports neither conditional mode, but predicts in any
-            region. An MLPE calibration head requires an MLPE calibration for the
-            query region and species, and population sampling units.
-
-            See the [comprehensive MLPE workflow notebook](../examples/mlpe_workflow.md)
-            for training, calibration, and evaluation, and the
-            [ensemble workflow](../examples/ensemble.md) for checkpoint continuation.
+            ``as_matrix()`` and ``as_matrix("effect_variance")`` arrange the values by
+            sampling unit.
         """
         _require_float64()
         self._validate_region(region)

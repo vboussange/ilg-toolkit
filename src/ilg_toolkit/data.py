@@ -1,4 +1,4 @@
-"""Region batches and labeled pairwise genetic observations."""
+"""Target contracts, region batches and pairwise genetic observations."""
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ from numpy.typing import ArrayLike
 
 
 class _TargetTransform(NamedTuple):
-    """Maps between the original and model scales and the values each accepts."""
+    """Maps between the original and model scales, with the values each accepts."""
 
     forward: Callable[[jax.Array], jax.Array]
     inverse: Callable[[jax.Array], jax.Array]
@@ -45,7 +45,7 @@ _TARGET_TRANSFORMS = {
 
 @dataclass(frozen=True)
 class TargetSpec:
-    """Meaning, original units, and model-scale transform of pairwise genetic observations.
+    """Target contract of pairwise genetic observations: meaning, units and transform.
 
     ``transform`` maps measurements from the original scale to the model scale,
     and genetic predictions apply its inverse:
@@ -54,12 +54,18 @@ class TargetSpec:
     - ``"log1p"``: ``log(1 + x)``, for nonnegative values.
     - ``"sqrt"``: ``sqrt(x)``, for nonnegative values.
     - ``"odds"``: ``x / (1 - x)``, for values in [0, 1), with inverse ``y / (1 + y)``.
-      It linearizes dissimilarities bounded by one; Rousset's linearized Fst,
-      ``Fst / (1 - Fst)``, is one example. Negative estimates are rejected rather
-      than clipped, so clean them before constructing observations.
+      It linearizes dissimilarities bounded by one, such as Rousset's linearized
+      Fst, ``Fst / (1 - Fst)``. Negative values raise an error; remove or clip
+      negative Fst estimates before constructing observations.
 
-    The direct objective compares ecological distances and model-scale targets
-    using log1p.
+    Args:
+        name: Name of the measured genetic quantity, such as ``"Fst"``.
+        units: Units of the original scale.
+        kind: ``"dissimilarity"``, ``"relatedness"`` or ``"similarity"``.
+        transform: ``"identity"``, ``"log1p"``, ``"sqrt"`` or ``"odds"``.
+
+    Raises:
+        ValueError: If a field is empty or names an unknown kind or transform.
     """
 
     name: str
@@ -79,8 +85,18 @@ class TargetSpec:
             *names, last = _TARGET_TRANSFORMS
             raise ValueError(f"Target transform must be {', '.join(names)}, or {last}")
 
-    def forward(self, values) -> jax.Array:
-        """Model-scale observations transformed from finite original-scale measurements."""
+    def forward(self, values: ArrayLike) -> jax.Array:
+        """Transforms original-scale measurements to the model scale.
+
+        Args:
+            values: Finite measurements on the original scale.
+
+        Returns:
+            The measurements on the model scale.
+
+        Raises:
+            ValueError: If a value is nonfinite or outside the transform's domain.
+        """
         values = jnp.asarray(values)
         if not bool(jnp.isfinite(values).all()):
             raise ValueError("Observed target values must be finite")
@@ -91,8 +107,20 @@ class TargetSpec:
                 raise ValueError(f"Target transform {self.transform} requires {description}")
         return transform.forward(values)
 
-    def inverse(self, values) -> jax.Array:
-        """Genetic predictions in the original measurement units."""
+    def inverse(self, values: ArrayLike) -> jax.Array:
+        """Transforms model-scale predictions to the original scale.
+
+        Args:
+            values: Predictions on the model scale.
+
+        Returns:
+            The predictions in the target's original units.
+
+        Raises:
+            ValueError: If a value is negative under the ``"sqrt"`` or ``"odds"``
+                transform.
+            FloatingPointError: If the inverse transform produces a nonfinite value.
+        """
         values = jnp.asarray(values)
         transform = _TARGET_TRANSFORMS[self.transform]
         if transform.nonnegative_predictions and (values < 0).any():
@@ -106,7 +134,7 @@ class TargetSpec:
 
 
 def _feature_names(names) -> tuple[str, ...]:
-    """Unique nonempty feature names, in channel order."""
+    """Returns feature names as a tuple after checking they are unique and nonempty."""
     names = tuple(names)
     if (
         not names
@@ -118,7 +146,7 @@ def _feature_names(names) -> tuple[str, ...]:
 
 
 def _cell_indices(axis: cx.Coordinate | None, dimension: str, values: np.ndarray) -> np.ndarray:
-    """Index of the raster cell containing each coordinate value, or -1 outside the raster.
+    """Returns the index of the raster cell containing each coordinate, or -1 outside it.
 
     Cell edges lie halfway between neighboring cell centers, and the outer edges half a
     cell beyond the first and last centers. Like GDAL, a shared edge belongs to the cell
@@ -155,19 +183,32 @@ def _cell_indices(axis: cx.Coordinate | None, dimension: str, values: np.ndarray
 
 @dataclass(frozen=True)
 class RegionBatch:
-    """Prepared landscape features and sampling-unit locations for one region.
+    """Region batch: the landscape features and sampling-unit grid positions of one region.
 
     Features are a coordax field with ``row``, ``column`` and ``feature``
-    dimensions. A ``cx.LabeledAxis`` on the feature dimension names each channel,
-    and row and column coordinates, such as those from ``cx.from_xarray``, are
-    kept. ``grid_positions`` gives each sampling unit's integer (row, column)
-    raster cell, which suits synthetic landscapes; use
-    [`from_points`][ilg_toolkit.RegionBatch.from_points] to snap projected
-    coordinates to cells instead.
+    dimensions. A ``cx.LabeledAxis`` on the feature dimension names each layer,
+    and the batch keeps row and column coordinates, such as those from
+    ``cx.from_xarray``. Synthetic studies give each sampling unit's grid position
+    directly; [`from_points`][ilg_toolkit.RegionBatch.from_points] snaps projected
+    coordinates to raster cells.
 
-    Optional species labels distinguish sampling units whose identifiers repeat
-    across species. ``individual_based`` marks regions whose sampling units are
-    individuals rather than populations; MLPE losses and calibration reject them.
+    Args:
+        name: Region name.
+        features: Landscape features with ``row``, ``column`` and ``feature``
+            dimensions and a labeled feature axis.
+        sampling_unit_ids: Sampling-unit identifiers, unique within each species.
+        grid_positions: Integer ``(row, column)`` raster cell of each sampling unit,
+            with shape ``(sampling units, 2)``.
+        species: Species of each sampling unit, for sampling units of several
+            species; ``None`` for one species.
+        individual_based: Whether the sampling units are individuals. MLPE losses
+            and MLPE calibration heads reject individual-based region batches.
+
+    Raises:
+        TypeError: If ``features`` is not a ``coordax.Field`` or
+            ``individual_based`` is not a bool.
+        ValueError: If the features, identifiers, species or grid positions are
+            invalid.
 
     Examples:
         A synthetic landscape with two named features::
@@ -245,27 +286,34 @@ class RegionBatch:
         species: Sequence[str] | None = None,
         individual_based: bool = False,
     ) -> "RegionBatch":
-        """Region batch locating each sampling unit in the raster cell containing it.
+        """Builds a region batch by snapping projected coordinates to raster cells.
 
-        Cell edges lie halfway between the row and column coordinates of
-        neighboring cells, so coordinates must be cell centers, as
-        ``cx.from_xarray`` keeps them from rioxarray rasters. Rows may follow
-        decreasing y, as in most GeoTIFFs. A point on an edge shared by two cells
-        belongs to the cell with the larger row or column index, as in GDAL.
+        Row and column coordinates are cell centers, as ``cx.from_xarray`` keeps
+        them from rioxarray rasters, and cell edges lie halfway between neighboring
+        centers. Rows may follow decreasing y, as in most GeoTIFFs. A point on an
+        edge shared by two cells belongs to the cell with the larger row or column
+        index, as in GDAL.
 
         Args:
             name: Region name.
-            features: Features with labeled row, column and feature axes, for instance
+            features: Landscape features with labeled row, column and feature axes,
+                for instance
                 ``cx.from_xarray(raster.rename(y="row", x="column", band="feature"))``.
-            sampling_unit_ids: Unique sampling-unit labels, aligned with ``coordinates``.
-            coordinates: Projected ``(x, y)`` coordinates of each sampling unit, in the
-                raster's coordinate reference system.
-            species: Species of each sampling unit, or ``None`` for one unnamed species.
+            sampling_unit_ids: Sampling-unit identifiers, aligned with ``coordinates``.
+            coordinates: Projected ``(x, y)`` coordinates of each sampling unit, in
+                the raster's coordinate reference system.
+            species: Species of each sampling unit, for sampling units of several
+                species; ``None`` for one species.
             individual_based: Whether the sampling units are individuals.
 
+        Returns:
+            The region batch with each sampling unit's grid position.
+
         Raises:
-            ValueError: If the features lack numeric row and column coordinates, or a
-                point lies outside the raster extent; the message names those sampling units.
+            TypeError: If ``features`` is not a ``coordax.Field``.
+            ValueError: If the features lack numeric row and column coordinates, or
+                a point lies outside the raster extent; the message names those
+                sampling units.
         """
         if not isinstance(features, cx.Field):
             raise TypeError("features must be a coordax.Field with named row, column, feature axes")
@@ -300,18 +348,21 @@ class RegionBatch:
 
     @property
     def feature_array(self) -> jax.Array:
-        """Landscape features as a JAX array with row, column, and feature dimensions."""
+        """Landscape features as a JAX array with row, column and feature dimensions."""
         return cast(jax.Array, self.features.data)
 
     @property
     def pixel_nodes(self) -> jax.Array:
-        """Sampling-unit locations as row-major raster pixel indices."""
+        """Row-major raster cell index of each sampling unit."""
         positions = cast(jax.Array, self.grid_positions)
         return positions[:, 0] * self.features.shape[1] + positions[:, 1]
 
 
 def _validate_pairs(pairs) -> tuple[tuple[str, str], ...]:
-    """Validate unordered identities while preserving requested orientation and order."""
+    """Returns pairs as label tuples after checking they are distinct and unique.
+
+    Pair identities are unordered; the returned pairs keep their order and orientation.
+    """
     try:
         raw = tuple(pairs)
         if any(isinstance(pair, (str, bytes)) for pair in raw):
@@ -333,12 +384,23 @@ def _validate_pairs(pairs) -> tuple[tuple[str, str], ...]:
 
 @dataclass(frozen=True, init=False)
 class PairwiseObservations:
-    """Labeled pairwise genetic observations with not-a-number (NaN) entries for absent pairs.
+    """Pairwise genetic observations of one species, as a labeled symmetric matrix.
 
-    Construct from a labeled symmetric matrix, or use ``from_pairs`` for
-    labeled pairs and their measurements.
-    Floating input precision is retained; array-like conversion uses the current
-    JAX precision, so enable float64 before creating precise measurements.
+    Unobserved pairs are not-a-number (NaN) entries.
+    [`from_pairs`][ilg_toolkit.PairwiseObservations.from_pairs] builds the matrix
+    from labeled pairs. Floating-point values keep their precision; other values
+    convert at the current JAX precision.
+
+    Args:
+        sampling_unit_ids: Unique sampling-unit identifiers ordering the matrix rows
+            and columns.
+        values: Symmetric matrix with a zero diagonal, NaN entries for unobserved
+            pairs and at least one observed pair.
+        target: Target contract of the measurements.
+        species: Species of the sampling units, or ``None`` for one unnamed species.
+
+    Raises:
+        ValueError: If the identifiers, the matrix or the species is invalid.
     """
 
     sampling_unit_ids: tuple[str, ...]
@@ -353,14 +415,6 @@ class PairwiseObservations:
         target: TargetSpec,
         species: str | None = None,
     ):
-        """Observations from a labeled symmetric matrix with a zero diagonal.
-
-        Args:
-            sampling_unit_ids: Unique labels ordering the matrix rows and columns.
-            values: Symmetric matrix with NaN entries for absent pairs.
-            target: Measured genetic quantity and its transform.
-            species: Species the observations describe, or ``None`` for one unnamed species.
-        """
         if species is not None and (not isinstance(species, str) or not species):
             raise ValueError("Observation species must be a nonempty name or None")
         ids = tuple(sampling_unit_ids)
@@ -387,12 +441,34 @@ class PairwiseObservations:
         object.__setattr__(self, "species", species)
 
     @classmethod
-    def from_pairs(cls, pairs, values, *, target, sampling_unit_ids=None, species=None):
-        """Pairwise genetic observations from labeled pairs and finite measurements.
+    def from_pairs(
+        cls,
+        pairs: Sequence[tuple[str, str]],
+        values: ArrayLike,
+        *,
+        target: TargetSpec,
+        sampling_unit_ids: Sequence[str] | None = None,
+        species: str | None = None,
+    ) -> "PairwiseObservations":
+        """Builds observations from labeled pairs and their measurements.
 
-        Repeated pairs, including reversed duplicates, are rejected. Optional
-        ``sampling_unit_ids`` declares a larger set of sampling units containing
-        sampling units with no observed pairs.
+        Args:
+            pairs: Unique unordered sampling-unit pairs; a pair and its reversal
+                are the same pair.
+            values: Finite measurement of each pair, on the original scale.
+            target: Target contract of the measurements.
+            sampling_unit_ids: Sampling-unit identifiers ordering the matrix,
+                including sampling units without observed pairs; ``None`` uses the
+                sorted identifiers of the pairs.
+            species: Species of the sampling units, or ``None`` for one unnamed
+                species.
+
+        Returns:
+            The observations, with NaN entries for pairs not in ``pairs``.
+
+        Raises:
+            ValueError: If a pair or measurement is invalid, or a pair names a
+                sampling unit absent from ``sampling_unit_ids``.
         """
         pairs = _validate_pairs(pairs)
         values = jnp.asarray(values)
@@ -419,7 +495,7 @@ class PairwiseObservations:
 
     @property
     def observed_pairs(self) -> tuple[tuple[str, str], ...]:
-        """Measured unordered sampling-unit pairs in deterministic matrix order."""
+        """Observed unordered sampling-unit pairs, in matrix order."""
         left, right = jnp.triu_indices(len(self.sampling_unit_ids), 1)
         present = jnp.isfinite(self.values[left, right])
         return tuple(
@@ -429,12 +505,24 @@ class PairwiseObservations:
 
     @property
     def observed_values(self) -> jax.Array:
-        """Original-scale measurements aligned with ``observed_pairs``."""
+        """Original-scale measurements, aligned with ``observed_pairs``."""
         upper = self.values[jnp.triu_indices(len(self.sampling_unit_ids), 1)]
         return upper[jnp.isfinite(upper)]
 
     def aligned_values(self, region: RegionBatch) -> jax.Array:
-        """Observations aligned with a region, retaining NaNs for absent pairs."""
+        """Returns the observation matrix in a region batch's sampling-unit order.
+
+        Args:
+            region: Region batch holding the observed sampling units of this species.
+
+        Returns:
+            Matrix over the region batch's sampling units, with a zero diagonal and
+            NaN entries for unobserved pairs.
+
+        Raises:
+            ValueError: If an observed sampling unit is absent from the region batch
+                or belongs to another species.
+        """
         lookup = {
             label: index
             for index, label in enumerate(region.sampling_unit_ids)
@@ -454,13 +542,20 @@ class PairwiseObservations:
         order = jnp.asarray([lookup[label] for label in self.sampling_unit_ids])
         return matrix.at[jnp.ix_(order, order)].set(self.values)
 
-    def select_pairs(self, pairs) -> "PairwiseObservations":
-        """Select measured pairs, preserving target, species, precision, and label order.
+    def select_pairs(self, pairs: Sequence[tuple[str, str]]) -> "PairwiseObservations":
+        """Returns the observations of the selected pairs.
 
-        Pair identities are unordered. The returned ``observed_pairs`` and
-        ``observed_values`` follow the original sampling-unit matrix order,
-        independently of selection order. Empty selections, duplicate identities,
-        and unobserved pairs are rejected.
+        Args:
+            pairs: Observed unordered pairs to keep, in any order and orientation.
+
+        Returns:
+            Observations with the same target, species, precision and sampling-unit
+            identifiers, whose ``observed_pairs`` and ``observed_values`` follow the
+            matrix order.
+
+        Raises:
+            ValueError: If the selection is empty, repeats a pair or contains an
+                unobserved pair.
 
         Examples:
             >>> observations = PairwiseObservations.from_pairs(
@@ -482,8 +577,20 @@ class PairwiseObservations:
             sampling_unit_ids=self.sampling_unit_ids,
         )
 
-    def aligned_pairs(self, region: RegionBatch):
-        """Observed index pairs and measurements in the region batch's sampling-unit order."""
+    def aligned_pairs(self, region: RegionBatch) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
+        """Returns the observed pairs as sampling-unit indices of a region batch.
+
+        Args:
+            region: Region batch holding the observed sampling units of this species.
+
+        Returns:
+            Row and column indices of each observed pair in the region batch's
+            sampling-unit order, and the original-scale measurements of those pairs.
+
+        Raises:
+            ValueError: If an observed sampling unit is absent from the region batch,
+                or the region batch holds no observed pair.
+        """
         values = self.aligned_values(region)
         left, right = jnp.triu_indices(len(region.sampling_unit_ids), 1)
         present = jnp.isfinite(values[left, right])
@@ -493,10 +600,11 @@ class PairwiseObservations:
         return pairs, values[pairs]
 
 
-# Inputs accepted by training and calibration: one region batch, a sequence, or a
-# mapping keyed by region name, each with one or several species' observations.
-RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
-RegionObservations = PairwiseObservations | Sequence[PairwiseObservations]
-ObservationCollection = (
-    RegionObservations | Sequence[RegionObservations] | Mapping[str, RegionObservations]
+# Regions and observations accepted by training and calibration fitting: one region
+# batch, a sequence, or a mapping keyed by region name, with one or several species'
+# observations per region.
+_RegionCollection = RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch]
+_RegionObservations = PairwiseObservations | Sequence[PairwiseObservations]
+_ObservationCollection = (
+    _RegionObservations | Sequence[_RegionObservations] | Mapping[str, _RegionObservations]
 )

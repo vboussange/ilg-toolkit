@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import coordax as cx
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -124,8 +125,9 @@ def test_prediction_failure_identifies_position_without_dropping_member(
         ensemble.members[0], distance_model=FeatureEmbedding(jnp.asarray(float("inf")))
     )
     requested = Ensemble([ensemble.members[0], broken, ensemble.members[1]])
-    with pytest.raises(RuntimeError, match="member 1 prediction failed"):
+    with pytest.raises(eqx.EquinoxRuntimeError, match="ensemble member 1") as error:
         requested.predict(region)
+    assert error.value.__notes__ == ["Raised by ensemble member 1"]
     assert len(requested.members) == 3
 
 
@@ -159,8 +161,9 @@ def test_feature_meanings_are_validated_for_every_member(known_ensemble):
     region, ensemble, _ = known_ensemble()
     meaning = cx.LabeledAxis("feature", np.array(["different meaning"]))
     changed = replace(region, features=cx.field(region.feature_array, "row", "column", meaning))
-    with pytest.raises(RuntimeError, match="member 0.*feature"):
+    with pytest.raises(ValueError, match="feature") as error:
         ensemble.predict(changed)
+    assert error.value.__notes__ == ["Raised by ensemble member 0"]
 
 
 def test_members_with_different_patch_sizes_align_genetic_predictions():

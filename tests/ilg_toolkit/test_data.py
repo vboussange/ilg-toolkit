@@ -373,7 +373,7 @@ def test_select_pairs_preserves_metadata_precision_and_deterministic_alignment(d
         [("a",)],
     ):
         with pytest.raises(ValueError):
-            observations.select_pairs(pairs)
+            observations.select_pairs(pairs)  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="unobserved"):
         selected.select_pairs([("c", "b")])
 

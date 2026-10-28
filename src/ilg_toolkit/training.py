@@ -1,7 +1,4 @@
-"""Joint training with equal species influence and equal region influence within species.
-
-Maximum-likelihood population effects (MLPE) calibration is fitted with the distance model.
-"""
+"""Training of distance models and statistical parameters across regions and species."""
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -17,11 +14,11 @@ import optax
 from ._checks import _require_float64
 from ._training_utils import (
     _prepare_training_inputs,
+    _RegionSpeciesKey,
     _RegionSpeciesTrainingInput,
-    RegionSpeciesKey,
 )
 from .config import TrainingConfig
-from .data import ObservationCollection, PairwiseObservations, RegionBatch, RegionCollection
+from .data import PairwiseObservations, RegionBatch
 from .losses import _LossContext, AbstractLoss
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
@@ -35,15 +32,27 @@ from .models.common import _inference_model, _reject_stateful_layers, _training_
 from .resistance import _ResistanceSolverContext
 
 
-Parameters = tuple[AbstractDistanceModel, Any]
+_Parameters = tuple[AbstractDistanceModel, Any]
 
 
 @final
 class StepRecord(eqx.Module):
-    """Evaluated group criteria after an update; zero is initialization.
+    """Evaluation record of one training step; step zero is initialization.
 
-    The aggregate averages group criteria across regions within each species,
-    then across species.
+    Aggregate losses average the losses of region–species groups over regions within
+    each species, then over species.
+
+    Attributes:
+        step: Number of updates before the evaluation.
+        training_loss: Aggregate loss of the training groups.
+        validation_loss: Aggregate loss of the validation groups, or ``None``
+            without validation.
+        training_by_region: Mean training loss of each region over its species.
+        validation_by_region: Mean validation loss of each region over its species.
+        training_by_species: Mean training loss of each species over its regions,
+            or ``None`` for a single-species distance model.
+        validation_by_species: Mean validation loss of each species over its
+            regions, or ``None`` for a single-species distance model.
     """
 
     step: int
@@ -57,14 +66,28 @@ class StepRecord(eqx.Module):
 
 @final
 class TrainingState(eqx.Module):
-    """Training progress and matching fitted models for continuing optimization.
+    """Training state: progress, optimizer and random state, and the latest and selected models.
 
-    ``latest_model`` and ``loss_state`` belong to the latest update, together with
-    optimizer and random state. ``selected_model`` retains its own distance model
-    and fitted calibration from the selected evaluation. ``converged`` records
-    whether an update reached the configured gradient tolerance. Continuation
-    requires unchanged inputs and settings, with only the total step budget and the
-    optimizer allowed to change; the optimizer must keep the state's structure.
+    [`train`][ilg_toolkit.train] returns a training state and continues from one.
+    Continuation takes unchanged inputs and settings, apart from a larger step
+    budget and an optimizer whose state keeps the saved structure.
+
+    Attributes:
+        loss_state: Statistical parameter state after the latest update.
+        optimizer_state: Optimizer state after the latest update.
+        rng_key: Random key for the next update.
+        config: Training configuration.
+        history: Evaluation records, in step order.
+        latest_model: Landscape genetics model of the latest step.
+        selected_model: Selected model: the evaluated model with the lowest
+            validation loss, or the final evaluated model without validation.
+        selected_step: Step of the selected model.
+        step: Number of completed updates.
+        converged: Whether an update reached the configuration's gradient tolerance.
+        training_groups: Region name and species index of each training
+            region–species group.
+        validation_groups: Region name and species index of each validation
+            region–species group.
     """
 
     loss_state: Any
@@ -77,22 +100,23 @@ class TrainingState(eqx.Module):
     selected_step: int
     step: int
     converged: bool
-    training_groups: tuple[RegionSpeciesKey, ...]
-    validation_groups: tuple[RegionSpeciesKey, ...]
+    training_groups: tuple[tuple[str, int], ...]
+    validation_groups: tuple[tuple[str, int], ...]
 
     @property
     def selection(self) -> str:
-        """Selection rule: minimum validation loss or the final training evaluation."""
+        """Selection rule: ``"validation"`` with validation groups, otherwise ``"final"``."""
         return "validation" if self.validation_groups else "final"
 
     @property
     def selected_loss(self) -> float:
-        """Validation or training loss at the selected model's evaluation."""
+        """Validation loss, or training loss without validation, of the selected model."""
         record = next(record for record in self.history if record.step == self.selected_step)
         return record.training_loss if record.validation_loss is None else record.validation_loss
 
 
 def _validate_state(state: TrainingState) -> None:
+    """Raises a ``ValueError`` if the state's steps, history or convergence are inconsistent."""
     if not 0 <= state.step <= state.config.steps:
         raise ValueError("Training step must be within the configured budget")
     if not 0 <= state.selected_step <= state.step:
@@ -104,7 +128,7 @@ def _validate_state(state: TrainingState) -> None:
 
 
 def _optimizer_state_signature(optimizer_state: optax.OptState) -> list[list]:
-    """Path, shape and dtype of every optimizer-state leaf, identifying its structure."""
+    """Returns the path, shape and dtype of every optimizer-state leaf."""
     return [
         [jax.tree_util.keystr(path), list(leaf.shape), str(leaf.dtype)]
         if hasattr(leaf, "dtype")
@@ -114,14 +138,14 @@ def _optimizer_state_signature(optimizer_state: optax.OptState) -> list[list]:
 
 
 def _same_optimizer_state_structure(first: optax.OptState, second: optax.OptState) -> bool:
-    """Whether two optimizer states share their tree structure, leaf shapes and dtypes."""
+    """Returns whether two optimizer states share their tree structure, leaf shapes and dtypes."""
     if jax.tree.structure(first) != jax.tree.structure(second):
         return False
     return _optimizer_state_signature(first) == _optimizer_state_signature(second)
 
 
 class _TrainingPayload(NamedTuple):
-    """Regional features, sampling-unit vertices, and aligned training observations."""
+    """Landscape features, sampling-unit pixels and loss context of one region–species group."""
 
     features: jax.Array
     nodes: jax.Array
@@ -130,18 +154,19 @@ class _TrainingPayload(NamedTuple):
 
 @dataclass(frozen=True)
 class _RegionSpeciesTrainingBatch:
-    """One region–species group's observations, numerical settings, and loss weight."""
+    """One region–species group's inputs, loss weight and distance context."""
 
     region: RegionBatch
     observations: PairwiseObservations
     payload: _TrainingPayload
     species_index: int
-    key: RegionSpeciesKey
+    key: _RegionSpeciesKey
     loss_weight: float
     context: _ResistanceSolverContext | None = None
 
 
 def _prepared(region, observations, loss, *, training):
+    """Returns the training payload of one region–species group."""
     return _TrainingPayload(
         region.feature_array,
         region.pixel_nodes,
@@ -151,6 +176,7 @@ def _prepared(region, observations, loss, *, training):
 
 @eqx.filter_jit
 def _group_distances(model, latent, payload, species_index, context):
+    """Returns the ecological distances of a region–species group's observed pairs."""
     return _distances_from_latent(
         model,
         latent,
@@ -165,7 +191,7 @@ def _group_distances(model, latent, payload, species_index, context):
 class _Contribution(NamedTuple):
     """One region–species group's arrays entering a compiled gradient.
 
-    The group's string identity stays outside, so groups share compiled programs.
+    The group's region name stays outside, so groups share compiled programs.
     """
 
     payload: _TrainingPayload
@@ -174,6 +200,7 @@ class _Contribution(NamedTuple):
 
 
 def _microbatch_objective(parameters, contributions, loss, context, key):
+    """Returns the weighted loss of a species microbatch within one region."""
     model, latent, states = parameters
     configured = _training_model(model, key)
     return sum(
@@ -192,13 +219,13 @@ _microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_objective))
 
 @eqx.filter_jit
 def _backbone(model, features, key):
-    """Patch features in training mode with ``key``, or in inference mode without one."""
+    """Returns the backbone output, in training mode with ``key`` or inference mode without."""
     configured = _inference_model(model) if key is None else _training_model(model, key)
     return configured.backbone(features)
 
 
 def _regional_gradient(parameters, contributions, groups, config, context, key):
-    """One region's objective gradient, accumulated over species microbatches."""
+    """Returns one region's objective gradient, accumulated over species microbatches."""
     model, loss_state = parameters
     features = contributions[0].payload.features
     latent, backward = eqx.filter_vjp(lambda m: _backbone(m, features, key), model)
@@ -232,7 +259,7 @@ def _regional_gradient(parameters, contributions, groups, config, context, key):
 
 
 def _when(condition: jax.Array, value: Callable[[], jax.Array]) -> jax.Array:
-    """``value()`` when ``condition`` holds and zero otherwise, running only the taken branch."""
+    """Returns ``value()`` when ``condition`` holds and zero otherwise, running one branch."""
     result = jax.eval_shape(value)
     return jax.lax.cond(condition, value, lambda: jnp.zeros(result.shape, result.dtype))
 
@@ -250,10 +277,10 @@ class _TrainingObjective(eqx.Module):
     regions: tuple[tuple[_Contribution, ...], ...]
     contexts: tuple[_ResistanceSolverContext | None, ...]
     keys: jax.Array
-    groups: tuple[tuple[RegionSpeciesKey, ...], ...] = eqx.field(static=True)
+    groups: tuple[tuple[_RegionSpeciesKey, ...], ...] = eqx.field(static=True)
     loss: AbstractLoss = eqx.field(static=True)
 
-    def __call__(self, parameters: Parameters) -> jax.Array:
+    def __call__(self, parameters: _Parameters) -> jax.Array:
         model, loss_state = parameters
 
         def group_value(index: int, item: _Contribution, group, latent) -> jax.Array:
@@ -287,7 +314,8 @@ class _TrainingObjective(eqx.Module):
         return cast(jax.Array, sum(values))
 
 
-def _labelled_pairs(batch: _RegionSpeciesTrainingBatch) -> tuple[tuple[str, str], ...]:
+def _labeled_pairs(batch: _RegionSpeciesTrainingBatch) -> tuple[tuple[str, str], ...]:
+    """Returns the observed pairs of a batch as sorted sampling-unit labels."""
     return tuple(
         (
             min(batch.region.sampling_unit_ids[i], batch.region.sampling_unit_ids[j]),
@@ -303,7 +331,7 @@ def _prepare_batches(
     distance_model: AbstractDistanceModel,
     config: TrainingConfig,
 ) -> tuple[tuple[_RegionSpeciesTrainingBatch, ...], tuple[_RegionSpeciesTrainingBatch, ...]]:
-    """Regional genetic targets with reusable resistance solvers."""
+    """Returns training and validation batches, sharing a distance context per raster shape."""
     contexts: dict[tuple[int, int], _ResistanceSolverContext | None] = {}
 
     def make_batch(
@@ -326,7 +354,7 @@ def _prepare_batches(
         training_batch = training_by_name.get(batch.key)
         if training_batch is None:
             continue
-        if set(_labelled_pairs(training_batch)) & set(_labelled_pairs(batch)):
+        if set(_labeled_pairs(training_batch)) & set(_labeled_pairs(batch)):
             raise ValueError("Training and validation observations overlap within the same region")
         if not np.array_equal(training_batch.region.feature_array, batch.region.feature_array):
             raise ValueError(
@@ -353,13 +381,13 @@ def _prepare_batches(
 
 @eqx.filter_jit
 def _apply_update(
-    parameters: Parameters,
+    parameters: _Parameters,
     optimizer: optax.GradientTransformation,
     optimizer_state: optax.OptState,
-    gradient: Parameters,
+    gradient: _Parameters,
     objective: _TrainingObjective,
-) -> tuple[Parameters, optax.OptState]:
-    """One optimizer update, with the objective's value, gradient and function as extra args.
+) -> tuple[_Parameters, optax.OptState]:
+    """Applies one optimizer update, passing the objective's value, gradient and function.
 
     The gradient comes from the memory-saving regional and microbatch programs. The
     value comes from the objective itself, so it agrees exactly with line-search
@@ -385,23 +413,29 @@ def _apply_update(
 
 
 @eqx.filter_jit
-def _gradient_norm(gradient: Parameters) -> jax.Array:
+def _gradient_norm(gradient: _Parameters) -> jax.Array:
+    """Returns the global L2 norm of a gradient."""
     return optax.tree.norm(gradient)
 
 
 @eqx.filter_jit
 def _criterion(loss, distances, context, state, fixed):
+    """Returns the loss of one region–species group."""
     return loss._value(distances, context, state, fixed)
 
 
 def _evaluate_regions(
-    parameters: Parameters,
+    parameters: _Parameters,
     batches: Sequence[_RegionSpeciesTrainingBatch],
     config: TrainingConfig,
     step: int,
     calibrations: Mapping | None = None,
 ) -> tuple[float, dict[str, float], dict, dict[str, float] | None]:
-    """Regional criteria and calibration from matching distance and statistical parameters."""
+    """Evaluates the loss of every batch, and calibrates training batches.
+
+    Returns the aggregate loss, the loss by region, the calibrations of training
+    batches (empty when ``calibrations`` is given) and the loss by species.
+    """
     values, fitted = {}, {}
     configured = _inference_model(parameters[0])
     previous_region, latent = None, None
@@ -458,59 +492,80 @@ def _evaluate_regions(
 
 
 def train(
-    region: RegionCollection,
-    observations: ObservationCollection,
+    region: RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch],
+    observations: PairwiseObservations
+    | Sequence[PairwiseObservations | Sequence[PairwiseObservations]]
+    | Mapping[str, PairwiseObservations | Sequence[PairwiseObservations]],
     *,
     distance_model: AbstractDistanceModel | None = None,
     config: TrainingConfig | None = None,
-    validation: tuple[RegionCollection, ObservationCollection] | None = None,
+    validation: tuple[
+        RegionBatch | Sequence[RegionBatch] | Mapping[str, RegionBatch],
+        PairwiseObservations
+        | Sequence[PairwiseObservations | Sequence[PairwiseObservations]]
+        | Mapping[str, PairwiseObservations | Sequence[PairwiseObservations]],
+    ]
+    | None = None,
     state: TrainingState | None = None,
     on_step: Callable[[TrainingState], None] | None = None,
 ) -> TrainingState:
-    """Joint training with equal species and within-species region influence.
+    """Trains a distance model and its statistical parameters jointly across regions.
 
-    ``config.steps`` is the total target update count. Evaluation at zero, every
-    ``eval_every`` updates, and the final step selects by validation loss or keeps
-    the final model without validation. ``on_step`` receives resumable state after
-    every update; supplied ``state`` continues the latest parameters and random state.
+    Training averages the losses of region–species groups over regions within each
+    species, then over species. It evaluates at step zero, every
+    ``config.eval_every`` updates and at the final step, and selects the model with
+    the lowest validation loss, or the final model without validation. ``state``
+    continues training from its latest parameters and random state.
 
-    ``config.optimizer`` applies each update. It receives the update's objective
+    ``config.optimizer`` applies each update and receives the update's objective
     value, gradient and a function evaluating the same objective (same regions,
     species and random key), so ``optax.lbfgs()`` line-searches deterministically
     within an update. With ``config.gradient_tolerance``, training stops after the
-    first update whose gradient norm is at or below it, evaluates that final step,
-    and records ``converged=True``; a converged state continues without updates.
+    first update whose gradient norm is at or below it, evaluates that step and sets
+    ``converged=True``; continuing a converged state makes no updates.
 
-    Training always compiles its update and evaluation steps. To debug them
-    eagerly, call ``train`` inside ``with jax.disable_jit():``.
+    Training compiles its update and evaluation steps; ``with jax.disable_jit():``
+    runs them eagerly for debugging.
 
     Args:
-        region: One region batch, a sequence, or a mapping keyed by region name.
-        observations: Genetic observations aligned with the supplied regions; each
-            region may supply observations for several species.
-        distance_model: Initial distance model for a new training run, carrying the
-            species names; omit for continuation.
-        config: Loss, optimizer and training settings. For continuation, only the
-            total step budget may increase and the optimizer may change if its state
-            keeps the saved structure; omitted settings use the saved configuration.
-        validation: Regions and disjoint observations used to select the model by
-            validation loss, using calibration estimated from training observations.
-        state: Saved training state to continue with unchanged inputs and settings.
-        on_step: Callback receiving resumable state after initialization and each update.
+        region: One region batch, a sequence of region batches, or a mapping keyed
+            by region name.
+        observations: Genetic observations aligned with the regions; each region
+            may supply observations for several species.
+        distance_model: Initial distance model, which carries the species names;
+            ``None`` when continuing from ``state``.
+        config: Training configuration; ``None`` when continuing with the saved
+            configuration. When continuing, only the step budget may increase, and
+            the optimizer may change if its state keeps the saved structure.
+        validation: Regions and observations disjoint from the training
+            observations, selecting the model by validation loss with the
+            calibration estimated on the training observations.
+        state: Training state to continue, with unchanged inputs and settings.
+        on_step: Function called with the training state after initialization and
+            after each update.
 
     Returns:
-        Training progress, optimizer and random state, and the latest and selected models.
+        The training state, with the history, the latest and selected models, and
+        the optimizer and random state for continuation.
+
+    Raises:
+        TypeError: If the distance model has stateful layers.
+        ValueError: If the inputs, settings or continuation state are invalid, or a
+            raster is not a multiple of the distance model's patch size.
+        FloatingPointError: If an evaluation produces a nonfinite loss.
+        RuntimeError: If float64 is disabled.
 
     Examples:
         >>> loss = MLPELoss()
         >>> state = train(region, observations.select_pairs(training_pairs),
         ...               distance_model=distance_model,
         ...               config=TrainingConfig(loss=loss, steps=500))
-        >>> fitted = state.selected_model
+        >>> model = state.selected_model
         >>> continued = train(region, observations.select_pairs(training_pairs), state=state,
         ...                   config=dataclasses.replace(state.config, steps=1000))
 
-        A low-dimensional distance model trains with L-BFGS until its gradient vanishes:
+        A distance model with few parameters trains with L-BFGS to a gradient
+        tolerance:
 
         >>> config = TrainingConfig(loss=Log1pLoss(), optimizer=optax.lbfgs(),
         ...                         steps=200, gradient_tolerance=1e-8)
@@ -518,9 +573,10 @@ def train(
         >>> state.converged
         True
 
-        Zero steps initializes statistical parameters and fits the coefficients at those
-        parameters; use ``fit_calibration_head`` to optimize calibration on a frozen
-        distance model. Built-in validation uses training-fitted coefficients and distance moments.
+        Zero steps initializes the statistical parameters and fits the coefficients
+        at those parameters; ``fit_calibration_head`` optimizes a calibration head
+        for a frozen distance model. Validation uses the coefficients and distance
+        moments from training.
     """
     _require_float64()
     if state is not None and not isinstance(state, TrainingState):

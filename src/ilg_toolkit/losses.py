@@ -1,4 +1,4 @@
-"""Whole-group statistical criteria and their immutable numerical settings."""
+"""Losses: statistical criteria of region–species groups and their numerical settings."""
 
 import math
 from abc import ABC, abstractmethod
@@ -11,7 +11,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from ._training_utils import RegionSpeciesKey
+from ._training_utils import _RegionSpeciesKey
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 
 
@@ -21,28 +21,30 @@ if TYPE_CHECKING:
 
 @final
 class _LossContext(eqx.Module):
+    """Model-scale targets of one region–species group and their sampling-unit pairs."""
+
     targets: jax.Array
     pairs: tuple[jax.Array, jax.Array]
     population_count: int = eqx.field(static=True)
 
 
 class AbstractLoss(ABC):
-    """A statistical criterion for a complete region–species group.
+    """Abstract loss: a statistical criterion for one region–species group.
 
-    Each loss owns its reduction, statistical parameters, and calibration head.
-    Training combines the resulting scalars with equal species influence and equal
-    region influence within species. Observation target transformations remain
-    separate from the statistical criterion.
+    A loss defines its reduction, its statistical parameter state and the
+    calibration head it produces. Training averages the losses of region–species
+    groups over regions within each species, then over species. The target
+    transform applies to the observations before the loss.
     """
 
     @abstractmethod
     def _prepare(self, region, observations, *, training: bool) -> _LossContext: ...
 
     @abstractmethod
-    def _initialize(self, groups: Mapping[RegionSpeciesKey, _LossContext]) -> Any: ...
+    def _initialize(self, groups: Mapping[_RegionSpeciesKey, _LossContext]) -> Any: ...
 
     @abstractmethod
-    def _group_state(self, state, identity: RegionSpeciesKey) -> Any: ...
+    def _group_state(self, state, identity: _RegionSpeciesKey) -> Any: ...
 
     @abstractmethod
     def _value(self, distances, context: _LossContext, state, fixed=None) -> jax.Array: ...
@@ -57,7 +59,7 @@ class AbstractLoss(ABC):
     def _calibration_head(
         self,
         target: TargetSpec,
-        fitted: Mapping[RegionSpeciesKey, Any],
+        fitted: Mapping[_RegionSpeciesKey, Any],
         species: tuple[str, ...] | None,
     ) -> "AbstractCalibrationHead": ...
 
@@ -72,6 +74,7 @@ class AbstractLoss(ABC):
 
 
 def _context(region: RegionBatch, observations: PairwiseObservations) -> _LossContext:
+    """Returns the model-scale targets and index pairs of observations in a region batch."""
     pairs, values = observations.aligned_pairs(region)
     return _LossContext(observations.target.forward(values), pairs, len(region.sampling_unit_ids))
 
@@ -79,7 +82,7 @@ def _context(region: RegionBatch, observations: PairwiseObservations) -> _LossCo
 @final
 @dataclass(frozen=True)
 class Log1pLoss(AbstractLoss):
-    r"""Log1p objective: mean squared difference of log1p ecological distances and targets.
+    r"""Log1p loss: mean squared difference of log1p ecological distances and targets.
 
     For a region–species group with observed pairs $\mathcal O$, ecological
     distances $s_{ij}$, and model-scale targets $t_{ij}=T(y_{ij})$ under the
@@ -88,15 +91,13 @@ class Log1pLoss(AbstractLoss):
     $$L=\frac{1}{|\mathcal O|}\sum_{(i,j)\in\mathcal O}
     \left[\log(1+s_{ij})-\log(1+t_{ij})\right]^2.$$
 
-    Training averages $L$ over regions within each species, then over species, so
-    regions with more pairs do not dominate. The log transforms reduce the leverage
-    of the largest genetic dissimilarities; the log1p comparison and the target
-    transform are separate choices. The target must describe nonnegative
-    dissimilarities.
+    Training averages $L$ over regions within each species, then over species. The
+    log1p comparison applies after the target transform, and the target describes
+    nonnegative dissimilarities. The loss accepts individual-based region batches.
 
-    The direct calibration head returns $T^{-1}(s)$, with no coefficients or
-    variance parameters, so this loss identifies an absolute connectivity scale.
-    It has no statistical parameters or standalone optimization budget.
+    The loss has no statistical parameters. Its direct calibration head returns
+    $T^{-1}(s)$ without coefficients or variance parameters, so the loss identifies
+    an absolute connectivity scale.
 
     Examples:
         >>> config = TrainingConfig(loss=Log1pLoss(), steps=100)
@@ -132,7 +133,7 @@ class Log1pLoss(AbstractLoss):
 
     def _fit_group(self, distances, observations, *, max_iterations):
         if max_iterations is not None:
-            raise ValueError("Log1pLoss calibration has no iteration budget")
+            raise ValueError("A direct calibration head has no iteration budget")
         return None
 
     def _state_metadata(self, state):
@@ -146,17 +147,21 @@ class Log1pLoss(AbstractLoss):
 
 @final
 class _MLPEGroupState(eqx.Module):
+    """Unconstrained population and residual variances of one region–species group."""
+
     raw_variances: jax.Array
 
 
 @final
 class _MLPEState(eqx.Module):
-    groups: dict[RegionSpeciesKey, _MLPEGroupState]
+    """MLPE statistical parameter state, keyed by region–species group."""
+
+    groups: dict[_RegionSpeciesKey, _MLPEGroupState]
 
 
 @final
 class _MLPEFixedParameters(eqx.Module):
-    """Training-fitted coefficients and distance moments held fixed by validation."""
+    """Coefficients and distance moments from training, held fixed in validation."""
 
     coefficients: jax.Array
     distance_center: jax.Array
@@ -166,7 +171,7 @@ class _MLPEFixedParameters(eqx.Module):
 @final
 @dataclass(frozen=True)
 class MLPELoss(AbstractLoss):
-    r"""Marginal maximum-likelihood population effects (MLPE) per observed pair.
+    r"""MLPE loss: marginal maximum-likelihood population effects (MLPE) negative log likelihood.
 
     MLPE accounts for dependence between pairwise genetic observations sharing a
     population. With sample-standardized ecological distances
@@ -186,19 +191,22 @@ class MLPELoss(AbstractLoss):
     (t-X\hat\theta)^\top V^{-1}(t-X\hat\theta)\right\},$$
 
     without restricted-likelihood correction. Coefficients, variance components,
-    distance moments, and population-effect posteriors are estimated separately for
-    each region–species group (group-specific calibration), while distance-model
+    distance moments and population-effect posteriors are estimated for each
+    region–species group (group-specific calibration), and distance-model
     parameters are shared across groups. Standardization makes the loss invariant
-    to the scale of ecological distances, so MLPE does not identify an absolute
+    to the scale of ecological distances, so MLPE identifies no absolute
     connectivity scale. MLPE requires population sampling units and dissimilarity
-    targets. See [`MLPECalibration`][ilg_toolkit.mlpe.MLPECalibration] for the
-    fitted values and diagnostics of each group.
+    targets. Each region–species group yields an
+    [`MLPECalibration`][ilg_toolkit.mlpe.MLPECalibration].
 
     Args:
-        variance_floor:
-            Positive lower limit for both variance components.
-        min_distance_scale: Minimum sample standard deviation of ecological distances.
-        jitter: Fixed residual variance addition in [0, 1e-6].
+        variance_floor: Positive lower bound of both variance components.
+        min_distance_scale: Positive minimum sample standard deviation of the
+            ecological distances of a region–species group.
+        jitter: Fixed residual variance added to $e$, in [0, 1e-6].
+
+    Raises:
+        ValueError: If a setting is nonfinite or out of range.
 
     Examples:
         >>> loss = MLPELoss(jitter=0.0)
@@ -208,11 +216,12 @@ class MLPELoss(AbstractLoss):
         ...                             state.selected_model.distance_model,
         ...                             loss=loss, max_iterations=2000)
 
-        Built-in training validation uses training-fitted coefficients, distance moments,
-        and variances. ``train`` updates distance and variance parameters with a fixed
-        Adam budget, and zero training steps only initializes the variances.
-        ``fit_calibration_head`` keeps the distance model fixed and estimates both
-        variance components with deterministic multistart optimization.
+        Validation during training uses the coefficients, distance moments and
+        variances from training. ``train`` updates distance-model and variance
+        parameters with the configured optimizer, and zero training steps only
+        initializes the variances. ``fit_calibration_head`` keeps the distance model
+        fixed and estimates both variance components with deterministic multistart
+        optimization.
     """
 
     variance_floor: float = 1e-10
@@ -234,11 +243,9 @@ class MLPELoss(AbstractLoss):
 
     def _prepare(self, region, observations, *, training):
         if observations.target.kind != "dissimilarity":
-            raise ValueError("Population MLPE requires dissimilarities")
+            raise ValueError("MLPE losses require dissimilarity targets")
         if region.individual_based:
-            raise ValueError(
-                "Population MLPE rejects individual-based regions: its effects model populations"
-            )
+            raise ValueError("MLPE losses reject individual-based region batches")
         context = _context(region, observations)
         if training:
             if len(context.targets) < 3:
@@ -308,13 +315,13 @@ class MLPELoss(AbstractLoss):
             calibration_pairs=observations.observed_pairs,
             loss=self,
             optimizer_iterations=step,
-            optimizer_message="Fixed-budget joint Adam; no variance convergence claim",
+            optimizer_message="Variances trained jointly with the distance model",
             converged=False,
         )
 
     def _fixed_parameters(self, fitted):
-        # Arrays rather than the calibration's Python floats, which compiled
-        # validation would treat as static and retrace at every evaluation.
+        # Arrays keep compiled validation from retracing when the values change;
+        # the calibration stores Python floats, which compilation treats as static.
         return _MLPEFixedParameters(
             jnp.asarray((fitted.intercept, fitted.slope)),
             jnp.asarray(fitted.distance_center),
@@ -365,11 +372,13 @@ class MLPELoss(AbstractLoss):
 
 
 def _loss_metadata(loss):
+    """Returns the kind and settings of a built-in loss for a checkpoint header."""
     if not isinstance(loss, (Log1pLoss, MLPELoss)):
         raise ValueError("Saving requires a built-in loss")
     return {"kind": type(loss).__name__, "settings": asdict(loss)}
 
 
 def _loss_from_metadata(metadata):
+    """Returns the built-in loss described by checkpoint metadata."""
     factories = {"Log1pLoss": Log1pLoss, "MLPELoss": MLPELoss}
     return factories[metadata["kind"]](**metadata["settings"])
