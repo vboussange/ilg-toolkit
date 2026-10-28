@@ -1,4 +1,4 @@
-"""Scientific behavior of checkpoint."""
+"""Tests of checkpoints: continuation, random keys, optimizer state and file integrity."""
 
 import json
 from dataclasses import asdict, dataclass, replace
@@ -26,7 +26,7 @@ from ilg_toolkit.models import AbstractDistanceModel
 
 @dataclass(frozen=True)
 class _ResumeScenario:
-    """A training run whose interrupted continuation must equal the uninterrupted run."""
+    """A training run whose continuation from a saved state equals the uninterrupted run."""
 
     regions: tuple[RegionBatch, ...]
     targets: tuple[Any, ...]
@@ -36,10 +36,10 @@ class _ResumeScenario:
 
 
 def _two_regions(
-    training_problem, family: str, num_species: int = 1
+    training_problem, family: str, species: tuple[str, ...] | None = None
 ) -> tuple[tuple[RegionBatch, ...], tuple[Any, ...], AbstractDistanceModel]:
-    """The problem's region and a renamed copy with targets scaled by 1.2."""
-    region, observations, model = training_problem(family, num_species=num_species)
+    """Returns the problem's region and a renamed copy with targets scaled by 1.2."""
+    region, observations, model = training_problem(family, species=species)
     other = replace(region, name="valley")
     if isinstance(observations, PairwiseObservations):
         other_observations = replace(observations, values=observations.values * 1.2)
@@ -56,15 +56,15 @@ _CONFIG = TrainingConfig(
 
 
 def _conductance_region_batches(training_problem):
-    """Random region minibatches of a conductance model fitted with MLPE."""
+    """Returns random region minibatches of a conductance model trained with MLPE."""
     regions, targets, model = _two_regions(training_problem, "conductance")
     return _ResumeScenario(regions, targets, model, replace(_CONFIG, region_batch_size=1))
 
 
 def _dropout_validation(training_problem):
-    """Dropout keys and a completed budget, selected at step 0 by validation."""
+    """Returns dropout keys and a completed budget, with the model selected at step 0."""
     regions, targets, model = _two_regions(training_problem, "dropout")
-    # Initial predictions as validation targets make step 0 the best validation step.
+    # Initial predictions as validation targets give step 0 the lowest validation loss.
     validation_targets = tuple(
         PairwiseObservations.from_pairs(prediction.pairs, prediction.values, target=o.target)
         for prediction, o in zip((model.predict(r) for r in regions), targets, strict=True)
@@ -80,8 +80,8 @@ def _dropout_validation(training_problem):
 
 
 def _species_microbatch_validation(training_problem):
-    """Species batches and microbatches of an embedding model with MLPE validation."""
-    regions, groups, model = _two_regions(training_problem, "embedding", num_species=2)
+    """Returns species batches and microbatches of an embedding model with MLPE validation."""
+    regions, groups, model = _two_regions(training_problem, "embedding", species=("frog", "newt"))
     validation = tuple(group[0].select_pairs(group[0].observed_pairs[-1:]) for group in groups)
     targets = tuple(tuple(o.select_pairs(o.observed_pairs[:-1]) for o in group) for group in groups)
     config = replace(_CONFIG, region_batch_size=1, species_batch_size=1, species_microbatch_size=1)
@@ -148,12 +148,12 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
         assert validation_loss is not None and validation_loss > resumed.selected_loss
     if validation is not None and scenario.distance_model.species is not None:
         assert resumed.history[-1].validation_by_species is not None
-        assert set(resumed.history[-1].validation_by_species) == {"species-0"}
+        assert set(resumed.history[-1].validation_by_species) == {"frog"}
 
 
 @pytest.fixture(scope="module")
 def initial_state(training_problem):
-    """Embedding problem and its training state at step zero, shared by read-only checks."""
+    """Returns the embedding problem and its training state at step zero."""
     region, observations, distance_model = training_problem("embedding")
     state = train(
         region,
@@ -265,7 +265,7 @@ def test_disk_continuation_uses_caller_supplied_observations(initial_state, tmp_
     assert np.isfinite(resumed.selected_model.predict(changed_region).values).all()
 
 
-def test_checkpoint_rejects_truncated_leaves_and_wrong_encoder_structure(
+def test_checkpoint_rejects_truncated_leaves_and_wrong_distance_model_structure(
     initial_state, WeightedEmbedding, tmp_path
 ):
     from ilg_toolkit import ArtifactError

@@ -103,7 +103,7 @@ def _prepare_region_species_inputs(
     species: tuple[str, ...] | None,
 ) -> tuple[_RegionSpeciesTrainingInput, ...]:
     """Returns weighted region–species groups, with equal species and region influence."""
-    from .models.base import region_for_species
+    from .models.base import _region_for_species
 
     groups = []
     keys = set()
@@ -132,7 +132,7 @@ def _prepare_region_species_inputs(
         if key in keys:
             raise ValueError("Provide one observations object per region–species group")
         keys.add(key)
-        selected = region_for_species(region, name)
+        selected = _region_for_species(region, name)
         groups.append(_RegionSpeciesTrainingInput(selected, observations, index, key, 0.0))
     coverage = Counter(group.species_index for group in groups)
     return tuple(

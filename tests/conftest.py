@@ -1,4 +1,4 @@
-"""Shared scientific data and numerical reference fixtures."""
+"""Fixtures of synthetic regions, distance models and numerical references for the tests."""
 
 import contextlib
 import itertools
@@ -38,7 +38,7 @@ jax.config.update("jax_enable_x64", True)
 
 
 def _feature_field(values, names: tuple[str, ...]) -> cx.Field:
-    """Row, column and feature data whose feature axis names each channel."""
+    """Returns row, column and feature data whose feature axis names each landscape feature."""
     return cx.field(values, "row", "column", cx.LabeledAxis("feature", np.asarray(names)))
 
 
@@ -118,8 +118,8 @@ _R_VARIANCES = np.array([0.23562746377731067, 0.02879401793899513])
 
 _R_DISTANCE_CENTER = -0.14328369260805038
 
-# MLPE standardizes distances, so this shift makes the R distances valid
-# (non-negative) ecological distances and changes only the fitted distance center.
+# The shift makes the R distances non-negative ecological distances. MLPE
+# standardizes distances, so the shift changes only the fitted distance center.
 _R_DISTANCE_SHIFT = 2.0
 _R_DISTANCE_SCALE = 1.012896471531856
 
@@ -142,7 +142,7 @@ _R_BLUPS = np.array(
 
 
 def _dense_resistance(surface, nodes):
-    """Dense Laplacian reference for effective resistance, constructed with NumPy."""
+    """Returns dense-Laplacian reference effective resistances between vertices, using NumPy."""
     rows, columns = surface.shape
     laplacian = np.zeros((surface.size, surface.size))
     for row in range(rows):
@@ -163,7 +163,7 @@ def _dense_resistance(surface, nodes):
 
 @final
 class _PointConductance(ConductanceModel):
-    """Distance model that scales one landscape feature into a conductance surface."""
+    """A distance model that scales one landscape feature into a conductance surface."""
 
     log_scale: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
@@ -222,7 +222,7 @@ def dropout_conductance_class():
 
 @final
 class _BatchNormConductance(ConductanceModel):
-    """Point conductance whose patch features pass through a stateful batch norm."""
+    """A point conductance model whose backbone output passes through a stateful batch norm."""
 
     distance_model: _PointConductance
     norm: eqx.nn.BatchNorm
@@ -250,7 +250,9 @@ def batch_norm_conductance_class():
     return _BatchNormConductance
 
 
-def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec]:
+def _known_ensemble(
+    *, species: tuple[str, ...] | None = None
+) -> tuple[RegionBatch, Ensemble, TargetSpec]:
     region = RegionBatch(
         "alpine",
         _feature_field(np.arange(4).reshape(1, 4, 1), ("elevation",)),
@@ -258,18 +260,22 @@ def _known_ensemble(*, num_species=1) -> tuple[RegionBatch, Ensemble, TargetSpec
         np.array([[0, 0], [0, 1], [0, 2], [0, 3]]),
     )
     target = TargetSpec("divergence", units="index")
-    if num_species == 2:
+    if species is not None:
         region = replace(
             region,
-            sampling_unit_ids=region.sampling_unit_ids * 2,
-            grid_positions=np.tile(region.grid_positions, (2, 1)),
-            species=("frog",) * 4 + ("newt",) * 4,
+            sampling_unit_ids=region.sampling_unit_ids * len(species),
+            grid_positions=np.tile(region.grid_positions, (len(species), 1)),
+            species=tuple(name for name in species for _ in range(4)),
         )
     members = [
         LandscapeGeneticsModel(
             _ScalarEmbedding(
-                jnp.asarray(weight if num_species == 1 else [weight, weight + 2]),
-                species=None if num_species == 1 else ("frog", "newt"),
+                jnp.asarray(
+                    weight
+                    if species is None
+                    else [weight + 2 * index for index in range(len(species))]
+                ),
+                species=species,
             ),
             DirectCalibrationHead(target),
             ("elevation",),
@@ -307,9 +313,10 @@ class _TabulatedDistance(AbstractDistanceModel):
 
 
 def _reference_problem(pairs, distances) -> tuple[RegionBatch, _TabulatedDistance]:
-    """A one-row region of the reference populations and a distance model giving ``distances``.
+    """Returns a one-row region of the reference populations and a distance model.
 
-    Each sampling unit has its own vertex, and ``distances`` align with ``pairs``.
+    The distance model gives ``distances``, aligned with ``pairs``. Each sampling
+    unit has its own vertex.
     """
     ids = tuple(sorted({label for pair in pairs for label in pair}))
     region = RegionBatch(
@@ -337,7 +344,7 @@ def _calibrated():
 def _joint_gaussian_reference(
     head, observed_pairs, observed_distances, targets, query_pairs, distances
 ):
-    """Gaussian conditioning reference built from the joint observation covariance."""
+    """Returns Gaussian conditional means and variances from the joint observation covariance."""
     all_pairs = tuple(observed_pairs) + tuple(query_pairs)
     labels = sorted({label for pair in all_pairs for label in pair})
     incidence = np.array([[float(label in pair) for label in labels] for pair in all_pairs])
@@ -357,7 +364,7 @@ def _joint_gaussian_reference(
 def _frozen_r_conditional_reference(
     observed_pairs, observed_distances, targets, query_pairs, distances, *, jitter
 ):
-    """NumPy conditional expectations derived from frozen R calibration results.
+    """Returns NumPy conditional expectations derived from frozen R calibration results.
 
     Coefficients, variance components and distance moments come from the R
     reference; conditioning uses the supplied observation inputs. Residual
@@ -387,7 +394,7 @@ def _frozen_r_conditional_reference(
 
 @final
 class _WeightedEmbedding(EmbeddingDistanceModel):
-    """Distance model with a learned scale for each embedding feature."""
+    """A distance model with a trainable scale for each embedding feature."""
 
     log_weights: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
@@ -441,7 +448,7 @@ def _embedding_problem(name="alpine", offset=0.0, seed=14, *, columns=3):
 
 
 def _dense_profile(distances, targets, left, right, n_populations, variances, *, jitter: float = 0):
-    """Dense Gaussian likelihood reference for fitted calibration parameters."""
+    """Returns the dense Gaussian likelihood reference for MLPE calibration variances."""
     distances = np.asarray(distances, dtype=np.float64)
     z = np.zeros((len(distances), n_populations))
     for row, (a, b) in enumerate(zip(left, right, strict=True)):
@@ -465,7 +472,7 @@ def _dense_profile(distances, targets, left, right, n_populations, variances, *,
 
 
 @final
-class _CovariateConductance(ConductanceModel):
+class _FeatureConductance(ConductanceModel):
     weight: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
@@ -589,7 +596,7 @@ def _population_effect_problem(
     labels = tuple(f"population-{index}" for index in range(6))
     region = RegionBatch(
         name,
-        _feature_field(jnp.asarray(features), ("east_covariate", "canopy_covariate")),
+        _feature_field(jnp.asarray(features), ("easting", "canopy")),
         labels,
         np.array(list(np.ndindex(2, 3))),
     )
@@ -621,7 +628,7 @@ def _calibration_problem(
 
 
 def _dense_jax_profile(distances, targets, left, right, n_populations, raw_variances):
-    """Dense Gaussian likelihood and gradient reference using automatic differentiation."""
+    """Returns the dense Gaussian likelihood and coefficients in JAX, for reference gradients."""
     import jax
     import jax.numpy as jnp
     from jax.scipy.linalg import cho_solve
@@ -648,9 +655,9 @@ def _dense_jax_profile(distances, targets, left, right, n_populations, raw_varia
 
 
 def _decimal_dense_profile_and_gradients(distances, targets, left, right, raw_variances):
-    """60-digit dense Gaussian reference for covariance gradients.
+    """Returns a 60-digit dense Gaussian likelihood, coefficients and gradients.
 
-    Uses standard-library Decimal Gaussian elimination.
+    Uses standard-library Decimal Gauss-Jordan elimination.
     """
     import math
     from collections.abc import Iterable
@@ -810,9 +817,9 @@ def dense_profile_fixture():
     return _dense_profile
 
 
-@pytest.fixture(name="CovariateConductance", scope="session")
-def covariate_conductance_fixture():
-    return _CovariateConductance
+@pytest.fixture(name="FeatureConductance", scope="session")
+def feature_conductance_fixture():
+    return _FeatureConductance
 
 
 @pytest.fixture(name="ScalarEmbedding", scope="session")
@@ -848,7 +855,7 @@ def float64_required_fixture():
 
 
 def _patch_check_problem() -> SimpleNamespace:
-    """A patch_size=2 log-linear patch encoder meeting regions that break its patch grid.
+    """Returns a patch_size=2 log-linear patch encoder and regions that break its patch grid.
 
     ``misaligned`` has 5 x 3 raster cells, which 2 x 2 patches do not tile. In
     ``shared``, sampling units ``a`` and ``b``, and ``c`` and ``d``, share vertices.
@@ -933,12 +940,12 @@ def decimal_dense_profile_and_gradients_fixture():
 
 @pytest.fixture(scope="session")
 def mlpe_reference():
-    """Frozen maximum-likelihood population effects (MLPE) reference values.
+    """Returns frozen maximum-likelihood population effects (MLPE) reference values.
 
     Computed with R 4.1.2, lme4 1.1-28 and ResistanceGA2 1.1.20, using full
     maximum likelihood and sample standard deviation scaling. ``problem(pairs,
     distances)`` builds a region and a distance model giving those distances;
-    fits use the R distances plus ``shift``.
+    MLPE calibrations use the R distances plus ``shift``.
     """
     return SimpleNamespace(
         distances=_R_DISTANCES,
@@ -954,13 +961,15 @@ def mlpe_reference():
 
 @pytest.fixture(scope="session")
 def training_problem():
-    """Build the same identifiable observations for each analytic distance-model family.
+    """Returns a builder of the same identifiable observations for each distance-model family.
 
     Families are ``"embedding"``, ``"conductance"`` and the single-species
     ``"dropout"`` embedding, whose backbone applies dropout during training.
+    With ``species`` names, each species gets its own copy of the sampling units
+    and observations scaled by its position.
     """
 
-    def build(family, *, name="alpine", num_species=1):
+    def build(family, *, name="alpine", species: tuple[str, ...] | None = None):
         features = np.random.default_rng(14).uniform(0.8, 1.6, size=(2, 2, 2)).astype(np.float32)
         region = RegionBatch(
             name,
@@ -973,27 +982,26 @@ def training_problem():
             [0.4, 0.7, 1.4, 0.6, 0.9, 0.8],
             target=TargetSpec("synthetic divergence", units="index"),
         )
-        names = None if num_species == 1 else tuple(f"species-{i}" for i in range(num_species))
         if family == "embedding":
-            weights = jnp.zeros(2) if num_species == 1 else jnp.array([[0.0, 0.0], [0.2, -0.3]])
-            model = _WeightedEmbedding(weights, species=names)
+            weights = jnp.zeros(2) if species is None else jnp.array([[0.0, 0.0], [0.2, -0.3]])
+            model = _WeightedEmbedding(weights, species=species)
         elif family == "conductance":
-            scales = jnp.array(0.0) if num_species == 1 else jnp.arange(num_species) * 0.2
-            model = _PointConductance(scales, species=names)
-        elif family == "dropout" and num_species == 1:
+            scales = jnp.array(0.0) if species is None else jnp.arange(len(species)) * 0.2
+            model = _PointConductance(scales, species=species)
+        elif family == "dropout" and species is None:
             model = _StochasticEmbedding(jnp.asarray(1.0))
         else:
-            raise ValueError(f"Unknown test model family: {family} with {num_species} species")
-        if names is not None:
+            raise ValueError(f"Unknown test model family: {family} with species {species}")
+        if species is not None:
             region = replace(
                 region,
-                sampling_unit_ids=region.sampling_unit_ids * num_species,
-                grid_positions=np.tile(region.grid_positions, (num_species, 1)),
-                species=tuple(name for name in names for _ in range(4)),
+                sampling_unit_ids=region.sampling_unit_ids * len(species),
+                grid_positions=np.tile(region.grid_positions, (len(species), 1)),
+                species=tuple(label for label in species for _ in range(4)),
             )
             observations = tuple(
-                replace(observations, species=name, values=observations.values * (index + 1))
-                for index, name in enumerate(names)
+                replace(observations, species=label, values=observations.values * (index + 1))
+                for index, label in enumerate(species)
             )
         return region, observations, model
 

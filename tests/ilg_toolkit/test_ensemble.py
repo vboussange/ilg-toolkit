@@ -1,4 +1,4 @@
-"""Original-scale averaging of ordered fitted models."""
+"""Tests of ensembles: original-scale averaging of ordered landscape genetics models."""
 
 from dataclasses import replace
 
@@ -10,7 +10,7 @@ import pytest
 from ilg_toolkit import Ensemble, Prediction
 
 
-def test_ordered_members_are_snapshotted_and_repeated_entries_are_preserved(known_ensemble):
+def test_ordered_members_are_copied_and_repeated_entries_are_preserved(known_ensemble):
     region, original, _ = known_ensemble()
     caller_members = [original.members[1], original.members[0], original.members[1]]
     ensemble = Ensemble(caller_members)
@@ -37,7 +37,7 @@ def test_ordered_members_are_snapshotted_and_repeated_entries_are_preserved(know
 
 
 def test_species_queries_average_each_species_and_keep_member_predictions(known_ensemble):
-    region, ensemble, _ = known_ensemble(num_species=2)
+    region, ensemble, _ = known_ensemble(species=("frog", "newt"))
     query = {"newt": None, "frog": [("d", "a")]}
     results = ensemble.predict(region, query)
     assert tuple(results) == ("newt", "frog")
@@ -131,7 +131,7 @@ def test_prediction_failure_identifies_position_without_dropping_member(
     assert len(requested.members) == 3
 
 
-def test_members_are_averaged_on_the_genetic_scale_not_through_their_surfaces(PointConductance):
+def test_members_are_averaged_on_the_original_scale_not_through_their_surfaces(PointConductance):
     from ilg_toolkit import DirectCalibrationHead, LandscapeGeneticsModel, RegionBatch, TargetSpec
 
     region = RegionBatch(

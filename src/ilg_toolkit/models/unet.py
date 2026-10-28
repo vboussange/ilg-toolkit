@@ -11,11 +11,11 @@ import jax.numpy as jnp
 
 from .._checks import _positive_integer
 from .base import _species_names, EmbeddingDistanceModel
-from .common import encode_patches
+from .common import _encode_patches
 
 
 def _match_shape(values: jax.Array, reference: jax.Array) -> jax.Array:
-    """A channel, height, width array cropped or zero-padded to a reference spatial shape."""
+    """Crops or zero-pads a channel, height, width array to a reference spatial shape."""
     target_height, target_width = reference.shape[1:]
     height, width = values.shape[1:]
     if height > target_height:
@@ -36,8 +36,8 @@ def _match_shape(values: jax.Array, reference: jax.Array) -> jax.Array:
 
 
 @final
-class ResidualConvBlock(eqx.Module):
-    """Residual convolutional block used throughout the U-Net."""
+class _ResidualConvBlock(eqx.Module):
+    """A residual convolutional block of the U-Net, with dropout."""
 
     conv1: eqx.nn.Conv2d
     conv2: eqx.nn.Conv2d
@@ -60,7 +60,7 @@ class ResidualConvBlock(eqx.Module):
         self.dropout = eqx.nn.Dropout(dropout, inference=True)
 
     def __call__(self, values: jax.Array) -> jax.Array:
-        """Residual convolutional features for one channel-first feature map."""
+        """Applies the residual block to one channel-first feature map."""
         residual = values if self.projection is None else self.projection(values)
         values = jax.nn.gelu(self.norm1(self.conv1(values)))
         values = self.norm2(self.conv2(values))
@@ -72,12 +72,14 @@ class ResidualConvBlock(eqx.Module):
 class UNetEmbeddingDistance(EmbeddingDistanceModel):
     """A U-Net embedding-distance model with species-specific embeddings.
 
-    A U-Net combines patch features across the region's patch grid, and squared
-    embedding distances provide ecological distances between sampling units.
+    A U-Net backbone combines patch embeddings across the region's vertex grid, and
+    squared embedding distances are the ecological distances between sampling
+    units.
 
     Args:
         in_channels:
-            Number of raster features, with meanings and order preserved across regions.
+            Number of landscape features, with the same meanings and order in every
+            region.
         species: Species names, one embedding projection each in parameter order;
             ``None`` (default) models one unnamed species.
         patch_size: Square raster patch side length, default 32. Both raster dimensions
@@ -85,39 +87,39 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         base_channels: Width of the first U-Net stage, default 32. Later stages expand
             this width.
         embedding_dim: Dimension of each species' embedding at a patch, default 16.
-        dropout: Dropout probability during training, default 0.1; prediction disables
-            it.
-        patch_microbatch_size: Maximum patches embedded together; ``None`` processes all
-            patches. It limits patch-embedding work but does not microbatch the whole
-            U-Net.
+        dropout: Dropout probability during training, default 0.1. Inference mode
+            disables it.
+        patch_microbatch_size: Maximum patches embedded together by the first
+            linear layer; ``None`` embeds all patches at once. The rest of the U-Net
+            runs on the whole vertex grid.
         key: JAX initialization key.
 
     Notes:
-        The U-Net combines neighboring patch features through two downsampling
-        stages, a bottleneck, and skip-connected upsampling. The output grid has one
-        embedding per patch and species. Ecological distance is the sum of squared
-        coordinate differences between the two sampled embeddings, without a resistance
-        solve. Cropping changes the spatial context available to the U-Net and can
-        therefore change predictions even at retained sampling locations.
+        The U-Net combines neighboring patch embeddings through two downsampling
+        stages, a bottleneck and skip-connected upsampling. The output grid has one
+        embedding per vertex and species. Ecological distance is the sum of squared
+        coordinate differences between two sampling units' embeddings. Cropping a
+        raster changes the spatial context of the U-Net, and with it the
+        ecological distances between the remaining sampling units.
     """
 
     patch_embedding: eqx.nn.Linear
     patch_norm: eqx.nn.GroupNorm
-    encoder1: ResidualConvBlock
+    encoder1: _ResidualConvBlock
     down1: eqx.nn.Conv2d
     down1_norm: eqx.nn.GroupNorm
-    encoder2: ResidualConvBlock
+    encoder2: _ResidualConvBlock
     down2: eqx.nn.Conv2d
     down2_norm: eqx.nn.GroupNorm
-    bottleneck: ResidualConvBlock
+    bottleneck: _ResidualConvBlock
     up2: eqx.nn.ConvTranspose2d
     merge2: eqx.nn.Conv2d
     merge2_norm: eqx.nn.GroupNorm
-    decoder2: ResidualConvBlock
+    decoder2: _ResidualConvBlock
     up1: eqx.nn.ConvTranspose2d
     merge1: eqx.nn.Conv2d
     merge1_norm: eqx.nn.GroupNorm
-    decoder1: ResidualConvBlock
+    decoder1: _ResidualConvBlock
     embedding_head: eqx.nn.Conv2d
     species: tuple[str, ...] | None = eqx.field(static=True, default=None, kw_only=True)
     patch_microbatch_size: int | None = eqx.field(static=True)
@@ -156,7 +158,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             key=keys[0],
         )
         self.patch_norm = eqx.nn.GroupNorm(min(8, base_channels), base_channels, dtype=jnp.float32)
-        self.encoder1 = ResidualConvBlock(
+        self.encoder1 = _ResidualConvBlock(
             base_channels, base_channels, dropout=dropout, key=keys[1]
         )
         self.down1 = eqx.nn.Conv2d(
@@ -169,7 +171,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             key=keys[2],
         )
         self.down1_norm = eqx.nn.GroupNorm(min(8, stage2), stage2, dtype=jnp.float32)
-        self.encoder2 = ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[3])
+        self.encoder2 = _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[3])
         self.down2 = eqx.nn.Conv2d(
             stage2,
             bottleneck,
@@ -180,7 +182,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             key=keys[4],
         )
         self.down2_norm = eqx.nn.GroupNorm(min(8, bottleneck), bottleneck, dtype=jnp.float32)
-        self.bottleneck = ResidualConvBlock(bottleneck, bottleneck, dropout=dropout, key=keys[5])
+        self.bottleneck = _ResidualConvBlock(bottleneck, bottleneck, dropout=dropout, key=keys[5])
         self.up2 = eqx.nn.ConvTranspose2d(
             bottleneck, stage2, 2, stride=2, dtype=jnp.float32, key=keys[6]
         )
@@ -188,7 +190,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             2 * stage2, stage2, 3, padding=1, dtype=jnp.float32, key=keys[7]
         )
         self.merge2_norm = eqx.nn.GroupNorm(min(8, stage2), stage2, dtype=jnp.float32)
-        self.decoder2 = ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[8])
+        self.decoder2 = _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[8])
         self.up1 = eqx.nn.ConvTranspose2d(
             stage2, base_channels, 2, stride=2, dtype=jnp.float32, key=keys[9]
         )
@@ -201,7 +203,7 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
             key=keys[10],
         )
         self.merge1_norm = eqx.nn.GroupNorm(min(8, base_channels), base_channels, dtype=jnp.float32)
-        self.decoder1 = ResidualConvBlock(
+        self.decoder1 = _ResidualConvBlock(
             base_channels, base_channels, dropout=dropout, key=keys[11]
         )
         self.embedding_head = eqx.nn.Conv2d(
@@ -218,8 +220,16 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         self.embedding_dim = embedding_dim
 
     def backbone(self, features: jax.Array) -> jax.Array:
-        """Patch features with a region-wide receptive field."""
-        values = encode_patches(
+        """Computes the U-Net backbone output, with a region-wide receptive field.
+
+        Args:
+            features: Landscape features with shape ``(rows, columns, in_channels)``.
+
+        Returns:
+            The backbone output with shape ``(rows // patch_size,
+            columns // patch_size, base_channels)``.
+        """
+        values = _encode_patches(
             self,
             features,
             lambda patch: self.patch_embedding(
@@ -243,7 +253,17 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         return jnp.moveaxis(values, 0, -1)
 
     def embedding(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
-        """Embedding grid from patch features."""
+        """Computes one species' embedding of every vertex from the backbone output.
+
+        Args:
+            latent: Backbone output returned by ``backbone``.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            Embeddings with shape ``(rows // patch_size, columns // patch_size,
+            embedding_dim)``.
+        """
         start = species_index * self.embedding_dim
         weights = jax.lax.dynamic_slice_in_dim(
             self.embedding_head.weight, start, self.embedding_dim, axis=0

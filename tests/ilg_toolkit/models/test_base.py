@@ -1,4 +1,4 @@
-"""Scientific behavior of models.base."""
+"""Tests of distance models: species queries, conductance surfaces and custom distance models."""
 
 from dataclasses import replace
 from typing import cast
@@ -126,9 +126,8 @@ def test_single_species_queries_return_one_prediction(PointConductance):
 
 
 @pytest.mark.filterwarnings("ignore:Sampling units share a vertex")
-def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateConductance):
-    # Float32 features exercise the float64 solve and cast back. Float64 resistances
-    # meet the dense Laplacian reference in the log-linear and conductance training tests.
+def test_requested_float32_resistances_and_gradients_match_jaxscape(FeatureConductance):
+    # Float32 features exercise the float64 solve and cast back.
     # Sampling units c and d share a vertex, so their resistance is exactly zero.
     dtype = jnp.float32
     region = RegionBatch(
@@ -142,11 +141,11 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateCon
         ("a", "b", "c", "d", "e"),
         np.array([[1, 2], [0, 0], [0, 2], [0, 2], [1, 0]]),
     )
-    model = CovariateConductance(jnp.array([[0.2, -0.1, 0.4], [0.3, 0.1, -0.2]], dtype=dtype))
+    model = FeatureConductance(jnp.array([[0.2, -0.1, 0.4], [0.3, 0.1, -0.2]], dtype=dtype))
     pairs = (("e", "a"), ("c", "b"), ("c", "d"))
     weights = jnp.array([0.4, -1.3, 2.1], dtype=dtype)
 
-    def objective(distance_model, *, upstream):
+    def weighted_distances(distance_model, *, upstream):
         if upstream:
             surface = distance_model.conductance_surface(region).data
             graph = GridGraph(surface.astype(jnp.float64), fun=lambda a, b: (a + b) / 2)
@@ -160,7 +159,7 @@ def test_requested_float32_resistances_and_gradients_match_jaxscape(CovariateCon
             values = distance_model.predict(region, pairs).values
         return weights @ values, values
 
-    evaluate = eqx.filter_jit(eqx.filter_value_and_grad(objective, has_aux=True))
+    evaluate = eqx.filter_jit(eqx.filter_value_and_grad(weighted_distances, has_aux=True))
     (_, expected), expected_gradient = evaluate(model, upstream=True)
     (_, actual), actual_gradient = evaluate(model, upstream=False)
     tolerance = 1e-6
@@ -194,7 +193,7 @@ def test_prediction_and_conductance_surfaces_reject_stateful_layers(
         getattr(BatchNormConductance(), evaluate)(region)
 
 
-def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductance):
+def test_custom_conductance_hooks_train_and_predict_requested_pairs(PointConductance):
     region = RegionBatch(
         "river",
         cx.field(
@@ -232,9 +231,7 @@ def test_custom_conductance_hooks_fit_and_predict_requested_pairs(PointConductan
     )
 
 
-def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels(
-    CustomDistance, tmp_path
-):
+def test_custom_distance_model_trains_and_reloads_without_genetic_labels(CustomDistance, tmp_path):
     region = RegionBatch(
         "custom",
         cx.field(

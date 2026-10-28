@@ -1,4 +1,4 @@
-"""Maximum-likelihood population effects (MLPE) prediction by calibration heads."""
+"""Tests of maximum-likelihood population effects (MLPE) predictions by calibration heads."""
 
 import numpy as np
 import pytest
@@ -13,7 +13,7 @@ from ilg_toolkit.mlpe import MLPEError
 
 
 def _predict(head, distances, pairs, **options):
-    """Predictions of the reference region's MLPE calibration head."""
+    """Returns predictions of the reference region's MLPE calibration head."""
     return head.predict(distances, pairs, region_name="alpine", **options)
 
 
