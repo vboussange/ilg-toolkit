@@ -49,17 +49,23 @@ You can then see your local copy of the documentation by navigating to `localhos
 
 ### Docstring format
 
-Use [Google-style Python docstrings](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings).
-Start with what the object is or does. Add `Args:`, `Returns:`, `Raises:`,
-`Attributes:`, `Notes:` and `Examples:` sections when they clarify the contract,
-and indent section contents by four spaces. Describe units, array shapes,
-ordering, constraints and scientific meaning; type annotations already describe
-Python types.
+Use [Google-style Python docstrings](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings)
+throughout the codebase. The summary line of a function or method opens with a
+descriptive third-person verb whose subject is the function ("Returns the
+conductance surface ..."); a class's opens with what the object is ("A region
+batch ..."); a property's reads like an attribute ("The target contract ...").
+
+The sections are `Args:`, `Returns:`, `Raises:`, `Attributes:`, `Notes:`, and
+`Examples:`. Indent section contents by four spaces. Describe units, array shapes,
+ordering, constraints, and scientific meaning; type annotations describe Python
+types. Keep substantive examples for prediction and calibration.
 
 Document initialization on the class; constructors and standard lifecycle
-methods do not need duplicate docstrings. Document public methods and
-properties. Ruff checks the Google convention, and mkdocstrings renders it in
-the API reference.
+methods carry no duplicate docstrings. Document public methods and properties.
+Ruff checks the Google convention, and mkdocstrings renders it in the API
+reference. Review scientific meaning and parameter coverage alongside those
+automated style checks. The Prose section of `AGENTS.md` sets the wording rules
+for docstrings, including the required `Args:` sections.
 
 ---
 

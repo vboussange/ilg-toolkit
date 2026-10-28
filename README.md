@@ -1,25 +1,29 @@
 # ILG Toolkit
 
-**Utilities for inverse landscape genetics in JAX.**
+**Differentiable, GPU-accelerated utilities for inverse landscape genetics in JAX.**
 
 [![Run tests](https://github.com/vboussange/ilg-toolkit/actions/workflows/run_tests.yml/badge.svg)](https://github.com/vboussange/ilg-toolkit/actions/workflows/run_tests.yml)
 [![Documentation](https://github.com/vboussange/ilg-toolkit/actions/workflows/docs.yml/badge.svg)](https://github.com/vboussange/ilg-toolkit/actions/workflows/docs.yml)
 
-Inverse landscape genetics (ILG) infers how landscapes shape movement from
-geolocated genetic data. ILG Toolkit provides utilities to train a patch encoder
-end-to-end through a differentiable effective-resistance layer: the encoder maps
-patches of landscape features to the vertex conductances of a conductance grid
-graph, whose effective resistances between sampling units predict their pairwise
-genetic dissimilarity.
+Inverse landscape genetics (ILG) infers spatial ecological networks from
+geolocated genetic data by learning a conductance grid graph whose edge weights
+encode local landscape permeability to movement, so that the effective
+resistances it induces between sampled populations predict their genetic
+dissimilarity.
+
+ILG Toolkit provides differentiable, GPU-accelerated utilities for ILG in JAX.
+A patch encoder maps patches of landscape features to the vertex conductances of
+the conductance grid graph, and is trained end-to-end through a differentiable
+effective-resistance layer.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/assets/ilg-overview.webp" width="420" alt="Landscape features become conductance, effective resistance, and genetic predictions.">
 </p>
 
 - Log-linear and ResNet9 patch encoders, and a U-Net embedding-distance model.
-- GPU-ready effective resistance with gradients, optionally preconditioned by
+- Effective resistance with gradients on the GPU, optionally preconditioned by
   algebraic multigrid.
-- Training under complete pooling across regions, with a log1p objective or
+- Training under complete pooling across regions, with a log1p loss or
   maximum-likelihood population effects (MLPE) for population dependence.
 - Genetic calibration, conditional prediction, and ensembles on the target's
   original scale, with experimental multispecies support.
@@ -33,8 +37,18 @@ dependencies to a [uv](https://docs.astral.sh/uv/) project with:
 uv add "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit"
 ```
 
-The `examples` extra installs rioxarray, pandas and Matplotlib for the examples.
-The `amg` extra adds algebraic-multigrid preconditioning.
+The `examples` extra installs rioxarray, pandas and Matplotlib for the examples,
+and the `amg` extra installs algebraic-multigrid preconditioning.
+
+ILG Toolkit runs on the device JAX selects. To run it on an NVIDIA GPU, install
+JAX with CUDA support:
+
+```bash
+uv add "jax[cuda12]"
+```
+
+The [JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
+lists the CUDA versions and platforms JAX supports.
 
 ## Quickstart
 
@@ -90,6 +104,13 @@ examples, the glossary, and the API reference.
 
 See [CONTRIBUTING.md](https://github.com/vboussange/ilg-toolkit/blob/main/CONTRIBUTING.md)
 for development checks, documentation conventions, and releases.
+
+## Interpreting results
+
+Interpret learned resistance surfaces, ecological distances and genetic
+predictions with care, in light of each study's design and data. The authors and
+contributors of ILG Toolkit accept no responsibility for results obtained with it
+or for decisions based on them.
 
 ## License
 
