@@ -14,8 +14,8 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 
+from ._checks import _require_float64
 from ._training_utils import RegionSpeciesKey
 from .calibration import DirectCalibrationModule, MLPECalibrationModule
 from .config import ResistanceSolverConfig
@@ -52,11 +52,6 @@ def _write_native(path, tree, *, kind, metadata):
     header = {
         "format": "ilg-toolkit-equinox",
         "kind": kind,
-        "requires_x64": any(
-            np.dtype(leaf.dtype)
-            in (np.dtype("float64"), np.dtype("complex128"), np.dtype("int64"), np.dtype("uint64"))
-            for _, leaf in arrays
-        ),
         # NumPy storage drops JAX weak types, which change dtype promotion.
         "weak_leaves": [index for index, leaf in arrays if leaf.weak_type],
         "metadata": metadata,
@@ -109,7 +104,7 @@ def _weakly_typed(leaf):
 
 
 def _read_header(stream, *, kind):
-    """Metadata and weakly typed leaves, after checking format and precision requirements."""
+    """Metadata and weakly typed leaves, after checking the format and file kind."""
     try:
         header = json.loads(stream.readline())
     except (ValueError, UnicodeError) as error:
@@ -118,10 +113,6 @@ def _read_header(stream, *, kind):
         raise ArtifactError("Unsupported saved-model or checkpoint format")
     if header.get("kind") != kind:
         raise ArtifactError(f"Expected {kind} file, found {header.get('kind')!r}")
-    if type(header.get("requires_x64")) is not bool:
-        raise ArtifactError("Missing saved-model or checkpoint precision requirement")
-    if header["requires_x64"] and not jax.config.read("jax_enable_x64"):
-        raise ArtifactError("Saved JAX leaves require JAX_ENABLE_X64=true before loading")
     weak_leaves = header.get("weak_leaves")
     if not isinstance(weak_leaves, list) or any(type(index) is not int for index in weak_leaves):
         raise ArtifactError("Missing or invalid saved-model or checkpoint weak-type record")
@@ -279,9 +270,7 @@ def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGenet
     differ. Saved parameters and conductance solver settings replace the template's
     values; solver preparation is rebuilt for each region.
 
-    Enable ``JAX_ENABLE_X64=true`` before constructing the template and loading any
-    artifact containing float64 JAX leaves. Loading does not change global JAX
-    precision. Equinox checks array structure, shapes, and dtypes; incompatible
+    Equinox checks array structure, shapes, and dtypes; incompatible
     artifacts or templates raise ``ArtifactError``. Static settings supplied by
     the caller remain part of the model contract, so retain the original constructor
     settings alongside the artifact.
@@ -296,7 +285,9 @@ def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGenet
 
     Raises:
         ArtifactError: The artifact or supplied template is incompatible.
+        RuntimeError: Float64 is disabled.
     """
+    _require_float64()
     try:
         with Path(path).open("rb") as stream:
             metadata, weak_leaves = _read_header(stream, kind="model")

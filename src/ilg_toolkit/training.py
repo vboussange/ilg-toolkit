@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
+from ._checks import _require_float64
 from ._training_utils import (
     _prepare_training_inputs,
     _RegionSpeciesTrainingInput,
@@ -399,6 +400,7 @@ def train(
         parameters; use ``calibrate`` to optimize calibration on a frozen distance
         model. Built-in validation uses training-fitted coefficients and distance moments.
     """
+    _require_float64()
     if species is not None and (
         isinstance(species, (str, bytes)) or not isinstance(species, Sequence)
     ):

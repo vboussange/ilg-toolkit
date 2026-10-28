@@ -33,7 +33,9 @@ from ilg_toolkit.models import ConductanceModel
 
 # Direct and MLPE calibrations, without and with species, save different trees.
 @pytest.mark.parametrize(("loss", "num_species"), [(Log1pLoss(), 1), (MLPELoss(), 2)])
-def test_saved_precision_is_preserved(tmp_path, training_problem, loss, num_species):
+def test_saved_precision_is_preserved(
+    tmp_path, training_problem, loss, num_species, float64_required
+):
     with jax.enable_x64():
         region, observations, distance_model = training_problem(
             "embedding", num_species=num_species
@@ -68,10 +70,9 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, loss, num_spec
                     lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,
                     distance_model,
                 )
-                with pytest.raises(ArtifactError):
-                    load = load_model if kind == "model" else load_checkpoint
-                    load(path, distance_model=narrow)
-                assert not jax.config.read("jax_enable_x64")
+            load = load_model if kind == "model" else load_checkpoint
+            with float64_required():
+                load(path, distance_model=narrow)
 
 
 # NumPy storage drops weak types, and eqx.tree_equal ignores them.
@@ -320,3 +321,11 @@ def test_interrupted_model_replacement_preserves_previous_predictions(
     np.testing.assert_array_equal(restored.predict(region).values, first.predict(region).values)
     assert not np.array_equal(replacement.predict(region).values, first.predict(region).values)
     assert set(tmp_path.iterdir()) == {path}
+
+
+def test_loading_requires_float64(tmp_path, observation_problem, float64_required):
+    region, target, distance_model = observation_problem()
+    path = tmp_path / "model.eqx"
+    save_model(path, LandscapeGeneticsModel(distance_model, DirectCalibrationModule(target), 2))
+    with float64_required():
+        load_model(path, distance_model=distance_model)

@@ -1,5 +1,6 @@
 """Shared scientific data and numerical reference fixtures."""
 
+import contextlib
 import itertools
 from collections.abc import Callable
 from dataclasses import replace
@@ -757,6 +758,18 @@ def regions_and_observations_fixture():
 @pytest.fixture(name="StochasticEmbedding", scope="session")
 def stochastic_embedding_fixture():
     return _StochasticEmbedding
+
+
+@contextlib.contextmanager
+def _float64_required():
+    """Disables float64 and expects the toolkit's precision error from the enclosed call."""
+    with jax.enable_x64(False), pytest.raises(RuntimeError, match="jax_enable_x64"):
+        yield
+
+
+@pytest.fixture(name="float64_required", scope="session")
+def float64_required_fixture():
+    return _float64_required
 
 
 @pytest.fixture(name="observation_problem", scope="session")

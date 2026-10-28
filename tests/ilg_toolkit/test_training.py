@@ -412,8 +412,6 @@ def test_mlpe_training_reports_precision_identifiability_and_numerical_failures(
     region, observations = embedding_problem(columns=2)
     model = WeightedEmbedding(jnp.zeros(2))
     config = TrainingConfig(loss=MLPELoss(), steps=0)
-    with jax.enable_x64(False), pytest.raises(RuntimeError):
-        train(region, observations, distance_model=model, config=config)
     with jax.enable_x64():
         six_units, _ = embedding_problem(columns=3)
         disjoint = PairwiseObservations.from_pairs(
@@ -908,3 +906,17 @@ def test_callback_models_keep_matching_distance_and_calibration_state(
         np.testing.assert_allclose([calibration.intercept, calibration.slope], beta, atol=1e-10)
         np.testing.assert_allclose(calibration.effect_mean, effects, atol=1e-10)
         np.testing.assert_allclose(calibration.effect_covariance, covariance, atol=1e-10)
+
+
+def test_training_requires_float64(observation_problem, float64_required):
+    region, target, model = observation_problem()
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20"), ("unit/20", "unit/99")], [1.0, 2.0], target=target
+    )
+    with float64_required():
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        )

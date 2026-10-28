@@ -14,7 +14,7 @@ from jaxscape import GridGraph, ResistanceDistance
 from jaxscape.solvers import AMJaxCGSolver
 from numpy.typing import ArrayLike
 
-from .._checks import _positive_integer
+from .._checks import _positive_integer, _require_float64
 from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
@@ -134,6 +134,7 @@ class AbstractDistanceModel(eqx.Module):
         avoids its distance matrix among sampling-unit vertices. Calling ``as_matrix()`` on the
         result explicitly allocates a sampling-unit-square array.
         """
+        _require_float64()
         order = validate_species_order(species_order, self.num_species)
         selected = select_species(order, species)
         results = {
@@ -214,6 +215,7 @@ class ConductanceModel(AbstractDistanceModel):
         ``species_order`` associates names with parameter rows for named species.
         A species sequence returns a mapping and computes patch features once.
         """
+        _require_float64()
         order = validate_species_order(species_order, self.num_species)
         selected = select_species(order, species)
         model = with_dropout_mode(self, inference=True, key=None)

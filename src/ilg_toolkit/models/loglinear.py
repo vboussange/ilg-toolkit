@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .._checks import _positive_integer
+from .._checks import _positive_integer, _require_float64
 from .._training_utils import _prepare_training_inputs
 from ..config import ResistanceSolverConfig
 from ..data import ObservationCollection, RegionBatch, RegionCollection
@@ -52,8 +52,7 @@ class LogLinearConductance(ConductanceModel):
         max_conductance: Positive cap, default 1000. Conductance is
             ``min(max_conductance, min_conductance + exp(features @ coefficients + intercept))``.
         solver_config: Effective-resistance tolerances and iteration limit; see
-            ``ResistanceSolverConfig``. Enable JAX float64 before using conductance
-            models.
+            ``ResistanceSolverConfig``.
 
     Notes:
         Patch microbatch size does not change graph resolution or ecological context.
@@ -189,6 +188,7 @@ def initialize_uniform_conductance(
         >>> state = train(region, observations, distance_model=distance_model,
         ...               config=TrainingConfig(loss=Log1pLoss(), steps=100))
     """
+    _require_float64()
     if not isinstance(model, LogLinearConductance):
         raise TypeError("initialize_uniform_conductance requires a LogLinearConductance")
     if not isinstance(loss, AbstractLoss):

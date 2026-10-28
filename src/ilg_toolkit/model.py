@@ -6,6 +6,7 @@ from typing import cast, final, overload
 import equinox as eqx
 import jax.numpy as jnp
 
+from ._checks import _require_float64
 from .calibration import AbstractCalibrationModule
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 from .models import AbstractDistanceModel
@@ -191,6 +192,7 @@ class LandscapeGeneticsModel(eqx.Module):
             for training, fresh calibration, and evaluation, and the
             [ensemble workflow](../examples/ensemble.md) for checkpoint continuation.
         """
+        _require_float64()
         self._validate_region(region)
         selected = select_species(self.species, species)
         support_by_species = self._support_observations(support, selected)

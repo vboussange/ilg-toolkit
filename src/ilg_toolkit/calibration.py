@@ -6,6 +6,7 @@ from typing import final, TYPE_CHECKING
 
 import equinox as eqx
 
+from ._checks import _require_float64
 from ._training_utils import RegionSpeciesKey
 from .data import ObservationCollection, PairwiseObservations, RegionCollection, TargetSpec
 from .mlpe import RegionalMLPECalibration
@@ -211,6 +212,7 @@ def calibrate(
     )
     from .models.common import with_dropout_mode
 
+    _require_float64()
     if not isinstance(distance_model, AbstractDistanceModel):
         raise TypeError("distance_model must implement AbstractDistanceModel")
     if not isinstance(loss, AbstractLoss):

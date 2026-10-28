@@ -197,3 +197,9 @@ def test_surface_failures_identify_member_without_restricting_genetic_prediction
         with pytest.raises((ValueError, RuntimeError), match=f"(?s)member 1.*{failure}"):
             ensemble.conductance_surfaces(region)
         assert ensemble.members == (first, second, first)
+
+
+def test_prediction_requires_float64(known_ensemble, float64_required):
+    region, ensemble, _ = known_ensemble()
+    with float64_required():
+        ensemble.predict(region)

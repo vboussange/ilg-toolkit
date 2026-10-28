@@ -191,3 +191,11 @@ def test_custom_common_distance_contract_fits_and_reloads_without_genetic_labels
     np.testing.assert_array_equal(
         restored.predict(region).values, state.selected_model.predict(region).values
     )
+
+
+def test_prediction_and_conductance_surfaces_require_float64(observation_problem, float64_required):
+    region, _, model = observation_problem()
+    with float64_required():
+        model.predict(region)
+    with float64_required():
+        LogLinearConductance(2, patch_size=1).conductance_surface(region)

@@ -129,10 +129,9 @@ def test_array_like_observations_and_targets_follow_configured_precision(
 ):
     precise = 0.123456789012345
     with jax.enable_x64(enable_x64):
-        region, target, model = observation_problem()
+        region, target, _ = observation_problem()
         dtype = jnp.float64 if enable_x64 else jnp.float32
         expected = precise if enable_x64 else float(np.float32(precise))
-        predictions = []
         for values in ([precise], np.array([precise]), jnp.asarray([precise])):
             observations = PairwiseObservations.from_pairs(
                 [("unit/7", "unit/20")], values, target=target
@@ -142,25 +141,33 @@ def test_array_like_observations_and_targets_follow_configured_precision(
             for transformed in (target.forward(values), target.inverse(values)):
                 assert transformed.dtype == dtype
                 assert float(transformed[0]) == expected
-            fitted = train(
-                region,
-                observations,
-                distance_model=model,
-                config=TrainingConfig(loss=Log1pLoss(), steps=0),
-            )
-            prediction = fitted.selected_model.predict(region)
-            assert prediction.values.dtype == prediction.as_matrix().dtype == dtype
-            predictions.append(prediction.values)
-        np.testing.assert_array_equal(predictions[0], predictions[1])
-        np.testing.assert_array_equal(predictions[0], predictions[2])
-        assert jax.config.read("jax_enable_x64") is enable_x64
-
         integer_observations = PairwiseObservations.from_pairs(
             [("unit/7", "unit/20")], [1], target=target, sampling_unit_ids=region.sampling_unit_ids
         )
         assert integer_observations.values.dtype == dtype
         assert bool(jnp.isnan(integer_observations.values[0, 2]))
         assert float(integer_observations.observed_values[0]) == 1.0
+
+
+def test_array_like_observations_give_identical_float64_predictions(observation_problem):
+    region, target, model = observation_problem()
+    precise = 0.123456789012345
+    predictions = []
+    for values in ([precise], np.array([precise]), jnp.asarray([precise])):
+        observations = PairwiseObservations.from_pairs(
+            [("unit/7", "unit/20")], values, target=target
+        )
+        fitted = train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        )
+        prediction = fitted.selected_model.predict(region)
+        assert prediction.values.dtype == prediction.as_matrix().dtype == jnp.float64
+        predictions.append(prediction.values)
+    np.testing.assert_array_equal(predictions[0], predictions[1])
+    np.testing.assert_array_equal(predictions[0], predictions[2])
 
 
 def test_coordinate_declarations_reject_unknown_axes_and_conflicting_feature_labels(

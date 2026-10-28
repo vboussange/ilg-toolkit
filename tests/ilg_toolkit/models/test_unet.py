@@ -1,6 +1,7 @@
 """Scientific behavior of models.unet, covered once at tiny width."""
 
 import coordax as cx
+import equinox as eqx
 import jax
 import numpy as np
 import pytest
@@ -37,6 +38,13 @@ def _unet(
         patch_microbatch_size=patch_microbatch_size,
         key=jax.random.key(seed),
     )
+
+
+def test_layers_keep_float32_weights_with_float64_enabled():
+    model = _unet(0)
+    leaves = jax.tree.leaves(eqx.filter(model, eqx.is_inexact_array))
+    assert jax.enable_x64.value
+    assert {leaf.dtype for leaf in leaves} == {np.dtype("float32")}
 
 
 def test_patch_microbatches_preserve_predictions_and_gradients(assert_patch_microbatches_match):

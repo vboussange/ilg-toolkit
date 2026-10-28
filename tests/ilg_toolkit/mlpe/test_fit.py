@@ -86,3 +86,9 @@ def test_explicit_numerical_constraints_and_optimization_failure_are_visible(
             region_name="alpine",
             max_iterations=1,
         )
+
+
+def test_calibration_requires_float64(reference_observations, mlpe_reference, float64_required):
+    observations = reference_observations()
+    with float64_required():
+        calibrate_mlpe(mlpe_reference.distances, observations, region_name="alpine")

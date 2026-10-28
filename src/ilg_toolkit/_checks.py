@@ -3,6 +3,8 @@
 from numbers import Integral
 from typing import Literal, overload
 
+import jax
+
 
 @overload
 def _positive_integer(
@@ -34,3 +36,16 @@ def _positive_integer(
     if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
         raise error(f"{name} must be a positive integer" + (" or None" if optional else ""))
     return int(value)
+
+
+def _require_float64() -> None:
+    """Raises a ``RuntimeError`` unless JAX float64 is enabled.
+
+    Training, calibration fitting, prediction, conductance surfaces and loading
+    call this check before any computation.
+    """
+    if not jax.enable_x64.value:
+        raise RuntimeError(
+            "ILG Toolkit requires float64: call "
+            'jax.config.update("jax_enable_x64", True) before creating arrays'
+        )

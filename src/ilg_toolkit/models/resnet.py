@@ -68,7 +68,7 @@ class ResNet9Conductance(ConductanceModel):
 
     Notes:
         Patch convolutions and GroupNorm use float32 parameters; effective resistance
-        uses float64, which must be enabled before constructing inputs. The network
+        uses float64. The network
         encodes each patch through two residual blocks and spatial pooling, followed
         by a species-specific linear map and softplus. It does not mix features across
         neighboring patches; the conductance grid graph connects their conductances.

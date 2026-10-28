@@ -61,7 +61,7 @@ def table(rows, columns=None):
     display(Markdown("\n".join(lines)))
 
 
-print("Devices:", jax.devices(), "— float64:", jax.config.read("jax_enable_x64"))
+print("Devices:", jax.devices(), "— float64:", jax.enable_x64.value)
 ```
 
     Devices: [CudaDevice(id=0)] — float64: True

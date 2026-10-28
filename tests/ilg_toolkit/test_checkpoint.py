@@ -309,3 +309,11 @@ def test_checkpoint_enforces_progress_bounds(initial_state, tmp_path, boundary):
                 load_checkpoint(path, distance_model=distance_model)
             else:
                 train(region, observations, state=invalid)
+
+
+def test_loading_requires_float64(initial_state, tmp_path, float64_required):
+    _, _, distance_model, state = initial_state
+    path = tmp_path / "checkpoint.eqx"
+    save_checkpoint(path, state)
+    with float64_required():
+        load_checkpoint(path, distance_model=distance_model)

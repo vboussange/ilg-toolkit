@@ -352,3 +352,14 @@ def test_uniform_initialization_requires_a_log_linear_model(dense_resistance, Po
         initialize_uniform_conductance(
             PointConductance(jnp.array(0.0)), region, observations, Log1pLoss()
         )
+
+
+def test_uniform_conductance_initialization_requires_float64(observation_problem, float64_required):
+    region, target, _ = observation_problem()
+    observations = PairwiseObservations.from_pairs(
+        [("unit/7", "unit/20"), ("unit/20", "unit/99")], [1.0, 2.0], target=target
+    )
+    with float64_required():
+        initialize_uniform_conductance(
+            LogLinearConductance(2, patch_size=1), region, observations, Log1pLoss()
+        )
