@@ -87,7 +87,7 @@ section is not verbatim in `examples/quickstart.py`.
 
 Run the examples on an NVIDIA GPU: install JAX with CUDA support into the project
 environment with `uv pip install "jax[cuda12]==<locked jax version>"`, and select the GPU
-with `CUDA_VISIBLE_DEVICES`. On an NVIDIA RTX 3090, all examples run in about four minutes.
+with `CUDA_VISIBLE_DEVICES`. On an NVIDIA RTX 3090, all examples run in about five minutes.
 
 Commit the regenerated notebooks, pages and figures together with the change that
 caused them.

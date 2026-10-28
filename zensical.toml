@@ -14,9 +14,7 @@ nav = [
   {"Overview" = "index.md"},
   {"Examples" = [
     {"Quickstart" = "examples/quickstart.md"},
-    {"Isolation-by-distance model" = "examples/ibd.md"},
-    {"MLPE workflow" = "examples/mlpe_workflow.md"},
-    {"Ensemble" = "examples/ensemble.md"},
+    {"Reference pipeline" = "examples/reference_pipeline.md"},
     {"Multispecies (experimental)" = "examples/multispecies.md"},
   ]},
   {"Glossary" = "glossary.md"},
