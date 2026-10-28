@@ -19,7 +19,7 @@ from .losses import MLPELoss
 from .mlpe import MLPECalibration
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel, ConductanceModel
-from .models.base import _model_species, _species_names
+from .models.base import _species_names, _species_rows
 
 
 class ArtifactError(ValueError):
@@ -185,7 +185,7 @@ def _model_template(metadata, distance_model):
     """Returns a landscape genetics model template from saved metadata and a distance model."""
     target = TargetSpec(**metadata["target"])
     species = None if metadata["species"] is None else tuple(metadata["species"])
-    if len(_model_species(distance_model)) != (1 if species is None else len(species)):
+    if _species_rows(distance_model.species) != _species_rows(species):
         raise ArtifactError(
             f"Saved model has species {species!r}; the distance_model template has "
             f"species {distance_model.species!r}"

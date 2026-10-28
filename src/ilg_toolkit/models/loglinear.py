@@ -22,6 +22,7 @@ from .base import (
     _model_species,
     _prepare_distance_context,
     _species_names,
+    _species_rows,
     ConductanceModel,
 )
 from .common import _encode_patches, _pixel_to_patch_nodes
@@ -121,7 +122,7 @@ class LogLinearConductance(ConductanceModel):
         self.min_conductance = float(min_conductance)
         self.max_conductance = float(max_conductance)
         self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
-        count = 1 if species is None else len(species)
+        count = _species_rows(species)
         self.coefficients = jnp.zeros((count, in_channels))
         self.intercepts = jnp.zeros(count)
 

@@ -155,3 +155,13 @@ def test_species_training_matches_dense_resistance_and_reloads(dense_resistance,
 def test_widths_must_be_three_positive_multiples_of_eight(channels):
     with pytest.raises(ValueError):
         ResNet9Conductance(2, channels=channels, key=jax.random.key(0))
+
+
+@pytest.mark.parametrize("min_conductance", [True, 0.0, -1.0, float("nan"), "1e-6"])
+def test_min_conductance_must_be_a_finite_positive_real(min_conductance):
+    with pytest.raises(ValueError, match="min_conductance"):
+        ResNet9Conductance(
+            2, channels=(8, 8, 8), min_conductance=min_conductance, key=jax.random.key(0)
+        )
+    model = ResNet9Conductance(2, channels=(8, 8, 8), min_conductance=1, key=jax.random.key(0))
+    assert type(model.min_conductance) is float

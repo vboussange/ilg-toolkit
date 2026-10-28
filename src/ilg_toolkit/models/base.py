@@ -348,6 +348,11 @@ def _species_names(species: Sequence[str] | None) -> tuple[str, ...] | None:
     return names
 
 
+def _species_rows(species: tuple[str, ...] | None) -> int:
+    """Returns the number of species-specific parameter rows: one per name, or one unnamed."""
+    return 1 if species is None else len(species)
+
+
 def _patch_axis(axis: cx.Coordinate | None, dimension: str, patch_size: int) -> cx.Coordinate | str:
     """Returns patch-center coordinates along one raster dimension, or the dimension name.
 

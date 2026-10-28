@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from numbers import Real
 from typing import final
 
 import equinox as eqx
@@ -12,7 +13,7 @@ import jax.numpy as jnp
 
 from .._checks import _positive_integer
 from ..config import ResistanceSolverConfig
-from .base import _species_names, ConductanceModel
+from .base import _species_names, _species_rows, ConductanceModel
 from .common import _encode_patches
 
 
@@ -84,7 +85,7 @@ class ResNet9Conductance(ConductanceModel):
     residual1: _ResidualBlock
     residual2: _ResidualBlock
     output: eqx.nn.Linear
-    species: tuple[str, ...] | None = eqx.field(static=True, default=None, kw_only=True)
+    species: tuple[str, ...] | None = eqx.field(static=True)
     channels: tuple[int, int, int] = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
@@ -111,8 +112,13 @@ class ResNet9Conductance(ConductanceModel):
         widths = tuple(_positive_integer("channels", width) for width in channels)
         if len(widths) != 3 or any(width % 8 for width in widths):
             raise ValueError("ResNet9Conductance channels must be three positive multiples of 8")
-        if not math.isfinite(min_conductance) or min_conductance <= 0:
-            raise ValueError("min_conductance must be finite and positive")
+        if (
+            isinstance(min_conductance, bool)
+            or not isinstance(min_conductance, Real)
+            or not math.isfinite(min_conductance)
+            or min_conductance <= 0
+        ):
+            raise ValueError("min_conductance must be a finite positive real number")
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
@@ -129,12 +135,12 @@ class ResNet9Conductance(ConductanceModel):
         self.residual2 = _ResidualBlock(second, key=keys[3])
         self.conv3 = eqx.nn.Conv2d(second, third, 3, padding=1, dtype=jnp.float32, key=keys[4])
         self.norm3 = eqx.nn.GroupNorm(8, third, dtype=jnp.float32)
-        count = 1 if species is None else len(species)
+        count = _species_rows(species)
         self.output = eqx.nn.Linear(third, count, dtype=jnp.float32, key=keys[5])
         self.species = species
         self.channels = (first, second, third)
         self.patch_size = patch_size
-        self.min_conductance = min_conductance
+        self.min_conductance = float(min_conductance)
         self.patch_microbatch_size = patch_microbatch_size
         self.solver_config = solver_config
 
