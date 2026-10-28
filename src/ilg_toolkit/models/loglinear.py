@@ -185,7 +185,7 @@ class LogLinearConductance(ConductanceModel):
             log-conductance coefficient for each species.
 
         Raises:
-            ValueError: The names are not unique, nonempty strings, one per feature.
+            ValueError: If the names are not unique, nonempty strings, one per feature.
 
         Examples:
             >>> effects = distance_model.feature_effects(region.feature_names)
