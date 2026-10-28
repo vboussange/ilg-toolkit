@@ -188,15 +188,15 @@ display(Markdown("\n".join(rows)))
 
     Species: ('newt', 'frog')
     MLPE loss at step 0: newt -1.751, frog -1.831
-    MLPE loss at step 300: newt -3.304, frog -3.343
+    MLPE loss at step 300: newt -3.300, frog -3.319
 
 
 
 | Region | Species | Slope | Population-effect variance | Residual variance |
 | --- | --- | ---: | ---: | ---: |
-| valley | newt | 0.0905 | 1.06e-04 | 2.12e-04 |
-| valley | frog | 0.0614 | 5.00e-05 | 1.07e-04 |
-| upland | newt | 0.0501 | 3.03e-05 | 7.37e-05 |
+| valley | newt | 0.0911 | 1.06e-04 | 2.12e-04 |
+| valley | frog | 0.0622 | 4.95e-05 | 1.07e-04 |
+| upland | newt | 0.0501 | 3.03e-05 | 7.34e-05 |
 
 
 ## Predict by species
@@ -243,7 +243,7 @@ print("Newt pairs predicted:", len(predictions["newt"].pairs))
 
 
     Frog pairs: (('frog-1', 'frog-2'), ('frog-3', 'frog-4'))
-    Frog predictions: [0.4445 0.3122]
+    Frog predictions: [0.4432 0.3097]
     Newt pairs predicted: 66
 
 

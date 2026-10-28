@@ -7,8 +7,9 @@ It relates pairwise Fst between 12 Mountain Pygmy-possum (*Burramys parvus*) sam
 the Victorian Alps to land cover. Three population-holdout folds each withhold four sampling
 units. In each fold, an isolation-by-distance (IBD) model and a log-linear patch encoder trained with
 the maximum-likelihood population effects (MLPE) loss, each with an MLPE calibration head,
-predict the pairs that involve the withheld sampling units. The three trained patch encoders form an
-ensemble, which summarizes the learned resistance surface and the land-cover effects.
+predict the pairs that involve the withheld sampling units. The three landscape genetics models
+with trained patch encoders, one per fold, form an ensemble, which summarizes the learned
+resistance surface and the land-cover effects.
 
 Genetic data: pairwise Fst kindly provided by Cesar Australia. Land cover: ESA WorldCover 2021
 (CC BY 4.0).
@@ -24,6 +25,7 @@ from tempfile import TemporaryDirectory
 import coordax as cx
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optax
@@ -534,10 +536,9 @@ plt.show()
 ## IBD model
 
 The IBD model's ecological distance is an affine function of the straight-line distance between
-the sampling units' vertices, on the same vertices as the patch encoder. `fit_calibration_head`
-fits one MLPE calibration head per fold on the calibration pairs. MLPE standardizes ecological
-distances, so the IBD model's slope and intercept leave its MLPE calibration unchanged, and the
-IBD model needs no training.
+the sampling units' vertices, on the same vertices as the patch encoder. Each fold's IBD model
+keeps its initial slope and intercept, and `fit_calibration_head` fits its MLPE calibration head
+on the calibration pairs.
 
 
 ```python
@@ -545,18 +546,20 @@ loss = MLPELoss()
 ibd_models = []
 for calibration in calibration_sets:
     ibd = IBDModel(patch_size=PATCH_SIZE)
-    head = fit_calibration_head(region, calibration, ibd, loss=loss)
-    ibd_models.append(LandscapeGeneticsModel(ibd, head, region.feature_names))
+    calibration_head = fit_calibration_head(region, calibration, ibd, loss=loss)
+    ibd_models.append(LandscapeGeneticsModel(ibd, calibration_head, region.feature_names))
 
 pd.DataFrame(
     [
         {
-            "MLPE slope": calibration.slope,
-            "population variance": calibration.unit_variance,
-            "residual variance": calibration.residual_variance,
-            "log likelihood": calibration.ml_log_likelihood,
+            "MLPE slope": mlpe_calibration.slope,
+            "population variance": mlpe_calibration.unit_variance,
+            "residual variance": mlpe_calibration.residual_variance,
+            "log likelihood": mlpe_calibration.ml_log_likelihood,
         }
-        for calibration in (model.calibration_head.for_region(region.name) for model in ibd_models)
+        for mlpe_calibration in (
+            model.calibration_head.for_region(region.name) for model in ibd_models
+        )
     ],
     index=pd.RangeIndex(1, len(folds) + 1, name="fold"),
 )
@@ -654,9 +657,9 @@ for training, validation, calibration in zip(
         validation=(region, validation),
     )
     selected = state.selected_model.distance_model
-    head = fit_calibration_head(region, calibration, selected, loss=loss)
+    calibration_head = fit_calibration_head(region, calibration, selected, loss=loss)
     states.append(state)
-    patch_models.append(LandscapeGeneticsModel(selected, head, region.feature_names))
+    patch_models.append(LandscapeGeneticsModel(selected, calibration_head, region.feature_names))
 
 pd.DataFrame(
     {
@@ -705,7 +708,7 @@ pd.DataFrame(
       <th>1</th>
       <td>170</td>
       <td>-1.393227</td>
-      <td>-1.574192</td>
+      <td>-1.574191</td>
     </tr>
     <tr>
       <th>2</th>
@@ -747,10 +750,10 @@ plt.show()
 
 ## Population-holdout evaluation
 
-Each model predicts the test pairs of its fold on the original Fst scale from the fitted
-intercept and slope of its MLPE calibration, without population effects. Pearson's $r$,
-predictive $R^2 = 1 - \sum (y - \hat y)^2 / \sum (y - \bar y)^2$ and the root mean squared
-error (RMSE) compare the predictions $\hat y$ with the observed Fst $y$ in each fold.
+Each model gives marginal predictions for the test pairs of its fold on the original Fst scale.
+Pearson's $r$, predictive $R^2 = 1 - \sum (y - \hat y)^2 / \sum (y - \bar y)^2$ and the root
+mean squared error (RMSE) compare the predictions $\hat y$ with the observed Fst $y$ in each
+fold.
 
 
 ```python
@@ -961,10 +964,13 @@ plt.show()
 
 ## Ensemble and learned resistance surface
 
-The three trained patch encoders, one per population-holdout fold, form an ensemble, whose
-genetic prediction averages the members on the original Fst scale. At each vertex, the median
-and interquartile range (IQR) of $\log_{10} Q$ across the members summarize the learned
-resistance surface, computed after $\log_{10}$-transforming the local resistance $Q = 1/C$.
+The three landscape genetics models with trained patch encoders, one per population-holdout
+fold, form an ensemble, whose genetic prediction averages the members on the original Fst
+scale. For each member, the $\log_{10}$ resistance relative to tree cover at vertex $k$ is
+$\log_{10}(Q_k / Q_\mathrm{tree})$, where $Q_k = 1/C_k$ is the local resistance and
+$Q_\mathrm{tree}$ the local resistance of a vertex covered by tree cover. At each vertex, its
+median and interquartile range (IQR) across the members summarize the learned resistance
+surface.
 
 
 ```python
@@ -1061,15 +1067,20 @@ pd.DataFrame(
 
 
 ```python
-log_resistance = xr.concat(
+tree_cover = jnp.zeros(len(region.feature_names))  # Land-cover fractions of a tree-cover vertex.
+relative_log_resistance = xr.concat(
     [
-        np.log10(1 / member.distance_model.conductance_surface(region).to_xarray())
+        np.log10(
+            float(member.distance_model.conductance(tree_cover, 0))
+            / member.distance_model.conductance_surface(region).to_xarray()
+        )
         for member in ensemble.members
     ],
     dim="member",
 )
-median = log_resistance.median("member")
-iqr = log_resistance.quantile(0.75, "member") - log_resistance.quantile(0.25, "member")
+median = relative_log_resistance.median("member")
+quartiles = relative_log_resistance.quantile([0.25, 0.75], "member")
+iqr = quartiles.sel(quantile=0.75) - quartiles.sel(quantile=0.25)
 
 figure, axes = plt.subplots(1, 3, figsize=(14, 6.4), sharex=True, sharey=True, layout="constrained")
 classes.plot.imshow(
@@ -1082,8 +1093,8 @@ axes[0].legend(
 )
 axes[0].set_title("Land cover")
 for axis, surface, title, cmap in (
-    (axes[1], median, "Median of log$_{10}$ Q", "magma"),
-    (axes[2], iqr, "IQR of log$_{10}$ Q", "viridis"),
+    (axes[1], median, "Median of log$_{10}$ resistance\nrelative to tree cover", "magma"),
+    (axes[2], iqr, "IQR of log$_{10}$ resistance\nrelative to tree cover", "viridis"),
 ):
     image = surface.plot.imshow(
         ax=axis, x="column", y="row", cmap=cmap, cbar_kwargs={"shrink": 0.7, "label": title}

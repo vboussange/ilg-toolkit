@@ -161,7 +161,7 @@ class LogLinearConductance(ConductanceModel):
         )
 
     def feature_effects(self, feature_names: Sequence[str]) -> dict[str, tuple[float, ...]]:
-        """Log-conductance coefficients by feature name, one per species.
+        """Returns each feature's log-conductance coefficient per species, by feature name.
 
         Each feature's effect is its coefficient in the linear predictor: the change
         in log conductance, before the floor and cap, when the feature's patch mean
