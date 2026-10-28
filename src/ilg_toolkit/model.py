@@ -72,6 +72,7 @@ class LandscapeGeneticsModel(eqx.Module):
         return self.calibration_head.target
 
     def _validate_region(self, region: RegionBatch):
+        """Raises a ``ValueError`` if a region's feature names differ from ``feature_names``."""
         if region.feature_names != self.feature_names:
             raise ValueError(
                 f"Query features {region.feature_names} must match the training features "
@@ -139,8 +140,9 @@ class LandscapeGeneticsModel(eqx.Module):
             known_effects: Whether to include the saved population-effect posterior
                 of the MLPE calibration.
             support: Support observations, one per queried species, that update the
-                saved population-effect posterior for this call. Support pairs are
-                disjoint from the calibration pairs and from explicit query pairs,
+                saved population-effect posterior for this call. Support requires
+                explicit query pairs for each queried species; support pairs are
+                disjoint from the calibration pairs and from the query pairs,
                 including reversals; shared sampling units are allowed.
 
         Returns:
@@ -150,9 +152,10 @@ class LandscapeGeneticsModel(eqx.Module):
         Raises:
             ValueError: If the region's feature names differ from ``feature_names``,
                 the query names an unknown species, a multispecies model receives a
-                sequence of pairs or ``None``, ``support`` does not match the queried
-                species, or the calibration head rejects the conditioning mode or the
-                region.
+                sequence of pairs or ``None``, the query pairs are empty, repeat a
+                pair or name an unknown sampling unit, ``support`` does not match the
+                queried species or comes without explicit query pairs, or the
+                calibration head rejects the conditioning mode or the region.
             MLPEError: If ``known_effects=True`` is combined with ``support``, or the
                 support observations or their pairs are invalid.
             RuntimeError: If float64 is disabled.
@@ -266,6 +269,8 @@ class LandscapeGeneticsModel(eqx.Module):
     ) -> dict[str | None, PairwiseObservations]:
         if support is None:
             return {}
+        if any(request.pairs is None for request in requests):
+            raise ValueError("Support requires explicit query pairs for each queried species")
         observations = (support,) if isinstance(support, PairwiseObservations) else support
         if (
             not isinstance(observations, Sequence)

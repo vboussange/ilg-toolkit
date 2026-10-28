@@ -150,7 +150,8 @@ def _cell_indices(axis: cx.Coordinate | None, dimension: str, values: np.ndarray
 
     Cell edges lie halfway between neighboring cell centers, and the outer edges half a
     cell beyond the first and last centers. Like GDAL, a shared edge belongs to the cell
-    with the larger index, and the outer edges belong to the raster.
+    with the larger index. The outer edges, widened by a millionth of the smallest cell,
+    belong to the raster.
     """
     if not isinstance(axis, cx.LabeledAxis) or not np.issubdtype(axis.ticks.dtype, np.number):
         raise ValueError(
@@ -177,8 +178,10 @@ def _cell_indices(axis: cx.Coordinate | None, dimension: str, values: np.ndarray
             [1.5 * centers[-1] - 0.5 * centers[-2]],
         )
     )
-    indices = np.minimum(np.searchsorted(edges, values, side="right") - 1, centers.size - 1)
-    return np.where((values >= edges[0]) & (values <= edges[-1]), indices, -1)
+    tolerance = 1e-6 * np.abs(steps).min()
+    inside = (values >= edges[0] - tolerance) & (values <= edges[-1] + tolerance)
+    indices = np.clip(np.searchsorted(edges, values, side="right") - 1, 0, centers.size - 1)
+    return np.where(inside, indices, -1)
 
 
 @dataclass(frozen=True)
@@ -290,9 +293,11 @@ class RegionBatch:
 
         Row and column coordinates are cell centers, as ``cx.from_xarray`` keeps
         them from rioxarray rasters, and cell edges lie halfway between neighboring
-        centers. Rows may follow decreasing y, as in most GeoTIFFs. A point on an
-        edge shared by two cells belongs to the cell with the larger row or column
-        index, as in GDAL.
+        centers, so each dimension needs at least two cells. The outer edges lie
+        half a cell beyond the outer centers, and points up to a millionth of a cell
+        beyond them belong to the outer cells. Rows may follow decreasing y, as in
+        most GeoTIFFs. A point on an edge shared by two cells belongs to the cell
+        with the larger row or column index, as in GDAL.
 
         Args:
             name: Region name.
@@ -311,9 +316,9 @@ class RegionBatch:
 
         Raises:
             TypeError: If ``features`` is not a ``coordax.Field``.
-            ValueError: If the features lack numeric row and column coordinates, or
-                a point lies outside the raster extent; the message names those
-                sampling units.
+            ValueError: If the features lack numeric, strictly monotonic row and
+                column coordinates over at least two cells each, or a point lies
+                outside the raster extent; the message names those sampling units.
         """
         if not isinstance(features, cx.Field):
             raise TypeError("features must be a coordax.Field with named row, column, feature axes")
@@ -329,7 +334,7 @@ class RegionBatch:
         if outside.size:
             raise ValueError(
                 "Sampling units lie outside the raster extent: "
-                + ", ".join(ids[index] for index in outside)
+                + ", ".join(str(ids[index]) for index in outside)
             )
         return cls(
             name,
@@ -565,17 +570,14 @@ class PairwiseObservations:
             (("b", "c"),)
         """
         selected = {tuple(sorted(pair)) for pair in _validate_pairs(pairs)}
-        observed = self.observed_pairs
-        if not selected.issubset({tuple(sorted(pair)) for pair in observed}):
+        if not selected.issubset({tuple(sorted(pair)) for pair in self.observed_pairs}):
             raise ValueError("Selection contains an unobserved pair")
-        mask = jnp.asarray([tuple(sorted(pair)) in selected for pair in observed])
-        return type(self).from_pairs(
-            [pair for pair, keep in zip(observed, mask, strict=True) if keep],
-            self.observed_values[mask],
-            target=self.target,
-            species=self.species,
-            sampling_unit_ids=self.sampling_unit_ids,
-        )
+        lookup = {label: index for index, label in enumerate(self.sampling_unit_ids)}
+        keep = np.eye(len(self.sampling_unit_ids), dtype=bool)
+        for left, right in selected:
+            keep[lookup[left], lookup[right]] = keep[lookup[right], lookup[left]] = True
+        values = jnp.where(jnp.asarray(keep), self.values, jnp.nan)
+        return type(self)(self.sampling_unit_ids, values, self.target, self.species)
 
     def aligned_pairs(self, region: RegionBatch) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
         """Returns the observed pairs as sampling-unit indices of a region batch.

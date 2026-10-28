@@ -1,5 +1,6 @@
 """Ensembles of landscape genetics models and their averaged genetic predictions."""
 
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast, final, overload
@@ -10,7 +11,13 @@ import jax.numpy as jnp
 from ._checks import _require_float64
 from .data import RegionBatch
 from .model import LandscapeGeneticsModel
-from .models.base import _query_results, _resolve_query
+from .models.base import (
+    _check_query,
+    _check_regions,
+    _model_species,
+    _query_results,
+    _resolve_query,
+)
 from .prediction import Prediction
 
 
@@ -122,8 +129,10 @@ class Ensemble:
     ) -> EnsemblePrediction | dict[str, EnsemblePrediction]:
         """Returns genetic predictions averaged over the ensemble members on the original scale.
 
-        An error of a member's prediction propagates with a note naming the member's
-        zero-based position.
+        The region and query are checked once, for every member, and sampling units
+        sharing a vertex trigger one ``UserWarning`` per patch size. An error of a
+        member's prediction propagates with a note naming the member's zero-based
+        position.
 
         Args:
             region: Region batch with the landscape features and the query pairs'
@@ -139,24 +148,35 @@ class Ensemble:
             ``EnsemblePrediction`` for a sequence of pairs or ``None``.
 
         Raises:
-            ValueError: If the query is invalid, or a member's predictions are not
-                finite.
+            ValueError: If the region's feature names differ from the members', the
+                query is invalid, a raster is not a multiple of a member's patch
+                size, or a member's predictions are not finite.
             RuntimeError: If float64 is disabled.
         """
         _require_float64()
-        requests, by_species = _resolve_query(self.members[0].species, query)
+        first = self.members[0]
+        requests, by_species = _resolve_query(first.species, query)
+        first._validate_region(region)
+        _check_query(_model_species(first.distance_model), region, requests)
+        distance_models = {
+            model.distance_model.patch_size: model.distance_model for model in self.members
+        }
+        for distance_model in distance_models.values():
+            _check_regions(distance_model, (region,))
         by_member = []
-        for index, model in enumerate(self.members):
-            try:
-                prediction = model.predict(region, query)
-            except Exception as error:
-                error.add_note(f"Raised by ensemble member {index}")
-                raise
-            by_member.append(
-                cast(dict[str | None, Prediction], prediction)
-                if by_species
-                else {requests[0].name: cast(Prediction, prediction)}
-            )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "Sampling units share a vertex", UserWarning)
+            for index, model in enumerate(self.members):
+                try:
+                    prediction = model.predict(region, query)
+                except Exception as error:
+                    error.add_note(f"Raised by ensemble member {index}")
+                    raise
+                by_member.append(
+                    cast(dict[str | None, Prediction], prediction)
+                    if by_species
+                    else {requests[0].name: cast(Prediction, prediction)}
+                )
         results = {
             request.name: _average_predictions(
                 tuple(predictions[request.name] for predictions in by_member)

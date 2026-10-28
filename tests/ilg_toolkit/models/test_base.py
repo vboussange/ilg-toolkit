@@ -1,5 +1,6 @@
 """Tests of distance models: species queries, conductance surfaces and custom distance models."""
 
+import warnings
 from dataclasses import replace
 from typing import cast, final
 
@@ -85,14 +86,83 @@ def test_species_queries_follow_the_model_species_with_reused_sampling_unit_ids(
         model.conductance_surface(region, species="stoat").data, np.full((1, 3), 2), rtol=1e-6
     )
     unlabeled = replace(region, sampling_unit_ids=("a", "b", "c", "d", "e"), species=None)
-    for query in (None, [("a", "b")], {"missing": None}, {"hare": [("a", "missing")]}):
-        with pytest.raises(ValueError):
+    for query, message in (
+        (None, "Multispecies models require a query mapping"),
+        ([("a", "b")], "Multispecies models require a query mapping"),
+        ({"missing": None}, "Unknown species"),
+        ({"hare": [("a", "missing")]}, "absent from region 'river': missing"),
+    ):
+        with pytest.raises(ValueError, match=message):
             model.predict(region, query)
     for species in (None, "missing"):
         with pytest.raises(ValueError, match="species"):
             model.conductance_surface(region, species)
     with pytest.raises(ValueError, match="sampling-unit species labels"):
         model.predict(unlabeled, {"hare": None})
+
+
+def test_query_pairs_are_checked_with_specific_messages(PointConductance):
+    region = RegionBatch(
+        "river",
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
+        ("a", "b", "c"),
+        np.array([[0, 0], [0, 1], [0, 2]]),
+    )
+    model = PointConductance(jnp.asarray(0.0))
+    for query, message in (
+        ("ab", "sequence of sampling-unit pairs"),
+        ([], "at least one sampling-unit pair"),
+        ([("a", "b"), ("b", "a")], "reversed duplicates"),
+        ([("a", "a")], "two distinct"),
+        ([("a", "z"), ("y", "b")], "absent from region 'river': z, y"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            model.predict(region, query)  # type: ignore[arg-type]
+    pairs = np.array([["c", "a"], ["b", "a"]])
+    prediction = model.predict(region, pairs)  # type: ignore[arg-type]
+    assert prediction.pairs == (("c", "a"), ("b", "a"))
+    labeled = replace(region, species=("frog",) * 3)
+    with pytest.raises(ValueError, match="require a distance model with species"):
+        model.predict(labeled)
+
+
+def test_shared_vertex_warnings_group_sampling_units_by_species():
+    region = RegionBatch(
+        "river",
+        cx.field(
+            np.ones((2, 4, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
+        ("a", "b", "c", "a", "d"),
+        np.array([[0, 0], [0, 1], [1, 1], [0, 0], [1, 0]]),
+        species=("frog", "frog", "frog", "newt", "newt"),
+    )
+    model = LogLinearConductance(1, species=("frog", "newt"), patch_size=1)
+    # A frog and a newt sharing a cell are told apart by species.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        model.predict(region, {"frog": None, "newt": None})
+    coarse = LogLinearConductance(1, species=("frog", "newt"), patch_size=2)
+    with pytest.warns(UserWarning, match="share a vertex") as record:
+        coarse.predict(region, {"frog": None, "newt": None})
+    assert len(record) == 1
+    assert str(record[0].message).endswith("region 'river': frog (a, b, c), newt (a, d)")
+
+
+def test_regions_smaller_than_one_patch_are_named():
+    region = RegionBatch(
+        "pond",
+        cx.field(
+            np.ones((1, 3, 1)), "row", "column", cx.LabeledAxis("feature", np.array(["elevation"]))
+        ),
+        ("a", "b"),
+        np.array([[0, 0], [0, 2]]),
+    )
+    with pytest.raises(
+        ValueError, match=r"Region 'pond' \(1 x 3 cells\) is smaller than one 4 x 4"
+    ):
+        LogLinearConductance(1, patch_size=4).predict(region)
 
 
 def test_single_species_queries_return_one_prediction(PointConductance):

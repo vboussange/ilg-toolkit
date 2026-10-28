@@ -1176,3 +1176,12 @@ def test_training_checks_the_patch_grid_of_training_and_validation_regions(patch
             validation=(shared, observations.select_pairs(pairs[8:])),
         )
     assert np.isfinite(state.selected_loss)
+    # A rebuilt copy of the training region is reported once.
+    with problem.shared_vertices_warned():
+        train(
+            shared,
+            observations.select_pairs(pairs[:8]),
+            distance_model=problem.model,
+            config=replace(config, steps=0),
+            validation=(replace(shared), observations.select_pairs(pairs[8:])),
+        )

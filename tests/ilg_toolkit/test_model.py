@@ -62,8 +62,13 @@ def test_genetic_queries_use_distance_model_species_and_original_scale(observati
     np.testing.assert_array_equal(
         model.predict(partial, {"hare": None})["hare"].values, results["hare"].values
     )
-    for query in (None, [("unit/7", "unit/20")], {"missing": None}, {}):
-        with pytest.raises(ValueError):
+    for query, message in (
+        (None, "Multispecies models require a query mapping"),
+        ([("unit/7", "unit/20")], "Multispecies models require a query mapping"),
+        ({"missing": None}, "Unknown species"),
+        ({}, "at least one species"),
+    ):
+        with pytest.raises(ValueError, match=message):
             model.predict(region, query)
 
 
@@ -333,6 +338,13 @@ def test_mlpe_prediction_rejects_individuals_before_computing_distances(
     individuals = replace(region, features=region.features * 0.0, individual_based=True)
     with pytest.raises(ValueError, match="individual-based"):
         model.predict(individuals)
+
+
+def test_support_requires_explicit_query_pairs(four_population_calibration, mlpe_calibrated_model):
+    region, observations, _ = four_population_calibration
+    support = observations.select_pairs(observations.observed_pairs[-1:])
+    with pytest.raises(ValueError, match="Support requires explicit query pairs"):
+        mlpe_calibrated_model.predict(region, support=support)
 
 
 def test_prediction_rejects_stateful_layers(BatchNormConductance, observation_problem):
