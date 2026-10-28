@@ -214,7 +214,7 @@ class _BatchNormConductance(ConductanceModel):
 
     distance_model: _PointConductance
     norm: eqx.nn.BatchNorm
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
 

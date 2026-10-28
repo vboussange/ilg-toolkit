@@ -41,7 +41,7 @@ class _Jitter(eqx.Module):
 class _JitteredEmbedding(EmbeddingDistanceModel):
     weight: jax.Array
     jitter: _Jitter
-    num_species: int = eqx.field(static=True, default=1)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
 
     def __init__(self, weight: jax.Array):
