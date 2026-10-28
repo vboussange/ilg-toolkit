@@ -9,7 +9,7 @@ from .calibration import (
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
 from .data import PairwiseObservations, RegionBatch, TargetSpec
-from .ensemble import aggregate_predictions, Ensemble, EnsemblePrediction, EnsembleSurface
+from .ensemble import Ensemble, EnsemblePrediction
 from .ibd import IBDModel
 from .losses import AbstractLoss, Log1pLoss, MLPELoss
 from .mlpe import calibrate_mlpe, MLPEError, RegionalMLPECalibration
@@ -26,7 +26,6 @@ __all__ = [
     "DirectCalibrationModule",
     "Ensemble",
     "EnsemblePrediction",
-    "EnsembleSurface",
     "IBDModel",
     "LandscapeGeneticsModel",
     "Log1pLoss",
@@ -42,7 +41,6 @@ __all__ = [
     "TargetSpec",
     "TrainingConfig",
     "TrainingState",
-    "aggregate_predictions",
     "calibrate",
     "calibrate_mlpe",
     "load_checkpoint",

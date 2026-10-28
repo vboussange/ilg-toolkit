@@ -11,17 +11,31 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from ilg_toolkit import (
+    LandscapeGeneticsModel,
     Log1pLoss,
     MLPECalibrationModule,
     MLPELoss,
     PairwiseObservations,
+    Prediction,
     RegionBatch,
     ResistanceSolverConfig,
     TargetSpec,
     train,
     TrainingConfig,
 )
-from ilg_toolkit.models import ConductanceModel, EmbeddingDistanceModel
+from ilg_toolkit.models import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
+
+
+def _single_species_prediction(
+    model: LandscapeGeneticsModel | AbstractDistanceModel,
+    region: RegionBatch,
+    name: str | None,
+    pairs: Sequence[tuple[str, str]] | None = None,
+) -> Prediction:
+    """A named species' prediction, or the prediction of an unnamed single-species model."""
+    if name is None:
+        return model.predict(region, pairs)
+    return model.predict(region, {name: pairs})[name]
 
 
 class _Jitter(eqx.Module):
@@ -233,11 +247,12 @@ def test_mlpe_updates_match_dense_reference(
         distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)
         np.fill_diagonal(distances, np.nan)
         np.testing.assert_allclose(
-            result.selected_model.distance_model.predict(
+            _single_species_prediction(
+                result.selected_model.distance_model,
                 region
                 if species is None
                 else replace(region, species=(species[groups_species[index]],) * unit_count),
-                species=None if species is None else species[groups_species[index]],
+                None if species is None else species[groups_species[index]],
             ).as_matrix(),
             distances,
             rtol=1e-8,
@@ -278,10 +293,11 @@ def test_mlpe_updates_match_dense_reference(
         query = (
             region if species is None else replace(region, species=(species[index],) * unit_count)
         )
-        predicted = result.selected_model.predict(
+        predicted = _single_species_prediction(
+            result.selected_model,
             query,
-            species=None if species is None else species[index],
-            pairs=observed.observed_pairs,
+            None if species is None else species[index],
+            observed.observed_pairs,
         )
         np.testing.assert_allclose(predicted.values, expected_values, atol=1e-8)
 
@@ -354,7 +370,7 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     expected_losses = []
     for index, (name, observed) in enumerate(zip(order, observed_groups, strict=True)):
         distances = np.asarray(
-            first.latest_model.distance_model.predict(region, species=name).as_matrix()
+            first.latest_model.distance_model.predict(region, {name: None})[name].as_matrix()
         )
         head = cast(MLPECalibrationModule, first.latest_model.calibration).for_region(
             region.name, index
@@ -591,8 +607,8 @@ def test_shared_embedding_update_matches_independent_equal_region_objective(
             assert set(result.history[0].training_by_region) == {"short", "wide"}
             for region in regions:
                 assert np.isfinite(
-                    result.selected_model.predict(
-                        region, species=None if species is None else "frog"
+                    _single_species_prediction(
+                        result.selected_model, region, None if species is None else "frog"
                     ).values
                 ).all()
         np.testing.assert_allclose(np.dot(probabilities, gradients), dense_gradient, rtol=1e-8)
@@ -820,7 +836,7 @@ def test_training_reads_species_names_from_the_distance_model(
     assert set(cast(dict, result.history[0].training_by_species)) == set(names)
     continued = train(region, observations, state=result, config=replace(config, steps=2))
     assert continued.selected_model.species == names
-    predictions = continued.selected_model.predict(region, species=names)
+    predictions = continued.selected_model.predict(region, dict.fromkeys(names))
     assert [prediction.species for prediction in predictions.values()] == list(names)
     with pytest.raises(ValueError, match="species"):
         train(
@@ -856,7 +872,7 @@ def test_training_reads_species_names_from_the_distance_model(
     assert named.history[0].training_by_species is None
     np.testing.assert_array_equal(
         named.selected_model.predict(labeled).values,
-        named.selected_model.predict(labeled, species="a").values,
+        named.selected_model.predict(labeled, {"a": None})["a"].values,
     )
 
 
@@ -869,7 +885,7 @@ def test_callback_models_keep_matching_distance_and_calibration_state(
     (left, right), targets = observations.aligned_pairs(region)
     for current in mlpe_embedding_fit.callbacks:
         model = current.latest_model
-        distances = model.distance_model.predict(region, pairs=observations.observed_pairs).values
+        distances = model.distance_model.predict(region, observations.observed_pairs).values
         calibration = cast(MLPECalibrationModule, model.calibration).for_region(region.name)
         nll, beta, effects, covariance = dense_profile(
             distances,

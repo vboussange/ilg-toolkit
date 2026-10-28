@@ -2,9 +2,9 @@
 
 from abc import abstractmethod
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from itertools import combinations
-from typing import cast, overload
+from typing import cast, final, overload
 
 import equinox as eqx
 import jax
@@ -24,6 +24,8 @@ from .common import _inference_model, pixel_to_patch_nodes
 
 # Sampling-unit vertices, followed by pairs indexing those sampling units.
 type DistancePairs = tuple[jax.Array, tuple[jax.Array, jax.Array]]
+# Ordered sampling-unit pairs, or ``None`` for every distinct pair.
+type _Pairs = Sequence[tuple[str, str]] | None
 
 
 class AbstractDistanceModel(eqx.Module):
@@ -58,8 +60,8 @@ class AbstractDistanceModel(eqx.Module):
     order compatible across regions. Sampling locations are integer
     ``(row, column)`` cells mapped to the vertex of their containing patch. During
     training, ``species_index`` may be a scalar integer array, so select species
-    parameters by array indexing. The inherited ``predict`` returns a
-    ``Prediction``, and ``train`` estimates the array-valued parameters with the
+    parameters by array indexing. The inherited ``predict`` returns ecological
+    distances for a ``query``, and ``train`` estimates the array-valued parameters with the
     chosen loss. See the experimental [multispecies example](../examples/multispecies.md)
     for species labels.
 
@@ -112,50 +114,46 @@ class AbstractDistanceModel(eqx.Module):
 
     @overload
     def predict(
-        self,
-        region: RegionBatch,
-        *,
-        species: str | None = None,
-        pairs: Sequence[tuple[str, str]] | None = None,
-    ) -> Prediction: ...
+        self, region: RegionBatch, query: Mapping[str, Sequence[tuple[str, str]] | None]
+    ) -> dict[str, Prediction]: ...
 
     @overload
     def predict(
-        self,
-        region: RegionBatch,
-        *,
-        species: Sequence[str],
-        pairs: Sequence[tuple[str, str]] | None = None,
-    ) -> dict[str, Prediction]: ...
+        self, region: RegionBatch, query: Sequence[tuple[str, str]] | None = None
+    ) -> Prediction: ...
 
     def predict(
         self,
         region: RegionBatch,
-        *,
-        species: str | Sequence[str] | None = None,
-        pairs: Sequence[tuple[str, str]] | None = None,
+        query: Mapping[str, Sequence[tuple[str, str]] | None]
+        | Sequence[tuple[str, str]]
+        | None = None,
     ) -> Prediction | dict[str, Prediction]:
-        """Ecological distances for query pairs of the selected species.
+        """Ecological distances for the queried species and sampling-unit pairs.
 
-        Omitted pairs request every distinct pair in sampling-unit order.
-        Species names come from the distance model's ``species``.
-        A species sequence returns a mapping and computes patch features once.
-        Explicit ``pairs`` limit the returned vector and avoid generating all
-        pair labels; this does not guarantee that an underlying resistance solver
-        avoids its distance matrix among sampling-unit vertices. Calling ``as_matrix()`` on the
-        result explicitly allocates a sampling-unit-square array.
+        ``query`` maps species names from the distance model's ``species`` to
+        ordered pairs, or to ``None`` for every distinct pair in sampling-unit
+        order, and returns a mapping of predictions by species in query order.
+        Patch features are computed once for every queried species. A
+        single-species model also accepts a sequence of pairs, or ``None`` for
+        every distinct pair, and returns one ``Prediction``. Unknown species, and
+        a sequence or ``None`` for a multispecies model, raise a ``ValueError``.
+
+        Explicit pairs limit the returned vector and avoid generating all pair
+        labels; this does not guarantee that an underlying resistance solver
+        avoids its distance matrix among sampling-unit vertices. Calling
+        ``as_matrix()`` on a result explicitly allocates a sampling-unit-square
+        array.
         """
         _require_float64()
-        selected = select_species(self.species, species)
+        requests, by_species = _resolve_query(self.species, query)
         results = {
             name: Prediction(values, labels, region.name, prepared.sampling_unit_ids, name)
             for name, (prepared, labels, values) in _species_distances(
-                self, region, selected, pairs
+                self, region, requests
             ).items()
         }
-        if isinstance(species, str) or species is None:
-            return results[selected[0][0]]
-        return cast(dict[str, Prediction], results)
+        return _query_results(results, by_species)
 
 
 class ConductanceModel(AbstractDistanceModel):
@@ -195,48 +193,21 @@ class ConductanceModel(AbstractDistanceModel):
         surface = self.conductance(latent, species_index)
         return effective_resistance(surface, nodes, context=context)[indices]
 
-    @overload
-    def conductance_surface(
-        self,
-        region: RegionBatch,
-        *,
-        species: str | None = None,
-    ) -> jax.Array: ...
+    def conductance_surface(self, region: RegionBatch, species: str | None = None) -> jax.Array:
+        """Positive conductance surface of one species, requested by name.
 
-    @overload
-    def conductance_surface(
-        self,
-        region: RegionBatch,
-        *,
-        species: Sequence[str],
-    ) -> dict[str, jax.Array]: ...
-
-    def conductance_surface(
-        self,
-        region: RegionBatch,
-        *,
-        species: str | Sequence[str] | None = None,
-    ) -> jax.Array | dict[str, jax.Array]:
-        """Positive conductance surfaces for the selected species.
-
-        Species names come from the distance model's ``species``. A species
-        sequence returns a mapping and computes patch features once.
+        ``species`` is one of the distance model's ``species``; a single-species
+        model needs no name.
         """
         _require_float64()
-        selected = select_species(self.species, species)
+        index = _species_index(self.species, species)
         model = _inference_model(self)
-        latent = model.backbone(region.feature_array)
-        results = {}
-        for name, index in selected:
-            surface = model.conductance(latent, index)
-            results[name] = eqx.error_if(
-                surface,
-                jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
-                "Distance model produced nonfinite or nonpositive conductance",
-            )
-        if isinstance(species, str) or species is None:
-            return results[selected[0][0]]
-        return cast(dict[str, jax.Array], results)
+        surface = model.conductance(model.backbone(region.feature_array), index)
+        return eqx.error_if(
+            surface,
+            jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
+            "Distance model produced nonfinite or nonpositive conductance",
+        )
 
 
 class EmbeddingDistanceModel(AbstractDistanceModel):
@@ -275,25 +246,71 @@ def _model_species(model: AbstractDistanceModel) -> tuple[str | None, ...]:
     return (None,) if model.species is None else model.species
 
 
-def select_species(
-    order: tuple[str, ...] | None, selection: str | Sequence[str] | None
-) -> tuple[tuple[str | None, int], ...]:
-    """Selected species names and their parameter row indices."""
-    if selection is None:
-        if order is not None and len(order) != 1:
-            raise ValueError("Multispecies queries require a species selection")
-        return ((None if order is None else order[0], 0),)
-    names = (selection,) if isinstance(selection, str) else selection
-    if (
-        isinstance(names, (str, bytes))
-        or not isinstance(names, Sequence)
-        or not names
-        or order is None
-        or any(not isinstance(name, str) or name not in order for name in names)
-        or len(set(names)) != len(names)
-    ):
-        raise ValueError("Species selection must contain unique names from the model's species")
-    return tuple((name, order.index(name)) for name in names)
+@final
+@dataclass(frozen=True)
+class _SpeciesQuery:
+    """One queried species: its name, parameter row, and pairs (``None`` for every pair)."""
+
+    name: str | None
+    index: int
+    pairs: tuple[tuple[str, str], ...] | None
+
+
+def _species_index(species: tuple[str, ...] | None, name: str | None) -> int:
+    """Parameter row of a named species; ``None`` names a single-species model's species."""
+    if name is None:
+        if species is not None and len(species) > 1:
+            raise ValueError(f"Multispecies models require a species name from {species!r}")
+        return 0
+    if species is None or name not in species:
+        raise ValueError(f"Unknown species {name!r}; the distance model's species are {species!r}")
+    return species.index(name)
+
+
+def _query_pairs_or_all(pairs: object) -> tuple[tuple[str, str], ...] | None:
+    """One species' query pairs as a tuple, or ``None`` for every distinct pair."""
+    if pairs is None:
+        return None
+    if isinstance(pairs, (str, bytes)) or not isinstance(pairs, Sequence):
+        raise ValueError("Query pairs must be a sequence of sampling-unit pairs or None")
+    return tuple(cast(Sequence[tuple[str, str]], pairs))
+
+
+def _resolve_query(
+    species: tuple[str, ...] | None, query: Mapping[str, _Pairs] | _Pairs
+) -> tuple[tuple[_SpeciesQuery, ...], bool]:
+    """Queried species in query order, and whether results are keyed by species.
+
+    A mapping names species from ``species`` and returns results by species. A
+    sequence of pairs, or ``None``, queries the only species of a single-species
+    model and returns one result.
+    """
+    if isinstance(query, Mapping):
+        if not query:
+            raise ValueError("A species query must name at least one species")
+        requests = []
+        for name, pairs in query.items():
+            if not isinstance(name, str):
+                raise ValueError(f"Query species must be names, got {name!r}")
+            requests.append(
+                _SpeciesQuery(name, _species_index(species, name), _query_pairs_or_all(pairs))
+            )
+        return tuple(requests), True
+    if species is not None and len(species) != 1:
+        raise ValueError(
+            "Multispecies models require a query mapping species names to pairs, "
+            f"with species from {species!r}"
+        )
+    name = None if species is None else species[0]
+    return (_SpeciesQuery(name, 0, _query_pairs_or_all(query)),), False
+
+
+def _query_results[T](results: Mapping[str | None, T], by_species: bool) -> T | dict[str, T]:
+    """Results by species for a species query, or the single result otherwise."""
+    if by_species:
+        return cast(dict[str, T], dict(results))
+    (result,) = results.values()
+    return result
 
 
 def region_for_species(region: RegionBatch, name: str | None) -> RegionBatch:
@@ -332,11 +349,10 @@ def _query_pairs(
 def _species_distances(
     model: AbstractDistanceModel,
     region: RegionBatch,
-    selected: tuple[tuple[str | None, int], ...],
-    pairs: Sequence[tuple[str, str]] | None,
+    requests: tuple[_SpeciesQuery, ...],
     extra_pairs: Mapping[str | None, tuple[tuple[str, str], ...]] | None = None,
 ) -> dict[str | None, tuple[RegionBatch, tuple[tuple[str, str], ...], jax.Array]]:
-    """Each selected species' region batch, query pair labels, and ecological distances.
+    """Each queried species' region batch, query pair labels, and ecological distances.
 
     Patch features and the resistance solver are prepared once, in inference
     mode. ``extra_pairs`` appends a species' additional pairs after its query
@@ -348,14 +364,14 @@ def _species_distances(
     context = prepare_distance_context(model, region.feature_array)
     latent = model.backbone(region.feature_array)
     results = {}
-    for name, index in selected:
-        prepared = region_for_species(region, name)
-        extra = () if extra_pairs is None else extra_pairs.get(name, ())
-        query = _query_pairs(prepared, pairs)[0] + extra if extra else pairs
+    for request in requests:
+        prepared = region_for_species(region, request.name)
+        extra = () if extra_pairs is None else extra_pairs.get(request.name, ())
+        pairs = _query_pairs(prepared, request.pairs)[0] + extra if extra else request.pairs
         labels, values = query_distances_from_latent(
-            model, latent, prepared, query, species_index=index, context=context
+            model, latent, prepared, pairs, species_index=request.index, context=context
         )
-        results[name] = (prepared, labels, values)
+        results[request.name] = (prepared, labels, values)
     return results
 
 

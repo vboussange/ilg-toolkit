@@ -120,11 +120,12 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
     resumed = train(regions[::-1], targets[::-1], state=restored, validation=validation)
     assert eqx.tree_equal(resumed, uninterrupted)
     for prepared in regions:
-        for name in scenario.distance_model.species or (None,):
-            np.testing.assert_array_equal(
-                resumed.selected_model.predict(prepared, species=name).values,
-                uninterrupted.selected_model.predict(prepared, species=name).values,
-            )
+        species = scenario.distance_model.species
+        query = None if species is None else dict.fromkeys(species)
+        assert eqx.tree_equal(
+            resumed.selected_model.predict(prepared, query),
+            uninterrupted.selected_model.predict(prepared, query),
+        )
     if validation is not None and scenario.distance_model.species is None:
         # A completed budget returns the saved state without further updates.
         save_checkpoint(path, resumed)

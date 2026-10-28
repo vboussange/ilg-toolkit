@@ -47,7 +47,7 @@ def test_selected_and_complete_predictions_share_pair_contract_and_matrix_order(
 ):
     region, target, distance_model = observation_problem()
     model = LandscapeGeneticsModel(distance_model, DirectCalibrationModule(target), 2)
-    selected = model.predict(region, pairs=[("unit/99", "unit/7")])
+    selected = model.predict(region, [("unit/99", "unit/7")])
     assert selected.region_name == region.name
     assert selected.sampling_unit_ids == region.sampling_unit_ids
     assert selected.pairs == (("unit/99", "unit/7"),)
@@ -61,5 +61,5 @@ def test_selected_and_complete_predictions_share_pair_contract_and_matrix_order(
     np.testing.assert_allclose(complete.values, [0.49, 1.96, 0.49])
     relatedness = LandscapeGeneticsModel(
         distance_model, DirectCalibrationModule(TargetSpec("relatedness", kind="relatedness")), 2
-    ).predict(region, pairs=[("unit/99", "unit/7")])
+    ).predict(region, [("unit/99", "unit/7")])
     np.testing.assert_allclose(relatedness.as_matrix(), selected.as_matrix())

@@ -121,7 +121,7 @@ for name, value in zip(
     FEATURE_CLASSES, state.selected_model.distance_model.coefficients[0].tolist(), strict=True
 ):
     print(f"  {name}: {value:+.3f}")
-prediction = state.selected_model.predict(region, pairs=observations.observed_pairs)
+prediction = state.selected_model.predict(region, observations.observed_pairs)
 for pair, predicted, observed in list(
     zip(prediction.pairs, prediction.values, observations.observed_values, strict=True)
 )[:3]:

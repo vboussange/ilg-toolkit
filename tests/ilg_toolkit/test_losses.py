@@ -18,5 +18,5 @@ def test_direct_loss_trains_without_statistical_parameters(
     )
     assert state.loss_state is None
     assert state.history[-1].training_loss < state.history[0].training_loss
-    prediction = state.selected_model.predict(regions[0], pairs=observations[0].observed_pairs)
+    prediction = state.selected_model.predict(regions[0], observations[0].observed_pairs)
     assert np.isfinite(prediction.values).all()

@@ -190,7 +190,7 @@ def calibrate(
             refitted = calibrate(region, observations,
                                  state.selected_model.distance_model, loss=loss,
                                  max_iterations=2000)
-            prediction = refitted.predict(region, pairs=query_pairs)
+            prediction = refitted.predict(region, query_pairs)
 
         For parameter-free direct prediction, use ``loss=Log1pLoss()`` and omit
         ``max_iterations``. For updating only population effects of an existing MLPE
