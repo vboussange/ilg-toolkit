@@ -1,4 +1,4 @@
-"""Inverse landscape genetics toolkit."""
+"""ILG Toolkit: inverse landscape genetics (ILG) in JAX."""
 
 from .calibration import (
     AbstractCalibrationHead,

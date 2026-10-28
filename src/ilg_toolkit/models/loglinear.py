@@ -14,7 +14,7 @@ import numpy as np
 from .._checks import _positive_integer, _require_float64
 from .._training_utils import _prepare_training_inputs
 from ..config import ResistanceSolverConfig
-from ..data import ObservationCollection, RegionBatch, RegionCollection
+from ..data import _ObservationCollection, _RegionCollection, RegionBatch
 from ..losses import AbstractLoss
 from ..resistance import effective_resistance
 from .base import (
@@ -143,8 +143,8 @@ class LogLinearConductance(ConductanceModel):
 
 def initialize_uniform_conductance(
     model: LogLinearConductance,
-    region: RegionCollection,
-    observations: ObservationCollection,
+    region: _RegionCollection,
+    observations: _ObservationCollection,
     loss: AbstractLoss,
 ) -> LogLinearConductance:
     """A log-linear patch encoder started at the best uniform conductance.

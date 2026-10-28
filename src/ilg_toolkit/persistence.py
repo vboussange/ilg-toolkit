@@ -1,7 +1,4 @@
-"""Landscape genetics models saved as Equinox files with prediction metadata.
-
-Calibration heads are direct or maximum-likelihood population effects (MLPE).
-"""
+"""Saved landscape genetics models: Equinox files with a JSON metadata header."""
 
 import json
 import os
@@ -26,22 +23,26 @@ from .models.base import _model_species, _species_names
 
 
 class ArtifactError(ValueError):
-    """An incompatible saved model, checkpoint, or loading template."""
+    """Error raised for an incompatible saved model, checkpoint or loading template."""
 
 
 def _is_typed_key(leaf) -> bool:
+    """Returns whether ``leaf`` is a typed JAX random key."""
     return isinstance(leaf, jax.Array) and jnp.issubdtype(leaf.dtype, jax.dtypes.prng_key)
 
 
 def _key_data(tree):
-    """The tree with typed random keys replaced by their raw key data, which NumPy can store."""
+    """Returns the tree with typed random keys replaced by their raw key data."""
     return jax.tree.map(
         lambda leaf: jax.random.key_data(leaf) if _is_typed_key(leaf) else leaf, tree
     )
 
 
 def _write_native(path, tree, *, kind, metadata):
-    """Atomic storage of metadata and model arrays, retaining the previous file if writing fails."""
+    """Writes the metadata header and the tree's arrays to ``path`` atomically.
+
+    A failed write keeps the previous file.
+    """
     tree = _key_data(tree)
     arrays = [
         (index, leaf)
@@ -73,7 +74,7 @@ def _write_native(path, tree, *, kind, metadata):
 
 
 def _read_native(stream, template, weak_leaves):
-    """Saved leaves loaded into a template, with the weak types recorded when saving."""
+    """Reads saved leaves into a template, restoring the weak types recorded when saving."""
     loaded = eqx.tree_deserialise_leaves(stream, _key_data(template))
     leaves, structure = jax.tree.flatten(loaded)
     for index in weak_leaves:
@@ -92,8 +93,11 @@ def _read_native(stream, template, weak_leaves):
 
 
 def _weakly_typed(leaf):
-    # Only Python scalars create weak types publicly: write the values into
-    # weakly typed zeros of the same kind, whose dtype follows the current precision.
+    """Returns ``leaf`` as a weakly typed array of the same dtype.
+
+    Python scalars are the only public way to create weak types, so the values are
+    written into weakly typed zeros, whose dtype follows the current precision.
+    """
     zeros = jax.lax.full(leaf.shape, leaf.dtype.type(0).item())
     if not zeros.weak_type or zeros.dtype != leaf.dtype:
         raise ArtifactError(
@@ -103,7 +107,7 @@ def _weakly_typed(leaf):
 
 
 def _read_header(stream, *, kind):
-    """Metadata and weakly typed leaves, after checking the format and file kind."""
+    """Returns the metadata and weakly typed leaf indices after checking the file kind."""
     try:
         header = json.loads(stream.readline())
     except (ValueError, UnicodeError) as error:
@@ -119,7 +123,7 @@ def _read_header(stream, *, kind):
 
 
 def _model_metadata(model):
-    """Target, feature, species and calibration-head metadata for a saved model."""
+    """Returns the target, feature, species and calibration-head metadata of a model."""
     head = model.calibration_head
     if isinstance(head, DirectCalibrationHead):
         calibration_head = {"kind": "direct"}
@@ -154,7 +158,7 @@ def _model_metadata(model):
 
 
 def _calibration_template(metadata) -> MLPECalibration:
-    """An MLPE calibration with the saved identities and settings and placeholder values."""
+    """Returns an MLPE calibration template with the saved identities and settings."""
     loss = MLPELoss(**metadata["loss"])
     population_ids = tuple(metadata["population_ids"])
     count = len(population_ids)
@@ -178,6 +182,7 @@ def _calibration_template(metadata) -> MLPECalibration:
 
 
 def _model_template(metadata, distance_model):
+    """Returns a landscape genetics model template from saved metadata and a distance model."""
     target = TargetSpec(**metadata["target"])
     species = None if metadata["species"] is None else tuple(metadata["species"])
     if len(_model_species(distance_model)) != (1 if species is None else len(species)):
@@ -218,66 +223,61 @@ def _model_template(metadata, distance_model):
     )
 
 
-def save_model(path, model: LandscapeGeneticsModel) -> None:
-    """Save a fitted model and its prediction contract atomically.
+def save_model(path: str | os.PathLike[str], model: LandscapeGeneticsModel) -> None:
+    """Saves a landscape genetics model to an Equinox file atomically.
 
-    The Equinox file retains distance parameters, the direct or MLPE calibration
-    head with its target contract, species, feature names, and the region, species
-    and calibration-pair identities of each MLPE calibration. Compatible custom
-    distance models use the same template protocol. Files contain a small JSON
-    metadata header followed by serialized array values.
-
-    The destination parent directory must exist. Writing and flushing a temporary
-    file precedes atomic replacement; a failed write preserves the previous file.
-    Save each ensemble member separately. See ``save_checkpoint`` when optimizer
-    and random state are needed for continuation.
+    The file holds a JSON metadata header followed by the model's arrays: distance
+    model parameters, the direct or MLPE calibration head with its target contract,
+    species, feature names, and the region, species and calibration pairs of each
+    MLPE calibration. The write goes to a temporary file that atomically replaces
+    the destination, so a failed write keeps the previous file. Custom distance
+    models are saved the same way. Each ensemble member is saved separately;
+    [`save_checkpoint`][ilg_toolkit.save_checkpoint] also saves the optimizer and
+    random state for continuing training.
 
     Args:
-        path (str | Path): Destination model file in an existing directory.
-        model: Fitted landscape genetics model to save.
+        path: Destination file in an existing directory.
+        model: Landscape genetics model to save.
 
     Raises:
-        ArtifactError: The supplied object is not a landscape genetics model.
+        ArtifactError: If ``model`` is not a landscape genetics model or holds an
+            unsupported calibration head.
 
     Examples:
         >>> save_model("analysis.eqx", state.selected_model)
-        >>> restored = load_model("analysis.eqx", distance_model=matching_template)
+        >>> restored = load_model("analysis.eqx", distance_model=template)
         >>> prediction = restored.predict(region, query_pairs)
 
-        The [multispecies workflow](../examples/multispecies.md) constructs a
-        matching template for model loading; the
-        [ensemble workflow](../examples/ensemble.md) demonstrates checkpoint continuation.
+        The [multispecies example](../examples/multispecies.md) builds the
+        distance-model template for loading.
     """
     if not isinstance(model, LandscapeGeneticsModel):
-        raise ArtifactError("save_model requires a fitted LandscapeGeneticsModel")
+        raise ArtifactError("save_model requires a LandscapeGeneticsModel")
     _write_native(path, model, kind="model", metadata=_model_metadata(model))
 
 
-def load_model(path, *, distance_model: AbstractDistanceModel) -> LandscapeGeneticsModel:
-    """A saved landscape genetics model loaded using a caller-constructed distance model.
+def load_model(
+    path: str | os.PathLike[str], *, distance_model: AbstractDistanceModel
+) -> LandscapeGeneticsModel:
+    """Loads a saved landscape genetics model into a distance-model template.
 
-    The template supplies the model class, static settings, and compatible
-    numerical shapes and dtypes. Match patch size, patch microbatch size, dropout,
-    species count, and custom activation functions. Initial parameter values may
-    differ. Saved parameters, species names and conductance solver settings replace
-    the template's values; solver preparation is rebuilt for each region.
-
-    Equinox checks array structure, shapes, and dtypes; incompatible
-    artifacts or templates raise ``ArtifactError``. Static settings supplied by
-    the caller remain part of the model contract, so retain the original constructor
-    settings alongside the artifact.
+    The template supplies the distance model's class, static settings, array shapes
+    and dtypes: build it with the original constructor settings (patch size, patch
+    microbatch size, dropout, species count and activation functions). Its
+    parameter values may differ. The saved parameters, species names and solver
+    settings replace the template's.
 
     Args:
-        path (str | Path): Model file previously written by ``save_model``.
-        distance_model: Template matching the saved model's class, static settings,
-            array shapes, and dtypes.
+        path: File written by [`save_model`][ilg_toolkit.save_model].
+        distance_model: Distance-model template matching the saved model's class,
+            static settings, array shapes and dtypes.
 
     Returns:
-        The saved model with its calibration head and prediction contract.
+        The saved landscape genetics model.
 
     Raises:
-        ArtifactError: The artifact or supplied template is incompatible.
-        RuntimeError: Float64 is disabled.
+        ArtifactError: If the file or the template is incompatible.
+        RuntimeError: If float64 is disabled.
     """
     _require_float64()
     try:

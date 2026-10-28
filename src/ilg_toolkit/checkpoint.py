@@ -1,5 +1,6 @@
-"""Training checkpoints saved as Equinox files for continuing optimization."""
+"""Checkpoints: saved training states for continuing training."""
 
+import os
 from dataclasses import asdict, fields
 from pathlib import Path
 
@@ -22,38 +23,32 @@ from .persistence import (
 from .training import _optimizer_state_signature, _validate_state, StepRecord, TrainingState
 
 
-def save_checkpoint(path, state: TrainingState) -> None:
-    """Atomic storage of the latest training state and selected fitted model.
+def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
+    """Saves a training state to a checkpoint file atomically.
 
+    The checkpoint holds the latest parameters, statistical parameter state,
+    optimizer and random state, history, training configuration, convergence,
+    training and validation groups, and the latest and selected models. It holds
+    no optimizer, observations or rasters: [`load_checkpoint`][ilg_toolkit.load_checkpoint]
+    takes the optimizer, and continuation takes the original inputs. The write
+    goes to a temporary file that atomically replaces the destination, so a
+    failed write keeps the previous file.
     ``train(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
-    initialization and each update. Statistical parameters, optimizer/random state,
-    and the selected model retain their respective training steps. History,
-    configuration, convergence, loss-specific state, and training/validation group
-    identities are included. The optimizer itself is not stored, because optax
-    optimizers are functions; ``load_checkpoint`` takes it like the distance-model
-    template. The parent directory must exist; writes atomically replace the
-    destination after flushing a temporary file.
-
-    ``state.latest_model`` matches the current distance and statistical parameters;
-    continuation uses those parameters with optimizer and random state.
-    ``state.selected_model`` is the evaluated fitted model retained for prediction,
-    and can come from an earlier step. Supply the original inputs and validation
-    arguments when resuming.
+    initialization and after each update.
 
     Args:
-        path (str | Path): Destination checkpoint file in an existing directory.
-        state: Training state returned by ``train``.
+        path: Destination file in an existing directory.
+        state: Training state returned by [`train`][ilg_toolkit.train].
 
     Raises:
-        ArtifactError: The state is incompatible with checkpoint persistence.
-
-    Notes:
-        No observation data or rasters are embedded in the checkpoint.
+        ArtifactError: If ``state`` is not a training state.
+        ValueError: If the state's steps or history are inconsistent, or its loss is
+            not [`Log1pLoss`][ilg_toolkit.Log1pLoss] or [`MLPELoss`][ilg_toolkit.MLPELoss].
 
     Examples:
         >>> save_checkpoint("training.eqx", state)
         >>> restored = load_checkpoint(
-        ...     "training.eqx", distance_model=distance_model_template, optimizer=optax.adam(1e-3)
+        ...     "training.eqx", distance_model=template, optimizer=optax.adam(1e-3)
         ... )
         >>> continued = train(region, observations, state=restored,
         ...                   config=dataclasses.replace(restored.config, steps=1000))
@@ -81,40 +76,37 @@ def save_checkpoint(path, state: TrainingState) -> None:
 
 
 def load_checkpoint(
-    path, *, distance_model: AbstractDistanceModel, optimizer: optax.GradientTransformation
+    path: str | os.PathLike[str],
+    *,
+    distance_model: AbstractDistanceModel,
+    optimizer: optax.GradientTransformation,
 ) -> TrainingState:
-    """A saved training state restored with caller-supplied distance model and optimizer.
+    """Loads a training state from a checkpoint file.
 
-    The distance-model template supplies the model class, static settings, numerical
-    shapes, and dtypes. The optimizer rebuilds the optimizer-state template, which must
-    have the saved state's structure (leaf paths, shapes and dtypes); it becomes the
-    restored configuration's optimizer. Continuation uses unchanged inputs and
-    execution settings, allowing only the total step budget to increase and the
-    optimizer to change while keeping its state's structure. The built-in loss
-    reconstructs its own statistical-state template from checkpoint metadata.
-    Checkpoint persistence supports built-in losses; custom distance models still use
-    caller-constructed templates.
-
-    Match the original model's static settings (including patch size, species count,
-    dropout, and patch microbatch size). Reproducible continuation also requires
-    the same inputs, observations, validation arguments, library versions, device,
-    and execution settings. An already-exhausted unchanged budget returns the saved
-    state. See ``save_checkpoint`` and the [ensemble workflow](../examples/ensemble.md)
-    for continuation examples.
+    The distance-model template supplies the distance model's class, static
+    settings, array shapes and dtypes: build it with the original constructor
+    settings (patch size, patch microbatch size, dropout, species count and
+    activation functions). The optimizer rebuilds the optimizer-state template,
+    whose leaf paths, shapes and dtypes match the saved optimizer state, and becomes
+    the optimizer of the restored training configuration. Continuing with the
+    original inputs, validation arguments, library versions, device and execution
+    settings reproduces the uninterrupted run; continuation accepts a larger step
+    budget and an optimizer whose state has the saved structure. Continuing with
+    the saved step budget returns the saved state.
 
     Args:
-        path (str | Path): Checkpoint file previously written by ``save_checkpoint``.
-        distance_model: Template matching the saved model's class, static settings,
-            array shapes, and dtypes.
+        path: File written by [`save_checkpoint`][ilg_toolkit.save_checkpoint].
+        distance_model: Distance-model template matching the saved model's class,
+            static settings, array shapes and dtypes.
         optimizer: Optax optimizer whose state matches the saved optimizer state,
-            usually the optimizer the checkpoint was trained with.
+            such as the optimizer the checkpoint was trained with.
 
     Returns:
-        Training state containing its latest parameters, selected model, and history.
+        The saved training state.
 
     Raises:
-        ArtifactError: The artifact or supplied template is incompatible.
-        RuntimeError: Float64 is disabled.
+        ArtifactError: If the file, the template or the optimizer is incompatible.
+        RuntimeError: If float64 is disabled.
     """
     _require_float64()
     try:
@@ -133,7 +125,7 @@ def load_checkpoint(
                 raise ArtifactError(
                     "The supplied optimizer's state does not match the checkpoint's optimizer "
                     "state (leaf paths, shapes and dtypes); supply an optimizer with the same "
-                    "state structure, such as the one the checkpoint was trained with"
+                    "state structure, such as the optimizer the checkpoint was trained with"
                 )
             history = tuple(StepRecord(**record) for record in metadata["history"])
             if not 1 <= len(history) <= config.steps + 1:
