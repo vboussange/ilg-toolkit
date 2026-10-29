@@ -20,7 +20,7 @@ from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
 from ..resistance import _effective_resistance, _resistance_context, _ResistanceSolverContext
-from .common import _inference_model, _pixel_to_patch_nodes
+from .common import _backbone, _inference_model, _pixel_to_patch_nodes
 
 
 # Ordered sampling-unit pairs, or ``None`` for every distinct pair.
@@ -157,10 +157,11 @@ class AbstractDistanceModel(eqx.Module):
     ) -> Prediction | dict[str, Prediction]:
         """Predicts ecological distances for the queried species and sampling-unit pairs.
 
-        The backbone output is computed once for every queried species. Explicit
-        pairs limit the returned values and the pair labels generated; for patch
-        encoders, the effective-resistance layer still computes effective
-        resistances among every sampling-unit vertex.
+        The backbone output is computed once for every queried species, and each
+        species' ecological distances once between every pair of its sampling
+        units; a pair and its reversal read the same distance. Explicit pairs limit
+        the returned values and the pair labels generated, and every pair selection
+        on regions of the same shape reuses the same compiled programs.
         ``as_matrix()`` on a result allocates a square array over sampling units.
 
         Args:
@@ -276,12 +277,7 @@ class ConductanceModel(AbstractDistanceModel):
         index = _species_index(self.species, species)
         _check_regions(self, (region,))
         model = _inference_model(self)
-        surface = model.conductance(model.backbone(region.feature_array), index)
-        surface = eqx.error_if(
-            surface,
-            jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
-            "Distance model produced nonfinite or nonpositive conductance",
-        )
+        surface = _checked_conductance(model, _backbone(model, region.feature_array, None), index)
         return cx.field(
             surface,
             _patch_axis(region.features.axes.get("row"), "row", self.patch_size),
@@ -571,8 +567,8 @@ def _query_pairs(
             f"Query pairs name sampling units absent from region {region.name!r}: "
             + ", ".join(unknown)
         )
-    indices = jnp.asarray([(lookup[a], lookup[b]) for a, b in labels], dtype=jnp.int32)
-    return labels, (indices[:, 0], indices[:, 1])
+    indices = np.asarray([(lookup[a], lookup[b]) for a, b in labels], dtype=np.int32)
+    return labels, (jnp.asarray(indices[:, 0]), jnp.asarray(indices[:, 1]))
 
 
 def _species_distances(
@@ -591,7 +587,7 @@ def _species_distances(
     _check_regions(model, (region,))
     model = _inference_model(model)
     context = _prepare_distance_context(model, region.feature_array)
-    latent = model.backbone(region.feature_array)
+    latent = _backbone(model, region.feature_array, None)
     results = {}
     for request in requests:
         prepared = regions[request.name]
@@ -648,23 +644,67 @@ def _query_distances_from_latent(
     species_index: int | jax.Array,
     context: _ResistanceSolverContext | None,
 ) -> tuple[tuple[tuple[str, str], ...], jax.Array]:
-    """Returns query pair labels and checked ecological distances for one species."""
-    labels, indices = _query_pairs(region, pairs)
+    """Returns query pair labels and checked ecological distances for one species.
+
+    One compiled program computes the ecological distances between every pair of
+    the region's sampling units; pair selections on regions of the same shape
+    reuse it.
+    """
+    labels, (left, right) = _query_pairs(region, pairs)
+    raster_shape = (region.feature_array.shape[0], region.feature_array.shape[1])
+    matrix = _distance_matrix(
+        model, latent, region.pixel_nodes, raster_shape, species_index, context
+    )
+    return labels, _pair_distances(matrix, left, right)
+
+
+@eqx.filter_jit
+def _distance_matrix(
+    model: AbstractDistanceModel,
+    latent: jax.Array,
+    pixel_nodes: jax.Array,
+    raster_shape: tuple[int, int],
+    species_index: int | jax.Array,
+    context: _ResistanceSolverContext | None,
+) -> jax.Array:
+    """Computes one species' symmetric matrix of ecological distances between sampling units."""
+    count = pixel_nodes.shape[0]
+    left, right = np.triu_indices(count, 1)
     values = _distances_from_latent(
         model,
         latent,
-        region.pixel_nodes,
-        indices,
-        raster_shape=(region.feature_array.shape[0], region.feature_array.shape[1]),
+        pixel_nodes,
+        (jnp.asarray(left), jnp.asarray(right)),
+        raster_shape=raster_shape,
         species_index=species_index,
         context=context,
     )
-    values = eqx.error_if(
+    matrix = jnp.zeros((count, count), values.dtype).at[left, right].set(values)
+    return matrix + matrix.T
+
+
+@eqx.filter_jit
+def _pair_distances(matrix: jax.Array, left: jax.Array, right: jax.Array) -> jax.Array:
+    """Returns the checked ecological distances of pairs of sampling units from their matrix."""
+    values = matrix[left, right]
+    return eqx.error_if(
         values,
         jnp.any(~jnp.isfinite(values) | (values < 0)),
         "Distance model produced nonfinite or negative ecological distances",
     )
-    return labels, values
+
+
+@eqx.filter_jit
+def _checked_conductance(
+    model: ConductanceModel, latent: jax.Array, species_index: int
+) -> jax.Array:
+    """Computes one species' conductance surface, checked to be finite and positive."""
+    surface = model.conductance(latent, species_index)
+    return eqx.error_if(
+        surface,
+        jnp.any(~jnp.isfinite(surface) | (surface <= 0)),
+        "Distance model produced nonfinite or nonpositive conductance",
+    )
 
 
 def _distances_from_latent(

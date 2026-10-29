@@ -22,6 +22,7 @@ class MLPEError(ValueError):
     """An error raised for an invalid or numerically unusable MLPE calibration."""
 
 
+@eqx.filter_jit
 def _raw_from_log_variances(log_variances):
     """Returns the raw variance parameters whose softplus equals ``exp(log_variances)``."""
     variances = jnp.exp(log_variances)
@@ -129,8 +130,8 @@ class MLPECalibration(eqx.Module):
         if (
             self.effect_mean.shape != (n,)
             or self.effect_covariance.shape != (n, n)
-            or not bool(jnp.isfinite(self.effect_mean).all())
-            or not bool(jnp.isfinite(self.effect_covariance).all())
+            or not np.isfinite(self.effect_mean).all()
+            or not np.isfinite(self.effect_covariance).all()
         ):
             raise MLPEError(
                 "MLPE calibration population-effect posterior must be finite and aligned"
@@ -193,31 +194,33 @@ def _fit_mlpe(
     nonfinite inputs, constant distances and unsupported variance ratios raise
     ``MLPEError``.
     """
-    distances = jnp.asarray(distances, dtype=jnp.float64)
+    # The optimizer's starts and bounds are prepared in NumPy on the host, compiling
+    # no XLA program for new shapes; the compiled kernels evaluate the likelihood.
+    distances = np.asarray(distances, dtype=np.float64)
     pairs = observations.observed_pairs
-    targets = observations.target.forward(
-        jnp.asarray(observations.observed_values, dtype=jnp.float64)
+    targets = np.asarray(
+        observations.target.forward(jnp.asarray(observations.observed_values, dtype=jnp.float64))
     )
-    if distances.shape != (len(pairs),) or not bool(jnp.isfinite(distances).all()):
+    if distances.shape != (len(pairs),) or not np.isfinite(distances).all():
         raise MLPEError("Calibration distances must be finite and aligned with observed_pairs")
-    center, scale = float(jnp.mean(distances)), float(jnp.std(distances, ddof=1))
+    center, scale = float(np.mean(distances)), float(np.std(distances, ddof=1))
     if not math.isfinite(scale) or scale <= loss.min_distance_scale:
         raise MLPEError("Calibration distances are constant or ill-scaled; singular GLS design")
-    design = jnp.column_stack((jnp.ones(len(distances)), (distances - center) / scale))
+    design = np.column_stack((np.ones(len(distances)), (distances - center) / scale))
     observed = {endpoint for pair in pairs for endpoint in pair}
     population_ids = tuple(label for label in observations.sampling_unit_ids if label in observed)
     lookup = {label: index for index, label in enumerate(population_ids)}
-    left = jnp.asarray([lookup[a] for a, b in pairs], dtype=jnp.int32)
-    right = jnp.asarray([lookup[b] for a, b in pairs], dtype=jnp.int32)
-    ols_beta = jnp.linalg.lstsq(design, targets, rcond=None)[0]
+    left = np.asarray([lookup[a] for a, b in pairs], dtype=np.int32)
+    right = np.asarray([lookup[b] for a, b in pairs], dtype=np.int32)
+    ols_beta = np.linalg.lstsq(design, targets, rcond=None)[0]
     response_variance = max(
-        float(jnp.var(targets - design @ ols_beta, ddof=1)), loss.variance_floor * 100
+        float(np.var(targets - design @ ols_beta, ddof=1)), loss.variance_floor * 100
     )
     bounds = [(math.log(loss.variance_floor), math.log(max(response_variance * 1e6, 1e4)))] * 2
 
     # Decode the fitted log variances through softplus while retaining the
     # variance floor and numerical precision near that floor.
-    kernel_inputs = distances, targets, left, right
+    kernel_inputs = tuple(map(jnp.asarray, (distances, targets, left, right)))
     kernel_options = dict(
         n_populations=len(population_ids),
         distance_center=center,
@@ -265,8 +268,8 @@ def _fit_mlpe(
     fit = _finalize_mlpe_fit(*kernel_inputs, raw_variances=raw, **kernel_options)
     # Retain the fitted variances: rounding during inverse softplus can place
     # reconstructed values slightly below the configured variance floor.
-    fit = fit._replace(variances=jnp.exp(jnp.asarray(result.x)))
-    if not all(bool(jnp.isfinite(value).all()) for value in jax.tree.leaves(fit)):
+    fit = fit._replace(variances=np.exp(result.x))
+    if not all(np.isfinite(value).all() for value in jax.tree.leaves(fit)):
         raise MLPEError("Fitted population-effect posterior is nonfinite")
     return _calibration_from_fit(
         fit,

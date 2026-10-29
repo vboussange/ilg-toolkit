@@ -25,7 +25,7 @@ from .base import (
     _species_rows,
     ConductanceModel,
 )
-from .common import _encode_patches, _pixel_to_patch_nodes
+from .common import _encode_patches
 
 
 # Log-spaced uniform conductances screened before golden-section refinement.
@@ -271,42 +271,42 @@ def initialize_uniform_conductance(
         for group in groups
     }
     loss_state = loss._initialize(contexts)
-    lower, upper = math.log(model.min_conductance), math.log(model.max_conductance)
-    intercepts = []
+    # Bookkeeping runs in NumPy on the host; each species' search is one compiled program.
+    # Traced bounds keep XLA from constant-folding the search grid with different rounding.
+    bounds = np.asarray([math.log(model.min_conductance), math.log(model.max_conductance)])
+    intercepts = np.array(model.intercepts)
     for index in range(len(_model_species(model))):
         selected = [group for group in groups if group.species_index == index]
         if not selected:
-            intercepts.append(model.intercepts[index])
             continue
         distances = []
         for group in selected:
             matrix_rows, resistances = unit_resistances[group.region.name]
-            rows = np.asarray([matrix_rows[pixel] for pixel in group.region.pixel_nodes.tolist()])
+            rows = np.asarray(
+                [matrix_rows[pixel] for pixel in group.region.pixel_nodes.tolist()], dtype=np.intp
+            )
             left, right = contexts[group.key].pairs
             distances.append(resistances[rows[np.asarray(left)], rows[np.asarray(right)]])
-        current = jnp.log(model.min_conductance + jnp.exp(model.intercepts[index]))
-        log_conductance = _best_log_conductance(
+        intercepts[index] = _best_intercept(
             loss,
             tuple(distances),
             tuple(contexts[group.key] for group in selected),
             tuple(loss._group_state(loss_state, group.key) for group in selected),
-            jnp.asarray([group.loss_weight for group in selected]),
-            jnp.asarray([lower, upper]),
-            current,
+            np.asarray([group.loss_weight for group in selected]),
+            bounds,
+            model,
+            index,
         )
-        # Conductance min_conductance + exp(intercept), written stably near the floor.
-        intercept = lower + jnp.log(jnp.expm1(log_conductance - lower))
-        intercepts.append(intercept.astype(model.intercepts.dtype))
     return eqx.tree_at(
         lambda current: (current.coefficients, current.intercepts),
         model,
-        (jnp.zeros_like(model.coefficients), jnp.stack(intercepts)),
+        (jnp.zeros_like(model.coefficients), jnp.asarray(intercepts)),
     )
 
 
 def _unit_conductance_resistances(
     model: LogLinearConductance, region: RegionBatch
-) -> tuple[dict[int, int], jax.Array]:
+) -> tuple[dict[int, int], np.ndarray]:
     """Computes effective resistances among a region's sampling-unit vertices at unit conductance.
 
     Returns the resistance-matrix row of each sampling-unit pixel, shared by the
@@ -314,16 +314,14 @@ def _unit_conductance_resistances(
     """
     context = _prepare_distance_context(model, region.feature_array)
     assert context is not None
-    height, width = region.feature_array.shape[:2]
     pixels = np.asarray(region.pixel_nodes)
-    vertices = np.asarray(
-        _pixel_to_patch_nodes(pixels, raster_shape=(height, width), patch_size=model.patch_size)
-    )
+    patch_rows, patch_columns = (np.asarray(region.grid_positions) // model.patch_size).T
+    vertices = patch_rows * (region.feature_array.shape[1] // model.patch_size) + patch_columns
     unique = np.unique(vertices)
     rows = np.searchsorted(unique, vertices)
-    surface = jnp.ones(context.graph_shape, dtype=model.intercepts.dtype)
+    surface = np.ones(context.graph_shape, dtype=model.intercepts.dtype)
     matrix_rows = dict(zip(pixels.tolist(), rows.tolist(), strict=True))
-    return matrix_rows, _effective_resistance(surface, jnp.asarray(unique), context=context)
+    return matrix_rows, np.asarray(_effective_resistance(surface, unique, context=context))
 
 
 def _species_loss(log_conductance, loss, distances, contexts, states, weights):
@@ -337,6 +335,17 @@ def _species_loss(log_conductance, loss, distances, contexts, states, weights):
 
 
 @eqx.filter_jit
+def _best_intercept(loss, distances, contexts, states, weights, bounds, model, species_index):
+    """Returns a species' intercept at the uniform conductance minimizing its loss."""
+    current = jnp.log(model.min_conductance + jnp.exp(model.intercepts[species_index]))
+    log_conductance = _best_log_conductance(
+        loss, distances, contexts, states, weights, bounds, current
+    )
+    # Conductance min_conductance + exp(intercept), written stably near the floor.
+    intercept = bounds[0] + jnp.log(jnp.expm1(log_conductance - bounds[0]))
+    return intercept.astype(model.intercepts.dtype)
+
+
 def _best_log_conductance(loss, distances, contexts, states, weights, bounds, current):
     """Returns the log uniform conductance minimizing a species' loss inside open bounds."""
 

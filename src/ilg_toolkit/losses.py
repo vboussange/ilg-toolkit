@@ -10,6 +10,7 @@ from typing import Any, final, TYPE_CHECKING
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from ._checks import _positive_integer
 from ._training_utils import _RegionSpeciesKey
@@ -117,7 +118,9 @@ class Log1pLoss(AbstractLoss):
     """
 
     def _prepare(self, region, observations, *, training):
-        if observations.target.kind != "dissimilarity" or jnp.any(observations.observed_values < 0):
+        if observations.target.kind != "dissimilarity" or np.any(
+            np.asarray(observations.observed_values) < 0
+        ):
             raise ValueError("Log1pLoss requires nonnegative dissimilarities")
         return _context(region, observations)
 
@@ -263,7 +266,7 @@ class MLPELoss(AbstractLoss):
         if training:
             if len(context.targets) < 3:
                 raise ValueError("MLPE training requires at least three observed pairs")
-            degree = jnp.bincount(jnp.concatenate(context.pairs), length=context.population_count)
+            degree = np.bincount(np.concatenate(context.pairs), minlength=context.population_count)
             if degree.max() <= 1:
                 raise ValueError("MLPE variances are unidentifiable: pairs share no sampling units")
         return eqx.tree_at(lambda c: c.targets, context, context.targets.astype(jnp.float64))
@@ -316,7 +319,7 @@ class MLPELoss(AbstractLoss):
         from .mlpe.fit import _calibration_from_fit
         from .mlpe.likelihood import _finalize_mlpe_fit
 
-        result = eqx.filter_jit(_finalize_mlpe_fit)(
+        result = _finalize_mlpe_fit(
             distances.astype(jnp.float64),
             context.targets,
             *context.pairs,
