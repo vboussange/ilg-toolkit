@@ -250,10 +250,11 @@ class RegionBatch:
         ):
             raise ValueError("species must label each sampling unit with a nonempty name")
         identities = ids if species is None else tuple(zip(species, ids, strict=True))
-        positions = jnp.asarray(self.grid_positions)
+        # Checks run in NumPy on the host, compiling no XLA program for new shapes.
+        positions = np.asarray(self.grid_positions)
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("Region name must be a nonempty string")
-        if min(features.shape) < 1 or not bool(jnp.isfinite(features).all()):
+        if min(features.shape) < 1 or not np.isfinite(np.asarray(field.data)).all():
             raise ValueError("features must contain finite nonempty row, column, feature data")
         if (
             len(ids) < 2
@@ -261,11 +262,11 @@ class RegionBatch:
             or len(set(identities)) != len(ids)
         ):
             raise ValueError("Sampling-unit ids must be nonempty and unique within each species")
-        if positions.shape != (len(ids), 2) or not jnp.issubdtype(positions.dtype, jnp.integer):
+        if positions.shape != (len(ids), 2) or not np.issubdtype(positions.dtype, np.integer):
             raise ValueError(
                 "grid_positions must be an integer (sampling units, 2) row/column array"
             )
-        if (positions < 0).any() or (positions >= jnp.asarray(features.shape[:2])).any():
+        if (positions < 0).any() or (positions >= features.shape[:2]).any():
             raise ValueError("grid_positions fall outside the raster")
         if not isinstance(self.individual_based, bool):
             raise TypeError("individual_based must be a bool")
@@ -276,7 +277,7 @@ class RegionBatch:
         )
         object.__setattr__(self, "sampling_unit_ids", ids)
         object.__setattr__(self, "species", species)
-        object.__setattr__(self, "grid_positions", positions.astype(jnp.int32))
+        object.__setattr__(self, "grid_positions", jnp.asarray(positions, dtype=jnp.int32))
 
     @classmethod
     def from_points(
@@ -424,21 +425,22 @@ class PairwiseObservations:
             raise ValueError("Observation species must be a nonempty name or None")
         ids = tuple(sampling_unit_ids)
         values = jnp.asarray(values)
+        # Checks and pair bookkeeping run in NumPy on the host, compiling no XLA
+        # program for new shapes.
+        matrix = np.asarray(values)
         if (
             len(ids) < 2
             or any(not isinstance(x, str) or not x for x in ids)
             or len(set(ids)) != len(ids)
         ):
             raise ValueError("Observation identifiers must be unique nonempty sampling-unit labels")
-        if values.shape != (len(ids), len(ids)) or jnp.isinf(values).any():
+        if matrix.shape != (len(ids), len(ids)) or np.isinf(matrix).any():
             raise ValueError(
                 "Observation matrix must be aligned with labels and contain no infinity"
             )
-        if not jnp.allclose(values, values.T, equal_nan=True) or not jnp.allclose(
-            jnp.diag(values), 0
-        ):
+        if not np.allclose(matrix, matrix.T, equal_nan=True) or not np.allclose(np.diag(matrix), 0):
             raise ValueError("Observation matrix must be symmetric with zero diagonal")
-        if not jnp.isfinite(values[jnp.triu_indices(len(ids), 1)]).any():
+        if not np.isfinite(matrix[np.triu_indices(len(ids), 1)]).any():
             raise ValueError("At least one observed pair is required")
         object.__setattr__(self, "sampling_unit_ids", ids)
         object.__setattr__(self, "values", values)
@@ -477,7 +479,7 @@ class PairwiseObservations:
         """
         pairs = _validate_pairs(pairs)
         values = jnp.asarray(values)
-        if values.shape != (len(pairs),) or not jnp.isfinite(values).all():
+        if values.shape != (len(pairs),) or not np.isfinite(values).all():
             raise ValueError("Observed pairs must be nonempty and have one finite value each")
         ids = (
             tuple(sampling_unit_ids)
@@ -487,22 +489,24 @@ class PairwiseObservations:
         lookup = {label: index for index, label in enumerate(ids)}
         if any(endpoint not in lookup for pair in pairs for endpoint in pair):
             raise ValueError("An observed sampling unit is absent from sampling_unit_ids")
-        left, right = (jnp.asarray([lookup[pair[end]] for pair in pairs]) for end in (0, 1))
+        left, right = (
+            np.asarray([lookup[pair[end]] for pair in pairs], dtype=np.intp) for end in (0, 1)
+        )
         dtype = (
             values.dtype
             if jnp.issubdtype(values.dtype, jnp.inexact)
             else jnp.result_type(values, 0.0)
         )
-        matrix = jnp.full((len(ids), len(ids)), jnp.nan, dtype=dtype)
-        matrix = matrix.at[jnp.diag_indices(len(ids))].set(0)
-        matrix = matrix.at[left, right].set(values).at[right, left].set(values)
+        matrix = np.full((len(ids), len(ids)), np.nan, dtype=dtype)
+        np.fill_diagonal(matrix, 0)
+        matrix[left, right] = matrix[right, left] = values
         return cls(ids, matrix, target, species)
 
     @property
     def observed_pairs(self) -> tuple[tuple[str, str], ...]:
         """Observed unordered sampling-unit pairs, in matrix order."""
-        left, right = jnp.triu_indices(len(self.sampling_unit_ids), 1)
-        present = jnp.isfinite(self.values[left, right])
+        left, right = np.triu_indices(len(self.sampling_unit_ids), 1)
+        present = np.isfinite(np.asarray(self.values)[left, right])
         return tuple(
             (self.sampling_unit_ids[i], self.sampling_unit_ids[j])
             for i, j in zip(left[present], right[present], strict=True)
@@ -511,8 +515,8 @@ class PairwiseObservations:
     @property
     def observed_values(self) -> jax.Array:
         """Original-scale measurements, aligned with ``observed_pairs``."""
-        upper = self.values[jnp.triu_indices(len(self.sampling_unit_ids), 1)]
-        return upper[jnp.isfinite(upper)]
+        upper = np.asarray(self.values)[np.triu_indices(len(self.sampling_unit_ids), 1)]
+        return jnp.asarray(upper[np.isfinite(upper)])
 
     def aligned_values(self, region: RegionBatch) -> jax.Array:
         """Returns the observation matrix in a region batch's sampling-unit order.
@@ -540,12 +544,13 @@ class PairwiseObservations:
             if jnp.issubdtype(self.values.dtype, jnp.inexact)
             else jnp.result_type(self.values, 0.0)
         )
-        matrix = jnp.full(
-            (len(region.sampling_unit_ids), len(region.sampling_unit_ids)), jnp.nan, dtype=dtype
+        matrix = np.full(
+            (len(region.sampling_unit_ids), len(region.sampling_unit_ids)), np.nan, dtype=dtype
         )
-        matrix = matrix.at[jnp.diag_indices(len(region.sampling_unit_ids))].set(0)
-        order = jnp.asarray([lookup[label] for label in self.sampling_unit_ids])
-        return matrix.at[jnp.ix_(order, order)].set(self.values)
+        np.fill_diagonal(matrix, 0)
+        order = np.asarray([lookup[label] for label in self.sampling_unit_ids], dtype=np.intp)
+        matrix[np.ix_(order, order)] = self.values
+        return jnp.asarray(matrix)
 
     def select_pairs(self, pairs: Sequence[tuple[str, str]]) -> "PairwiseObservations":
         """Returns the observations of the selected pairs.
@@ -576,7 +581,7 @@ class PairwiseObservations:
         keep = np.eye(len(self.sampling_unit_ids), dtype=bool)
         for left, right in selected:
             keep[lookup[left], lookup[right]] = keep[lookup[right], lookup[left]] = True
-        values = jnp.where(jnp.asarray(keep), self.values, jnp.nan)
+        values = np.where(keep, np.asarray(self.values), np.nan)
         return type(self)(self.sampling_unit_ids, values, self.target, self.species)
 
     def aligned_pairs(self, region: RegionBatch) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
@@ -593,13 +598,13 @@ class PairwiseObservations:
             ValueError: If an observed sampling unit is absent from the region batch,
                 or the region batch holds no observed pair.
         """
-        values = self.aligned_values(region)
-        left, right = jnp.triu_indices(len(region.sampling_unit_ids), 1)
-        present = jnp.isfinite(values[left, right])
-        pairs = left[present], right[present]
-        if not len(pairs[0]):
+        values = np.asarray(self.aligned_values(region))
+        left, right = np.triu_indices(len(region.sampling_unit_ids), 1)
+        present = np.isfinite(values[left, right])
+        left, right = left[present], right[present]
+        if not len(left):
             raise ValueError("Selected observations must contain at least one observed pair")
-        return pairs, values[pairs]
+        return (jnp.asarray(left), jnp.asarray(right)), jnp.asarray(values[left, right])
 
 
 # Regions and observations accepted by training and calibration fitting: one region

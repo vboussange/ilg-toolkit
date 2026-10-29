@@ -6,6 +6,7 @@ from typing import cast, final
 
 import coordax as cx
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import lineax as lx
 import numpy as np
@@ -203,6 +204,46 @@ def test_single_species_queries_return_one_prediction(PointConductance):
     ):
         with pytest.raises(ValueError, match=message):
             named.predict(region, query)  # pyright: ignore[reportArgumentType]
+
+
+def test_compiled_predictions_and_conductance_surfaces_match_eager_evaluation(WeightedEmbedding):
+    region = RegionBatch(
+        "meadow",
+        cx.field(
+            np.random.default_rng(3).uniform(size=(4, 6, 2)),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["grass", "rock"])),
+        ),
+        ("a", "b", "c", "d"),
+        np.array([[0, 0], [1, 5], [3, 2], [2, 4]]),
+    )
+    # The embedding model exercises the distance matrix and pair selection that every
+    # distance model shares.
+    embedding = WeightedEmbedding(jnp.array([0.3, -0.2]))
+    conductance = LogLinearConductance(2, patch_size=2)
+    conductance = eqx.tree_at(
+        lambda value: value.coefficients, conductance, jnp.array([[1.5, -2.0]])
+    )
+    pairs = [("c", "a"), ("b", "d"), ("a", "d")]
+
+    def evaluate():
+        return (
+            embedding.predict(region).values,
+            embedding.predict(region, pairs).values,
+            conductance.conductance_surface(region).data,
+        )
+
+    compiled = evaluate()
+    with jax.disable_jit():
+        eager = evaluate()
+    for actual, expected in zip(compiled, eager, strict=True):
+        np.testing.assert_allclose(actual, expected, rtol=1e-12)
+    # Every pair selection reads the same ecological distances, in either orientation.
+    every_pair, selected, surface = map(np.asarray, compiled)
+    lookup = dict(zip(map(frozenset, embedding.predict(region).pairs), every_pair, strict=True))
+    np.testing.assert_array_equal(selected, [lookup[frozenset(pair)] for pair in pairs])
+    assert np.all(selected > 0) and np.ptp(surface) > 0
 
 
 @pytest.mark.filterwarnings("ignore:Sampling units share a vertex")

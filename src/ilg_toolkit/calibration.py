@@ -360,7 +360,7 @@ def fit_calibration_head(
         _prepare_distance_context,
         _query_distances_from_latent,
     )
-    from .models.common import _inference_model
+    from .models.common import _backbone, _inference_model
 
     _require_float64()
     if not isinstance(distance_model, AbstractDistanceModel):
@@ -380,7 +380,7 @@ def fit_calibration_head(
         if group.region.name not in prepared_regions:
             features = group.region.feature_array
             prepared_regions[group.region.name] = (
-                inference_model.backbone(features),
+                _backbone(inference_model, features, None),
                 _prepare_distance_context(inference_model, features),
             )
         latent, context = prepared_regions[group.region.name]

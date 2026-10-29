@@ -316,7 +316,7 @@ class MLPELoss(AbstractLoss):
         from .mlpe.fit import _calibration_from_fit
         from .mlpe.likelihood import _finalize_mlpe_fit
 
-        result = eqx.filter_jit(_finalize_mlpe_fit)(
+        result = _finalize_mlpe_fit(
             distances.astype(jnp.float64),
             context.targets,
             *context.pairs,

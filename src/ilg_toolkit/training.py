@@ -28,7 +28,7 @@ from .models.base import (
     _model_species,
     _prepare_distance_context,
 )
-from .models.common import _inference_model, _reject_stateful_layers, _training_model
+from .models.common import _backbone, _inference_model, _reject_stateful_layers, _training_model
 from .resistance import _ResistanceSolverContext
 
 
@@ -269,13 +269,6 @@ def _microbatch_objective(parameters, contributions, loss, context, key):
 
 
 _microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_objective))
-
-
-@eqx.filter_jit
-def _backbone(model, features, key):
-    """Returns the backbone output, in training mode with ``key`` or inference mode without."""
-    configured = _inference_model(model) if key is None else _training_model(model, key)
-    return configured.backbone(features)
 
 
 def _regional_gradient(parameters, contributions, groups, config, context, key):

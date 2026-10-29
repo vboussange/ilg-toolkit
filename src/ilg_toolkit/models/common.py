@@ -96,6 +96,13 @@ def _training_model[Model](model: Model, key: jax.Array) -> Model:
     )
 
 
+@eqx.filter_jit
+def _backbone(model, features: jax.Array, key: jax.Array | None) -> jax.Array:
+    """Returns the backbone output, in training mode with ``key`` or inference mode without."""
+    configured = _inference_model(model) if key is None else _training_model(model, key)
+    return configured.backbone(features)
+
+
 def _patchify(features: ArrayLike, patch_size: int) -> tuple[jax.Array, tuple[int, int]]:
     """Splits row, column, feature data into non-overlapping, feature-first patches."""
     raster = jnp.asarray(features)

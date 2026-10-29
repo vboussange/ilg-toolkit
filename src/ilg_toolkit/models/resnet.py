@@ -41,6 +41,28 @@ class _ResidualBlock(eqx.Module):
         return jax.nn.relu(outputs + residual)
 
 
+@eqx.filter_jit
+def _initial_layers(in_channels: int, channels: tuple[int, int, int], outputs: int, key: jax.Array):
+    """Initializes the ResNet9 layers in one compiled program.
+
+    Eager initialization compiles the random draw of each weight shape separately;
+    on CPU those compilations dominate construction time.
+    """
+    first, second, third = channels
+    keys = jax.random.split(key, 8)
+    return (
+        eqx.nn.Conv2d(in_channels, first, 3, padding=1, dtype=jnp.float32, key=keys[0]),
+        eqx.nn.GroupNorm(8, first, dtype=jnp.float32),
+        _ResidualBlock(first, key=keys[1]),
+        eqx.nn.Conv2d(first, second, 3, padding=1, dtype=jnp.float32, key=keys[2]),
+        eqx.nn.GroupNorm(8, second, dtype=jnp.float32),
+        _ResidualBlock(second, key=keys[3]),
+        eqx.nn.Conv2d(second, third, 3, padding=1, dtype=jnp.float32, key=keys[4]),
+        eqx.nn.GroupNorm(8, third, dtype=jnp.float32),
+        eqx.nn.Linear(third, outputs, dtype=jnp.float32, key=keys[5]),
+    )
+
+
 @final
 class ResNet9Conductance(ConductanceModel):
     """A ResNet9 patch encoder mapping each raster patch to one vertex conductance.
@@ -126,17 +148,17 @@ class ResNet9Conductance(ConductanceModel):
         if not isinstance(solver_config, ResistanceSolverConfig):
             raise TypeError("solver_config must be a ResistanceSolverConfig")
         first, second, third = widths
-        keys = jax.random.split(key, 8)
-        self.conv1 = eqx.nn.Conv2d(in_channels, first, 3, padding=1, dtype=jnp.float32, key=keys[0])
-        self.norm1 = eqx.nn.GroupNorm(8, first, dtype=jnp.float32)
-        self.residual1 = _ResidualBlock(first, key=keys[1])
-        self.conv2 = eqx.nn.Conv2d(first, second, 3, padding=1, dtype=jnp.float32, key=keys[2])
-        self.norm2 = eqx.nn.GroupNorm(8, second, dtype=jnp.float32)
-        self.residual2 = _ResidualBlock(second, key=keys[3])
-        self.conv3 = eqx.nn.Conv2d(second, third, 3, padding=1, dtype=jnp.float32, key=keys[4])
-        self.norm3 = eqx.nn.GroupNorm(8, third, dtype=jnp.float32)
-        count = _species_rows(species)
-        self.output = eqx.nn.Linear(third, count, dtype=jnp.float32, key=keys[5])
+        (
+            self.conv1,
+            self.norm1,
+            self.residual1,
+            self.conv2,
+            self.norm2,
+            self.residual2,
+            self.conv3,
+            self.norm3,
+            self.output,
+        ) = _initial_layers(in_channels, (first, second, third), _species_rows(species), key)
         self.species = species
         self.channels = (first, second, third)
         self.patch_size = patch_size
