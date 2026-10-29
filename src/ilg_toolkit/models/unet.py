@@ -69,6 +69,50 @@ class _ResidualConvBlock(eqx.Module):
         return jax.nn.gelu(values + residual)
 
 
+@eqx.filter_jit
+def _initial_layers(
+    in_channels: int,
+    patch_size: int,
+    base_channels: int,
+    outputs: int,
+    dropout: float,
+    key: jax.Array,
+):
+    """Initializes the U-Net layers in one compiled program.
+
+    Eager initialization compiles the random draw of each weight shape separately;
+    on CPU those compilations dominate construction time.
+    """
+    keys = jax.random.split(key, 13)
+    stage2, bottleneck = 2 * base_channels, 4 * base_channels
+    return (
+        eqx.nn.Linear(
+            in_channels * patch_size * patch_size, base_channels, dtype=jnp.float32, key=keys[0]
+        ),
+        eqx.nn.GroupNorm(math.gcd(8, base_channels), base_channels, dtype=jnp.float32),
+        _ResidualConvBlock(base_channels, base_channels, dropout=dropout, key=keys[1]),
+        eqx.nn.Conv2d(
+            base_channels, stage2, 3, stride=2, padding=1, dtype=jnp.float32, key=keys[2]
+        ),
+        eqx.nn.GroupNorm(math.gcd(8, stage2), stage2, dtype=jnp.float32),
+        _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[3]),
+        eqx.nn.Conv2d(stage2, bottleneck, 3, stride=2, padding=1, dtype=jnp.float32, key=keys[4]),
+        eqx.nn.GroupNorm(math.gcd(8, bottleneck), bottleneck, dtype=jnp.float32),
+        _ResidualConvBlock(bottleneck, bottleneck, dropout=dropout, key=keys[5]),
+        eqx.nn.ConvTranspose2d(bottleneck, stage2, 2, stride=2, dtype=jnp.float32, key=keys[6]),
+        eqx.nn.Conv2d(2 * stage2, stage2, 3, padding=1, dtype=jnp.float32, key=keys[7]),
+        eqx.nn.GroupNorm(math.gcd(8, stage2), stage2, dtype=jnp.float32),
+        _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[8]),
+        eqx.nn.ConvTranspose2d(stage2, base_channels, 2, stride=2, dtype=jnp.float32, key=keys[9]),
+        eqx.nn.Conv2d(
+            2 * base_channels, base_channels, 3, padding=1, dtype=jnp.float32, key=keys[10]
+        ),
+        eqx.nn.GroupNorm(math.gcd(8, base_channels), base_channels, dtype=jnp.float32),
+        _ResidualConvBlock(base_channels, base_channels, dropout=dropout, key=keys[11]),
+        eqx.nn.Conv2d(base_channels, outputs, 1, dtype=jnp.float32, key=keys[12]),
+    )
+
+
 @final
 class UNetEmbeddingDistance(EmbeddingDistanceModel):
     """A U-Net embedding-distance model with species-specific embeddings.
@@ -150,73 +194,32 @@ class UNetEmbeddingDistance(EmbeddingDistanceModel):
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
-        keys = jax.random.split(key, 13)
-        stage2, bottleneck = 2 * base_channels, 4 * base_channels
-        self.patch_embedding = eqx.nn.Linear(
-            in_channels * patch_size * patch_size,
-            base_channels,
-            dtype=jnp.float32,
-            key=keys[0],
-        )
-        self.patch_norm = eqx.nn.GroupNorm(
-            math.gcd(8, base_channels), base_channels, dtype=jnp.float32
-        )
-        self.encoder1 = _ResidualConvBlock(
-            base_channels, base_channels, dropout=dropout, key=keys[1]
-        )
-        self.down1 = eqx.nn.Conv2d(
-            base_channels,
-            stage2,
-            3,
-            stride=2,
-            padding=1,
-            dtype=jnp.float32,
-            key=keys[2],
-        )
-        self.down1_norm = eqx.nn.GroupNorm(math.gcd(8, stage2), stage2, dtype=jnp.float32)
-        self.encoder2 = _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[3])
-        self.down2 = eqx.nn.Conv2d(
-            stage2,
-            bottleneck,
-            3,
-            stride=2,
-            padding=1,
-            dtype=jnp.float32,
-            key=keys[4],
-        )
-        self.down2_norm = eqx.nn.GroupNorm(math.gcd(8, bottleneck), bottleneck, dtype=jnp.float32)
-        self.bottleneck = _ResidualConvBlock(bottleneck, bottleneck, dropout=dropout, key=keys[5])
-        self.up2 = eqx.nn.ConvTranspose2d(
-            bottleneck, stage2, 2, stride=2, dtype=jnp.float32, key=keys[6]
-        )
-        self.merge2 = eqx.nn.Conv2d(
-            2 * stage2, stage2, 3, padding=1, dtype=jnp.float32, key=keys[7]
-        )
-        self.merge2_norm = eqx.nn.GroupNorm(math.gcd(8, stage2), stage2, dtype=jnp.float32)
-        self.decoder2 = _ResidualConvBlock(stage2, stage2, dropout=dropout, key=keys[8])
-        self.up1 = eqx.nn.ConvTranspose2d(
-            stage2, base_channels, 2, stride=2, dtype=jnp.float32, key=keys[9]
-        )
-        self.merge1 = eqx.nn.Conv2d(
-            2 * base_channels,
-            base_channels,
-            3,
-            padding=1,
-            dtype=jnp.float32,
-            key=keys[10],
-        )
-        self.merge1_norm = eqx.nn.GroupNorm(
-            math.gcd(8, base_channels), base_channels, dtype=jnp.float32
-        )
-        self.decoder1 = _ResidualConvBlock(
-            base_channels, base_channels, dropout=dropout, key=keys[11]
-        )
-        self.embedding_head = eqx.nn.Conv2d(
+        (
+            self.patch_embedding,
+            self.patch_norm,
+            self.encoder1,
+            self.down1,
+            self.down1_norm,
+            self.encoder2,
+            self.down2,
+            self.down2_norm,
+            self.bottleneck,
+            self.up2,
+            self.merge2,
+            self.merge2_norm,
+            self.decoder2,
+            self.up1,
+            self.merge1,
+            self.merge1_norm,
+            self.decoder1,
+            self.embedding_head,
+        ) = _initial_layers(
+            in_channels,
+            patch_size,
             base_channels,
             _species_rows(species) * embedding_dim,
-            1,
-            dtype=jnp.float32,
-            key=keys[12],
+            float(dropout),
+            key,
         )
         self.species = species
         self.patch_microbatch_size = patch_microbatch_size
