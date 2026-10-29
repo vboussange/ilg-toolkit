@@ -1,7 +1,6 @@
 """Maximum-likelihood population effects (MLPE) calibration of one region–species group."""
 
 import math
-from functools import partial
 from typing import final, TYPE_CHECKING
 
 import equinox as eqx
@@ -22,14 +21,14 @@ class MLPEError(ValueError):
     """An error raised for an invalid or numerically unusable MLPE calibration."""
 
 
-@jax.jit
+@eqx.filter_jit
 def _raw_from_log_variances(log_variances):
     """Returns the raw variance parameters whose softplus equals ``exp(log_variances)``."""
     variances = jnp.exp(log_variances)
     return variances + jnp.log(-jnp.expm1(-variances))
 
 
-@partial(jax.jit, static_argnames=("n_populations",))
+@eqx.filter_jit
 def _optimizer_value_and_gradient(log_variances, distances, targets, left, right, **options):
     """Returns the profiled negative log likelihood and its gradient in log variances."""
 
@@ -221,13 +220,15 @@ def _fit_mlpe(
     # Decode the fitted log variances through softplus while retaining the
     # variance floor and numerical precision near that floor.
     kernel_inputs = tuple(map(jnp.asarray, (distances, targets, left, right)))
+    # Array options are traced: every fit shares the compiled kernels, and XLA folds
+    # no option into a constant with different rounding.
     kernel_options = dict(
         n_populations=len(population_ids),
-        distance_center=center,
-        distance_scale=scale,
-        min_distance_scale=loss.min_distance_scale,
-        variance_floor=0.0,
-        jitter=loss.jitter,
+        distance_center=jnp.asarray(center),
+        distance_scale=jnp.asarray(scale),
+        min_distance_scale=jnp.asarray(loss.min_distance_scale),
+        variance_floor=jnp.asarray(0.0),
+        jitter=jnp.asarray(loss.jitter),
     )
 
     def objective(log_variances):

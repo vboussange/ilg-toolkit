@@ -1,5 +1,6 @@
 """Maximum-likelihood population effects (MLPE) prediction on the original scale."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
@@ -43,7 +44,7 @@ def _endpoints(pairs, population_ids):
     )
 
 
-@jax.jit
+@eqx.filter_jit
 def _effect_prediction(mean, covariance, left, right):
     """Returns pair population-effect means and variances, and whether the factor is finite."""
     factor = jnp.linalg.cholesky(covariance)
@@ -115,7 +116,7 @@ def _predict_mlpe(
     )
 
 
-@jax.jit
+@eqx.filter_jit
 def _condition_posterior(mean, covariance, residual, left, right, noise):
     """Conditions the population-effect posterior on support residuals with Gaussian noise."""
     prior_factor = jnp.linalg.cholesky(covariance)
@@ -153,7 +154,7 @@ def _condition_on_support(
     )
     d = calibration.residual_variance + calibration.loss.jitter
     updated_mean, updated_covariance = _condition_posterior(
-        mean, covariance, residual, left, right, d
+        mean, covariance, residual, left, right, jnp.asarray(d)
     )
     if not bool(jnp.isfinite(updated_mean).all() & jnp.isfinite(updated_covariance).all()):
         raise MLPEError("Support update produced a nonfinite population-effect posterior")

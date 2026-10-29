@@ -6,9 +6,9 @@ unsupported numerical conditioning return nonfinite results.
 """
 
 import math
-from functools import partial
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import cho_solve
@@ -173,7 +173,7 @@ def _profiled_mlpe_ml_fit(
     return jnp.where(valid, nll, jnp.nan), jnp.where(valid, beta, jnp.nan)
 
 
-@partial(jax.jit, static_argnames=("n_populations",))
+@eqx.filter_jit
 def _finalize_mlpe_fit(
     distances,
     targets,

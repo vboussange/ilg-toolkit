@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import cast, NamedTuple
 
 import coordax as cx
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -36,8 +37,8 @@ _TARGET_TRANSFORMS = {
     "log1p": _TargetTransform(jnp.log1p, jnp.expm1, (_nonnegative, "nonnegative values"), False),
     "sqrt": _TargetTransform(jnp.sqrt, jnp.square, (_nonnegative, "nonnegative values"), True),
     "odds": _TargetTransform(
-        jax.jit(lambda values: values / (1 - values)),
-        jax.jit(lambda values: values / (1 + values)),
+        eqx.filter_jit(lambda values: values / (1 - values)),
+        eqx.filter_jit(lambda values: values / (1 + values)),
         (_unit_interval, "values in [0, 1)"),
         True,
     ),
