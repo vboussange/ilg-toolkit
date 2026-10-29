@@ -53,6 +53,7 @@ def _resistance_context(
     return _ResistanceSolverContext(graph_shape, solver, state)
 
 
+@eqx.filter_jit
 def _effective_resistance(
     conductance,
     terminal_nodes,

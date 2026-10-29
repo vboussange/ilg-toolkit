@@ -14,19 +14,20 @@ from numpy.typing import ArrayLike
 class _TargetTransform(NamedTuple):
     """Maps between the original and model scales, with the values each accepts."""
 
+    # Compiled maps between the scales; checks run in NumPy on the host.
     forward: Callable[[jax.Array], jax.Array]
     inverse: Callable[[jax.Array], jax.Array]
     # Accepted finite original-scale measurements and their description; None accepts all.
-    domain: tuple[Callable[[jax.Array], jax.Array], str] | None
+    domain: tuple[Callable[[np.ndarray], np.ndarray], str] | None
     # Whether the inverse rejects negative model-scale predictions.
     nonnegative_predictions: bool
 
 
-def _nonnegative(values: jax.Array) -> jax.Array:
+def _nonnegative(values: np.ndarray) -> np.ndarray:
     return values >= 0
 
 
-def _unit_interval(values: jax.Array) -> jax.Array:
+def _unit_interval(values: np.ndarray) -> np.ndarray:
     return (values >= 0) & (values < 1)
 
 
@@ -35,8 +36,8 @@ _TARGET_TRANSFORMS = {
     "log1p": _TargetTransform(jnp.log1p, jnp.expm1, (_nonnegative, "nonnegative values"), False),
     "sqrt": _TargetTransform(jnp.sqrt, jnp.square, (_nonnegative, "nonnegative values"), True),
     "odds": _TargetTransform(
-        lambda values: values / (1 - values),
-        lambda values: values / (1 + values),
+        jax.jit(lambda values: values / (1 - values)),
+        jax.jit(lambda values: values / (1 + values)),
         (_unit_interval, "values in [0, 1)"),
         True,
     ),
@@ -98,12 +99,13 @@ class TargetSpec:
             ValueError: If a value is nonfinite or outside the transform's domain.
         """
         values = jnp.asarray(values)
-        if not bool(jnp.isfinite(values).all()):
+        host = np.asarray(values)
+        if not np.isfinite(host).all():
             raise ValueError("Observed target values must be finite")
         transform = _TARGET_TRANSFORMS[self.transform]
         if transform.domain is not None:
             accepts, description = transform.domain
-            if not bool(accepts(values).all()):
+            if not accepts(host).all():
                 raise ValueError(f"Target transform {self.transform} requires {description}")
         return transform.forward(values)
 
@@ -123,12 +125,12 @@ class TargetSpec:
         """
         values = jnp.asarray(values)
         transform = _TARGET_TRANSFORMS[self.transform]
-        if transform.nonnegative_predictions and (values < 0).any():
+        if transform.nonnegative_predictions and (np.asarray(values) < 0).any():
             raise ValueError(
                 f"{self.transform} inverse requires nonnegative transformed predictions"
             )
         values = transform.inverse(values)
-        if not bool(jnp.isfinite(values).all()):
+        if not np.isfinite(values).all():
             raise FloatingPointError("Target inverse transformation produced nonfinite predictions")
         return values
 
@@ -360,8 +362,8 @@ class RegionBatch:
     @property
     def pixel_nodes(self) -> jax.Array:
         """Row-major raster cell index of each sampling unit."""
-        positions = cast(jax.Array, self.grid_positions)
-        return positions[:, 0] * self.features.shape[1] + positions[:, 1]
+        positions = np.asarray(self.grid_positions)
+        return jnp.asarray(positions[:, 0] * self.features.shape[1] + positions[:, 1])
 
 
 def _validate_pairs(pairs) -> tuple[tuple[str, str], ...]:
