@@ -24,6 +24,14 @@ Now make your changes. Make sure to include additional tests if necessary. Next 
 uv run pytest -n 8
 ```
 
+Tests of the NVIDIA CUDA Direct Sparse Solver (cuDSS) skip without spineax and a GPU
+backend. Run them on an NVIDIA GPU, selected with `CUDA_VISIBLE_DEVICES`, with the
+`cudss` extra:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run --extra cudss pytest
+```
+
 Then push your changes back to your fork of the repository:
 
 ```bash
@@ -85,9 +93,14 @@ executed notebook back into `examples/`, and each example's Markdown page and fi
 into `docs/examples/`. It fails when the Python code block in the README's Quickstart
 section is not verbatim in `examples/quickstart.py`.
 
-Run the examples on an NVIDIA GPU: install JAX with CUDA support into the project
-environment with `uv pip install "jax[cuda12]==<locked jax version>"`, and select the GPU
-with `CUDA_VISIBLE_DEVICES`. On an NVIDIA RTX 3090, all examples run in about five minutes.
+Run the examples on an NVIDIA GPU, where they select cuDSS: add the `cudss` extra, which
+installs JAX with CUDA 13 support, and select the GPU with `CUDA_VISIBLE_DEVICES`:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run --extra examples --extra cudss python scripts/run_examples.py
+```
+
+On an NVIDIA RTX 3090, all examples run in about five minutes.
 
 Commit the regenerated notebooks, pages and figures together with the change that
 caused them.

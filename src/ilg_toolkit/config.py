@@ -1,4 +1,4 @@
-"""Training configuration and effective-resistance solver settings."""
+"""Training configuration and resistance solver settings."""
 
 import math
 from dataclasses import dataclass, field
@@ -13,22 +13,34 @@ from .losses import AbstractLoss
 
 @dataclass(frozen=True)
 class ResistanceSolverConfig:
-    """Settings of the float64 solver in the effective-resistance layer.
+    """Settings of the float64 resistance solver of the effective-resistance layer.
 
-    ``solver`` selects one of three solvers. ``"cg"`` runs conjugate gradient (CG).
-    ``"amg"`` runs CG preconditioned with algebraic multigrid (AMG), prepared once
-    on a uniform conductance grid graph, through the ``amg`` extra. Both raise an
-    error when they reach ``max_steps`` before either tolerance. ``"cudss"`` runs
-    the NVIDIA cuDSS sparse direct solver, through the ``cudss`` extra, and has no
-    tolerances or iteration limit.
+    ``solver`` selects one of three resistance solvers:
+
+    - ``"cg"`` runs conjugate gradient (CG) on a CPU or a GPU, with no optional
+      dependency. Choose it for small conductance grid graphs with low conductance
+      contrast. Its iterations grow with both grid size and conductance contrast.
+    - ``"amg"`` runs CG preconditioned with algebraic multigrid (AMG) on a CPU or a
+      GPU, through the ``amg`` extra. Its hierarchy is prepared once on a uniform
+      conductance grid graph. Choose it for larger conductance grid graphs with
+      conductance contrast below 4 orders of magnitude. Its iterations grow with
+      conductance contrast and not with grid size.
+    - ``"cudss"`` runs the NVIDIA CUDA Direct Sparse Solver (cuDSS) on an NVIDIA GPU,
+      through the ``cudss`` extra. Choose it on an NVIDIA GPU when the factorization
+      fits in GPU memory, in particular to train a deep patch encoder, whose
+      conductance surface can reach its floor. It has no tolerances or iteration
+      limit, and its cost does not depend on conductance contrast.
+
+    ``"cg"`` and ``"amg"`` raise an error when they reach ``max_steps`` before either
+    tolerance.
 
     A conductance model carries its solver settings. Constructing, saving and
-    loading them work on any backend. Preparing ``"cudss"``, at the start of training
-    or of a prediction, raises an ``ImportError`` or a ``RuntimeError`` naming the
-    ``cudss`` extra without spineax or a CUDA-enabled GPU backend.
+    loading them work on any backend. Preparing ``"cudss"`` raises an ``ImportError``
+    or a ``RuntimeError`` naming the ``cudss`` extra without spineax or a CUDA-enabled
+    GPU backend. No other resistance solver replaces it.
 
     Args:
-        solver: The solver: ``"cg"`` (default), ``"amg"`` or ``"cudss"``.
+        solver: The resistance solver: ``"cg"`` (default), ``"amg"`` or ``"cudss"``.
         rtol: Relative residual tolerance of ``"cg"`` and ``"amg"``, finite and
             nonnegative; ``None`` (default) selects 1e-6.
         atol: Absolute residual tolerance of ``"cg"`` and ``"amg"``, finite and

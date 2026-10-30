@@ -6,7 +6,8 @@ Run from any directory, with the examples extra:
 
 An example is a script or a notebook in ``examples/``, named by its file stem.
 Without names, every example runs. Examples run in this Python environment with
-float64 enabled, so on the GPU when JAX has CUDA. Each executed notebook is
+float64 enabled, so on the GPU when JAX has CUDA, where they select the NVIDIA CUDA
+Direct Sparse Solver through the ``cudss`` extra. Each executed notebook is
 written back in place with its outputs. Each example's Markdown page goes to
 ``docs/examples/NAME.md`` and its figures to ``docs/examples/NAME_files/``,
 replacing that example's previous page and figures. Before running anything, the
