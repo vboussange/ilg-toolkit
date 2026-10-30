@@ -188,7 +188,7 @@ _Paper_: fit.
 _Avoid_: Fitting, when naming this optimization workflow.
 
 **Checkpoint**:
-A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, convergence, and selected model, for continuing training. The optimizer itself is not saved; it is supplied when loading, like the distance-model template.
+A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, convergence, and selected model, for continuing training. The optimizer and the penalty are not saved; each is supplied when loading, like the distance-model template. The checkpoint records the penalty's value at the latest model, and loading rejects a penalty that is missing, unexpected or gives a different value.
 _Paper_: none.
 
 **Loss**:

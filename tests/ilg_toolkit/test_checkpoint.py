@@ -1,8 +1,10 @@
-"""Tests of checkpoints: continuation, random keys, optimizer state and file integrity."""
+"""Tests of checkpoints: continuation, penalties, random keys, optimizer state and integrity."""
 
+import functools
 import json
 from dataclasses import asdict, dataclass, replace
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast, final
 
 import coordax as cx
 import equinox as eqx
@@ -12,11 +14,13 @@ import numpy as np
 import optax
 import pytest
 from ilg_toolkit import (
+    ArtifactError,
     load_checkpoint,
     Log1pLoss,
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
+    RidgePenalty,
     save_checkpoint,
     train,
     TrainingConfig,
@@ -94,10 +98,36 @@ def _species_microbatch_validation(training_problem):
     )
 
 
+def _penalized_conductance_region_batches(training_problem):
+    """Returns random region minibatches, in which the penalty enters each update once."""
+    scenario = _conductance_region_batches(training_problem)
+    penalty = RidgePenalty(prior_sd=0.5, where=lambda model: model.log_scale)
+    return replace(scenario, config=replace(scenario.config, penalty=penalty))
+
+
+def _penalized_dropout_validation(training_problem):
+    """Returns a selected model at step 0, with the penalty on a nested field."""
+    scenario = _dropout_validation(training_problem)
+    penalty = RidgePenalty(prior_sd=0.5, where=lambda model: model.distance_model.weight)
+    return replace(scenario, config=replace(scenario.config, penalty=penalty))
+
+
 @pytest.mark.parametrize(
     "build",
-    [_conductance_region_batches, _dropout_validation, _species_microbatch_validation],
-    ids=["conductance-regions", "dropout-validation", "species-microbatches"],
+    [
+        _conductance_region_batches,
+        _dropout_validation,
+        _species_microbatch_validation,
+        _penalized_conductance_region_batches,
+        _penalized_dropout_validation,
+    ],
+    ids=[
+        "conductance-regions",
+        "dropout-validation",
+        "species-microbatches",
+        "penalized-conductance-regions",
+        "penalized-dropout-validation",
+    ],
 )
 def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
     scenario = build(training_problem)
@@ -118,7 +148,10 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
     path = tmp_path / "checkpoint.eqx"
     save_checkpoint(path, partial)
     restored = load_checkpoint(
-        path, distance_model=scenario.distance_model, optimizer=scenario.config.optimizer
+        path,
+        distance_model=scenario.distance_model,
+        optimizer=scenario.config.optimizer,
+        penalty=scenario.config.penalty,
     )
     assert eqx.tree_equal(restored, partial)
     # Reversing region order also checks restoration of the random trajectory.
@@ -135,7 +168,10 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
         # A completed budget returns the saved state without further updates.
         save_checkpoint(path, resumed)
         completed = load_checkpoint(
-            path, distance_model=scenario.distance_model, optimizer=scenario.config.optimizer
+            path,
+            distance_model=scenario.distance_model,
+            optimizer=scenario.config.optimizer,
+            penalty=scenario.config.penalty,
         )
         callbacks = []
         unchanged = train(
@@ -268,8 +304,6 @@ def test_disk_continuation_uses_caller_supplied_observations(initial_state, tmp_
 def test_checkpoint_rejects_truncated_leaves_and_wrong_distance_model_structure(
     initial_state, WeightedEmbedding, tmp_path
 ):
-    from ilg_toolkit import ArtifactError
-
     _, _, model, result = initial_state
     path = tmp_path / "incompatible.eqx"
     save_checkpoint(path, result)
@@ -358,8 +392,6 @@ def test_checkpoints_resume_with_the_supplied_optimizer(
 
 
 def test_checkpoints_reject_an_optimizer_with_a_different_state(initial_state, tmp_path):
-    from ilg_toolkit import ArtifactError
-
     _, _, distance_model, state = initial_state
     path = tmp_path / "adam.eqx"
     save_checkpoint(path, state)
@@ -390,3 +422,381 @@ def test_unpenalized_checkpoints_round_trip_the_training_objective(
     assert [record.training_objective for record in restored.history] == [
         record.training_loss for record in state.history
     ]
+
+
+def _log_weights(model):
+    """Returns the leaves that the ridge penalties of these tests select."""
+    return model.log_weights
+
+
+@pytest.mark.parametrize("optimizer", [optax.adam(0.1), optax.lbfgs()], ids=["adam", "lbfgs"])
+def test_continuing_with_the_same_penalty_reproduces_the_uninterrupted_run(
+    tmp_path, training_problem, optimizer
+):
+    regions, targets, model = _two_regions(training_problem, "embedding")
+    penalty = RidgePenalty(prior_sd=0.5, where=_log_weights)
+    config = TrainingConfig(loss=MLPELoss(), steps=4, optimizer=optimizer, penalty=penalty)
+    states = []
+    uninterrupted = train(
+        regions, targets, distance_model=model, config=config, on_step=states.append
+    )
+    assert uninterrupted.step == 4
+    record = uninterrupted.history[-1]
+    assert record.training_objective > record.training_loss
+    path = tmp_path / "penalized.eqx"
+    save_checkpoint(path, states[2])
+    restored = load_checkpoint(path, distance_model=model, optimizer=optimizer, penalty=penalty)
+    assert restored.config.penalty is penalty
+    assert eqx.tree_equal(restored, states[2])
+    assert eqx.tree_equal(train(regions, targets, state=restored), uninterrupted)
+
+
+@pytest.fixture(scope="module")
+def penalized_checkpoint(training_problem, tmp_path_factory):
+    """Returns a checkpoint saved after two updates of a ridge-penalized run."""
+    regions, targets, model = _two_regions(training_problem, "embedding")
+    optimizer = optax.adam(0.1)
+    state = train(
+        regions,
+        targets,
+        distance_model=model,
+        config=TrainingConfig(
+            loss=Log1pLoss(),
+            steps=2,
+            optimizer=optimizer,
+            penalty=RidgePenalty(prior_sd=0.5, where=_log_weights),
+        ),
+    )
+    path = tmp_path_factory.mktemp("penalized") / "checkpoint.eqx"
+    save_checkpoint(path, state)
+    return SimpleNamespace(path=path, distance_model=model, optimizer=optimizer, state=state)
+
+
+def _load_penalized(checkpoint, penalty=None):
+    """Returns the checkpoint of the ``penalized_checkpoint`` fixture, loaded with a penalty."""
+    return load_checkpoint(
+        checkpoint.path,
+        distance_model=checkpoint.distance_model,
+        optimizer=checkpoint.optimizer,
+        penalty=penalty,
+    )
+
+
+def test_loading_a_penalized_checkpoint_requires_a_penalty(penalized_checkpoint):
+    with pytest.raises(ArtifactError, match="trained with a penalty"):
+        _load_penalized(penalized_checkpoint)
+
+
+def test_loading_an_unpenalized_checkpoint_rejects_a_penalty(initial_state, tmp_path):
+    _, _, distance_model, state = initial_state
+    path = tmp_path / "unpenalized.eqx"
+    save_checkpoint(path, state)
+    with pytest.raises(ArtifactError, match="trained without a penalty"):
+        load_checkpoint(
+            path,
+            distance_model=distance_model,
+            optimizer=state.config.optimizer,
+            penalty=RidgePenalty(prior_sd=0.5, where=_log_weights),
+        )
+
+
+def test_a_checkpoint_records_the_penalty_of_the_latest_model_and_not_the_selected_one(
+    tmp_path, training_problem
+):
+    scenario = _penalized_dropout_validation(training_problem)
+    state = train(
+        scenario.regions,
+        scenario.targets,
+        distance_model=scenario.distance_model,
+        config=scenario.config,
+        validation=scenario.validation,
+    )
+    assert (state.selected_step, state.step) == (0, 2)
+    path = tmp_path / "penalized.eqx"
+    save_checkpoint(path, state)
+    with path.open("rb") as stream:
+        recorded = json.loads(stream.readline())["metadata"]["penalty"]
+    weight = float(cast(Any, state.latest_model.distance_model).weight)
+    assert weight != float(cast(Any, state.selected_model.distance_model).weight)
+    # A ridge with prior_sd 0.5 is twice the squared weight, and no pair count enters.
+    np.testing.assert_allclose(recorded, 2 * weight**2, rtol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        RidgePenalty(prior_sd=1.0, where=_log_weights),
+        RidgePenalty(prior_sd=0.5, where=lambda model: model.log_weights[0]),
+        lambda model: jnp.sum(model.log_weights**2),
+        lambda model: jnp.asarray(jnp.nan),
+    ],
+    ids=["prior_sd", "where", "function", "nonfinite"],
+)
+def test_loading_rejects_a_penalty_with_a_different_value(penalized_checkpoint, changed):
+    assert penalized_checkpoint.state.step > 0
+    with pytest.raises(ArtifactError, match="differs"):
+        _load_penalized(penalized_checkpoint, changed)
+
+
+@pytest.mark.parametrize("value_scale", [1 + 1e-11, 1 - 1e-11], ids=["above", "below"])
+def test_loading_accepts_a_penalty_value_within_the_relative_tolerance(
+    penalized_checkpoint, value_scale
+):
+    penalty = RidgePenalty(prior_sd=0.5 / value_scale**0.5, where=_log_weights)
+    assert _load_penalized(penalized_checkpoint, penalty).config.penalty is penalty
+
+
+@pytest.mark.parametrize("value_scale", [1 + 1e-8, 1 - 1e-8], ids=["above", "below"])
+def test_loading_rejects_a_penalty_value_beyond_the_relative_tolerance(
+    penalized_checkpoint, value_scale
+):
+    penalty = RidgePenalty(prior_sd=0.5 / value_scale**0.5, where=_log_weights)
+    with pytest.raises(ArtifactError, match="differs"):
+        _load_penalized(penalized_checkpoint, penalty)
+
+
+def test_a_separately_built_penalty_with_the_same_value_continues_training(
+    penalized_checkpoint, training_problem
+):
+    regions, targets, _ = _two_regions(training_problem, "embedding")
+    restored = _load_penalized(
+        penalized_checkpoint, RidgePenalty(prior_sd=0.5, where=lambda model: model.log_weights)
+    )
+    continued = train(regions, targets, state=restored, config=replace(restored.config, steps=3))
+    assert continued.step == 3
+
+
+def _step_zero_checkpoint(path, distance_model, region, observations):
+    """Saves the step-zero state of a ridge with prior_sd 0.5 and returns its optimizer."""
+    state = train(
+        region,
+        observations,
+        distance_model=distance_model,
+        config=TrainingConfig(
+            loss=Log1pLoss(), steps=0, penalty=RidgePenalty(prior_sd=0.5, where=_log_weights)
+        ),
+    )
+    save_checkpoint(path, state)
+    return state.config.optimizer
+
+
+def test_a_step_zero_checkpoint_compares_the_penalty_at_the_initial_parameters(
+    tmp_path, WeightedEmbedding, embedding_problem
+):
+    region, observations = embedding_problem("alpine")
+    path = tmp_path / "initial.eqx"
+    changed = RidgePenalty(prior_sd=1.0, where=_log_weights)
+
+    model = WeightedEmbedding(jnp.ones(2))
+    optimizer = _step_zero_checkpoint(path, model, region, observations)
+    with pytest.raises(ArtifactError, match="differs"):
+        load_checkpoint(path, distance_model=model, optimizer=optimizer, penalty=changed)
+
+    # A ridge on all-zero parameters is 0 at any prior_sd.
+    model = WeightedEmbedding(jnp.zeros(2))
+    optimizer = _step_zero_checkpoint(path, model, region, observations)
+    restored = load_checkpoint(path, distance_model=model, optimizer=optimizer, penalty=changed)
+    assert restored.step == 0
+
+
+@pytest.mark.parametrize(
+    "penalty",
+    [
+        "ridge",
+        lambda model: jnp.ones(2),
+        RidgePenalty(prior_sd=0.5, where=lambda model: model.coefficients),
+    ],
+    ids=["not-callable", "not-scalar", "missing-field"],
+)
+def test_loading_rejects_a_penalty_that_cannot_be_evaluated_at_the_latest_model(
+    penalized_checkpoint, penalty
+):
+    with pytest.raises(ArtifactError):
+        _load_penalized(penalized_checkpoint, penalty)
+
+
+def _squared_weight(distance_model):
+    """Returns a penalty that is a plain function."""
+    return jnp.sum(distance_model.weight**2)
+
+
+def _scaled_squared_weight(distance_model, scale):
+    """Returns a penalty with a setting bound by ``functools.partial``."""
+    return scale * jnp.sum(distance_model.weight**2)
+
+
+class _SquaredWeight:
+    """A penalty that is a callable object and not an Equinox module."""
+
+    def __call__(self, distance_model):
+        return jnp.sum(distance_model.weight**2)
+
+
+@pytest.mark.parametrize(
+    "penalty",
+    [
+        _squared_weight,
+        lambda model: jnp.sum(model.weight**2),
+        functools.partial(_scaled_squared_weight, scale=2.0),
+        _SquaredWeight(),
+    ],
+    ids=["function", "lambda", "partial", "object"],
+)
+def test_on_step_saves_training_with_a_penalty_that_is_not_a_module(
+    tmp_path, ScalarEmbedding, regions_and_observations, penalty
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    path = tmp_path / "checkpoint.eqx"
+    optimizer = optax.adam(0.1)
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optimizer, penalty=penalty),
+        on_step=lambda state: save_checkpoint(path, state),
+    )
+    restored = load_checkpoint(path, distance_model=model, optimizer=optimizer, penalty=penalty)
+    assert restored.config.penalty is penalty
+    assert eqx.tree_equal(restored, state)
+
+
+def test_a_checkpoint_saved_between_evaluations_continues_the_penalized_run(
+    tmp_path, ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    optimizer = optax.adam(0.1)
+    config = TrainingConfig(
+        loss=Log1pLoss(), steps=3, eval_every=2, optimizer=optimizer, penalty=_squared_weight
+    )
+    states = []
+    uninterrupted = train(
+        regions, observations, distance_model=model, config=config, on_step=states.append
+    )
+    between = states[1]
+    assert [record.step for record in between.history] == [0]
+    path = tmp_path / "between.eqx"
+    save_checkpoint(path, between)
+    restored = load_checkpoint(
+        path, distance_model=model, optimizer=optimizer, penalty=_squared_weight
+    )
+    assert eqx.tree_equal(restored, between)
+    assert eqx.tree_equal(train(regions, observations, state=restored), uninterrupted)
+
+
+def test_saving_loading_and_continuing_reuse_the_penalty_programs_that_training_compiled(
+    tmp_path, ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    traces = []
+
+    def penalty(model):
+        traces.append(None)
+        return jnp.sum(model.weight**2)
+
+    # A strongly typed weight gives every update the same compiled signature.
+    model = ScalarEmbedding(jnp.asarray(1.0, jnp.float64))
+    optimizer = optax.adam(0.1)
+    config = TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optimizer, penalty=penalty)
+    train(regions, observations, distance_model=model, config=config)
+    traces.clear()
+    path = tmp_path / "checkpoint.eqx"
+    train(
+        regions,
+        observations,
+        distance_model=model,
+        config=config,
+        on_step=lambda state: save_checkpoint(path, state),
+    )
+    # Only the check of the penalty's output shape runs the penalty again.
+    assert len(traces) == 1
+    traces.clear()
+    restored = load_checkpoint(path, distance_model=model, optimizer=optimizer, penalty=penalty)
+    assert traces == []
+    train(regions, observations, state=restored, config=replace(restored.config, steps=3))
+    assert len(traces) == 1
+
+
+@final
+class _CenteredPenalty(eqx.Module):
+    """A penalty holding an array: the squared distance of the weight from a center."""
+
+    center: jax.Array
+
+    def __call__(self, distance_model):
+        return jnp.sum((distance_model.weight - self.center) ** 2)
+
+
+def test_a_penalty_module_holding_arrays_is_supplied_on_load_and_compared_by_value(
+    tmp_path, ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    optimizer = optax.adam(0.1)
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(
+            loss=Log1pLoss(),
+            steps=2,
+            optimizer=optimizer,
+            penalty=_CenteredPenalty(jnp.asarray(0.5)),
+        ),
+    )
+    path = tmp_path / "centered.eqx"
+    save_checkpoint(path, state)
+    restored = load_checkpoint(
+        path, distance_model=model, optimizer=optimizer, penalty=_CenteredPenalty(jnp.asarray(0.5))
+    )
+    assert eqx.tree_equal(restored, state)
+    with pytest.raises(ArtifactError, match="differs"):
+        load_checkpoint(
+            path,
+            distance_model=model,
+            optimizer=optimizer,
+            penalty=_CenteredPenalty(jnp.asarray(0.6)),
+        )
+
+
+def test_saving_rejects_a_nonfinite_penalty_and_keeps_the_previous_file(
+    penalized_checkpoint, tmp_path
+):
+    state = penalized_checkpoint.state
+    path = tmp_path / "checkpoint.eqx"
+    save_checkpoint(path, state)
+    original = path.read_bytes()
+    nonfinite = replace(state, config=replace(state.config, penalty=lambda model: jnp.inf))
+    with pytest.raises(ValueError):
+        save_checkpoint(path, nonfinite)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "drop_training_objective", [False, True], ids=["penalty-record", "training-objective"]
+)
+@pytest.mark.parametrize(
+    "supplied",
+    [None, RidgePenalty(prior_sd=0.5, where=_log_weights)],
+    ids=["without-penalty", "with-penalty"],
+)
+def test_a_checkpoint_without_a_penalty_record_raises_an_artifact_error(
+    penalized_checkpoint, tmp_path, supplied, drop_training_objective
+):
+    with penalized_checkpoint.path.open("rb") as stream:
+        header = json.loads(stream.readline())
+        leaves = stream.read()
+    del header["metadata"]["penalty"]
+    if drop_training_objective:
+        for record in header["metadata"]["history"]:
+            del record["training_objective"]
+    path = tmp_path / "no-record.eqx"
+    path.write_bytes(json.dumps(header).encode() + b"\n" + leaves)
+    with pytest.raises(ArtifactError, match="no penalty record"):
+        load_checkpoint(
+            path,
+            distance_model=penalized_checkpoint.distance_model,
+            optimizer=penalized_checkpoint.optimizer,
+            penalty=supplied,
+        )

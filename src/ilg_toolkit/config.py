@@ -79,7 +79,7 @@ class TrainingConfig:
     equality covers the penalty: two separately written functions compare unequal,
     and ``dataclasses.replace(config, steps=...)`` keeps the same object. Training
     compiles its update for each penalty object, so reusing one penalty object across
-    folds and runs reuses the compiled update.
+    folds, runs and checkpoint loads reuses the compiled update.
 
     Args:
         loss: Loss of every region–species group.
