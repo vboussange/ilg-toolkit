@@ -1085,16 +1085,25 @@ def training_problem():
     Families are ``"embedding"``, ``"conductance"`` and the single-species
     ``"dropout"`` embedding, whose backbone applies dropout during training.
     With ``species`` names, each species gets its own copy of the sampling units
-    and observations scaled by its position.
+    and observations scaled by its position. ``seed`` draws the landscape features,
+    and ``shape`` sets the raster, with the sampling units at its corners.
     """
 
-    def build(family, *, name="alpine", species: tuple[str, ...] | None = None):
-        features = np.random.default_rng(14).uniform(0.8, 1.6, size=(2, 2, 2)).astype(np.float32)
+    def build(
+        family,
+        *,
+        name="alpine",
+        species: tuple[str, ...] | None = None,
+        seed: int = 14,
+        shape: tuple[int, int] = (2, 2),
+    ):
+        rows, columns = shape
+        features = np.random.default_rng(seed).uniform(0.8, 1.6, size=(rows, columns, 2))
         region = RegionBatch(
             name,
-            _feature_field(features, ("elevation", "canopy")),
+            _feature_field(features.astype(np.float32), ("elevation", "canopy")),
             ("south", "north", "west", "east"),
-            np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
+            np.array([[0, 0], [0, columns - 1], [rows - 1, 0], [rows - 1, columns - 1]]),
         )
         observations = PairwiseObservations.from_pairs(
             tuple(itertools.combinations(region.sampling_unit_ids, 2)),
