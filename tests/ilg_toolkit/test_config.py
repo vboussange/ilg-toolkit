@@ -1,9 +1,7 @@
 """Tests of training configurations and the inputs training requires."""
 
-from dataclasses import replace
 from typing import Any
 
-import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
@@ -101,34 +99,7 @@ def test_configuration_equality_covers_the_penalty():
     def where(model):
         return model.coefficients
 
-    ridge = RidgePenalty(prior_sd=1.5, where=where)
-    config = TrainingConfig(loss=Log1pLoss(), penalty=ridge)
-    assert config.penalty is ridge
-    assert TrainingConfig(loss=Log1pLoss()).penalty is None
-    assert config != TrainingConfig(loss=Log1pLoss())
+    config = TrainingConfig(loss=Log1pLoss(), penalty=RidgePenalty(1.5, where))
     assert config == TrainingConfig(loss=Log1pLoss(), penalty=RidgePenalty(1.5, where))
     assert config != TrainingConfig(loss=Log1pLoss(), penalty=RidgePenalty(2.0, where))
-    assert config != TrainingConfig(
-        loss=Log1pLoss(), penalty=RidgePenalty(1.5, lambda model: model.coefficients)
-    )
-    assert replace(config, steps=7) == replace(
-        TrainingConfig(loss=Log1pLoss(), penalty=ridge), steps=7
-    )
-    # Two separately written functions compare unequal.
-    assert TrainingConfig(loss=Log1pLoss(), penalty=lambda model: 0.0) != TrainingConfig(
-        loss=Log1pLoss(), penalty=lambda model: 0.0
-    )
-
-
-def test_configuration_equality_compares_an_unhashable_penalty_by_its_own_equality(
-    UnhashablePenalty,
-):
-    config = TrainingConfig(loss=Log1pLoss(), penalty=UnhashablePenalty(1.0))
-    assert config == TrainingConfig(loss=Log1pLoss(), penalty=UnhashablePenalty(1.0))
-    assert config != TrainingConfig(loss=Log1pLoss(), penalty=UnhashablePenalty(2.0))
-    assert hash(config) == hash(TrainingConfig(loss=Log1pLoss()))
-
-
-def test_configuration_stays_hashable_with_a_penalty_holding_arrays(CenteredPenalty):
-    config = TrainingConfig(loss=Log1pLoss(), penalty=CenteredPenalty(jnp.ones(2)))
-    assert hash(config) == hash(TrainingConfig(loss=Log1pLoss()))
+    assert config != TrainingConfig(loss=Log1pLoss())

@@ -73,8 +73,7 @@ class TrainingConfig:
     equality covers the penalty: two separately written functions compare unequal,
     and ``dataclasses.replace(config, steps=...)`` keeps the same object. Training
     compiles its update for each penalty object, so reusing one penalty object across
-    folds, runs and checkpoint loads reuses the compiled update. Changing a penalty
-    object's attributes after its first use does not change the compiled update.
+    folds, runs and checkpoint loads reuses the compiled update.
 
     Args:
         loss: Loss of every region–species group.
@@ -94,8 +93,8 @@ class TrainingConfig:
         species_microbatch_size: Maximum number of species processed together;
             ``None`` processes all sampled species of a region together.
         seed: Seed of the random sampling and random layers, in ``[0, 2**32)``.
-        penalty: Callable of the distance model returning a scalar, such as
-            [`RidgePenalty`][ilg_toolkit.RidgePenalty]; ``None`` trains on the
+        penalty: Function or Equinox module of the distance model returning a scalar,
+            such as [`RidgePenalty`][ilg_toolkit.RidgePenalty]; ``None`` trains on the
             aggregate loss alone.
 
     Raises:
@@ -111,8 +110,7 @@ class TrainingConfig:
     species_batch_size: int | None = None
     species_microbatch_size: int | None = None
     seed: int = 0
-    # Excluded from the hash: a penalty module holding arrays is unhashable.
-    penalty: Callable[[Any], Any] | None = field(default=None, hash=False)
+    penalty: Callable[[Any], Any] | None = None
 
     def __post_init__(self):
         if not isinstance(self.loss, AbstractLoss):

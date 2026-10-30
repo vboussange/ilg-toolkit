@@ -1,13 +1,13 @@
 """Penalties: functions of a distance model added to the training objective."""
 
+import math
 from collections.abc import Callable
 from typing import Any, final
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
+import optax
 
-from ._checks import _is_finite_real
 from .models import AbstractDistanceModel
 
 
@@ -27,8 +27,7 @@ class RidgePenalty(eqx.Module):
             ``eqx.tree_at``; it reaches nested fields and slices.
 
     Raises:
-        ValueError: If ``prior_sd`` is not finite and positive, or ``where`` is not
-            callable.
+        ValueError: If ``prior_sd`` is not finite and positive.
 
     Examples:
         A ridge penalty on the coefficients of a log-linear patch encoder:
@@ -38,16 +37,12 @@ class RidgePenalty(eqx.Module):
         >>> state = train(region, observations, distance_model=distance_model, config=config)
     """
 
-    prior_sd: float
+    prior_sd: float = eqx.field(converter=float)
     where: Callable[[Any], Any] = eqx.field(static=True)
 
-    def __init__(self, prior_sd: float, where: Callable[[Any], Any]):
-        if not _is_finite_real(prior_sd) or prior_sd <= 0:
+    def __check_init__(self):
+        if not (math.isfinite(self.prior_sd) and self.prior_sd > 0):
             raise ValueError("prior_sd must be finite and positive")
-        if not callable(where):
-            raise ValueError("where must be callable")
-        self.prior_sd = float(prior_sd)
-        self.where = where
 
     def __call__(self, distance_model: AbstractDistanceModel) -> jax.Array:
         """Returns the negative log density of the selected leaves, without the constant.
@@ -58,5 +53,4 @@ class RidgePenalty(eqx.Module):
         Returns:
             The scalar sum of the squared selected leaves divided by ``2 * prior_sd**2``.
         """
-        leaves = jax.tree.leaves(self.where(distance_model))
-        return jnp.asarray(sum(jnp.sum(leaf**2) for leaf in leaves)) / (2 * self.prior_sd**2)
+        return optax.tree.norm(self.where(distance_model), squared=True) / (2 * self.prior_sd**2)

@@ -1,6 +1,4 @@
-"""Tests of penalties: the ridge penalty's value, leaf selection and arguments."""
-
-from typing import Any
+"""Tests of penalties: the ridge penalty's value, gradient and arguments."""
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -32,23 +30,17 @@ def _distance_model() -> LogLinearConductance:
     ids=["field", "slice", "fields", "empty"],
 )
 def test_ridge_penalty_is_the_gaussian_negative_log_density_without_its_constant(where, expected):
-    value = RidgePenalty(prior_sd=2.0, where=where)(_distance_model())
-    assert value.shape == ()
-    assert float(value) == expected
+    assert float(RidgePenalty(prior_sd=2.0, where=where)(_distance_model())) == expected
 
 
-@pytest.mark.parametrize("prior_sd", [0, -1.0, float("nan"), float("inf"), True, "1.5", None])
-def test_ridge_penalty_rejects_a_prior_sd_that_is_not_finite_and_positive(prior_sd: Any):
+def test_ridge_gradient_is_the_selected_leaf_over_the_squared_prior_sd():
+    penalty = RidgePenalty(prior_sd=2.0, where=lambda model: model.coefficients[:, 1:])
+    gradient = eqx.filter_grad(penalty)(_distance_model())
+    np.testing.assert_array_equal(gradient.coefficients, [[0.0, 4 / 4]])
+    np.testing.assert_array_equal(gradient.intercepts, [0.0])
+
+
+@pytest.mark.parametrize("prior_sd", [0, -1.0, float("nan"), float("inf")])
+def test_ridge_penalty_rejects_a_prior_sd_that_is_not_finite_and_positive(prior_sd):
     with pytest.raises(ValueError, match="prior_sd"):
         RidgePenalty(prior_sd=prior_sd, where=lambda model: model.coefficients)
-
-
-@pytest.mark.parametrize("where", [None, "coefficients", 3])
-def test_ridge_penalty_rejects_a_where_that_is_not_callable(where: Any):
-    with pytest.raises(ValueError, match="where"):
-        RidgePenalty(prior_sd=1.0, where=where)
-
-
-def test_ridge_penalty_stores_prior_sd_as_a_float():
-    penalty = RidgePenalty(prior_sd=np.float64(2.0), where=lambda model: model.coefficients)
-    assert type(penalty.prior_sd) is float

@@ -188,7 +188,7 @@ _Paper_: fit.
 _Avoid_: Fitting, when naming this optimization workflow.
 
 **Checkpoint**:
-A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, convergence, and selected model, for continuing training. The optimizer and the penalty are not saved; each is supplied when loading, like the distance-model template. The checkpoint records the penalty's value at the latest model, and loading rejects a penalty that is missing, unexpected or gives a different value.
+A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, convergence, and selected model, for continuing training. The optimizer and the penalty are not saved; each is supplied when loading, like the distance-model template.
 _Paper_: none.
 
 **Loss**:
@@ -198,7 +198,7 @@ _Avoid_: Objective name, when referring to the criterion and its settings.
 
 **Summed loss**:
 The loss of one region–species group times its number of pairs
-(`AbstractLoss.summed_value`): the MLPE negative log likelihood for the MLPE loss, and
+(`AbstractLoss.sum_over_pairs`): the MLPE negative log likelihood for the MLPE loss, and
 the sum of squared differences for the log1p loss. For one region–species group, the
 summed loss plus the penalty is the number of pairs times the training objective.
 _Paper_: none.
