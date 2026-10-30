@@ -180,7 +180,10 @@ class AbstractDistanceModel(eqx.Module):
             ValueError: If a species is unknown, a multispecies model receives a
                 sequence or ``None``, the query pairs are empty or repeat a pair,
                 or a pair names an unknown sampling unit.
-            RuntimeError: If float64 is disabled.
+            ImportError: If a conductance model's ``solver_config`` selects ``"cudss"``
+                without spineax.
+            RuntimeError: If float64 is disabled, or a conductance model's
+                ``solver_config`` selects ``"cudss"`` without a CUDA-enabled GPU backend.
         """
         _require_float64()
         requests, by_species = _resolve_query(self.species, query)
@@ -239,6 +242,11 @@ class ConductanceModel(AbstractDistanceModel):
 
         Returns:
             Effective resistances aligned with ``left`` and ``right``.
+
+        Raises:
+            ImportError: If ``solver_config`` selects ``"cudss"`` without spineax.
+            RuntimeError: If ``solver_config`` selects ``"cudss"`` without a
+                CUDA-enabled GPU backend.
         """
         return _resistance_distances(self, latent, pairs, species_index, context=None)[0]
 

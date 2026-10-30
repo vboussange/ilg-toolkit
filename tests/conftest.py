@@ -4,7 +4,7 @@ import contextlib
 import importlib
 import itertools
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import final
@@ -765,14 +765,16 @@ def _decimal_dense_profile_and_gradients(distances, targets, left, right, raw_va
 
 
 class _CuDSSTokens:
-    """Host-side tokens of the cuDSS double, which follow spineax's token rule.
+    """Host-side tokens of the double of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
 
-    A refactorization consumes its token and returns a fresh one. Refactorizing a
-    superseded token stays correct and repeats the analysis, which ``rebuild_count``
-    counts for the whole process, as spineax's counter does, so tests compare
-    differences. ``analysis_count`` counts the analyses of new solver states, which
-    has no spineax counterpart. A factorization fails while ``failing`` is set, as a
-    cuDSS factorization that meets a non-positive pivot does.
+    They follow spineax's token rule: a refactorization consumes its token and returns
+    a fresh one. Refactorizing a superseded token stays correct and repeats the
+    analysis, which ``rebuild_count`` counts for the whole process, as spineax's counter
+    does, so tests compare differences. ``analysis_count`` counts the analyses of new
+    solver states, which has no spineax counterpart. A factorization fails while
+    ``failing`` is set, as a cuDSS factorization that meets a non-positive pivot does.
+    A refactorization raises from its callback while ``raising`` is set, as a failed
+    native spineax call does.
     """
 
     def __init__(self) -> None:
@@ -781,12 +783,21 @@ class _CuDSSTokens:
         self.analyses = 0
         self.rebuilds = 0
         self.failing = False
+        self.raising = False
 
     def rebuild_count(self) -> int:
         return self.rebuilds
 
     def analysis_count(self) -> int:
         return self.analyses
+
+    @contextlib.contextmanager
+    def one_analysis(self) -> Iterator[None]:
+        """Expects the enclosed call to analyze one solver state and to repeat no analysis."""
+        rebuilds, analyses = self.rebuilds, self.analyses
+        yield
+        assert self.rebuilds == rebuilds
+        assert self.analyses == analyses + 1
 
     def _fresh_token(self) -> tuple[np.ndarray, np.ndarray]:
         self.next_token += 1
@@ -798,6 +809,8 @@ class _CuDSSTokens:
         return self._fresh_token()
 
     def refactorize(self, token: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if self.raising:
+            raise RuntimeError("cuDSS call failed (status 3)")
         if int(token) in self.live:
             self.live.remove(int(token))
         else:
@@ -809,6 +822,7 @@ _CUDSS_TOKENS = _CuDSSTokens()
 _TOKEN_RESULT = (jax.ShapeDtypeStruct((), jnp.int32), jax.ShapeDtypeStruct((), jnp.bool_))
 
 
+@final
 class _DenseFactorization(eqx.Module):
     token: jax.Array
     cholesky: jax.Array
@@ -850,11 +864,13 @@ def cudss_double_fixture(monkeypatch):
     """Runs ``solver="cudss"`` on the CPU double and returns its tokens.
 
     The tokens' ``rebuild_count()`` matches that of the ``cudss_gpu`` fixture's
-    module, and setting ``failing`` makes factorizations fail.
+    module. Setting ``failing`` makes factorizations fail, and setting ``raising``
+    makes refactorizations raise.
     """
     monkeypatch.setattr("ilg_toolkit.resistance.CuDSSSolver", _CuDSSDouble)
     yield _CUDSS_TOKENS
     _CUDSS_TOKENS.failing = False
+    _CUDSS_TOKENS.raising = False
 
 
 @pytest.fixture(name="cudss_gpu")

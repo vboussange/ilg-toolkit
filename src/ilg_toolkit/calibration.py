@@ -330,7 +330,10 @@ def fit_calibration_head(
             for a direct calibration head, or MLPE receives individual-based regions.
         MLPEError: If ``max_iterations`` is not a positive integer for MLPE, or an
             MLPE calibration cannot be fitted.
-        RuntimeError: If float64 is disabled.
+        ImportError: If the distance model's ``solver_config`` selects ``"cudss"``
+            without spineax.
+        RuntimeError: If float64 is disabled, or the distance model's ``solver_config``
+            selects ``"cudss"`` without a CUDA-enabled GPU backend.
 
     Examples:
         Train a patch encoder, then refit its calibration head on the training

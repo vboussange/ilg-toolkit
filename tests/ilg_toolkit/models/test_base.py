@@ -386,10 +386,8 @@ def test_species_of_one_prediction_share_a_solver_state(
             ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
         )
     )
-    rebuilds, analyses = cudss_double.rebuild_count(), cudss_double.analysis_count()
-    predictions = direct.predict(region, dict.fromkeys(species))
-    assert cudss_double.rebuild_count() == rebuilds
-    assert cudss_double.analysis_count() == analyses + 1
+    with cudss_double.one_analysis():
+        predictions = direct.predict(region, dict.fromkeys(species))
     expected = iterative.predict(region, dict.fromkeys(species))
     for name in species:
         np.testing.assert_allclose(predictions[name].values, expected[name].values, rtol=1e-8)

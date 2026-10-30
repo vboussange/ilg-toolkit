@@ -146,12 +146,13 @@ carries it in `solver_config`:
 | `"amg"` | CG preconditioned with algebraic multigrid (AMG) | `amg` extra | A CPU or a GPU, on larger conductance grid graphs with conductance contrast below 4 orders of magnitude |
 | `"cudss"` | cuDSS, a sparse direct solver | `cudss` extra | An NVIDIA GPU, at any conductance contrast, when the factorization fits in GPU memory |
 
-`"cg"` and `"amg"` raise an error when they reach their iteration limit. `"cudss"`
-has no iteration limit, and its cost does not depend on conductance contrast. A deep
-patch encoder can drive conductance to its floor, so train one with `"cudss"` on an
-NVIDIA GPU. The
+`"cg"` and `"amg"` raise an error when they reach their iteration limit. The
+iterations of `"cg"` grow with grid size and conductance contrast, and those of
+`"amg"` with conductance contrast. `"cudss"` has no iteration limit, and its cost
+does not depend on conductance contrast. A deep patch encoder can drive conductance
+to its floor, so train one with `"cudss"` on an NVIDIA GPU. The
 [API reference](https://vboussange.github.io/ilg-toolkit/api/models/#resistance-solvers)
-gives iterations and costs for each resistance solver.
+describes solver state, failures and saved models.
 
 ## Documentation
 

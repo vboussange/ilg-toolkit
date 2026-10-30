@@ -230,6 +230,29 @@ def test_failed_factorization_of_a_composed_patch_encoder_is_named(
         )
 
 
+@pytest.mark.parametrize("optimizer", [optax.adam(0.05), optax.lbfgs()], ids=["adam", "lbfgs"])
+def test_composed_patch_encoder_trains_to_the_result_of_a_direct_one(
+    optimizer, cudss_double, PointConductance, training_problem
+):
+    region, observations, _ = training_problem("conductance")
+    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
+    config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optimizer)
+    direct = train(region, observations, distance_model=model, config=config)
+    composed = train(
+        region, observations, distance_model=_ComposedConductance(model), config=config
+    )
+    np.testing.assert_allclose(
+        [record.training_loss for record in composed.history],
+        [record.training_loss for record in direct.history],
+        rtol=1e-10,
+    )
+    np.testing.assert_allclose(
+        cast(Any, composed.latest_model.distance_model).encoder.log_scale,
+        cast(Any, direct.latest_model.distance_model).log_scale,
+        rtol=1e-10,
+    )
+
+
 @pytest.mark.parametrize(
     ("failing_step", "failed_step"), [(None, 0), (1, 2)], ids=["initialization", "gradient"]
 )
@@ -258,6 +281,71 @@ def test_failed_factorization_names_the_region_species_and_step(
     assert caught.type is RuntimeError
     assert str(caught.value).startswith(f"region 'alpine', species 'frog': step {failed_step}: ")
     assert isinstance(caught.value.__cause__, eqx.EquinoxRuntimeError)
+
+
+@pytest.mark.parametrize(
+    ("failing_step", "failed_step"), [(None, 0), (1, 2)], ids=["initialization", "gradient"]
+)
+def test_failed_native_call_names_the_region_species_step_and_reason(
+    failing_step, failed_step, cudss_double, PointConductance, training_problem
+):
+    species = ("frog", "newt")
+    region, observations, _ = training_problem("conductance", species=species)
+    model = PointConductance(
+        jnp.array([0.0, 0.2]), species=species, solver_config=ResistanceSolverConfig(solver="cudss")
+    )
+    cudss_double.raising = failing_step is None
+
+    def fail_after_step(state):
+        if state.step == failing_step:
+            cudss_double.raising = True
+
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=3),
+            on_step=fail_after_step,
+        )
+    assert caught.type is RuntimeError
+    assert str(caught.value) == (
+        f"region 'alpine', species 'frog': step {failed_step}: "
+        "RuntimeError: cuDSS call failed (status 3)"
+    )
+    assert isinstance(caught.value.__cause__, jax.errors.JaxRuntimeError)
+
+
+@final
+class _NativeFailureEmbedding(EmbeddingDistanceModel):
+    """A distance model whose backbone raises the error of a failed native spineax call."""
+
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def backbone(self, features):
+        raise jax.errors.JaxRuntimeError(
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize\n"
+            "Further detail"
+        )
+
+    def embedding(self, latent, species_index):
+        return latent
+
+
+def test_failed_native_call_reports_the_first_line_of_its_message(training_problem):
+    region, observations, _ = training_problem("embedding")
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            region,
+            observations,
+            distance_model=_NativeFailureEmbedding(),
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        )
+    assert str(caught.value) == (
+        "region 'alpine', species 0: step 0: "
+        "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize"
+    )
 
 
 def _assert_failed_line_search_candidate_names_the_sampled_groups(
@@ -604,8 +692,7 @@ def test_line_searches_carry_the_solver_state_across_groups_and_shapes(
 
 
 def test_eager_training_carries_the_solver_state(cudss_double, training_problem, PointConductance):
-    rebuilds, analyses = cudss_double.rebuild_count(), cudss_double.analysis_count()
-    with jax.disable_jit():
+    with cudss_double.one_analysis(), jax.disable_jit():
         state = _CarryScenario((("alpine", (2, 2), 1),), settings={"steps": 1}).run(
             training_problem,
             PointConductance,
@@ -618,8 +705,6 @@ def test_eager_training_carries_the_solver_state(cudss_double, training_problem,
             ),
         )
     assert cast(Any, optax.tree.get(state.optimizer_state, "num_linesearch_steps")) > 1
-    assert cudss_double.rebuild_count() == rebuilds
-    assert cudss_double.analysis_count() == analyses + 1
 
 
 @pytest.mark.parametrize(

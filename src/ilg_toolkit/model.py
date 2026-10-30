@@ -159,7 +159,10 @@ class LandscapeGeneticsModel[DistanceModel: AbstractDistanceModel](eqx.Module):
                 calibration head rejects the conditioning mode or the region.
             MLPEError: If ``known_effects=True`` is combined with ``support``, or the
                 support observations or their pairs are invalid.
-            RuntimeError: If float64 is disabled.
+            ImportError: If the distance model's ``solver_config`` selects ``"cudss"``
+                without spineax.
+            RuntimeError: If float64 is disabled, or the distance model's
+                ``solver_config`` selects ``"cudss"`` without a CUDA-enabled GPU backend.
 
         Examples:
             Prepare one landscape with six located populations and fit an MLPE

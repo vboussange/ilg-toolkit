@@ -1,6 +1,7 @@
 """Training of distance models and statistical parameters across regions and species."""
 
-from collections.abc import Callable, Mapping, Sequence
+import contextlib
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast, final, NamedTuple
@@ -10,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from jaxscape.solvers import SparseDirectState
 
 from ._checks import _require_float64
 from ._training_utils import (
@@ -29,14 +31,20 @@ from .models.base import (
     _prepare_distance_context,
 )
 from .models.common import _backbone, _inference_model, _reject_stateful_layers, _training_model
-from .resistance import _ResistanceSolverContext
+from .resistance import _carried_state, _ResistanceSolverContext, _with_carried_state
 
 
 _Parameters = tuple[AbstractDistanceModel, Any]
 _RasterShape = tuple[int, int]
 _Contexts = dict[_RasterShape, _ResistanceSolverContext | None]
-# What `eqx.error_if` raises from a compiled call, and from a call under `jax.disable_jit()`.
-_COMPILED_CALL_ERRORS = (eqx.EquinoxRuntimeError, eqx.EquinoxTracetimeError)
+_SolverStates = dict[_RasterShape, SparseDirectState | None]
+# What `eqx.error_if` raises from a compiled call and from a call under `jax.disable_jit()`, and
+# what a failed native call raises, such as one of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
+_COMPILED_CALL_ERRORS = (
+    eqx.EquinoxRuntimeError,
+    eqx.EquinoxTracetimeError,
+    jax.errors.JaxRuntimeError,
+)
 
 
 @final
@@ -219,7 +227,7 @@ class _RegionSpeciesTrainingBatch:
     species_index: int
     key: _RegionSpeciesKey
     loss_weight: float
-    shape: _RasterShape
+    raster_shape: _RasterShape
 
 
 def _prepared(region, observations, loss, *, training):
@@ -233,7 +241,7 @@ def _prepared(region, observations, loss, *, training):
 
 @eqx.filter_jit
 def _group_distances(model, latent, payload, species_index, context):
-    """Returns the ecological distances of a group's observed pairs and the next solve's context."""
+    """Returns a region–species group's ecological distances and the next solve's context."""
     return _distances_from_latent(
         model,
         latent,
@@ -251,6 +259,16 @@ def _group_name(species: tuple[str, ...] | None, group: _RegionSpeciesKey) -> st
     return f"region {region!r}, species {index if species is None else repr(species[index])}"
 
 
+def _failure_reason(error: Exception) -> str:
+    """Returns the line of a compiled call's error that states why the call failed.
+
+    That line follows Equinox's marker for ``eqx.error_if``, ends the traceback of a
+    failed callback, and opens the message of a failed native call.
+    """
+    lines = str(error).rpartition("equinox.EquinoxRuntimeError: ")[2].strip().split("\n")
+    return lines[-1] if lines[0].endswith("Traceback (most recent call last):") else lines[0]
+
+
 def _training_failure(
     species: tuple[str, ...] | None,
     groups: Sequence[_RegionSpeciesKey],
@@ -259,15 +277,31 @@ def _training_failure(
     *,
     in_line_search: bool = False,
 ) -> RuntimeError:
-    """Returns the error naming the groups and step of a failed compiled call.
+    """Returns the error naming the region–species groups and step of a failed compiled call.
 
-    The message ends with the first line of the message of ``error``, which raises
-    from the returned error.
+    The message ends with the reason of ``error``, which raises from the returned
+    error.
     """
     names = "; ".join(_group_name(species, group) for group in groups)
     phase = "line search: " if in_line_search else ""
-    reason = str(error).rpartition("equinox.EquinoxRuntimeError: ")[2].partition("\n")[0]
-    return RuntimeError(f"{names}: step {step}: {phase}{reason}")
+    return RuntimeError(f"{names}: step {step}: {phase}{_failure_reason(error)}")
+
+
+@contextlib.contextmanager
+def _naming_failures(
+    species: tuple[str, ...] | None,
+    groups: Sequence[_RegionSpeciesKey],
+    step: int,
+    *,
+    in_line_search: bool = False,
+) -> Iterator[None]:
+    """Raises the error naming the region–species groups and step of a call failing in the block."""
+    try:
+        yield
+    except _COMPILED_CALL_ERRORS as error:
+        raise _training_failure(
+            species, groups, step, error, in_line_search=in_line_search
+        ) from error
 
 
 class _Contribution(NamedTuple):
@@ -299,7 +333,10 @@ _microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_objective, has
 
 
 def _failing_groups(model, latent, contributions, groups, context, key):
-    """Returns the first group of a failed microbatch whose distances fail again, or every group."""
+    """Returns the region–species groups to name for a failed microbatch.
+
+    That is the first region–species group whose distances fail again, or every group.
+    """
     configured = _training_model(model, key)
     for item, group in zip(contributions, groups, strict=True):
         try:
@@ -314,7 +351,7 @@ def _failing_groups(model, latent, contributions, groups, context, key):
 def _regional_gradient(parameters, contributions, groups, config, context, key, step):
     """Returns one region's objective gradient, over species microbatches, and the next context.
 
-    A failed microbatch raises the error naming the group that failed.
+    A failed microbatch raises the error naming the region–species group that failed.
     """
     model, loss_state = parameters
     features = contributions[0].payload.features
@@ -349,40 +386,26 @@ def _regional_gradient(parameters, contributions, groups, config, context, key, 
     return (model_gradient, state_gradient), context
 
 
-def _carried_state(context: _ResistanceSolverContext | None) -> Any:
-    """Returns the solver state a solve refreshes, or ``None`` for a context without one."""
-    return context.solver_state if context is not None and context.carried else None
-
-
-def _carried_states(contexts: _Contexts) -> dict[_RasterShape, Any]:
+def _solver_states(contexts: _Contexts) -> _SolverStates:
     """Returns the carried solver state of each raster shape, as arrays and static fields only."""
     return {shape: _carried_state(context) for shape, context in contexts.items()}
 
 
-def _with_carried_state(
-    context: _ResistanceSolverContext | None, state: Any
-) -> _ResistanceSolverContext | None:
-    """Returns the context holding a carried solver state; other contexts stay as they are."""
-    if context is None or not context.carried:
-        return context
-    return replace(context, solver_state=state)
-
-
-def _when[Carried](
+def _when(
     condition: jax.Array,
-    compute: Callable[[Carried], tuple[jax.Array, Carried]],
-    carried: Carried,
-) -> tuple[jax.Array, Carried]:
-    """Returns ``compute(carried)`` when ``condition`` holds, otherwise zero and ``carried``.
+    compute: Callable[[_SolverStates], tuple[jax.Array, _SolverStates]],
+    solver_states: _SolverStates,
+) -> tuple[jax.Array, _SolverStates]:
+    """Returns ``compute(solver_states)`` under ``condition``, otherwise zero and the same states.
 
     It runs one branch.
     """
-    result, _ = jax.eval_shape(compute, carried)
+    result, _ = jax.eval_shape(compute, solver_states)
     return jax.lax.cond(
         condition,
         compute,
-        lambda carried: (jnp.zeros(result.shape, result.dtype), carried),
-        carried,
+        lambda solver_states: (jnp.zeros(result.shape, result.dtype), solver_states),
+        solver_states,
     )
 
 
@@ -396,8 +419,8 @@ class _TrainingObjective(eqx.Module):
     structure and the compiled update stay fixed across updates.
 
     A call takes the carried solver state of each raster shape, ``None`` for a shape
-    without one, and returns them refreshed. Each group's solve takes the state the
-    previous group's solve returned.
+    without one, and returns them refreshed. Each region–species group's solve takes
+    the state the solve of the previous one returned.
     """
 
     regions: tuple[tuple[_Contribution, ...], ...]
@@ -408,42 +431,42 @@ class _TrainingObjective(eqx.Module):
     loss: AbstractLoss = eqx.field(static=True)
 
     def __call__(
-        self, parameters: _Parameters, carried: dict[_RasterShape, Any]
-    ) -> tuple[jax.Array, dict[_RasterShape, Any]]:
+        self, parameters: _Parameters, solver_states: _SolverStates
+    ) -> tuple[jax.Array, _SolverStates]:
         model, loss_state = parameters
 
-        def group_value(index: int, item: _Contribution, group, latent, carried):
+        def group_value(index: int, item: _Contribution, group, latent, solver_states):
             shape = self.shapes[index]
             value, context = _microbatch_objective(
                 (model, latent, (self.loss._group_state(loss_state, group),)),
                 (item,),
                 self.loss,
-                _with_carried_state(self.contexts[shape], carried[shape]),
+                _with_carried_state(self.contexts[shape], solver_states[shape]),
                 self.keys[index],
             )
-            return cast(jax.Array, value), {**carried, shape: _carried_state(context)}
+            return cast(jax.Array, value), {**solver_states, shape: _carried_state(context)}
 
-        def region_value(index: int, carried):
+        def region_value(index: int, solver_states):
             latent = _backbone(model, self.regions[index][0].payload.features, self.keys[index])
             values = []
             for item, group in zip(self.regions[index], self.groups[index], strict=True):
-                value, carried = _when(
+                value, solver_states = _when(
                     item.loss_weight > 0,
                     partial(group_value, index, item, group, latent),
-                    carried,
+                    solver_states,
                 )
                 values.append(value)
-            return cast(jax.Array, sum(values)), carried
+            return cast(jax.Array, sum(values)), solver_states
 
         values = []
         for index, contributions in enumerate(self.regions):
-            value, carried = _when(
+            value, solver_states = _when(
                 jnp.any(jnp.stack([item.loss_weight for item in contributions]) > 0),
                 partial(region_value, index),
-                carried,
+                solver_states,
             )
             values.append(value)
-        return cast(jax.Array, sum(values)), carried
+        return cast(jax.Array, sum(values)), solver_states
 
 
 def _labeled_pairs(batch: _RegionSpeciesTrainingBatch) -> tuple[tuple[str, str], ...]:
@@ -473,11 +496,11 @@ def _prepare_batches(
     ) -> _RegionSpeciesTrainingBatch:
         region, observations, species_index, key, loss_weight = inputs
         payload = _prepared(region, observations, config.loss, training=training)
-        shape = (region.feature_array.shape[0], region.feature_array.shape[1])
-        if shape not in contexts:
-            contexts[shape] = _prepare_distance_context(distance_model, region.feature_array)
+        raster_shape = (region.feature_array.shape[0], region.feature_array.shape[1])
+        if raster_shape not in contexts:
+            contexts[raster_shape] = _prepare_distance_context(distance_model, region.feature_array)
         return _RegionSpeciesTrainingBatch(
-            region, observations, payload, species_index, key, loss_weight, shape
+            region, observations, payload, species_index, key, loss_weight, raster_shape
         )
 
     training = tuple(make_batch(inputs, training=True) for inputs in training_inputs)
@@ -519,8 +542,8 @@ def _apply_update(
     optimizer_state: optax.OptState,
     gradient: _Parameters,
     objective: _TrainingObjective,
-    carried: dict[_RasterShape, Any],
-) -> tuple[_Parameters, optax.OptState, dict[_RasterShape, Any]]:
+    solver_states: _SolverStates,
+) -> tuple[_Parameters, optax.OptState, _SolverStates]:
     """Applies one optimizer update, passing the objective's value, gradient and function.
 
     The gradient comes from the regional and microbatch programs, and the value from
@@ -534,7 +557,7 @@ def _apply_update(
     side effect.
     """
     trainable, fixed = eqx.partition(parameters, eqx.is_inexact_array)
-    references = jax.tree.map(jax.new_ref, carried)
+    references = jax.tree.map(jax.new_ref, solver_states)
 
     def value_fn(candidate):
         value, fresh = objective(
@@ -569,6 +592,26 @@ def _criterion(loss, distances, context, state, fixed):
     return loss._value(distances, context, state, fixed)
 
 
+class _Evaluation(NamedTuple):
+    """The losses of an evaluation of batches, with their calibrations and the next contexts.
+
+    Attributes:
+        loss: Aggregate loss.
+        by_region: Mean loss of each region over its species.
+        calibrations: Calibrations of training batches; empty for an evaluation given
+            calibrations.
+        by_species: Mean loss of each species over its regions, or ``None`` for a
+            single-species distance model.
+        contexts: The contexts for the next solves.
+    """
+
+    loss: float
+    by_region: dict[str, float]
+    calibrations: dict
+    by_species: dict[str, float] | None
+    contexts: _Contexts
+
+
 def _evaluate_regions(
     parameters: _Parameters,
     batches: Sequence[_RegionSpeciesTrainingBatch],
@@ -576,13 +619,8 @@ def _evaluate_regions(
     step: int,
     contexts: _Contexts,
     calibrations: Mapping | None = None,
-) -> tuple[float, dict[str, float], dict, dict[str, float] | None, _Contexts]:
-    """Evaluates the loss of every batch, and calibrates training batches.
-
-    Returns the aggregate loss, the loss by region, the calibrations of training
-    batches (empty when ``calibrations`` is given), the loss by species and the
-    contexts for the next solves.
-    """
+) -> _Evaluation:
+    """Evaluates the loss of every batch, and calibrates training batches."""
     contexts = dict(contexts)
     values, fitted = {}, {}
     species = parameters[0].species
@@ -596,22 +634,20 @@ def _evaluate_regions(
                 "Validation requires a training calibration for the same region–species group"
             )
         fixed = None if calibration is None else config.loss._fixed_parameters(calibration)
-        try:
+        with _naming_failures(species, (batch.key,), step):
             if batch.region.name != previous_region:
                 latent = _backbone(parameters[0], batch.payload.features, None)
                 previous_region = batch.region.name
-            distances, contexts[batch.shape] = _group_distances(
+            distances, contexts[batch.raster_shape] = _group_distances(
                 configured,
                 latent,
                 batch.payload,
                 jnp.asarray(batch.species_index),
-                contexts[batch.shape],
+                contexts[batch.raster_shape],
             )
             value = float(
                 _criterion(config.loss, distances, batch.payload.context, group_state, fixed)
             )
-        except _COMPILED_CALL_ERRORS as error:
-            raise _training_failure(species, (batch.key,), step, error) from error
         if not np.isfinite(value):
             raise FloatingPointError(
                 f"{_group_name(species, batch.key)}: step {step}: nonfinite loss"
@@ -640,7 +676,7 @@ def _evaluate_regions(
             for index in sorted({b.species_index for b in batches})
         }
     )
-    return (
+    return _Evaluation(
         sum(batch.loss_weight * values[batch.key] for batch in batches),
         regional,
         fitted,
@@ -682,14 +718,18 @@ def train[DistanceModel: AbstractDistanceModel](
     first update whose gradient norm is at or below it, evaluates that step and sets
     ``converged=True``; continuing a converged state makes no updates.
 
-    Training prepares the resistance solver once for each raster shape. With
-    ``solver="cudss"``, every update, line-search evaluation, evaluation and
-    ``on_step`` evaluation on a raster shape carries that shape's solver state, so
-    the solver repeats no analysis. A failed compiled step raises at once, so the
-    last checkpoint ``on_step`` wrote stays as it is.
+    Training a conductance model prepares the resistance solver once for each raster
+    shape. With ``solver="cudss"``, every update, line-search evaluation, evaluation
+    and ``on_step`` evaluation on a raster shape carries that shape's solver state, so
+    the resistance solver repeats no analysis. A distance model that composes a
+    conductance model solves through ``ConductanceModel.ecological_distances``, which
+    prepares its solver state itself and repeats the analysis on every solve. A failed
+    compiled step raises at once, so the last checkpoint ``on_step`` wrote stays as it
+    is.
 
     Training compiles its update and evaluation steps; ``with jax.disable_jit():``
-    runs them eagerly for debugging, with every solver but cuDSS, which runs compiled.
+    runs them eagerly for debugging with conjugate gradient and algebraic multigrid
+    (AMG).
 
     Args:
         region: One region batch, a sequence of region batches, or a mapping keyed
@@ -820,7 +860,7 @@ def train[DistanceModel: AbstractDistanceModel](
     )
     region_count = len(regional_batches)
     selected_count = min(region_count, config.region_batch_size or region_count)
-    regional_shapes = tuple(groups[0].shape for groups in regional_batches)
+    regional_shapes = tuple(groups[0].raster_shape for groups in regional_batches)
     regional_groups = tuple(tuple(batch.key for batch in groups) for groups in regional_batches)
 
     training_groups = tuple(batch.key for batch in training_batches)
@@ -916,7 +956,7 @@ def train[DistanceModel: AbstractDistanceModel](
                 )
                 chosen_groups = tuple(groups[i].key for i in chosen)
                 sampled.extend(chosen_groups)
-                try:
+                with _naming_failures(distance_model.species, chosen_groups, step):
                     gradient, contexts[regional_shapes[index]] = _regional_gradient(
                         parameters,
                         contributions,
@@ -926,10 +966,6 @@ def train[DistanceModel: AbstractDistanceModel](
                         keys[index],
                         step,
                     )
-                except _COMPILED_CALL_ERRORS as error:
-                    raise _training_failure(
-                        distance_model.species, chosen_groups, step, error
-                    ) from error
                 accumulated = (
                     gradient
                     if accumulated is None
@@ -958,55 +994,57 @@ def train[DistanceModel: AbstractDistanceModel](
             )
             if config.gradient_tolerance is not None:
                 converged = float(_gradient_norm(accumulated)) <= config.gradient_tolerance
-            try:
-                parameters, optimizer_state, carried = _apply_update(
+            # The objective just passed at the current parameters, so a candidate failed.
+            with _naming_failures(distance_model.species, sampled, step, in_line_search=True):
+                parameters, optimizer_state, solver_states = _apply_update(
                     parameters,
                     config.optimizer,
                     optimizer_state,
                     accumulated,
                     objective,
-                    _carried_states(contexts),
+                    _solver_states(contexts),
                 )
-            except _COMPILED_CALL_ERRORS as error:
-                # The objective just passed at the current parameters, so a candidate failed.
-                raise _training_failure(
-                    distance_model.species, sampled, step, error, in_line_search=True
-                ) from error
             contexts = {
-                shape: _with_carried_state(context, carried[shape])
+                shape: _with_carried_state(context, solver_states[shape])
                 for shape, context in contexts.items()
             }
         if step == 0 or step % config.eval_every == 0 or step == config.steps or converged:
-            training_loss, regional_training, calibrations, species_training, contexts = (
-                _evaluate_regions(parameters, training_batches, config, step, contexts)
+            evaluation = _evaluate_regions(parameters, training_batches, config, step, contexts)
+            contexts = evaluation.contexts
+            validation_loss, regional_validation, species_validation = (
+                None,
+                {},
+                None if len(_model_species(distance_model)) == 1 else {},
             )
-            validation_loss, regional_validation, _, species_validation, contexts = (
-                (None, {}, {}, None if len(_model_species(distance_model)) == 1 else {}, contexts)
-                if not validation_batches
-                else _evaluate_regions(
-                    parameters, validation_batches, config, step, contexts, calibrations
+            if validation_batches:
+                validated = _evaluate_regions(
+                    parameters, validation_batches, config, step, contexts, evaluation.calibrations
                 )
-            )
+                contexts = validated.contexts
+                validation_loss, regional_validation, species_validation = (
+                    validated.loss,
+                    validated.by_region,
+                    validated.by_species,
+                )
             history.append(
                 StepRecord(
                     step,
-                    training_loss,
+                    evaluation.loss,
                     validation_loss,
-                    regional_training,
+                    evaluation.by_region,
                     regional_validation,
-                    species_training,
+                    evaluation.by_species,
                     species_validation,
                 )
             )
-            latest = make_model(calibrations)
+            latest = make_model(evaluation.calibrations)
             if validation_loss is None or validation_loss < selected_loss:
                 selected, selected_step = latest, step
-                selected_loss = training_loss if validation_loss is None else validation_loss
+                selected_loss = evaluation.loss if validation_loss is None else validation_loss
         elif on_step is not None:
-            _, _, current_calibrations, _, contexts = _evaluate_regions(
-                parameters, training_batches, config, step, contexts
-            )
-            latest = make_model(current_calibrations)
+            evaluation = _evaluate_regions(parameters, training_batches, config, step, contexts)
+            contexts = evaluation.contexts
+            latest = make_model(evaluation.calibrations)
         if on_step is not None:
             on_step(continuation())
         if converged:

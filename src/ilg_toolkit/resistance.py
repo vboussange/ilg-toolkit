@@ -2,14 +2,14 @@
 
 import math
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import cast
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax as lx
 from jaxscape import GridGraph, ResistanceDistance
-from jaxscape.solvers import AMJaxCGSolver, CuDSSSolver
+from jaxscape.solvers import AMJaxCGSolver, AMJaxCGSolverState, CuDSSSolver, SparseDirectState
 
 from .config import ResistanceSolverConfig
 
@@ -21,17 +21,34 @@ class _ResistanceSolverContext:
 
     Attributes:
         graph_shape: Shape of the conductance grid graphs the context solves.
-        solver: The linear solver.
+        solver: The resistance solver.
         solver_state: ``None`` for conjugate gradient, the fixed hierarchy for
-            algebraic multigrid, and the state of the latest solve for cuDSS.
-        carried: Whether a solve returns a refreshed ``solver_state``, which the
-            next solve takes. True only for cuDSS.
+            algebraic multigrid, and the state of the latest solve for the NVIDIA
+            CUDA Direct Sparse Solver (cuDSS).
+        carries_state: Whether a solve returns a refreshed ``solver_state``, which
+            the next solve takes. True only for cuDSS.
     """
 
     graph_shape: tuple[int, ...] = field(metadata={"static": True})
     solver: lx.AbstractLinearSolver
-    solver_state: Any = None
-    carried: bool = field(default=False, metadata={"static": True})
+    solver_state: AMJaxCGSolverState | SparseDirectState | None = None
+    carries_state: bool = field(default=False, metadata={"static": True})
+
+
+def _carried_state(context: _ResistanceSolverContext | None) -> SparseDirectState | None:
+    """Returns the solver state a solve refreshes, or ``None`` for a context without one."""
+    if context is None or not context.carries_state:
+        return None
+    return cast(SparseDirectState, context.solver_state)
+
+
+def _with_carried_state(
+    context: _ResistanceSolverContext | None, state: SparseDirectState | None
+) -> _ResistanceSolverContext | None:
+    """Returns the context holding a carried solver state; other contexts stay as they are."""
+    if context is None or not context.carries_state:
+        return context
+    return replace(context, solver_state=state)
 
 
 def _mean_conductance(left, right):
@@ -88,7 +105,9 @@ def _resistance_context(
     with jax.ensure_compile_time_eval():
         template = GridGraph(jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance)
         state = ResistanceDistance(solver=solver).init(template)
-    return _ResistanceSolverContext(graph_shape, solver, state, carried=config.solver == "cudss")
+    return _ResistanceSolverContext(
+        graph_shape, solver, state, carries_state=config.solver == "cudss"
+    )
 
 
 @eqx.filter_jit
@@ -105,8 +124,8 @@ def _effective_resistance(
     between coincident vertices. Invalid inputs and failed solves raise errors.
 
     With a carried solver state, the returned context holds the state refreshed for
-    ``conductance``. Passing it to the next call keeps the solver's analysis; passing
-    an earlier state stays correct and repeats the analysis.
+    ``conductance``. Passing it to the next call keeps the resistance solver's
+    analysis; passing an earlier state stays correct and repeats the analysis.
 
     Args:
         conductance: Positive conductance surface with shape ``(rows, columns)``.
@@ -141,7 +160,7 @@ def _effective_resistance(
         )
     graph = GridGraph(surface.astype(jnp.float64), fun=_mean_conductance)
     distance = ResistanceDistance(solver=context.solver)
-    if context.carried:
+    if context.carries_state:
         context = replace(context, solver_state=distance.reinit(graph, context.solver_state))
     resistances = distance.nodes_to_nodes_distance(graph, nodes, state=context.solver_state)
     return resistances.at[jnp.diag_indices(nodes.size)].set(0), context

@@ -60,8 +60,8 @@ class LogLinearConductance(ConductanceModel):
             predictor.
         max_conductance: Positive cap, default 1000. Conductance is
             ``min(max_conductance, min_conductance + exp(features @ coefficients + intercept))``.
-        solver_config: Solver of the effective-resistance layer and its settings; see
-            ``ResistanceSolverConfig``.
+        solver_config: Resistance solver of the effective-resistance layer and its
+            settings; see ``ResistanceSolverConfig``.
 
     Notes:
         Prepare feature scaling and categorical reference levels before building a
@@ -239,6 +239,9 @@ def initialize_uniform_conductance(
         TypeError: ``model`` is not a ``LogLinearConductance`` or ``loss`` is not
             an ``AbstractLoss``.
         ValueError: The inputs violate the contract that ``train`` enforces.
+        ImportError: ``model.solver_config`` selects ``"cudss"`` without spineax.
+        RuntimeError: float64 is disabled, or ``model.solver_config`` selects ``"cudss"``
+            without a CUDA-enabled GPU backend.
 
     Notes:
         Losses that identify an absolute conductance scale, such as ``Log1pLoss``,
