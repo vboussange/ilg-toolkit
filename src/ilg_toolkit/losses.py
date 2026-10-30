@@ -1,10 +1,8 @@
 """Losses: statistical criteria of region–species groups and their numerical settings."""
 
-import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from numbers import Real
 from typing import Any, final, TYPE_CHECKING
 
 import equinox as eqx
@@ -12,13 +10,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._checks import _positive_integer
-from ._training_utils import _RegionSpeciesKey
+from ._checks import _is_finite_real, _positive_integer, _require_float64
+from ._training_utils import _prepare_training_inputs, _RegionSpeciesKey
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 
 
 if TYPE_CHECKING:
     from .calibration import AbstractCalibrationHead
+    from .models import AbstractDistanceModel
 
 
 @final
@@ -82,6 +81,84 @@ class AbstractLoss(ABC):
 
     @abstractmethod
     def _state_template(self, metadata) -> Any: ...
+
+    def sum_over_pairs(
+        self,
+        region: RegionBatch,
+        observations: PairwiseObservations,
+        distance_model: "AbstractDistanceModel",
+        loss_state: Any,
+    ) -> jax.Array:
+        """Returns the loss of one region–species group summed over its observed pairs.
+
+        The summed loss is the loss times the number of observed pairs: the
+        maximum-likelihood population effects (MLPE) negative log likelihood for
+        ``MLPELoss``, and the sum of squared differences for ``Log1pLoss``. At the
+        distance model and statistical parameter state that ``train`` returns for one
+        region–species group, the summed loss plus the penalty is the number of pairs
+        times the training objective.
+
+        The value is differentiable with respect to the distance model and compiles with
+        ``eqx.filter_jit``. ``MLPELoss`` holds its generalized least squares
+        coefficients fixed under differentiation: first derivatives are those of the
+        profiled likelihood, ``jax.hessian`` and similar second-order automatic
+        differentiation are conditional on the coefficients, and central finite
+        differences of the gradient give the second derivatives of the profiled
+        likelihood.
+
+        Args:
+            region: Region batch holding the observed sampling units.
+            observations: Pairwise genetic observations of the region–species group.
+            distance_model: Distance model, evaluated in inference mode.
+            loss_state: Statistical parameter state, as in ``TrainingState.loss_state``.
+
+        Returns:
+            The scalar summed loss, not-a-number when ``MLPELoss`` rejects the distances,
+            as it does constant distances.
+
+        Raises:
+            ValueError: If the inputs do not form one region–species group of the
+                distance model, the statistical parameter state does not hold that
+                group, or the loss rejects the observations.
+            RuntimeError: If float64 is disabled.
+
+        Examples:
+            The summed loss plus the penalty of one region–species group, and its gradient
+            at the distance model that ``train`` returns:
+
+            >>> def summed_loss_plus_penalty(distance_model):
+            ...     summed = loss.sum_over_pairs(
+            ...         region, observations, distance_model, state.loss_state
+            ...     )
+            ...     return summed + penalty(distance_model)
+            >>> model = state.latest_model.distance_model
+            >>> gradient = eqx.filter_grad(summed_loss_plus_penalty)(model)
+        """
+        from .models.base import _model_species, _species_distances, _SpeciesQuery
+
+        _require_float64()
+        # The inputs are concrete; an enclosing compilation keeps them as constants.
+        with jax.ensure_compile_time_eval():
+            (group,) = _prepare_training_inputs(
+                region, observations, distance_model.species
+            ).training
+            context = self._prepare(group.region, group.observations, training=True)
+        labels = group.region.sampling_unit_ids
+        pairs = tuple(
+            (labels[left], labels[right])
+            for left, right in zip(*map(np.asarray, context.pairs), strict=True)
+        )
+        name = _model_species(distance_model)[group.species_index]
+        query = _SpeciesQuery(name, group.species_index, pairs)
+        _, _, distances = _species_distances(distance_model, region, (query,))[name]
+        state = self._group_state(loss_state, group.key)
+        return _criterion(self, distances, context, state, None) * len(pairs)
+
+
+@eqx.filter_jit
+def _criterion(loss, distances, context, state, fixed):
+    """Returns the loss of one region–species group."""
+    return loss._value(distances, context, state, fixed)
 
 
 def _context(region: RegionBatch, observations: PairwiseObservations) -> _LossContext:
@@ -247,7 +324,7 @@ class MLPELoss(AbstractLoss):
     def __post_init__(self):
         for name in ("variance_floor", "min_distance_scale", "jitter"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+            if not _is_finite_real(value):
                 raise ValueError(f"{name} must be finite and numeric")
             value = float(value)
             if name == "jitter":
@@ -283,7 +360,7 @@ class MLPELoss(AbstractLoss):
     def _group_state(self, state, identity):
         if identity not in state.groups:
             raise ValueError(
-                "Validation requires a training calibration for its region–species group"
+                f"The statistical parameter state has no region–species group {identity!r}"
             )
         return state.groups[identity]
 

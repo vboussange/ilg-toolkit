@@ -8,6 +8,8 @@
 
 ::: ilg_toolkit.MLPELoss
 
+::: ilg_toolkit.RidgePenalty
+
 ::: ilg_toolkit.train
 
 ::: ilg_toolkit.TrainingState

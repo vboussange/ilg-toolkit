@@ -1,7 +1,14 @@
 """Tests of the log1p and maximum-likelihood population effects (MLPE) losses."""
 
+from dataclasses import replace
+from types import SimpleNamespace
+from typing import cast
+
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 from ilg_toolkit import (
     fit_calibration_head,
@@ -9,9 +16,227 @@ from ilg_toolkit import (
     Log1pLoss,
     MLPECalibrationHead,
     MLPELoss,
+    PairwiseObservations,
+    ResistanceSolverConfig,
+    RidgePenalty,
     train,
     TrainingConfig,
 )
+
+
+_PENALTY = RidgePenalty(prior_sd=0.5, where=lambda model: model.log_weights)
+
+
+def _trained(region, observations, distance_model, loss, *, penalty=None):
+    """Returns the training state of three updates, evaluated at the final step."""
+    return train(
+        region,
+        observations,
+        distance_model=distance_model,
+        config=TrainingConfig(
+            loss=loss, steps=3, eval_every=3, optimizer=optax.adam(0.05), penalty=penalty
+        ),
+    )
+
+
+@pytest.fixture(scope="module", params=[Log1pLoss(), MLPELoss()], ids=["log1p", "mlpe"])
+def trained_group(request, WeightedEmbedding, embedding_problem):
+    """Returns one region–species group, its loss and its ridge-penalized training state."""
+    region, observations = embedding_problem()
+    model = WeightedEmbedding(jnp.asarray([0.3, -0.2]))
+    state = _trained(region, observations, model, request.param, penalty=_PENALTY)
+    return SimpleNamespace(
+        region=region,
+        observations=observations,
+        loss=request.param,
+        state=state,
+        model=state.latest_model.distance_model,
+    )
+
+
+def _summed_loss(group, distance_model):
+    """Returns the summed loss of a trained group at a distance model."""
+    return group.loss.sum_over_pairs(
+        group.region, group.observations, distance_model, group.state.loss_state
+    )
+
+
+def test_summed_loss_is_the_pair_count_times_the_training_loss_and_objective(trained_group):
+    group = trained_group
+    pair_count = len(group.observations.observed_pairs)
+    record = group.state.history[-1]
+    summed = float(_summed_loss(group, group.model))
+    assert summed == pytest.approx(pair_count * record.training_loss, rel=1e-12)
+    assert summed + float(_PENALTY(group.model)) == pytest.approx(
+        pair_count * record.training_objective, rel=1e-12
+    )
+
+
+def test_summed_loss_gradient_compiles_and_matches_central_differences(trained_group):
+    group = trained_group
+
+    def shifted(index, shift):
+        weights = group.model.log_weights.at[index].add(shift)
+        return _summed_loss(group, eqx.tree_at(lambda m: m.log_weights, group.model, weights))
+
+    step = 1e-6
+    differences = [(shifted(i, step) - shifted(i, -step)) / (2 * step) for i in range(2)]
+    gradient = eqx.filter_jit(eqx.filter_grad(lambda model: _summed_loss(group, model)))(
+        group.model
+    )
+    np.testing.assert_allclose(gradient.log_weights, differences, rtol=1e-7)
+
+
+def test_summed_loss_is_unchanged_when_observations_list_their_units_in_another_order(
+    trained_group,
+):
+    group = trained_group
+    ids = group.region.sampling_unit_ids
+    shuffled = PairwiseObservations.from_pairs(
+        group.observations.observed_pairs,
+        group.observations.observed_values,
+        target=group.observations.target,
+        sampling_unit_ids=tuple(ids[index] for index in (2, 0, 5, 1, 4, 3)),
+    )
+    value = group.loss.sum_over_pairs(group.region, shuffled, group.model, group.state.loss_state)
+    assert float(value) == pytest.approx(float(_summed_loss(group, group.model)), rel=1e-13)
+
+
+def test_summed_log1p_loss_is_the_sum_of_squared_differences(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    # Weight 1 predicts the distances 1, 4 and 1 of the wide region, whose targets are 0.1.
+    value = Log1pLoss().sum_over_pairs(
+        regions[0], observations[0], ScalarEmbedding(jnp.asarray(1.0)), None
+    )
+    expected = sum((np.log1p(distance) - np.log1p(0.1)) ** 2 for distance in (1.0, 4.0, 1.0))
+    assert float(value) == pytest.approx(expected, rel=1e-12)
+
+
+def _assert_direct_summed_loss_matches_conjugate_gradient(training_problem, PointConductance):
+    """Checks the compiled summed loss and its gradient on cuDSS against conjugate gradient."""
+    region, observations, _ = training_problem("conductance")
+    value_and_gradient = eqx.filter_jit(
+        eqx.filter_value_and_grad(
+            lambda model: Log1pLoss().sum_over_pairs(region, observations, model, None)
+        )
+    )
+    value, gradient = value_and_gradient(
+        PointConductance(jnp.asarray(0.2), solver_config=ResistanceSolverConfig(solver="cudss"))
+    )
+    expected_value, expected_gradient = value_and_gradient(
+        PointConductance(
+            jnp.asarray(0.2), solver_config=ResistanceSolverConfig(rtol=1e-11, atol=1e-11)
+        )
+    )
+    assert float(value) == pytest.approx(float(expected_value), rel=1e-8)
+    assert float(gradient.log_scale) == pytest.approx(float(expected_gradient.log_scale), rel=1e-6)
+
+
+def test_summed_loss_on_the_direct_solver_matches_conjugate_gradient(
+    cudss_double, training_problem, PointConductance
+):
+    _assert_direct_summed_loss_matches_conjugate_gradient(training_problem, PointConductance)
+
+
+def test_summed_loss_on_the_direct_solver_matches_conjugate_gradient_on_a_gpu(
+    cudss_gpu, training_problem, PointConductance
+):
+    _assert_direct_summed_loss_matches_conjugate_gradient(training_problem, PointConductance)
+
+
+def test_summed_mlpe_loss_is_the_negative_log_likelihood_of_the_dense_reference(
+    WeightedEmbedding, embedding_problem, dense_profile
+):
+    region, observations = embedding_problem()
+    loss = MLPELoss(jitter=1e-7)
+    state = _trained(region, observations, WeightedEmbedding(jnp.zeros(2)), loss)
+    model = state.latest_model.distance_model
+    calibration = cast(MLPECalibrationHead, state.latest_model.calibration_head).for_region(
+        region.name
+    )
+    pairs = observations.observed_pairs
+    lookup = {label: index for index, label in enumerate(region.sampling_unit_ids)}
+    nll, *_ = dense_profile(
+        np.asarray(model.predict(region, pairs).values),
+        np.asarray(observations.observed_values),
+        [lookup[a] for a, _ in pairs],
+        [lookup[b] for _, b in pairs],
+        len(region.sampling_unit_ids),
+        (calibration.unit_variance, calibration.residual_variance),
+        jitter=1e-7,
+    )
+    value = loss.sum_over_pairs(region, observations, model, state.loss_state)
+    assert float(value) == pytest.approx(nll, rel=1e-9)
+
+
+def test_central_differences_of_the_summed_mlpe_gradient_match_second_differences_of_the_value(
+    WeightedEmbedding, embedding_problem
+):
+    region, observations = embedding_problem()
+    loss = MLPELoss()
+    state = _trained(region, observations, WeightedEmbedding(jnp.asarray([0.3, -0.2])), loss)
+    trained = state.latest_model.distance_model
+
+    @eqx.filter_jit
+    def value(log_weights):
+        model = eqx.tree_at(lambda m: m.log_weights, trained, log_weights)
+        return loss.sum_over_pairs(region, observations, model, state.loss_state)
+
+    gradient = eqx.filter_jit(jax.grad(value))
+    start, unit = trained.log_weights, jnp.asarray([1.0, 0.0])
+    gradient_step, value_step = 1e-5 * unit, 1e-4 * unit
+    from_gradient = (gradient(start + gradient_step)[0] - gradient(start - gradient_step)[0]) / 2e-5
+    from_value = (value(start + value_step) - 2 * value(start) + value(start - value_step)) / 1e-8
+    assert float(from_gradient) == pytest.approx(float(from_value), rel=1e-6)
+    # Second-order automatic differentiation is conditional on the coefficients.
+    assert float(jax.jacfwd(gradient)(start)[0, 0]) != pytest.approx(float(from_value), rel=1e-3)
+
+
+def test_summed_mlpe_loss_reads_the_observed_species_group(training_problem):
+    species = ("frog", "newt")
+    loss = MLPELoss()
+    region, observations, distance_model = training_problem("embedding", species=species)
+    state = _trained(region, observations, distance_model, loss)
+    model = state.latest_model.distance_model
+    record = state.history[-1]
+    assert record.training_by_species is not None
+    for name, observed in zip(species, observations, strict=True):
+        summed = eqx.filter_jit(
+            lambda current, group=observed: loss.sum_over_pairs(
+                region, group, current, state.loss_state
+            )
+        )
+        expected = len(observed.observed_pairs) * record.training_by_species[name]
+        assert float(summed(model)) == pytest.approx(expected, rel=1e-12)
+
+
+def test_summed_loss_rejects_inputs_outside_the_statistical_parameter_state_and_loss(
+    WeightedEmbedding, embedding_problem, training_problem
+):
+    loss = MLPELoss()
+    region, observations = embedding_problem()
+    model = WeightedEmbedding(jnp.zeros(2))
+    state = _trained(region, observations, model, loss)
+    with pytest.raises(ValueError, match="region–species group"):
+        loss.sum_over_pairs(
+            replace(region, name="elsewhere"), observations, model, state.loss_state
+        )
+    with pytest.raises(ValueError, match="at least three"):
+        selected = observations.select_pairs(observations.observed_pairs[:2])
+        loss.sum_over_pairs(region, selected, model, state.loss_state)
+    labeled, groups, species_model = training_problem("embedding", species=("frog", "newt"))
+    with pytest.raises(ValueError, match="species"):
+        loss.sum_over_pairs(labeled, replace(groups[0], species=None), species_model, None)
+
+
+def test_summed_loss_requires_float64(ScalarEmbedding, regions_and_observations, float64_required):
+    regions, observations = regions_and_observations()
+    with float64_required():
+        Log1pLoss().sum_over_pairs(
+            regions[0], observations[0], ScalarEmbedding(jnp.asarray(1.0)), None
+        )
 
 
 def test_direct_loss_trains_without_statistical_parameters(

@@ -31,9 +31,10 @@ from jaxscape import EuclideanDistance, GridGraph
 
 
 _DIVERGENCE = TargetSpec("divergence", units="index")
-# Slope and intercept estimated by SciPy's L-BFGS-B, with non-negative bounds on the
-# mean region log1p squared loss, for ``_reference_problem`` from the vertex distances
-# of its sampling units at patch_size=2.
+# Slope and intercept estimated by SciPy's limited-memory Broyden–Fletcher–Goldfarb–Shanno
+# method with bounds (L-BFGS-B), with non-negative bounds on the mean region log1p squared
+# loss, for ``_reference_problem`` from the vertex distances of its sampling units at
+# patch_size=2.
 _SCIPY_SLOPE = 0.10436956986904002
 _SCIPY_INTERCEPT = 0.032285430139206664
 

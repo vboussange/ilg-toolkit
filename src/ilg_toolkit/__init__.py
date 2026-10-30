@@ -12,6 +12,7 @@ from .data import PairwiseObservations, RegionBatch, TargetSpec
 from .ensemble import Ensemble, EnsemblePrediction
 from .losses import AbstractLoss, Log1pLoss, MLPELoss
 from .model import LandscapeGeneticsModel
+from .penalties import RidgePenalty
 from .persistence import ArtifactError, load_model, save_model
 from .prediction import Prediction
 from .training import StepRecord, train, TrainingState
@@ -32,6 +33,7 @@ __all__ = [
     "Prediction",
     "RegionBatch",
     "ResistanceSolverConfig",
+    "RidgePenalty",
     "StepRecord",
     "TargetSpec",
     "TrainingConfig",

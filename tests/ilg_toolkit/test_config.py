@@ -9,6 +9,7 @@ from ilg_toolkit import (
     Log1pLoss,
     PairwiseObservations,
     ResistanceSolverConfig,
+    RidgePenalty,
     train,
     TrainingConfig,
 )
@@ -144,3 +145,19 @@ def test_direct_solver_settings_construct_without_a_gpu_backend():
 def test_solver_settings_have_no_use_amg_option():
     with pytest.raises(TypeError):
         ResistanceSolverConfig(use_amg=True)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("penalty", [0.1, "ridge", (1, 2)])
+def test_a_penalty_that_is_not_callable_is_rejected(penalty: Any):
+    with pytest.raises(ValueError, match="penalty"):
+        TrainingConfig(loss=Log1pLoss(), penalty=penalty)
+
+
+def test_configuration_equality_covers_the_penalty():
+    def where(model):
+        return model.coefficients
+
+    config = TrainingConfig(loss=Log1pLoss(), penalty=RidgePenalty(1.5, where))
+    assert config == TrainingConfig(loss=Log1pLoss(), penalty=RidgePenalty(1.5, where))
+    assert config != TrainingConfig(loss=Log1pLoss(), penalty=RidgePenalty(2.0, where))
+    assert config != TrainingConfig(loss=Log1pLoss())
