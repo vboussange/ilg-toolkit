@@ -1,9 +1,10 @@
 """Fixtures of synthetic regions, distance models and numerical references for the tests."""
 
 import contextlib
+import importlib
 import itertools
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import final
@@ -31,6 +32,8 @@ from ilg_toolkit.models import (
     EmbeddingDistanceModel,
     LogLinearConductance,
 )
+from jax.experimental import io_callback
+from jaxscape.solvers import AbstractSparseDirectSolver, CSRPattern
 
 
 # The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
@@ -761,6 +764,136 @@ def _decimal_dense_profile_and_gradients(distances, targets, left, right, raw_va
         )
 
 
+class _CuDSSTokens:
+    """Host-side tokens of the double of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
+
+    They follow spineax's token rule: a refactorization consumes its token and returns
+    a fresh one. Refactorizing a superseded token stays correct and repeats the
+    analysis, which ``rebuild_count`` counts for the whole process, as spineax's counter
+    does, so tests compare differences. ``analysis_count`` counts the analyses of new
+    solver states, which has no spineax counterpart. A factorization fails while
+    ``failing`` is set, as a cuDSS factorization that meets a non-positive pivot does.
+    A refactorization raises from its callback while ``raising`` is set, as a failed
+    native spineax call does.
+    """
+
+    def __init__(self) -> None:
+        self.next_token = 0
+        self.live: set[int] = set()
+        self.analyses = 0
+        self.rebuilds = 0
+        self.failing = False
+        self.raising = False
+
+    def rebuild_count(self) -> int:
+        return self.rebuilds
+
+    def analysis_count(self) -> int:
+        return self.analyses
+
+    @contextlib.contextmanager
+    def one_analysis(self) -> Iterator[None]:
+        """Expects the enclosed call to analyze one solver state and to repeat no analysis."""
+        rebuilds, analyses = self.rebuilds, self.analyses
+        yield
+        assert self.rebuilds == rebuilds
+        assert self.analyses == analyses + 1
+
+    def _fresh_token(self) -> tuple[np.ndarray, np.ndarray]:
+        self.next_token += 1
+        self.live.add(self.next_token)
+        return np.asarray(self.next_token, np.int32), np.asarray(self.failing)
+
+    def analyze(self) -> tuple[np.ndarray, np.ndarray]:
+        self.analyses += 1
+        return self._fresh_token()
+
+    def refactorize(self, token: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if self.raising:
+            raise RuntimeError("cuDSS call failed (status 3)")
+        if int(token) in self.live:
+            self.live.remove(int(token))
+        else:
+            self.rebuilds += 1
+        return self._fresh_token()
+
+
+_CUDSS_TOKENS = _CuDSSTokens()
+_TOKEN_RESULT = (jax.ShapeDtypeStruct((), jnp.int32), jax.ShapeDtypeStruct((), jnp.bool_))
+
+
+@final
+class _DenseFactorization(eqx.Module):
+    token: jax.Array
+    cholesky: jax.Array
+
+
+def _dense_factorization(
+    token: jax.Array, failing: jax.Array, pattern: CSRPattern, values: jax.Array
+) -> _DenseFactorization:
+    dense = jnp.zeros((pattern.n, pattern.n), values.dtype).at[pattern.rows, pattern.columns]
+    cholesky = jnp.linalg.cholesky(dense.set(values))
+    return _DenseFactorization(token, jnp.where(failing, jnp.nan, cholesky))
+
+
+@final
+class _CuDSSDouble(AbstractSparseDirectSolver[_DenseFactorization]):
+    """A dense Cholesky solver on the CPU in place of ``CuDSSSolver``, with its token rule.
+
+    Its callbacks are unordered, as spineax's calls are, so a failed call leaves later
+    calls unaffected on a GPU. The token passed between them orders refactorizations.
+    """
+
+    def factorize(self, pattern: CSRPattern, values: jax.Array) -> _DenseFactorization:
+        token, failing = io_callback(_CUDSS_TOKENS.analyze, _TOKEN_RESULT)
+        return _dense_factorization(token, failing, pattern, values)
+
+    def refactorize(
+        self, factorization: _DenseFactorization, pattern: CSRPattern, values: jax.Array
+    ) -> _DenseFactorization:
+        token, failing = io_callback(_CUDSS_TOKENS.refactorize, _TOKEN_RESULT, factorization.token)
+        return _dense_factorization(token, failing, pattern, values)
+
+    def solve(self, factorization: _DenseFactorization, vector: jax.Array) -> jax.Array:
+        return jax.scipy.linalg.cho_solve((factorization.cholesky, True), vector)
+
+    def residual_tolerance(self, dtype) -> float:
+        return 1e-4
+
+
+@pytest.fixture(name="cudss_double")
+def cudss_double_fixture(monkeypatch):
+    """Runs ``solver="cudss"`` on the CPU double and returns its tokens.
+
+    The tokens' ``rebuild_count()`` matches that of the ``cudss_gpu`` fixture's
+    module. Setting ``failing`` makes factorizations fail, and setting ``raising``
+    makes refactorizations raise.
+    """
+    monkeypatch.setattr("ilg_toolkit.resistance.CuDSSSolver", _CuDSSDouble)
+    yield _CUDSS_TOKENS
+    _CUDSS_TOKENS.failing = False
+    _CUDSS_TOKENS.raising = False
+
+
+@pytest.fixture(name="cudss_gpu")
+def cudss_gpu_fixture():
+    """Returns ``spineax.cudss``, skipping without spineax or a GPU backend."""
+    pytest.importorskip("spineax", exc_type=ImportError)
+    if jax.default_backend() != "gpu":
+        pytest.skip("cuDSS requires a GPU backend")
+    return importlib.import_module("spineax.cudss")
+
+
+@pytest.fixture(name="solver_choice", params=["cg", "amg", "cudss"])
+def solver_choice_fixture(request) -> str:
+    """Returns each solver choice, with cuDSS on the CPU double."""
+    if request.param == "amg":
+        pytest.importorskip("amjax")
+    if request.param == "cudss":
+        request.getfixturevalue("cudss_double")
+    return request.param
+
+
 @pytest.fixture(name="dense_resistance", scope="session")
 def dense_resistance_fixture():
     return _dense_resistance
@@ -970,16 +1103,25 @@ def training_problem():
     Families are ``"embedding"``, ``"conductance"`` and the single-species
     ``"dropout"`` embedding, whose backbone applies dropout during training.
     With ``species`` names, each species gets its own copy of the sampling units
-    and observations scaled by its position.
+    and observations scaled by its position. ``seed`` draws the landscape features,
+    and ``shape`` sets the raster, with the sampling units at its corners.
     """
 
-    def build(family, *, name="alpine", species: tuple[str, ...] | None = None):
-        features = np.random.default_rng(14).uniform(0.8, 1.6, size=(2, 2, 2)).astype(np.float32)
+    def build(
+        family,
+        *,
+        name="alpine",
+        species: tuple[str, ...] | None = None,
+        seed: int = 14,
+        shape: tuple[int, int] = (2, 2),
+    ):
+        rows, columns = shape
+        features = np.random.default_rng(seed).uniform(0.8, 1.6, size=(rows, columns, 2))
         region = RegionBatch(
             name,
-            _feature_field(features, ("elevation", "canopy")),
+            _feature_field(features.astype(np.float32), ("elevation", "canopy")),
             ("south", "north", "west", "east"),
-            np.array([[0, 0], [0, 1], [1, 0], [1, 1]]),
+            np.array([[0, 0], [0, columns - 1], [rows - 1, 0], [rows - 1, columns - 1]]),
         )
         observations = PairwiseObservations.from_pairs(
             tuple(itertools.combinations(region.sampling_unit_ids, 2)),

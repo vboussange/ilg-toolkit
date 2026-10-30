@@ -1,9 +1,9 @@
-"""Training configuration and effective-resistance solver settings."""
+"""Training configuration and resistance solver settings."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from numbers import Integral
-from typing import Any
+from typing import Any, Literal
 
 import optax
 
@@ -13,39 +13,69 @@ from .losses import AbstractLoss
 
 @dataclass(frozen=True)
 class ResistanceSolverConfig:
-    """Settings of the float64 solver in the effective-resistance layer.
+    """Settings of the float64 resistance solver of the effective-resistance layer.
 
-    The solver runs conjugate gradient, optionally preconditioned with algebraic
-    multigrid (AMG) through the ``amg`` extra, and raises an error when it reaches
-    ``max_steps`` before either tolerance. A conductance model carries its solver
-    settings.
+    ``solver`` selects one of three resistance solvers:
+
+    - ``"cg"`` runs conjugate gradient (CG) on a CPU or a GPU, with no optional
+      dependency. Choose it for small conductance grid graphs with low conductance
+      contrast. Its iterations grow with both grid size and conductance contrast.
+    - ``"amg"`` runs CG preconditioned with algebraic multigrid (AMG) on a CPU or a
+      GPU, through the ``amg`` extra. Its hierarchy is prepared once on a uniform
+      conductance grid graph. Choose it for larger conductance grid graphs with
+      conductance contrast below 4 orders of magnitude. Its iterations grow with
+      conductance contrast and not with grid size.
+    - ``"cudss"`` runs the NVIDIA CUDA Direct Sparse Solver (cuDSS) on an NVIDIA GPU,
+      through the ``cudss`` extra. Choose it on an NVIDIA GPU when the factorization
+      fits in GPU memory, in particular to train a deep patch encoder, whose
+      conductance surface can reach its floor. It has no tolerances or iteration
+      limit, and its cost does not depend on conductance contrast.
+
+    ``"cg"`` and ``"amg"`` raise an error when they reach ``max_steps`` before either
+    tolerance.
+
+    A conductance model carries its solver settings. Constructing, saving and
+    loading them work on any backend. Preparing ``"cudss"`` raises an ``ImportError``
+    or a ``RuntimeError`` naming the ``cudss`` extra without spineax or a CUDA-enabled
+    GPU backend. No other resistance solver replaces it.
 
     Args:
-        rtol: Relative residual tolerance, finite and nonnegative.
-        atol: Absolute residual tolerance, finite and nonnegative; at least one of
-            ``rtol`` and ``atol`` is positive.
-        max_steps: Maximum number of conjugate-gradient iterations.
-        use_amg: Whether to precondition with AMG.
+        solver: The resistance solver: ``"cg"`` (default), ``"amg"`` or ``"cudss"``.
+        rtol: Relative residual tolerance of ``"cg"`` and ``"amg"``, finite and
+            nonnegative; ``None`` (default) selects 1e-6.
+        atol: Absolute residual tolerance of ``"cg"`` and ``"amg"``, finite and
+            nonnegative; ``None`` (default) selects 1e-6. At least one of ``rtol``
+            and ``atol`` is positive.
+        max_steps: Maximum number of CG iterations of ``"cg"`` and ``"amg"``;
+            ``None`` (default) selects 1000.
 
     Raises:
-        ValueError: If a setting is invalid.
+        ValueError: If a setting is invalid, ``solver`` is unknown, or ``"cudss"``
+            receives ``rtol``, ``atol`` or ``max_steps``.
     """
 
-    rtol: float = 1e-6
-    atol: float = 1e-6
-    max_steps: int = 1000
-    use_amg: bool = False
+    solver: Literal["cg", "amg", "cudss"] = "cg"
+    rtol: float | None = None
+    atol: float | None = None
+    max_steps: int | None = None
 
     def __post_init__(self):
+        if self.solver not in ("cg", "amg", "cudss"):
+            raise ValueError(f"solver must be one of 'cg', 'amg' or 'cudss', got {self.solver!r}")
+        if self.solver == "cudss":
+            for name in ("rtol", "atol", "max_steps"):
+                if getattr(self, name) is not None:
+                    raise ValueError(f"{name} does not apply to solver 'cudss'; leave it as None")
+            return
         for name, value in (("rtol", self.rtol), ("atol", self.atol)):
+            value = 1e-6 if value is None else value
             if not _is_finite_real(value) or value < 0:
                 raise ValueError(f"solver {name} must be finite and nonnegative")
             object.__setattr__(self, name, float(value))
         if self.rtol == 0 and self.atol == 0:
             raise ValueError("At least one solver tolerance must be positive")
-        object.__setattr__(self, "max_steps", _positive_integer("solver max_steps", self.max_steps))
-        if not isinstance(self.use_amg, bool):
-            raise ValueError("solver use_amg must be a boolean")
+        max_steps = 1000 if self.max_steps is None else self.max_steps
+        object.__setattr__(self, "max_steps", _positive_integer("solver max_steps", max_steps))
 
 
 @dataclass(frozen=True)

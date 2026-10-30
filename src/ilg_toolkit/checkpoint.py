@@ -111,7 +111,8 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
         The saved training state.
 
     Raises:
-        ArtifactError: If the file, the template or the optimizer is incompatible.
+        ArtifactError: If the file, the template or the optimizer is incompatible, or
+            the file holds a ``use_amg`` solver setting.
         RuntimeError: If float64 is disabled.
     """
     _require_float64()

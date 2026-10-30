@@ -21,8 +21,9 @@ effective-resistance layer.
 </p>
 
 - Log-linear and ResNet9 patch encoders, and a U-Net embedding-distance model.
-- Effective resistance with gradients on the GPU, optionally preconditioned by
-  algebraic multigrid.
+- Effective resistance with gradients on the GPU, through conjugate gradient,
+  conjugate gradient preconditioned by algebraic multigrid, or the NVIDIA CUDA
+  Direct Sparse Solver (cuDSS).
 - Training under complete pooling across regions, with a log1p loss or
   maximum-likelihood population effects (MLPE) for population dependence.
 - Genetic calibration, conditional prediction, and ensembles on the target's
@@ -37,14 +38,34 @@ dependencies to a [uv](https://docs.astral.sh/uv/) project with:
 uv add "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit"
 ```
 
-The `examples` extra installs rioxarray, pandas and Matplotlib for the examples,
-and the `amg` extra installs algebraic-multigrid preconditioning.
+The `examples` extra installs rioxarray, pandas and Matplotlib for the examples.
+The `amg` and `cudss` extras install optional
+[resistance solvers](#resistance-solvers).
 
-ILG Toolkit runs on the device JAX selects. To run it on an NVIDIA GPU, install
-JAX with CUDA support:
+ILG Toolkit runs on the device JAX selects. To run it on an NVIDIA GPU, add the
+`cudss` extra, which installs cuDSS through [spineax](https://github.com/johnviljoen/spineax)
+and JAX with CUDA 13 support:
 
 ```bash
-uv add "jax[cuda12]"
+uv add "ilg-toolkit[examples,cudss] @ git+https://github.com/vboussange/ilg-toolkit"
+```
+
+The `cudss` extra runs on Linux x86-64 with an NVIDIA GPU of compute capability 7.5
+or newer. Two environment variables configure it:
+
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false` leaves GPU memory for cuDSS, which allocates
+  its factorizations outside JAX's memory pool.
+- `SPINEAX_FACTOR_CACHE` sets how many factorizations spineax keeps on the GPU, by
+  default 8. With more than 8 raster shapes, set it to at least their number.
+
+For CUDA 12, build spineax from source as in
+[these notes](https://github.com/vboussange/jaxscape/issues/49#issuecomment-6501729059).
+
+To run on an NVIDIA GPU with another resistance solver, install JAX with CUDA
+support instead:
+
+```bash
+uv add "jax[cuda13]"
 ```
 
 The [JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
@@ -56,20 +77,23 @@ The [quickstart](https://vboussange.github.io/ilg-toolkit/examples/quickstart/)
 trains a log-linear patch encoder on pairwise Fst between 12 Mountain
 Pygmy-possum sampling units in the Victorian Alps, kindly provided by
 [Cesar Australia](https://cesaraustralia.com), and ESA WorldCover 2021 land
-cover (CC BY 4.0). Run it on an NVIDIA GPU with uv, the `examples` extra and
-JAX with CUDA support:
+cover (CC BY 4.0). Run it on an NVIDIA GPU with uv and the `examples` and `cudss`
+extras:
 
 ```bash
 curl -O https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/examples/quickstart.py
-uv run --with "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit" \
-  --with "jax[cuda12]" python quickstart.py
+XLA_PYTHON_CLIENT_PREALLOCATE=false uv run \
+  --with "ilg-toolkit[examples,cudss] @ git+https://github.com/vboussange/ilg-toolkit" \
+  python quickstart.py
 ```
 
-Without an NVIDIA GPU, omit `--with "jax[cuda12]"` to run it on the CPU.
+Without an NVIDIA GPU, omit the `cudss` extra and the environment variable to run
+it on the CPU.
 
 The script reads the land-cover GeoTIFF with rioxarray, turns it into land-cover
-fractions, places the sampling units by their coordinates, and trains the patch
-encoder from the best uniform conductance:
+fractions, places the sampling units by their coordinates, selects cuDSS on a GPU
+and conjugate gradient elsewhere, and trains the patch encoder from the best
+uniform conductance:
 
 ```python
 region = RegionBatch.from_points(
@@ -84,8 +108,12 @@ observations = PairwiseObservations(
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
 loss = Log1pLoss()
+solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
 distance_model = initialize_uniform_conductance(
-    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE), region, observations, loss
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver_config=solver_config),
+    region,
+    observations,
+    loss,
 )
 state = train(
     region,
@@ -101,10 +129,30 @@ resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
   <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/examples/quickstart_files/quickstart.png" width="720" alt="Land cover and sampling units next to the learned log10 resistance surface.">
 </p>
 
-The quickstart runs in about a minute on an NVIDIA RTX 3090.
+The quickstart runs in about 30 seconds on an NVIDIA RTX 3090.
 
 Swap in `ResNet9Conductance` as a deep patch encoder that maps raw patches of
-landscape features to vertex conductances.
+landscape features to vertex conductances, with the same `solver_config`.
+
+## Resistance solvers
+
+The resistance solver is the numerical method behind the effective-resistance
+layer. `ResistanceSolverConfig(solver=...)` selects it, and a conductance model
+carries it in `solver_config`:
+
+| `solver` | Method | Installation | Choose it for |
+| --- | --- | --- | --- |
+| `"cg"` (default) | Conjugate gradient (CG) | Included | A CPU or a GPU with no optional dependency, on small conductance grid graphs with low conductance contrast |
+| `"amg"` | CG preconditioned with algebraic multigrid (AMG) | `amg` extra | A CPU or a GPU, on larger conductance grid graphs with conductance contrast below 4 orders of magnitude |
+| `"cudss"` | cuDSS, a sparse direct solver | `cudss` extra | An NVIDIA GPU, at any conductance contrast, when the factorization fits in GPU memory |
+
+`"cg"` and `"amg"` raise an error when they reach their iteration limit. The
+iterations of `"cg"` grow with grid size and conductance contrast, and those of
+`"amg"` with conductance contrast. `"cudss"` has no iteration limit, and its cost
+does not depend on conductance contrast. A deep patch encoder can drive conductance
+to its floor, so train one with `"cudss"` on an NVIDIA GPU. The
+[API reference](https://vboussange.github.io/ilg-toolkit/api/models/#resistance-solvers)
+describes solver state, failures and saved models.
 
 ## Documentation
 

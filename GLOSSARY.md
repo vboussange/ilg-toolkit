@@ -137,6 +137,10 @@ relationship; geographic relationship.
 **Conductance surface**:
 A spatial grid of positive values describing how readily a landscape permits movement for one species, with one conductance $C$ per vertex of the conductance grid graph.
 
+**Conductance contrast**:
+The ratio of a conductance surface's largest to smallest conductance, in orders of
+magnitude.
+
 **Resistance surface**:
 Local resistance $Q = 1/C$ at each vertex, the inverse of the conductance surface.
 A trained patch encoder yields a learned resistance surface, the main result of
@@ -159,6 +163,23 @@ The differentiable computation of effective resistance between sampling-unit
 vertices of a conductance grid graph, with gradients with respect to its
 conductances.
 _Avoid_: Distance solver; resistance calculation.
+
+**Resistance solver**:
+The numerical method that solves the linear systems of the effective-resistance
+layer, selected with `ResistanceSolverConfig`: conjugate gradient (CG), CG
+preconditioned with algebraic multigrid (AMG), or the NVIDIA CUDA Direct Sparse
+Solver (cuDSS), a sparse direct solver.
+Identifiers such as the saved `distance_solver` setting keep their names.
+_Avoid_: Effective-resistance solver; distance solver; linear solver, in prose.
+
+**Solver state**:
+What a resistance solver prepares for one raster shape (the rows and columns of a
+region's landscape features) on a uniform conductance grid graph, and reuses for
+the conductance surfaces of that shape: the AMG hierarchy, or cuDSS's sparse
+analysis and latest factorization. CG has no solver state. Training carries one
+cuDSS solver state per raster shape from update to update, shared by the regions,
+species and evaluations on that shape.
+_Avoid_: Token; solver context, when referring only to the prepared state.
 
 **Embedding**:
 A vector representation of a sampling unit's landscape features whose squared Euclidean distance from another such vector is their ecological distance.

@@ -17,6 +17,7 @@ from ilg_toolkit import (
     MLPECalibrationHead,
     MLPELoss,
     PairwiseObservations,
+    ResistanceSolverConfig,
     RidgePenalty,
     train,
     TrainingConfig,
@@ -111,6 +112,38 @@ def test_summed_log1p_loss_is_the_sum_of_squared_differences(
     )
     expected = sum((np.log1p(distance) - np.log1p(0.1)) ** 2 for distance in (1.0, 4.0, 1.0))
     assert float(value) == pytest.approx(expected, rel=1e-12)
+
+
+def _assert_direct_summed_loss_matches_conjugate_gradient(training_problem, PointConductance):
+    """Checks the compiled summed loss and its gradient on cuDSS against conjugate gradient."""
+    region, observations, _ = training_problem("conductance")
+    value_and_gradient = eqx.filter_jit(
+        eqx.filter_value_and_grad(
+            lambda model: Log1pLoss().sum_over_pairs(region, observations, model, None)
+        )
+    )
+    value, gradient = value_and_gradient(
+        PointConductance(jnp.asarray(0.2), solver_config=ResistanceSolverConfig(solver="cudss"))
+    )
+    expected_value, expected_gradient = value_and_gradient(
+        PointConductance(
+            jnp.asarray(0.2), solver_config=ResistanceSolverConfig(rtol=1e-11, atol=1e-11)
+        )
+    )
+    assert float(value) == pytest.approx(float(expected_value), rel=1e-8)
+    assert float(gradient.log_scale) == pytest.approx(float(expected_gradient.log_scale), rel=1e-6)
+
+
+def test_summed_loss_on_the_direct_solver_matches_conjugate_gradient(
+    cudss_double, training_problem, PointConductance
+):
+    _assert_direct_summed_loss_matches_conjugate_gradient(training_problem, PointConductance)
+
+
+def test_summed_loss_on_the_direct_solver_matches_conjugate_gradient_on_a_gpu(
+    cudss_gpu, training_problem, PointConductance
+):
+    _assert_direct_summed_loss_matches_conjugate_gradient(training_problem, PointConductance)
 
 
 def test_summed_mlpe_loss_is_the_negative_log_likelihood_of_the_dense_reference(

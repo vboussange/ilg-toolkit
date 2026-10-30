@@ -60,8 +60,8 @@ class LogLinearConductance(ConductanceModel):
             predictor.
         max_conductance: Positive cap, default 1000. Conductance is
             ``min(max_conductance, min_conductance + exp(features @ coefficients + intercept))``.
-        solver_config: Effective-resistance tolerances and iteration limit; see
-            ``ResistanceSolverConfig``.
+        solver_config: Resistance solver of the effective-resistance layer and its
+            settings; see ``ResistanceSolverConfig``.
 
     Notes:
         Prepare feature scaling and categorical reference levels before building a
@@ -239,6 +239,9 @@ def initialize_uniform_conductance(
         TypeError: ``model`` is not a ``LogLinearConductance`` or ``loss`` is not
             an ``AbstractLoss``.
         ValueError: The inputs violate the contract that ``train`` enforces.
+        ImportError: ``model.solver_config`` selects ``"cudss"`` without spineax.
+        RuntimeError: float64 is disabled, or ``model.solver_config`` selects ``"cudss"``
+            without a CUDA-enabled GPU backend.
 
     Notes:
         Losses that identify an absolute conductance scale, such as ``Log1pLoss``,
@@ -263,9 +266,7 @@ def initialize_uniform_conductance(
         raise ValueError(f"Expected landscape features with {model.in_channels} channels")
     groups = prepared.training
     regions = {item.region.name: item.region for item in prepared.inputs}
-    unit_resistances = {
-        name: _unit_conductance_resistances(model, batch) for name, batch in regions.items()
-    }
+    unit_resistances = _unit_conductance_resistances(model, regions)
     contexts = {
         group.key: loss._prepare(group.region, group.observations, training=True)
         for group in groups
@@ -305,23 +306,36 @@ def initialize_uniform_conductance(
 
 
 def _unit_conductance_resistances(
-    model: LogLinearConductance, region: RegionBatch
-) -> tuple[dict[int, int], np.ndarray]:
-    """Computes effective resistances among a region's sampling-unit vertices at unit conductance.
+    model: LogLinearConductance, regions: Mapping[str, RegionBatch]
+) -> dict[str, tuple[dict[int, int], np.ndarray]]:
+    """Computes effective resistances among sampling-unit vertices at unit conductance.
 
-    Returns the resistance-matrix row of each sampling-unit pixel, shared by the
-    sampling units of every species, and the float64 matrix.
+    Regions of one raster shape share a resistance solver. Returns, by region name,
+    the resistance-matrix row of each sampling-unit pixel, shared by the sampling
+    units of every species, and the float64 matrix.
     """
-    context = _prepare_distance_context(model, region.feature_array)
-    assert context is not None
-    pixels = np.asarray(region.pixel_nodes)
-    patch_rows, patch_columns = (np.asarray(region.grid_positions) // model.patch_size).T
-    vertices = patch_rows * (region.feature_array.shape[1] // model.patch_size) + patch_columns
-    unique = np.unique(vertices)
-    rows = np.searchsorted(unique, vertices)
-    surface = np.ones(context.graph_shape, dtype=model.intercepts.dtype)
-    matrix_rows = dict(zip(pixels.tolist(), rows.tolist(), strict=True))
-    return matrix_rows, np.asarray(_effective_resistance(surface, unique, context=context))
+    contexts = {}
+    results = {}
+    for name, region in regions.items():
+        raster_shape = region.feature_array.shape[:2]
+        context = contexts.get(raster_shape)
+        if context is None:
+            context = _prepare_distance_context(model, region.feature_array)
+        assert context is not None
+        pixels = np.asarray(region.pixel_nodes)
+        patch_rows, patch_columns = (np.asarray(region.grid_positions) // model.patch_size).T
+        vertices = patch_rows * (region.feature_array.shape[1] // model.patch_size) + patch_columns
+        unique = np.unique(vertices)
+        rows = np.searchsorted(unique, vertices)
+        surface = np.ones(context.graph_shape, dtype=model.intercepts.dtype)
+        resistances, contexts[raster_shape] = _effective_resistance(
+            surface, unique, context=context
+        )
+        results[name] = (
+            dict(zip(pixels.tolist(), rows.tolist(), strict=True)),
+            np.asarray(resistances),
+        )
+    return results
 
 
 def _species_loss(log_conductance, loss, distances, contexts, states, weights):

@@ -1,7 +1,8 @@
 """Tests of training: dense-reference updates, batching, penalties, selection and continuation."""
 
-from collections.abc import Sequence
-from dataclasses import replace
+import itertools
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, cast, final, NamedTuple
 
 import coordax as cx
@@ -13,6 +14,7 @@ import optax
 import pytest
 from ilg_toolkit import (
     LandscapeGeneticsModel,
+    load_checkpoint,
     Log1pLoss,
     MLPECalibrationHead,
     MLPELoss,
@@ -21,6 +23,7 @@ from ilg_toolkit import (
     RegionBatch,
     ResistanceSolverConfig,
     RidgePenalty,
+    save_checkpoint,
     TargetSpec,
     train,
     TrainingConfig,
@@ -98,41 +101,736 @@ def _two_species(regions, observations):
     )
 
 
-def test_failed_solver_preserves_solver_failure(PointConductance):
-    with jax.enable_x64():
-        region = RegionBatch(
-            "bad-solve",
-            cx.field(
-                np.linspace(0.1, 2, 12).reshape(3, 4, 1),
-                "row",
-                "column",
-                cx.LabeledAxis("feature", np.array(["elevation"])),
+_EXHAUSTED_CONJUGATE_GRADIENT = ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1)
+_EXHAUSTED_MESSAGE = "The maximum number of solver steps was reached"
+
+
+def _exhausted_conjugate_gradient_problem(PointConductance):
+    """Returns a region and observations whose conjugate gradient runs out of steps."""
+    region = RegionBatch(
+        "bad-solve",
+        cx.field(
+            np.linspace(0.1, 2, 12).reshape(3, 4, 1),
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
+        ),
+        ("first", "last"),
+        np.array([[0, 0], [2, 3]]),
+    )
+    observations = PairwiseObservations(
+        region.sampling_unit_ids, [[0, 1], [1, 0]], target=TargetSpec("dissimilarity")
+    )
+    model = PointConductance(jnp.array(0.0), solver_config=_EXHAUSTED_CONJUGATE_GRADIENT)
+    return region, observations, model
+
+
+def test_failed_solver_names_the_region_species_and_step(PointConductance):
+    region, observations, model = _exhausted_conjugate_gradient_problem(PointConductance)
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        )
+    assert caught.type is RuntimeError
+    assert str(caught.value).startswith(
+        f"region 'bad-solve', species 0: step 0: {_EXHAUSTED_MESSAGE}"
+    )
+    assert isinstance(caught.value.__cause__, eqx.EquinoxRuntimeError)
+    assert "Above is the stack" not in str(caught.value)
+
+
+def test_failed_solver_names_the_group_in_eager_training(PointConductance):
+    region, observations, model = _exhausted_conjugate_gradient_problem(PointConductance)
+    with (
+        jax.disable_jit(),
+        pytest.raises(
+            RuntimeError, match=f"region 'bad-solve', species 0: step 0: {_EXHAUSTED_MESSAGE}"
+        ),
+    ):
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        )
+
+
+@final
+class _ContrastConductance(ConductanceModel):
+    """A distance model whose second species' conductance contrast grows with one parameter.
+
+    Its first species has a uniform conductance surface at any parameter value.
+    """
+
+    contrast: jax.Array
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+    solver_config: ResistanceSolverConfig = eqx.field(
+        static=True, default=ResistanceSolverConfig(max_steps=30)
+    )
+
+    def __init__(self, contrast: jax.Array, *, species: tuple[str, ...]):
+        self.contrast = contrast
+        self.species = species
+
+    def backbone(self, features):
+        return features
+
+    def conductance(self, latent, species_index):
+        return jnp.exp(jnp.array([0.0, 1.0])[species_index] * self.contrast * latent[..., 0])
+
+
+@pytest.mark.parametrize("microbatch_size", [None, 1], ids=["one_microbatch", "two_microbatches"])
+def test_exhausted_gradient_solve_names_the_failing_species(microbatch_size, training_problem):
+    # On a 6 x 6 graph, 30 steps solve a uniform conductance surface. The first update
+    # moves the contrast by the learning rate, and the second gradient exceeds the steps.
+    species = ("frog", "newt")
+    region, observations, _ = training_problem("conductance", shape=(6, 6), species=species)
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            region,
+            observations,
+            distance_model=_ContrastConductance(jnp.asarray(0.0), species=species),
+            config=TrainingConfig(
+                loss=Log1pLoss(),
+                steps=5,
+                eval_every=5,
+                optimizer=optax.adam(8.0),
+                species_microbatch_size=microbatch_size,
             ),
-            ("first", "last"),
-            np.array([[0, 0], [2, 3]]),
         )
-        observations = PairwiseObservations(
-            region.sampling_unit_ids, [[0, 1], [1, 0]], target=TargetSpec("dissimilarity")
+    assert str(caught.value).startswith(
+        f"region 'alpine', species 'newt': step 2: {_EXHAUSTED_MESSAGE}"
+    )
+    assert "frog" not in str(caught.value)
+
+
+@final
+class _ComposedConductance(AbstractDistanceModel):
+    """A distance model composing a patch encoder, which computes its own resistances."""
+
+    encoder: ConductanceModel
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, encoder: ConductanceModel):
+        self.encoder = encoder
+
+    def backbone(self, features):
+        return self.encoder.backbone(features)
+
+    def ecological_distances(self, latent, pairs, species_index):
+        return self.encoder.ecological_distances(latent, pairs, species_index)
+
+
+def test_failed_solve_of_a_composed_patch_encoder_is_named(PointConductance):
+    region, observations, model = _exhausted_conjugate_gradient_problem(PointConductance)
+    with pytest.raises(
+        RuntimeError, match=f"region 'bad-solve', species 0: step 0: {_EXHAUSTED_MESSAGE}"
+    ):
+        train(
+            region,
+            observations,
+            distance_model=_ComposedConductance(model),
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
-        with pytest.raises(RuntimeError):
-            train(
-                region,
-                observations,
-                distance_model=PointConductance(
-                    jnp.array(0.0),
-                    solver_config=ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1),
+
+
+def test_failed_factorization_of_a_composed_patch_encoder_is_named(
+    cudss_double, PointConductance, training_problem
+):
+    region, observations, _ = training_problem("conductance")
+    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
+
+    def fail_after_initialization(state):
+        cudss_double.failing = True
+
+    with pytest.raises(RuntimeError, match="region 'alpine', species 0: step 1: "):
+        train(
+            region,
+            observations,
+            distance_model=_ComposedConductance(model),
+            config=TrainingConfig(loss=Log1pLoss(), steps=2),
+            on_step=fail_after_initialization,
+        )
+
+
+@pytest.mark.parametrize("optimizer", [optax.adam(0.05), optax.lbfgs()], ids=["adam", "lbfgs"])
+def test_composed_patch_encoder_trains_to_the_result_of_a_direct_one(
+    optimizer, cudss_double, PointConductance, training_problem
+):
+    region, observations, _ = training_problem("conductance")
+    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
+    config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optimizer)
+    direct = train(region, observations, distance_model=model, config=config)
+    composed = train(
+        region, observations, distance_model=_ComposedConductance(model), config=config
+    )
+    np.testing.assert_allclose(
+        [record.training_loss for record in composed.history],
+        [record.training_loss for record in direct.history],
+        rtol=1e-10,
+    )
+    np.testing.assert_allclose(
+        cast(Any, composed.latest_model.distance_model).encoder.log_scale,
+        cast(Any, direct.latest_model.distance_model).log_scale,
+        rtol=1e-10,
+    )
+
+
+@pytest.mark.parametrize(
+    ("failing_step", "failed_step"), [(None, 0), (1, 2)], ids=["initialization", "gradient"]
+)
+def test_failed_factorization_names_the_region_species_and_step(
+    failing_step, failed_step, cudss_double, PointConductance, training_problem
+):
+    species = ("frog", "newt")
+    region, observations, _ = training_problem("conductance", species=species)
+    model = PointConductance(
+        jnp.array([0.0, 0.2]), species=species, solver_config=ResistanceSolverConfig(solver="cudss")
+    )
+    cudss_double.failing = failing_step is None
+
+    def fail_after_step(state):
+        if state.step == failing_step:
+            cudss_double.failing = True
+
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=3),
+            on_step=fail_after_step,
+        )
+    assert caught.type is RuntimeError
+    assert str(caught.value).startswith(f"region 'alpine', species 'frog': step {failed_step}: ")
+    assert isinstance(caught.value.__cause__, eqx.EquinoxRuntimeError)
+
+
+@pytest.mark.parametrize(
+    ("failing_step", "failed_step"), [(None, 0), (1, 2)], ids=["initialization", "gradient"]
+)
+def test_failed_native_call_names_the_region_species_step_and_reason(
+    failing_step, failed_step, cudss_double, PointConductance, training_problem
+):
+    species = ("frog", "newt")
+    region, observations, _ = training_problem("conductance", species=species)
+    model = PointConductance(
+        jnp.array([0.0, 0.2]), species=species, solver_config=ResistanceSolverConfig(solver="cudss")
+    )
+    cudss_double.raising = failing_step is None
+
+    def fail_after_step(state):
+        if state.step == failing_step:
+            cudss_double.raising = True
+
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=TrainingConfig(loss=Log1pLoss(), steps=3),
+            on_step=fail_after_step,
+        )
+    assert caught.type is RuntimeError
+    assert str(caught.value) == (
+        f"region 'alpine', species 'frog': step {failed_step}: "
+        "RuntimeError: cuDSS call failed (status 3)"
+    )
+    assert isinstance(caught.value.__cause__, jax.errors.JaxRuntimeError)
+
+
+@final
+class _NativeFailureEmbedding(EmbeddingDistanceModel):
+    """A distance model whose backbone raises the error of a failed native spineax call."""
+
+    message: str = eqx.field(static=True)
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def backbone(self, features):
+        raise jax.errors.JaxRuntimeError(self.message)
+
+    def embedding(self, latent, species_index):
+        return latent
+
+
+@pytest.mark.parametrize(
+    ("message", "reason"),
+    [
+        (
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize\n"
+            "Further detail",
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize",
+        ),
+        (
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize"
+            " [executable_name='jit__group_distances']",
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize",
+        ),
+        (
+            "INTERNAL: CpuCallback error calling callback: Traceback (most recent call last):\n"
+            '  File "solver.py", line 1, in refactorize\n'
+            "RuntimeError: cuDSS call failed (status 3)"
+            " [executable_name='jit__microbatch_loss']",
+            "RuntimeError: cuDSS call failed (status 3)",
+        ),
+    ],
+    ids=["first_line", "executable_name", "callback_traceback"],
+)
+def test_failed_native_call_reports_the_line_stating_its_reason(message, reason, training_problem):
+    region, observations, _ = training_problem("embedding")
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            region,
+            observations,
+            distance_model=_NativeFailureEmbedding(message=message),
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
+        )
+    assert str(caught.value) == f"region 'alpine', species 0: step 0: {reason}"
+
+
+def _assert_failed_line_search_candidate_names_the_sampled_groups(
+    settings, group_count, solver_config, PointConductance, training_problem
+):
+    # The first candidate's scale is so large that the conductance is zero or infinite.
+    species = ("frog", "newt")
+    problems = [
+        training_problem("conductance", name=name, seed=seed, species=species)
+        for name, seed in (("alpine", 1), ("valley", 2))
+    ]
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            [problem[0] for problem in problems],
+            [problem[1] for problem in problems],
+            distance_model=PointConductance(
+                jnp.array([0.0, 0.2]), species=species, solver_config=solver_config
+            ),
+            config=TrainingConfig(
+                loss=Log1pLoss(),
+                steps=1,
+                optimizer=optax.chain(
+                    optax.sgd(1e6),
+                    optax.scale_by_zoom_linesearch(
+                        max_linesearch_steps=5, initial_guess_strategy="one"
+                    ),
                 ),
-                config=TrainingConfig(
-                    loss=Log1pLoss(),
-                    steps=0,
+                **settings,
+            ),
+        )
+    message = str(caught.value)
+    assert message.count("region '") == group_count
+    assert ": step 1: line search: conductance must be finite and strictly positive" in message
+
+
+@pytest.mark.parametrize(
+    ("settings", "group_count"),
+    [({}, 4), ({"region_batch_size": 1, "species_batch_size": 1}, 1)],
+    ids=["every_group", "one_sampled_group"],
+)
+def test_failed_line_search_candidate_names_the_sampled_groups(
+    settings, group_count, PointConductance, training_problem
+):
+    _assert_failed_line_search_candidate_names_the_sampled_groups(
+        settings, group_count, ResistanceSolverConfig(), PointConductance, training_problem
+    )
+
+
+def test_failed_line_search_candidate_names_the_sampled_groups_on_a_gpu(
+    cudss_gpu, PointConductance, training_problem
+):
+    _assert_failed_line_search_candidate_names_the_sampled_groups(
+        {}, 4, ResistanceSolverConfig(solver="cudss"), PointConductance, training_problem
+    )
+
+
+@jax.custom_vjp
+def _failing_in_the_backward_pass(value):
+    return value
+
+
+def _forward_pass(value):
+    return value, None
+
+
+def _backward_pass(_, cotangent):
+    return (eqx.error_if(cotangent, jnp.all(cotangent == cotangent), "backward pass failed"),)
+
+
+_failing_in_the_backward_pass.defvjp(_forward_pass, _backward_pass)
+
+
+@final
+class _BackwardFailingEmbedding(EmbeddingDistanceModel):
+    """A distance model whose gradients fail and whose ecological distances do not."""
+
+    weights: jax.Array
+    species: tuple[str, ...] | None = eqx.field(static=True, default=None)
+    patch_size: int = eqx.field(static=True, default=1)
+
+    def __init__(self, weights: jax.Array, *, species: tuple[str, ...]):
+        self.weights = weights
+        self.species = species
+
+    def backbone(self, features):
+        return features
+
+    def embedding(self, latent, species_index):
+        return _failing_in_the_backward_pass(self.weights[species_index] * latent)
+
+
+def test_failed_microbatch_names_every_group_when_no_solve_fails_again(training_problem):
+    species = ("frog", "newt")
+    region, observations, _ = training_problem("embedding", species=species)
+    with pytest.raises(RuntimeError) as caught:
+        train(
+            region,
+            observations,
+            distance_model=_BackwardFailingEmbedding(jnp.array([1.0, 2.0]), species=species),
+            config=TrainingConfig(loss=Log1pLoss(), steps=1),
+        )
+    message = str(caught.value)
+    assert "region 'alpine', species 'frog'" in message
+    assert "region 'alpine', species 'newt'" in message
+    assert ": step 1: backward pass failed" in message
+
+
+def test_failed_training_leaves_the_last_checkpoint_intact(
+    cudss_double, PointConductance, training_problem, tmp_path
+):
+    region, observations, _ = training_problem("conductance")
+    path = tmp_path / "checkpoint.eqx"
+    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
+    config = TrainingConfig(loss=Log1pLoss(), steps=4, optimizer=optax.adam(0.05))
+
+    def checkpoint_and_fail_after_step_two(state):
+        save_checkpoint(path, state)
+        cudss_double.failing = state.step == 2
+
+    with pytest.raises(RuntimeError, match="region 'alpine', species 0: step 3: "):
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=config,
+            on_step=checkpoint_and_fail_after_step_two,
+        )
+    cudss_double.failing = False
+    restored = load_checkpoint(path, distance_model=model, optimizer=config.optimizer)
+    assert restored.step == 2
+    continued = train(region, observations, state=restored)
+    uninterrupted = train(region, observations, distance_model=model, config=config)
+    assert continued.step == uninterrupted.step == 4
+    np.testing.assert_allclose(
+        cast(Any, continued.latest_model.distance_model).log_scale,
+        cast(Any, uninterrupted.latest_model.distance_model).log_scale,
+        rtol=1e-10,
+    )
+
+
+@pytest.mark.parametrize("optimizer", [optax.adam(0.05), optax.lbfgs()], ids=["adam", "lbfgs"])
+def test_training_with_each_solver_choice_matches_conjugate_gradient(
+    solver_choice, optimizer, PointConductance, training_problem
+):
+    region, observations, _ = training_problem("conductance")
+    config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optimizer)
+    tolerance = None if solver_choice == "cudss" else 1e-11
+    state, reference = (
+        train(
+            region,
+            observations,
+            distance_model=PointConductance(jnp.asarray(0.0), solver_config=solver_config),
+            config=config,
+        )
+        for solver_config in (
+            ResistanceSolverConfig(solver=solver_choice, rtol=tolerance, atol=tolerance),
+            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+        )
+    )
+    np.testing.assert_allclose(
+        [record.training_loss for record in state.history],
+        [record.training_loss for record in reference.history],
+        rtol=1e-8,
+    )
+    assert state.history[-1].training_loss < state.history[0].training_loss
+
+
+@pytest.mark.parametrize("error", [ImportError("no spineax"), RuntimeError("no GPU backend")])
+def test_training_with_an_unavailable_direct_solver_fails_before_initialization(
+    PointConductance, training_problem, monkeypatch, error
+):
+    def unavailable():
+        raise error
+
+    monkeypatch.setattr("ilg_toolkit.resistance.CuDSSSolver", unavailable)
+    region, observations, _ = training_problem("conductance")
+    completed = []
+    with pytest.raises(type(error), match=r"ilg-toolkit\[cudss\]"):
+        train(
+            region,
+            observations,
+            distance_model=PointConductance(
+                jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss")
+            ),
+            config=TrainingConfig(loss=Log1pLoss(), steps=1),
+            on_step=completed.append,
+        )
+    assert completed == []
+
+
+@dataclass(frozen=True)
+class _CarryScenario:
+    """A training run on a direct solver, with one solver preparation per raster shape."""
+
+    regions: tuple[tuple[str, tuple[int, int], int], ...]
+    validation: tuple[tuple[str, tuple[int, int], int], ...] = ()
+    species: tuple[str, ...] | None = None
+    settings: Mapping[str, Any] = field(default_factory=dict)
+    evaluates_on_step: bool = False
+
+    def problems(self, training_problem, regions):
+        """Returns the regions and observations of the named regions."""
+        built = [
+            training_problem("conductance", name=name, shape=shape, seed=seed, species=self.species)
+            for name, shape, seed in regions
+        ]
+        return [item[0] for item in built], [item[1] for item in built]
+
+    @property
+    def shape_count(self) -> int:
+        return len({shape for _, shape, _ in (*self.regions, *self.validation)})
+
+    def run(self, training_problem, PointConductance, solver_config, optimizer):
+        """Trains with the solver settings and returns the training state."""
+        scales = jnp.asarray(0.0) if self.species is None else jnp.array([0.0, 0.2])
+        return train(
+            *self.problems(training_problem, self.regions),
+            distance_model=PointConductance(
+                scales, species=self.species, solver_config=solver_config
+            ),
+            config=TrainingConfig(
+                **{
+                    "loss": Log1pLoss(),
+                    "steps": 4,
+                    "optimizer": optimizer,
+                    "seed": 3,
+                    **self.settings,
+                }
+            ),
+            validation=(
+                self.problems(training_problem, self.validation) if self.validation else None
+            ),
+            on_step=(lambda state: None) if self.evaluates_on_step else None,
+        )
+
+
+_ONE_REGION = (("alpine", (2, 3), 1),)
+_TWO_REGIONS = (("alpine", (2, 3), 1), ("valley", (2, 3), 2))
+_TWO_SHAPES = (("alpine", (2, 3), 1), ("valley", (3, 2), 2), ("ridge", (2, 3), 3))
+_FROG_AND_NEWT = ("frog", "newt")
+_CARRY_SCENARIOS = {
+    "repeated_updates": _CarryScenario(_ONE_REGION),
+    "complete_pooling_on_one_shape": _CarryScenario(_TWO_REGIONS),
+    "several_species": _CarryScenario(_ONE_REGION, species=_FROG_AND_NEWT),
+    "species_microbatches": _CarryScenario(
+        _ONE_REGION, species=_FROG_AND_NEWT, settings={"species_microbatch_size": 1}
+    ),
+    "several_shapes": _CarryScenario(_TWO_SHAPES),
+    "sampled_groups": _CarryScenario(
+        _TWO_REGIONS,
+        species=_FROG_AND_NEWT,
+        settings={"region_batch_size": 1, "species_batch_size": 1},
+    ),
+    "validation": _CarryScenario(_TWO_REGIONS, validation=(("ridge", (2, 3), 3),)),
+    "validation_on_another_shape": _CarryScenario(_ONE_REGION, validation=(("ridge", (3, 2), 3),)),
+    "on_step_evaluations": _CarryScenario(
+        _TWO_REGIONS, settings={"eval_every": 10}, evaluates_on_step=True
+    ),
+}
+_EVERY_GEOMETRY = _CarryScenario(
+    _TWO_SHAPES,
+    validation=(("river", (3, 2), 4),),
+    species=_FROG_AND_NEWT,
+    settings={"eval_every": 3},
+    evaluates_on_step=True,
+)
+_REJECTING_LINE_SEARCH = optax.chain(
+    optax.sgd(50.0),
+    optax.scale_by_zoom_linesearch(max_linesearch_steps=20, initial_guess_strategy="one"),
+)
+_PENALIZED = _CarryScenario(
+    _TWO_REGIONS, settings={"penalty": RidgePenalty(1.0, lambda model: model.log_scale)}
+)
+
+
+def _assert_no_rebuild_and_equal_to_conjugate_gradient(
+    scenario, optimizer, rebuild_count, training_problem, PointConductance
+):
+    """Checks that a direct-solver run repeats no analysis, and matches conjugate gradient."""
+    rebuilds = rebuild_count()
+    state = scenario.run(
+        training_problem, PointConductance, ResistanceSolverConfig(solver="cudss"), optimizer
+    )
+    assert rebuild_count() == rebuilds
+    reference = scenario.run(
+        training_problem,
+        PointConductance,
+        ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+        optimizer,
+    )
+    for record, expected in zip(state.history, reference.history, strict=True):
+        np.testing.assert_allclose(record.training_loss, expected.training_loss, rtol=1e-8)
+        if expected.validation_loss is not None:
+            np.testing.assert_allclose(record.validation_loss, expected.validation_loss, rtol=1e-8)
+    np.testing.assert_allclose(
+        cast(Any, state.latest_model.distance_model).log_scale,
+        cast(Any, reference.latest_model.distance_model).log_scale,
+        rtol=1e-7,
+        atol=1e-9,
+    )
+    return state
+
+
+def _assert_carried_and_equal_to_conjugate_gradient(
+    scenario, optimizer, tokens, training_problem, PointConductance
+):
+    """Checks that a run on the double analyzes once per shape, and matches conjugate gradient."""
+    analyses = tokens.analysis_count()
+    state = _assert_no_rebuild_and_equal_to_conjugate_gradient(
+        scenario, optimizer, tokens.rebuild_count, training_problem, PointConductance
+    )
+    assert tokens.analysis_count() == analyses + scenario.shape_count
+    return state
+
+
+@pytest.mark.parametrize("scenario", _CARRY_SCENARIOS.values(), ids=_CARRY_SCENARIOS.keys())
+def test_training_carries_the_solver_state_of_each_raster_shape(
+    scenario, cudss_double, training_problem, PointConductance
+):
+    _assert_carried_and_equal_to_conjugate_gradient(
+        scenario, optax.adam(0.05), cudss_double, training_problem, PointConductance
+    )
+
+
+def test_line_search_evaluations_carry_the_solver_state(
+    cudss_double, training_problem, PointConductance
+):
+    state = _assert_carried_and_equal_to_conjugate_gradient(
+        _CarryScenario(_ONE_REGION, settings={"steps": 1}),
+        _REJECTING_LINE_SEARCH,
+        cudss_double,
+        training_problem,
+        PointConductance,
+    )
+    assert cast(Any, optax.tree.get(state.optimizer_state, "num_linesearch_steps")) > 1
+
+
+@pytest.mark.parametrize(
+    "optimizer", [_REJECTING_LINE_SEARCH, optax.lbfgs()], ids=["rejecting", "lbfgs"]
+)
+def test_line_searches_carry_the_solver_state_across_groups_and_shapes(
+    optimizer, cudss_double, training_problem, PointConductance
+):
+    _assert_carried_and_equal_to_conjugate_gradient(
+        _EVERY_GEOMETRY, optimizer, cudss_double, training_problem, PointConductance
+    )
+
+
+def test_penalized_lbfgs_carries_the_solver_state(cudss_double, training_problem, PointConductance):
+    state = _assert_carried_and_equal_to_conjugate_gradient(
+        _PENALIZED, optax.lbfgs(), cudss_double, training_problem, PointConductance
+    )
+    assert state.history[-1].training_objective > state.history[-1].training_loss
+
+
+def test_eager_training_carries_the_solver_state(cudss_double, training_problem, PointConductance):
+    with cudss_double.one_analysis(), jax.disable_jit():
+        state = _CarryScenario((("alpine", (2, 2), 1),), settings={"steps": 1}).run(
+            training_problem,
+            PointConductance,
+            ResistanceSolverConfig(solver="cudss"),
+            optax.chain(
+                optax.sgd(50.0),
+                optax.scale_by_zoom_linesearch(
+                    max_linesearch_steps=3, initial_guess_strategy="one"
                 ),
-            )
+            ),
+        )
+    assert cast(Any, optax.tree.get(state.optimizer_state, "num_linesearch_steps")) > 1
+
+
+@pytest.mark.parametrize(
+    "optimizer",
+    [optax.adam(0.05), _REJECTING_LINE_SEARCH, optax.lbfgs()],
+    ids=["adam", "rejecting", "lbfgs"],
+)
+def test_training_repeats_no_analysis_and_matches_conjugate_gradient_on_a_gpu(
+    optimizer, cudss_gpu, training_problem, PointConductance
+):
+    _assert_no_rebuild_and_equal_to_conjugate_gradient(
+        _EVERY_GEOMETRY, optimizer, cudss_gpu.rebuild_count, training_problem, PointConductance
+    )
+
+
+def test_penalized_lbfgs_repeats_no_analysis_and_matches_conjugate_gradient_on_a_gpu(
+    cudss_gpu, training_problem, PointConductance
+):
+    state = _assert_no_rebuild_and_equal_to_conjugate_gradient(
+        _PENALIZED, optax.lbfgs(), cudss_gpu.rebuild_count, training_problem, PointConductance
+    )
+    assert state.history[-1].training_objective > state.history[-1].training_loss
+
+
+@pytest.mark.parametrize(
+    "log_surface",
+    [
+        np.log(10.0) * np.random.default_rng(3).uniform(-3.0, 3.0, size=(30, 30)),
+        np.where(np.random.default_rng(3).random((30, 30)) < 0.5, np.log(1e-6), 0.0),
+    ],
+    ids=["six_orders_of_magnitude", "floor_patches"],
+)
+def test_training_on_a_heterogeneous_problem_completes_on_a_gpu(
+    log_surface, cudss_gpu, FeatureConductance
+):
+    region = RegionBatch(
+        "alpine",
+        cx.field(
+            log_surface[..., None],
+            "row",
+            "column",
+            cx.LabeledAxis("feature", np.array(["elevation"])),
+        ),
+        ("south", "north", "west", "east", "center"),
+        np.array([[0, 0], [0, 29], [29, 0], [29, 29], [15, 15]]),
+    )
+    pairs = tuple(itertools.combinations(region.sampling_unit_ids, 2))
+    observations = PairwiseObservations.from_pairs(
+        pairs, np.linspace(0.2, 1.4, len(pairs)), target=TargetSpec("divergence")
+    )
+    rebuilds = cudss_gpu.rebuild_count()
+    state = train(
+        region,
+        observations,
+        distance_model=FeatureConductance(
+            jnp.asarray(1.0), solver_config=ResistanceSolverConfig(solver="cudss")
+        ),
+        config=TrainingConfig(loss=Log1pLoss(), steps=5, optimizer=optax.adam(0.01)),
+    )
+    assert cudss_gpu.rebuild_count() == rebuilds
+    assert state.step == 5
+    assert np.isfinite([record.training_loss for record in state.history]).all()
 
 
 def test_nonfinite_training_is_reported_at_evaluation(ScalarEmbedding, regions_and_observations):
     regions, observations = regions_and_observations()
     completed = []
-    with pytest.raises(FloatingPointError):
+    with pytest.raises(
+        FloatingPointError, match="region 'wide', species 0: step 1: nonfinite loss"
+    ):
         train(
             regions[0],
             observations[0],

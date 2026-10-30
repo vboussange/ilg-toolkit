@@ -311,12 +311,57 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(
         restored_model.conductance_surface(region).data,
         cast(ConductanceModel, model.distance_model).conductance_surface(region).data,
     )
-    np.testing.assert_array_equal(
+    # Repeated conjugate gradient solves on a GPU differ by rounding.
+    np.testing.assert_allclose(
         restored_model.predict(region).as_matrix(),
         model.distance_model.predict(region).as_matrix(),
+        rtol=1e-9,
     )
-    np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
+    np.testing.assert_allclose(
+        restored.predict(region).values, model.predict(region).values, rtol=1e-9
+    )
     assert restored_model.solver_config == solver_config
+
+
+def _saved_conductance_model(PointConductance, training_problem, solver_config, path):
+    """Saves a conductance model with a direct calibration head, and returns it and its region."""
+    region, _, _ = training_problem("conductance")
+    model = LandscapeGeneticsModel(
+        PointConductance(jnp.asarray(0.3), solver_config=solver_config),
+        DirectCalibrationHead(TargetSpec("divergence")),
+        region.feature_names,
+    )
+    save_model(path, model)
+    return model, region
+
+
+def test_saved_models_record_each_solver_choice(
+    solver_choice, PointConductance, training_problem, tmp_path
+):
+    solver_config = ResistanceSolverConfig(solver=solver_choice)
+    path = tmp_path / "conductance.eqx"
+    model, region = _saved_conductance_model(
+        PointConductance, training_problem, solver_config, path
+    )
+    restored = load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
+    assert cast(ConductanceModel, restored.distance_model).solver_config == solver_config
+    np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
+
+
+@pytest.mark.parametrize("use_amg", [False, True])
+def test_loading_a_saved_use_amg_setting_names_its_replacement(
+    PointConductance, training_problem, tmp_path, use_amg
+):
+    path = tmp_path / "conductance.eqx"
+    _saved_conductance_model(PointConductance, training_problem, ResistanceSolverConfig(), path)
+    line, arrays = path.read_bytes().split(b"\n", 1)
+    header = json.loads(line)
+    header["metadata"]["distance_solver"] = dict(
+        rtol=1e-6, atol=1e-6, max_steps=1000, use_amg=use_amg
+    )
+    path.write_bytes(json.dumps(header).encode() + b"\n" + arrays)
+    with pytest.raises(ArtifactError, match=r"use_amg.*solver='cg'.*solver='amg'"):
+        load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
 
 
 def test_model_reload_uses_native_shape_and_dtype_compatibility(WeightedEmbedding, tmp_path):

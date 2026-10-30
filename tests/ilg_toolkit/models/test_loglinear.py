@@ -429,3 +429,41 @@ def test_feature_effects_map_feature_names_to_per_species_coefficients():
 def test_feature_effects_require_one_unique_name_per_feature(feature_names):
     with pytest.raises(ValueError):
         LogLinearConductance(2).feature_effects(feature_names)
+
+
+def test_uniform_initialization_shares_one_solver_across_regions_of_one_shape(cudss_double):
+    features = np.random.default_rng(5).uniform(size=(3, 4, 1))
+    regions = [
+        RegionBatch(
+            name,
+            cx.field(
+                features,
+                "row",
+                "column",
+                cx.LabeledAxis("feature", np.array(["elevation"])),
+            ),
+            ("a", "b", "c"),
+            np.array([[0, 0], [2, 3], [0, 3]]),
+        )
+        for name in ("river", "ridge")
+    ]
+    observations = [
+        PairwiseObservations.from_pairs(
+            [("a", "b"), ("a", "c"), ("b", "c")], values, target=TargetSpec("divergence")
+        )
+        for values in ([3.0, 1.0, 2.0], [2.0, 1.0, 3.0])
+    ]
+    direct, iterative = (
+        LogLinearConductance(1, patch_size=1, solver_config=config)
+        for config in (
+            ResistanceSolverConfig(solver="cudss"),
+            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+        )
+    )
+    with cudss_double.one_analysis():
+        initialized = initialize_uniform_conductance(direct, regions, observations, Log1pLoss())
+    np.testing.assert_allclose(
+        initialized.intercepts,
+        initialize_uniform_conductance(iterative, regions, observations, Log1pLoss()).intercepts,
+        rtol=1e-6,
+    )

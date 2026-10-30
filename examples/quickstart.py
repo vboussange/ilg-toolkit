@@ -4,8 +4,10 @@ Pairwise Fst between 12 Mountain Pygmy-possum (Burramys parvus) sampling units i
 the Victorian Alps, kindly provided by Cesar Australia, is related to ESA WorldCover
 2021 land cover (CC BY 4.0). A log-linear patch encoder maps land-cover fractions to
 the vertex conductances of a conductance grid graph, whose effective resistances
-predict the odds of Fst. Install the ``examples`` extra and run this script: it
-downloads 0.25 MB of example data on first use and writes ``quickstart.png``.
+predict the odds of Fst. Its resistance solver is the NVIDIA CUDA Direct Sparse
+Solver (cuDSS) on a GPU, through the ``cudss`` extra, and conjugate gradient
+elsewhere. Install the ``examples`` extra and run this script: it downloads 0.25 MB
+of example data on first use and writes ``quickstart.png``.
 """
 
 import urllib.request
@@ -23,6 +25,7 @@ from ilg_toolkit import (
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
+    ResistanceSolverConfig,
     TargetSpec,
     train,
     TrainingConfig,
@@ -89,8 +92,12 @@ observations = PairwiseObservations(
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
 loss = Log1pLoss()
+solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
 distance_model = initialize_uniform_conductance(
-    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE), region, observations, loss
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver_config=solver_config),
+    region,
+    observations,
+    loss,
 )
 state = train(
     region,

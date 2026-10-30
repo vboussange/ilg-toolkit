@@ -5,7 +5,14 @@ from typing import Any
 import numpy as np
 import optax
 import pytest
-from ilg_toolkit import Log1pLoss, PairwiseObservations, RidgePenalty, train, TrainingConfig
+from ilg_toolkit import (
+    Log1pLoss,
+    PairwiseObservations,
+    ResistanceSolverConfig,
+    RidgePenalty,
+    train,
+    TrainingConfig,
+)
 
 
 @pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "2"])
@@ -87,6 +94,57 @@ def test_integer_settings_accept_numpy_integers():
         options = {name: value}
         with pytest.raises(ValueError, match=name):
             TrainingConfig(loss=Log1pLoss(), **options)
+
+
+@pytest.mark.parametrize("solver", ["cg", "amg"])
+@pytest.mark.parametrize(
+    "options",
+    [
+        dict(rtol=True),
+        dict(atol=float("nan")),
+        dict(rtol=0, atol=0),
+        dict(max_steps=1.5),
+        dict(max_steps=False),
+    ],
+)
+def test_iterative_solver_settings_reject_invalid_options(solver, options):
+    with pytest.raises(ValueError):
+        ResistanceSolverConfig(solver=solver, **options)
+
+
+@pytest.mark.parametrize("solver", ["cg", "amg"])
+def test_iterative_solvers_default_to_their_tolerances_and_iteration_limit(solver):
+    config = ResistanceSolverConfig(solver=solver)
+    assert (config.rtol, config.atol, config.max_steps) == (1e-6, 1e-6, 1000)
+    assert config == ResistanceSolverConfig(solver=solver, rtol=1e-6, atol=1e-6, max_steps=1000)
+
+
+def test_conjugate_gradient_is_the_default_solver():
+    assert ResistanceSolverConfig().solver == "cg"
+
+
+@pytest.mark.parametrize("solver", ["CG", "direct", "", None, 1])
+def test_solver_settings_reject_an_unknown_solver(solver):
+    with pytest.raises(ValueError, match="solver must be one of 'cg', 'amg' or 'cudss'"):
+        ResistanceSolverConfig(solver=solver)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"), [("rtol", 1e-6), ("atol", 1e-6), ("max_steps", 1000), ("rtol", 0)]
+)
+def test_direct_solver_rejects_iterative_settings_by_name(name, value):
+    with pytest.raises(ValueError, match=f"{name} does not apply to solver 'cudss'"):
+        ResistanceSolverConfig(solver="cudss", **{name: value})
+
+
+def test_direct_solver_settings_construct_without_a_gpu_backend():
+    config = ResistanceSolverConfig(solver="cudss")
+    assert (config.rtol, config.atol, config.max_steps) == (None, None, None)
+
+
+def test_solver_settings_have_no_use_amg_option():
+    with pytest.raises(TypeError):
+        ResistanceSolverConfig(use_amg=True)  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize("penalty", [0.1, "ridge", (1, 2)])
