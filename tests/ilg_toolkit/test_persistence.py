@@ -311,11 +311,15 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(
         restored_model.conductance_surface(region).data,
         cast(ConductanceModel, model.distance_model).conductance_surface(region).data,
     )
-    np.testing.assert_array_equal(
+    # Repeated conjugate gradient solves on a GPU differ by rounding.
+    np.testing.assert_allclose(
         restored_model.predict(region).as_matrix(),
         model.distance_model.predict(region).as_matrix(),
+        rtol=1e-9,
     )
-    np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
+    np.testing.assert_allclose(
+        restored.predict(region).values, model.predict(region).values, rtol=1e-9
+    )
     assert restored_model.solver_config == solver_config
 
 

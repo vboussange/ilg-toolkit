@@ -838,18 +838,20 @@ def _dense_factorization(
 
 @final
 class _CuDSSDouble(AbstractSparseDirectSolver[_DenseFactorization]):
-    """A dense Cholesky solver on the CPU in place of ``CuDSSSolver``, with its token rule."""
+    """A dense Cholesky solver on the CPU in place of ``CuDSSSolver``, with its token rule.
+
+    Its callbacks are unordered, as spineax's calls are, so a failed call leaves later
+    calls unaffected on a GPU. The token passed between them orders refactorizations.
+    """
 
     def factorize(self, pattern: CSRPattern, values: jax.Array) -> _DenseFactorization:
-        token, failing = io_callback(_CUDSS_TOKENS.analyze, _TOKEN_RESULT, ordered=True)
+        token, failing = io_callback(_CUDSS_TOKENS.analyze, _TOKEN_RESULT)
         return _dense_factorization(token, failing, pattern, values)
 
     def refactorize(
         self, factorization: _DenseFactorization, pattern: CSRPattern, values: jax.Array
     ) -> _DenseFactorization:
-        token, failing = io_callback(
-            _CUDSS_TOKENS.refactorize, _TOKEN_RESULT, factorization.token, ordered=True
-        )
+        token, failing = io_callback(_CUDSS_TOKENS.refactorize, _TOKEN_RESULT, factorization.token)
         return _dense_factorization(token, failing, pattern, values)
 
     def solve(self, factorization: _DenseFactorization, vector: jax.Array) -> jax.Array:
