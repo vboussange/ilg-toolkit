@@ -60,7 +60,7 @@ def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
     options = {
         field.name: getattr(state.config, field.name)
         for field in fields(state.config)
-        if field.name != "optimizer"
+        if field.name not in ("optimizer", "penalty")
     }
     options["loss"] = _loss_metadata(state.config.loss)
     metadata = {

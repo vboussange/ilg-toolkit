@@ -1,11 +1,15 @@
 """Tests of training configurations and the inputs training requires."""
 
+from dataclasses import replace
 from typing import Any
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
-from ilg_toolkit import Log1pLoss, PairwiseObservations, train, TrainingConfig
+from ilg_toolkit import Log1pLoss, PairwiseObservations, RidgePenalty, train, TrainingConfig
 
 
 @pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "2"])
@@ -87,3 +91,43 @@ def test_integer_settings_accept_numpy_integers():
         options = {name: value}
         with pytest.raises(ValueError, match=name):
             TrainingConfig(loss=Log1pLoss(), **options)
+
+
+@pytest.mark.parametrize("penalty", [0.1, "ridge", (1, 2)])
+def test_a_penalty_that_is_not_callable_is_rejected(penalty: Any):
+    with pytest.raises(ValueError, match="penalty"):
+        TrainingConfig(loss=Log1pLoss(), penalty=penalty)
+
+
+def test_configuration_equality_covers_the_penalty():
+    def where(model):
+        return model.coefficients
+
+    ridge = RidgePenalty(prior_sd=1.5, where=where)
+    config = TrainingConfig(loss=Log1pLoss(), penalty=ridge)
+    assert config.penalty is ridge
+    assert TrainingConfig(loss=Log1pLoss()).penalty is None
+    assert config != TrainingConfig(loss=Log1pLoss())
+    assert config == TrainingConfig(loss=Log1pLoss(), penalty=RidgePenalty(1.5, where))
+    assert config != TrainingConfig(loss=Log1pLoss(), penalty=RidgePenalty(2.0, where))
+    assert config != TrainingConfig(
+        loss=Log1pLoss(), penalty=RidgePenalty(1.5, lambda model: model.coefficients)
+    )
+    assert replace(config, steps=7) == replace(
+        TrainingConfig(loss=Log1pLoss(), penalty=ridge), steps=7
+    )
+    # Two separately written functions compare unequal.
+    assert TrainingConfig(loss=Log1pLoss(), penalty=lambda model: 0.0) != TrainingConfig(
+        loss=Log1pLoss(), penalty=lambda model: 0.0
+    )
+
+
+def test_configuration_stays_hashable_with_a_penalty_holding_arrays():
+    class _Centered(eqx.Module):
+        center: jax.Array
+
+        def __call__(self, distance_model):
+            return jnp.sum((distance_model.coefficients - self.center) ** 2)
+
+    config = TrainingConfig(loss=Log1pLoss(), penalty=_Centered(jnp.ones(2)))
+    assert hash(config) == hash(TrainingConfig(loss=Log1pLoss()))

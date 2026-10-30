@@ -369,3 +369,24 @@ def test_checkpoints_reject_an_optimizer_with_a_different_state(initial_state, t
             load_checkpoint(path, distance_model=distance_model, optimizer=optimizer)
     restored = load_checkpoint(path, distance_model=distance_model, optimizer=optax.adam(0.1))
     assert eqx.tree_equal(restored, state)
+
+
+def test_unpenalized_checkpoints_round_trip_the_training_objective(
+    tmp_path, ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.1)),
+    )
+    path = tmp_path / "unpenalized.eqx"
+    save_checkpoint(path, state)
+    restored = load_checkpoint(path, distance_model=model, optimizer=state.config.optimizer)
+    assert restored.config.penalty is None
+    assert eqx.tree_equal(restored, state)
+    assert [record.training_objective for record in restored.history] == [
+        record.training_loss for record in state.history
+    ]
