@@ -1,6 +1,7 @@
 """Training of distance models and statistical parameters across regions and species."""
 
 import contextlib
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
@@ -45,6 +46,8 @@ _COMPILED_CALL_ERRORS = (
     eqx.EquinoxTracetimeError,
     jax.errors.JaxRuntimeError,
 )
+# What JAX appends to the message of a compiled call failing on a GPU.
+_EXECUTABLE_NAME = re.compile(r"\s*\[executable_name='[^']*'\]\s*$")
 
 
 @final
@@ -263,9 +266,11 @@ def _failure_reason(error: Exception) -> str:
     """Returns the line of a compiled call's error that states why the call failed.
 
     That line follows Equinox's marker for ``eqx.error_if``, ends the traceback of a
-    failed callback, and opens the message of a failed native call.
+    failed callback, and opens the message of a failed native call. It excludes the
+    name of the compiled program.
     """
-    lines = str(error).rpartition("equinox.EquinoxRuntimeError: ")[2].strip().split("\n")
+    message = _EXECUTABLE_NAME.sub("", str(error))
+    lines = message.rpartition("equinox.EquinoxRuntimeError: ")[2].strip().split("\n")
     return lines[-1] if lines[0].endswith("Traceback (most recent call last):") else lines[0]
 
 

@@ -320,32 +320,50 @@ def test_failed_native_call_names_the_region_species_step_and_reason(
 class _NativeFailureEmbedding(EmbeddingDistanceModel):
     """A distance model whose backbone raises the error of a failed native spineax call."""
 
+    message: str = eqx.field(static=True)
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
 
     def backbone(self, features):
-        raise jax.errors.JaxRuntimeError(
-            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize\n"
-            "Further detail"
-        )
+        raise jax.errors.JaxRuntimeError(self.message)
 
     def embedding(self, latent, species_index):
         return latent
 
 
-def test_failed_native_call_reports_the_first_line_of_its_message(training_problem):
+@pytest.mark.parametrize(
+    ("message", "reason"),
+    [
+        (
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize\n"
+            "Further detail",
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize",
+        ),
+        (
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize"
+            " [executable_name='jit__group_distances']",
+            "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize",
+        ),
+        (
+            "INTERNAL: CpuCallback error calling callback: Traceback (most recent call last):\n"
+            '  File "solver.py", line 1, in refactorize\n'
+            "RuntimeError: cuDSS call failed (status 3)"
+            " [executable_name='jit__microbatch_objective']",
+            "RuntimeError: cuDSS call failed (status 3)",
+        ),
+    ],
+    ids=["first_line", "executable_name", "callback_traceback"],
+)
+def test_failed_native_call_reports_the_line_stating_its_reason(message, reason, training_problem):
     region, observations, _ = training_problem("embedding")
     with pytest.raises(RuntimeError) as caught:
         train(
             region,
             observations,
-            distance_model=_NativeFailureEmbedding(),
+            distance_model=_NativeFailureEmbedding(message=message),
             config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
-    assert str(caught.value) == (
-        "region 'alpine', species 0: step 0: "
-        "INTERNAL: spineax pbatch token: cuDSS call failed (status 3): refactorize"
-    )
+    assert str(caught.value) == f"region 'alpine', species 0: step 0: {reason}"
 
 
 def _assert_failed_line_search_candidate_names_the_sampled_groups(
