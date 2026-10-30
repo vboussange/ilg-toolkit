@@ -17,6 +17,7 @@ from ilg_toolkit import (
     MLPECalibrationHead,
     MLPELoss,
     PairwiseObservations,
+    ResistanceSolverConfig,
     TargetSpec,
     train,
     TrainingConfig,
@@ -402,3 +403,33 @@ def test_calibration_checks_the_patch_grid(patch_check_problem):
         )
     with problem.shared_vertices_warned():
         fit_calibration_head(shared, problem.observations(shared), problem.model, loss=Log1pLoss())
+
+
+def test_mlpe_calibration_groups_share_a_solver_state(
+    cudss_double, training_problem, PointConductance
+):
+    species = ("frog", "newt")
+    regions, observations = zip(
+        *(
+            training_problem("conductance", name=name, species=species)[:2]
+            for name in ("alpine", "valley")
+        ),
+        strict=True,
+    )
+    scales = jnp.array([0.0, 0.5])
+    direct, iterative = (
+        PointConductance(scales, species=species, solver_config=config)
+        for config in (
+            ResistanceSolverConfig(solver="cudss"),
+            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+        )
+    )
+    rebuilds, analyses = cudss_double.rebuild_count(), cudss_double.analysis_count()
+    head = fit_calibration_head(regions, observations, direct, loss=MLPELoss())
+    assert cudss_double.rebuild_count() == rebuilds
+    assert cudss_double.analysis_count() == analyses + 1
+    expected = fit_calibration_head(regions, observations, iterative, loss=MLPELoss())
+    assert isinstance(head, MLPECalibrationHead) and isinstance(expected, MLPECalibrationHead)
+    assert head.calibrations.keys() == expected.calibrations.keys()
+    for group, calibration in head.calibrations.items():
+        np.testing.assert_allclose(calibration.slope, expected.calibrations[group].slope, rtol=1e-6)

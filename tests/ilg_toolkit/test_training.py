@@ -101,6 +101,56 @@ def test_failed_solver_preserves_solver_failure(PointConductance):
             )
 
 
+@pytest.mark.parametrize("optimizer", [optax.adam(0.05), optax.lbfgs()], ids=["adam", "lbfgs"])
+def test_training_with_each_solver_choice_matches_conjugate_gradient(
+    solver_choice, optimizer, PointConductance, training_problem
+):
+    region, observations, _ = training_problem("conductance")
+    config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optimizer)
+    tolerance = None if solver_choice == "cudss" else 1e-11
+    state, reference = (
+        train(
+            region,
+            observations,
+            distance_model=PointConductance(jnp.asarray(0.0), solver_config=solver_config),
+            config=config,
+        )
+        for solver_config in (
+            ResistanceSolverConfig(solver=solver_choice, rtol=tolerance, atol=tolerance),
+            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+        )
+    )
+    np.testing.assert_allclose(
+        [record.training_loss for record in state.history],
+        [record.training_loss for record in reference.history],
+        rtol=1e-8,
+    )
+    assert state.history[-1].training_loss < state.history[0].training_loss
+
+
+@pytest.mark.parametrize("error", [ImportError("no spineax"), RuntimeError("no GPU backend")])
+def test_training_with_an_unavailable_direct_solver_fails_before_initialization(
+    PointConductance, training_problem, monkeypatch, error
+):
+    def unavailable():
+        raise error
+
+    monkeypatch.setattr("ilg_toolkit.resistance.CuDSSSolver", unavailable)
+    region, observations, _ = training_problem("conductance")
+    completed = []
+    with pytest.raises(type(error), match=r"ilg-toolkit\[cudss\]"):
+        train(
+            region,
+            observations,
+            distance_model=PointConductance(
+                jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss")
+            ),
+            config=TrainingConfig(loss=Log1pLoss(), steps=1),
+            on_step=completed.append,
+        )
+    assert completed == []
+
+
 def test_nonfinite_training_is_reported_at_evaluation(ScalarEmbedding, regions_and_observations):
     regions, observations = regions_and_observations()
     completed = []

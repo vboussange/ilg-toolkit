@@ -3,6 +3,7 @@
 import math
 from dataclasses import dataclass, field
 from numbers import Integral, Real
+from typing import Literal
 
 import optax
 
@@ -14,29 +15,48 @@ from .losses import AbstractLoss
 class ResistanceSolverConfig:
     """Settings of the float64 solver in the effective-resistance layer.
 
-    The solver runs conjugate gradient, optionally preconditioned with algebraic
-    multigrid (AMG) through the ``amg`` extra, and raises an error when it reaches
-    ``max_steps`` before either tolerance. A conductance model carries its solver
-    settings.
+    ``solver`` selects one of three solvers. ``"cg"`` runs conjugate gradient (CG).
+    ``"amg"`` runs CG preconditioned with algebraic multigrid (AMG), prepared once
+    on a uniform conductance grid graph, through the ``amg`` extra. Both raise an
+    error when they reach ``max_steps`` before either tolerance. ``"cudss"`` runs
+    the NVIDIA cuDSS sparse direct solver, through the ``cudss`` extra, and has no
+    tolerances or iteration limit.
+
+    A conductance model carries its solver settings. Constructing, saving and
+    loading them work on any backend. Preparing ``"cudss"``, at the start of training
+    or of a prediction, raises an ``ImportError`` or a ``RuntimeError`` naming the
+    ``cudss`` extra without spineax or a CUDA-enabled GPU backend.
 
     Args:
-        rtol: Relative residual tolerance, finite and nonnegative.
-        atol: Absolute residual tolerance, finite and nonnegative; at least one of
-            ``rtol`` and ``atol`` is positive.
-        max_steps: Maximum number of conjugate-gradient iterations.
-        use_amg: Whether to precondition with AMG.
+        solver: The solver: ``"cg"`` (default), ``"amg"`` or ``"cudss"``.
+        rtol: Relative residual tolerance of ``"cg"`` and ``"amg"``, finite and
+            nonnegative; ``None`` (default) selects 1e-6.
+        atol: Absolute residual tolerance of ``"cg"`` and ``"amg"``, finite and
+            nonnegative; ``None`` (default) selects 1e-6. At least one of ``rtol``
+            and ``atol`` is positive.
+        max_steps: Maximum number of CG iterations of ``"cg"`` and ``"amg"``;
+            ``None`` (default) selects 1000.
 
     Raises:
-        ValueError: If a setting is invalid.
+        ValueError: If a setting is invalid, ``solver`` is unknown, or ``"cudss"``
+            receives ``rtol``, ``atol`` or ``max_steps``.
     """
 
-    rtol: float = 1e-6
-    atol: float = 1e-6
-    max_steps: int = 1000
-    use_amg: bool = False
+    solver: Literal["cg", "amg", "cudss"] = "cg"
+    rtol: float | None = None
+    atol: float | None = None
+    max_steps: int | None = None
 
     def __post_init__(self):
+        if self.solver not in ("cg", "amg", "cudss"):
+            raise ValueError(f"solver must be one of 'cg', 'amg' or 'cudss', got {self.solver!r}")
+        if self.solver == "cudss":
+            for name in ("rtol", "atol", "max_steps"):
+                if getattr(self, name) is not None:
+                    raise ValueError(f"{name} does not apply to solver 'cudss'; leave it as None")
+            return
         for name, value in (("rtol", self.rtol), ("atol", self.atol)):
+            value = 1e-6 if value is None else value
             if (
                 isinstance(value, bool)
                 or not isinstance(value, Real)
@@ -47,9 +67,8 @@ class ResistanceSolverConfig:
             object.__setattr__(self, name, float(value))
         if self.rtol == 0 and self.atol == 0:
             raise ValueError("At least one solver tolerance must be positive")
-        object.__setattr__(self, "max_steps", _positive_integer("solver max_steps", self.max_steps))
-        if not isinstance(self.use_amg, bool):
-            raise ValueError("solver use_amg must be a boolean")
+        max_steps = 1000 if self.max_steps is None else self.max_steps
+        object.__setattr__(self, "max_steps", _positive_integer("solver max_steps", max_steps))
 
 
 @dataclass(frozen=True)

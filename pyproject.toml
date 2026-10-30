@@ -48,6 +48,7 @@ version = "0.0.3"
 
 [project.optional-dependencies]
 amg = ["jaxscape[amjax]==0.0.15"]
+cudss = ["jaxscape[cudss]==0.0.15"]
 examples = ["matplotlib>=3.10,<4", "pandas>=2.2,<4", "rioxarray>=0.19,<1"]
 
 [tool.pyright]

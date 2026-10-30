@@ -228,6 +228,8 @@ class ConductanceModel(AbstractDistanceModel):
     ) -> jax.Array:
         """Computes float64 effective resistances for pairs of sampling units.
 
+        Each call prepares its own resistance solver.
+
         Args:
             latent: Backbone output of the region.
             pairs: ``(vertices, (left, right))``, as in
@@ -238,7 +240,7 @@ class ConductanceModel(AbstractDistanceModel):
         Returns:
             Effective resistances aligned with ``left`` and ``right``.
         """
-        return _resistance_distances(self, latent, pairs, species_index, context=None)
+        return _resistance_distances(self, latent, pairs, species_index, context=None)[0]
 
     def conductance_surface(self, region: RegionBatch, species: str | None = None) -> cx.Field:
         """Returns one species' positive conductance surface over a region.
@@ -580,8 +582,9 @@ def _species_distances(
     """Computes each queried species' region batch, pair labels and ecological distances.
 
     The backbone output and the resistance solver are prepared once, in inference
-    mode. ``extra_pairs`` appends a species' additional pairs after its explicit
-    query pairs, in both the labels and the distances.
+    mode, and the queried species share the solver state. ``extra_pairs`` appends a
+    species' additional pairs after its explicit query pairs, in both the labels and
+    the distances.
     """
     regions = _query_regions(_model_species(model), region, requests)
     _check_regions(model, (region,))
@@ -596,7 +599,7 @@ def _species_distances(
         if extra:
             assert pairs is not None
             pairs = (*pairs, *extra)
-        labels, values = _query_distances_from_latent(
+        labels, values, context = _query_distances_from_latent(
             model, latent, prepared, pairs, species_index=request.index, context=context
         )
         results[request.name] = (prepared, labels, values)
@@ -606,7 +609,7 @@ def _species_distances(
 def _prepare_distance_context(
     model: AbstractDistanceModel, features: ArrayLike
 ) -> _ResistanceSolverContext | None:
-    """Prepares a reusable resistance solver for a region's conductance grid graph.
+    """Prepares a resistance solver for a region's conductance grid graph.
 
     Distance models without a conductance grid graph need no solver.
     """
@@ -626,13 +629,18 @@ def _resistance_distances(
     species_index: int | jax.Array,
     *,
     context: _ResistanceSolverContext | None,
-) -> jax.Array:
-    """Computes a patch encoder's effective resistances with a prepared or new solver."""
+) -> tuple[jax.Array, _ResistanceSolverContext]:
+    """Computes a patch encoder's effective resistances with a prepared or new solver.
+
+    Returns the effective resistances aligned with the pairs and the context for the
+    next solve.
+    """
     nodes, indices = pairs
     surface = model.conductance(latent, species_index)
     if context is None:
         context = _resistance_context(surface.shape, model.solver_config)
-    return _effective_resistance(surface, nodes, context=context)[indices]
+    resistances, context = _effective_resistance(surface, nodes, context=context)
+    return resistances[indices], context
 
 
 def _query_distances_from_latent(
@@ -643,8 +651,8 @@ def _query_distances_from_latent(
     *,
     species_index: int | jax.Array,
     context: _ResistanceSolverContext | None,
-) -> tuple[tuple[tuple[str, str], ...], jax.Array]:
-    """Returns query pair labels and checked ecological distances for one species.
+) -> tuple[tuple[tuple[str, str], ...], jax.Array, _ResistanceSolverContext | None]:
+    """Returns query pair labels, checked ecological distances and the next solve's context.
 
     One compiled program computes the ecological distances between every pair of
     the region's sampling units; pair selections on regions of the same shape
@@ -652,10 +660,10 @@ def _query_distances_from_latent(
     """
     labels, (left, right) = _query_pairs(region, pairs)
     raster_shape = (region.feature_array.shape[0], region.feature_array.shape[1])
-    matrix = _distance_matrix(
+    matrix, context = _distance_matrix(
         model, latent, region.pixel_nodes, raster_shape, species_index, context
     )
-    return labels, _pair_distances(matrix, left, right)
+    return labels, _pair_distances(matrix, left, right), context
 
 
 @eqx.filter_jit
@@ -666,11 +674,14 @@ def _distance_matrix(
     raster_shape: tuple[int, int],
     species_index: int | jax.Array,
     context: _ResistanceSolverContext | None,
-) -> jax.Array:
-    """Computes one species' symmetric matrix of ecological distances between sampling units."""
+) -> tuple[jax.Array, _ResistanceSolverContext | None]:
+    """Computes one species' symmetric matrix of ecological distances between sampling units.
+
+    Returns the matrix and the context for the next solve.
+    """
     count = pixel_nodes.shape[0]
     left, right = np.triu_indices(count, 1)
-    values = _distances_from_latent(
+    values, context = _distances_from_latent(
         model,
         latent,
         pixel_nodes,
@@ -680,7 +691,7 @@ def _distance_matrix(
         context=context,
     )
     matrix = jnp.zeros((count, count), values.dtype).at[left, right].set(values)
-    return matrix + matrix.T
+    return matrix + matrix.T, context
 
 
 @eqx.filter_jit
@@ -716,8 +727,12 @@ def _distances_from_latent(
     raster_shape: tuple[int, int],
     species_index: int | jax.Array = 0,
     context: _ResistanceSolverContext | None = None,
-) -> jax.Array:
-    """Computes one species' ecological distances from the backbone output."""
+) -> tuple[jax.Array, _ResistanceSolverContext | None]:
+    """Computes one species' ecological distances from the backbone output.
+
+    Returns the ecological distances and the context for the next solve, which is
+    ``context`` for a distance model that computes its own.
+    """
     nodes = _pixel_to_patch_nodes(
         pixel_nodes,
         raster_shape=raster_shape,
@@ -726,4 +741,4 @@ def _distances_from_latent(
     pairs = (nodes, indices)
     if isinstance(model, ConductanceModel):
         return _resistance_distances(model, latent, pairs, species_index, context=context)
-    return model.ecological_distances(latent, pairs, species_index)
+    return model.ecological_distances(latent, pairs, species_index), context

@@ -199,6 +199,13 @@ def _model_template[DistanceModel: AbstractDistanceModel](
     if isinstance(distance_model, ConductanceModel):
         if solver_settings is None:
             raise ArtifactError("Saved distance model requires a non-conductance template")
+        if "use_amg" in solver_settings:
+            raise ArtifactError(
+                "The saved solver settings hold use_amg, which the solver setting replaces: "
+                "use_amg=false is solver='cg' and use_amg=true is solver='amg'. Replace it in "
+                "the file's JSON header, or train and save the model again with "
+                "ResistanceSolverConfig(solver=...)"
+            )
         distance_model = copy(distance_model)
         object.__setattr__(
             distance_model, "solver_config", ResistanceSolverConfig(**solver_settings)
@@ -279,7 +286,8 @@ def load_model[DistanceModel: AbstractDistanceModel](
         The saved landscape genetics model.
 
     Raises:
-        ArtifactError: If the file or the template is incompatible.
+        ArtifactError: If the file or the template is incompatible, or the file holds
+            a ``use_amg`` solver setting.
         RuntimeError: If float64 is disabled.
     """
     _require_float64()

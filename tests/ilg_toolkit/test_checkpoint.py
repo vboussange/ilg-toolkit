@@ -12,16 +12,18 @@ import numpy as np
 import optax
 import pytest
 from ilg_toolkit import (
+    ArtifactError,
     load_checkpoint,
     Log1pLoss,
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
+    ResistanceSolverConfig,
     save_checkpoint,
     train,
     TrainingConfig,
 )
-from ilg_toolkit.models import AbstractDistanceModel
+from ilg_toolkit.models import AbstractDistanceModel, ConductanceModel
 
 
 @dataclass(frozen=True)
@@ -369,3 +371,58 @@ def test_checkpoints_reject_an_optimizer_with_a_different_state(initial_state, t
             load_checkpoint(path, distance_model=distance_model, optimizer=optimizer)
     restored = load_checkpoint(path, distance_model=distance_model, optimizer=optax.adam(0.1))
     assert eqx.tree_equal(restored, state)
+
+
+def _conductance_checkpoint(PointConductance, training_problem, solver_config, path):
+    """Saves a checkpoint after one update, and returns the region, observations and state."""
+    region, observations, _ = training_problem("conductance")
+    state = train(
+        region,
+        observations,
+        distance_model=PointConductance(jnp.asarray(0.0), solver_config=solver_config),
+        config=TrainingConfig(loss=Log1pLoss(), steps=1, optimizer=optax.sgd(1e-3)),
+    )
+    save_checkpoint(path, state)
+    return region, observations, state
+
+
+def test_checkpoints_record_and_continue_with_each_solver_choice(
+    solver_choice, PointConductance, training_problem, tmp_path
+):
+    solver_config = ResistanceSolverConfig(solver=solver_choice)
+    path = tmp_path / "conductance.eqx"
+    region, observations, state = _conductance_checkpoint(
+        PointConductance, training_problem, solver_config, path
+    )
+    restored = load_checkpoint(
+        path, distance_model=PointConductance(jnp.asarray(0.0)), optimizer=state.config.optimizer
+    )
+    for model in (restored.latest_model, restored.selected_model):
+        assert isinstance(model.distance_model, ConductanceModel)
+        assert model.distance_model.solver_config == solver_config
+    continued = train(
+        region, observations, state=restored, config=replace(restored.config, steps=2)
+    )
+    assert continued.step == 2
+
+
+def test_loading_a_checkpoint_with_a_saved_use_amg_setting_names_its_replacement(
+    PointConductance, training_problem, tmp_path
+):
+    path = tmp_path / "conductance.eqx"
+    _, _, state = _conductance_checkpoint(
+        PointConductance, training_problem, ResistanceSolverConfig(), path
+    )
+    line, arrays = path.read_bytes().split(b"\n", 1)
+    header = json.loads(line)
+    for kind in ("latest_model", "selected_model"):
+        header["metadata"][kind]["distance_solver"] = dict(
+            rtol=1e-6, atol=1e-6, max_steps=1000, use_amg=False
+        )
+    path.write_bytes(json.dumps(header).encode() + b"\n" + arrays)
+    with pytest.raises(ArtifactError, match=r"use_amg.*solver='cg'.*solver='amg'"):
+        load_checkpoint(
+            path,
+            distance_model=PointConductance(jnp.asarray(0.0)),
+            optimizer=state.config.optimizer,
+        )

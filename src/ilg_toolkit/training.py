@@ -238,7 +238,7 @@ def _group_distances(model, latent, payload, species_index, context):
         raster_shape=(payload.features.shape[0], payload.features.shape[1]),
         species_index=species_index,
         context=context,
-    )
+    )[0]
 
 
 class _Contribution(NamedTuple):

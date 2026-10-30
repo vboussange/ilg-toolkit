@@ -374,24 +374,25 @@ def fit_calibration_head(
     groups = prepared.training
     for group in groups:
         loss._prepare(group.region, group.observations, training=True)
-    prepared_regions = {}
+    latents = {}
+    solver_contexts = {}
 
     def group_distances(group: _RegionSpeciesTrainingInput) -> jax.Array:
-        if group.region.name not in prepared_regions:
-            features = group.region.feature_array
-            prepared_regions[group.region.name] = (
-                _backbone(inference_model, features, None),
-                _prepare_distance_context(inference_model, features),
-            )
-        latent, context = prepared_regions[group.region.name]
-        return _query_distances_from_latent(
+        features = group.region.feature_array
+        raster_shape = features.shape[:2]
+        if group.region.name not in latents:
+            latents[group.region.name] = _backbone(inference_model, features, None)
+        if raster_shape not in solver_contexts:
+            solver_contexts[raster_shape] = _prepare_distance_context(inference_model, features)
+        _, distances, solver_contexts[raster_shape] = _query_distances_from_latent(
             inference_model,
-            latent,
+            latents[group.region.name],
             group.region,
             group.observations.observed_pairs,
             species_index=group.species_index,
-            context=context,
-        )[1]
+            context=solver_contexts[raster_shape],
+        )
+        return distances
 
     fitted = {
         group.key: loss._fit_group(
