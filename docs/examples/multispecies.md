@@ -23,6 +23,7 @@ from ilg_toolkit import (
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
+    ResistanceSolverConfig,
     save_model,
     TargetSpec,
     train,
@@ -41,6 +42,7 @@ CELLS = 48  # Raster side length in cells.
 PATCH_SIZE = 8  # Groups 8x8 cells into one vertex: a 6x6 conductance grid graph.
 UNITS = 12  # Sampling units per species and region, each at its own vertex.
 target = TargetSpec("genetic dissimilarity", units="index")
+solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
 ```
 
 ## Simulate two regions
@@ -58,7 +60,7 @@ sampling unit with its species.
 ```python
 simulator = eqx.tree_at(
     lambda model: model.coefficients,
-    LogLinearConductance(2, species=SPECIES, patch_size=PATCH_SIZE),
+    LogLinearConductance(2, species=SPECIES, patch_size=PATCH_SIZE, solver_config=solver_config),
     jnp.array([[2.0, 0.0], [0.0, 2.0]]),  # One row of feature coefficients per species.
 )
 
@@ -143,7 +145,8 @@ plt.show()
 `ResNet9Conductance` with `species=SPECIES` builds a backbone of three convolutional
 stages and two residual blocks, shared by both species, and one species-specific head per
 species: a linear map with softplus to the conductance of each vertex. The channel widths
-`(8, 16, 32)` keep the patch encoder narrow.
+`(8, 16, 32)` keep the patch encoder narrow. Its resistance solver, `solver_config`, is the
+NVIDIA CUDA Direct Sparse Solver (cuDSS) on a GPU and conjugate gradient elsewhere.
 
 `train` reads the species names from the distance model. Each species has equal influence,
 and each region has equal influence within a species. The maximum-likelihood population
@@ -157,6 +160,7 @@ distance_model = ResNet9Conductance(
     species=SPECIES,
     patch_size=PATCH_SIZE,
     channels=(8, 16, 32),
+    solver_config=solver_config,
     key=jax.random.key(0),
 )
 state = train(
@@ -188,15 +192,15 @@ display(Markdown("\n".join(rows)))
 
     Species: ('newt', 'frog')
     MLPE loss at step 0: newt -1.751, frog -1.831
-    MLPE loss at step 300: newt -3.300, frog -3.319
+    MLPE loss at step 300: newt -3.297, frog -3.322
 
 
 
 | Region | Species | Slope | Population-effect variance | Residual variance |
 | --- | --- | ---: | ---: | ---: |
-| valley | newt | 0.0911 | 1.06e-04 | 2.12e-04 |
-| valley | frog | 0.0622 | 4.95e-05 | 1.07e-04 |
-| upland | newt | 0.0501 | 3.03e-05 | 7.34e-05 |
+| valley | newt | 0.0897 | 1.07e-04 | 2.12e-04 |
+| valley | frog | 0.0590 | 5.01e-05 | 1.07e-04 |
+| upland | newt | 0.0500 | 3.06e-05 | 7.40e-05 |
 
 
 ## Predict by species
@@ -243,7 +247,7 @@ print("Newt pairs predicted:", len(predictions["newt"].pairs))
 
 
     Frog pairs: (('frog-1', 'frog-2'), ('frog-3', 'frog-4'))
-    Frog predictions: [0.4432 0.3097]
+    Frog predictions: [0.4384 0.3154]
     Newt pairs predicted: 66
 
 
@@ -281,9 +285,8 @@ plt.show()
 
 `save_model` writes the distance model with its species names and the calibration head to
 one file. `load_model` restores them into a template with the same architecture and
-species, replacing the template's parameter values. The reloaded model equals the
-trained model, and its predictions match to the relative tolerance of the
-effective-resistance solver, 1e-6.
+species, replacing the template's parameter values and resistance solver. The reloaded
+model equals the trained model, and its predictions match to a relative tolerance of 1e-6.
 
 
 ```python

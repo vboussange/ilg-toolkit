@@ -40,6 +40,7 @@ from ilg_toolkit import (
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
+    ResistanceSolverConfig,
     save_model,
     TargetSpec,
     train,
@@ -53,6 +54,7 @@ from matplotlib.patches import Patch
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
 print(jax.devices())
+solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
 ```
 
     [CudaDevice(id=0)]
@@ -633,8 +635,9 @@ The log-linear patch encoder maps the patch means $x_k$ of the three land-cover 
 conductance $C_k = \min\{e^{\beta^\top x_k + \beta_0} + 10^{-2}, 10^3\}$ of vertex $k$. In each
 fold, the patch encoder is initialized at the best uniform conductance and trained on the
 training pairs with the MLPE loss and AdamW (learning rate $10^{-2}$, weight decay $10^{-4}$)
-for 1,000 updates. Training evaluates the model every 10 updates and selects the update with
-the lowest validation loss. The selected patch encoder, frozen, receives an MLPE calibration
+for 1,000 updates, with the NVIDIA CUDA Direct Sparse Solver (cuDSS) as resistance solver on a
+GPU and conjugate gradient elsewhere. Training evaluates the model every 10 updates and
+selects the update with the lowest validation loss. The selected patch encoder, frozen, receives an MLPE calibration
 head fitted on the calibration pairs.
 
 
@@ -647,7 +650,10 @@ for training, validation, calibration in zip(
     training_sets, validation_sets, calibration_sets, strict=True
 ):
     distance_model = initialize_uniform_conductance(
-        LogLinearConductance(3, patch_size=PATCH_SIZE), region, training, loss
+        LogLinearConductance(3, patch_size=PATCH_SIZE, solver_config=solver_config),
+        region,
+        training,
+        loss,
     )
     state = train(
         region,
@@ -713,14 +719,14 @@ pd.DataFrame(
     <tr>
       <th>2</th>
       <td>50</td>
-      <td>-2.958546</td>
-      <td>-3.039169</td>
+      <td>-2.958545</td>
+      <td>-3.039165</td>
     </tr>
     <tr>
       <th>3</th>
       <td>200</td>
       <td>-1.408699</td>
-      <td>-1.651802</td>
+      <td>-1.651803</td>
     </tr>
   </tbody>
 </table>
@@ -1209,8 +1215,9 @@ effects.round(3)
 
 ## Saving and reloading the members
 
-`save_model` writes each member to one file. `load_model` reads it into a log-linear patch
-encoder built with the same settings, and the reloaded members form the same ensemble.
+`save_model` writes each member to one file, with its resistance solver. `load_model` reads it
+into a log-linear patch encoder built with the same patch size, and the reloaded members form
+the same ensemble.
 
 
 ```python
@@ -1236,5 +1243,7 @@ print(
 ```
 
     Members equal: True
+
+
     Predictions equal: True
 

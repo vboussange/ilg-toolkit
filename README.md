@@ -129,7 +129,7 @@ resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
   <img src="https://raw.githubusercontent.com/vboussange/ilg-toolkit/main/docs/examples/quickstart_files/quickstart.png" width="720" alt="Land cover and sampling units next to the learned log10 resistance surface.">
 </p>
 
-The quickstart runs in about a minute on an NVIDIA RTX 3090.
+The quickstart runs in about 30 seconds on an NVIDIA RTX 3090.
 
 Swap in `ResNet9Conductance` as a deep patch encoder that maps raw patches of
 landscape features to vertex conductances, with the same `solver_config`.

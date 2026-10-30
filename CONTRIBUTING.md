@@ -100,7 +100,7 @@ installs JAX with CUDA 13 support, and select the GPU with `CUDA_VISIBLE_DEVICES
 XLA_PYTHON_CLIENT_PREALLOCATE=false uv run --extra examples --extra cudss python scripts/run_examples.py
 ```
 
-On an NVIDIA RTX 3090, all examples run in about five minutes.
+On an NVIDIA RTX 3090, all examples run in about two and a half minutes.
 
 Commit the regenerated notebooks, pages and figures together with the change that
 caused them.
