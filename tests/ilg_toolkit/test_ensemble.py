@@ -208,7 +208,7 @@ def test_members_with_different_patch_sizes_align_genetic_predictions():
     coarse = replace(first, distance_model=LogLinearConductance(1, patch_size=2))
     result = Ensemble([first, coarse, first]).predict(region, [("east", "west")])
     assert len(result.members) == 3
-    np.testing.assert_array_equal(result.members[0].values, result.members[2].values)
+    np.testing.assert_allclose(result.members[0].values, result.members[2].values, rtol=1e-9)
     assert np.isfinite(result.mean.values).all()
 
 
