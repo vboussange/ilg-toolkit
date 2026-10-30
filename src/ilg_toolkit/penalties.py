@@ -1,14 +1,13 @@
 """Penalties: functions of a distance model added to the training objective."""
 
-import math
 from collections.abc import Callable
-from numbers import Real
 from typing import Any, final
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from ._checks import _is_finite_real
 from .models import AbstractDistanceModel
 
 
@@ -43,12 +42,7 @@ class RidgePenalty(eqx.Module):
     where: Callable[[Any], Any] = eqx.field(static=True)
 
     def __init__(self, prior_sd: float, where: Callable[[Any], Any]):
-        if (
-            isinstance(prior_sd, bool)
-            or not isinstance(prior_sd, Real)
-            or not math.isfinite(prior_sd)
-            or prior_sd <= 0
-        ):
+        if not _is_finite_real(prior_sd) or prior_sd <= 0:
             raise ValueError("prior_sd must be finite and positive")
         if not callable(where):
             raise ValueError("where must be callable")

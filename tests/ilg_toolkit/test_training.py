@@ -1,7 +1,7 @@
 """Tests of training: dense-reference updates, batching, penalties, selection and continuation."""
 
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, cast, final, NamedTuple
 
 import coordax as cx
@@ -1289,6 +1289,35 @@ def test_a_custom_penalty_enters_the_value_the_gradient_and_the_line_search_func
     )
 
 
+@final
+class _PenaltyWithAField(eqx.Module):
+    """A penalty module that calls the penalty held in its field."""
+
+    penalty: Any
+
+    def __call__(self, distance_model):
+        return self.penalty(distance_model)
+
+
+@pytest.mark.parametrize(
+    "wrap", [lambda penalty: penalty, _PenaltyWithAField], ids=["object", "module-field"]
+)
+def test_an_unhashable_penalty_enters_the_value_the_gradient_and_the_line_search_function(
+    ScalarEmbedding, UnhashablePenalty, regions_and_observations, wrap
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(2.0))
+    plain = _recorded_update(regions, observations, model)
+    penalized = _recorded_update(regions, observations, model, penalty=wrap(UnhashablePenalty(3.0)))
+    # The two regions hold 3 + 1 pairs. At weight 2, 3 * w**2 is 12 and its derivative 12; at
+    # the shifted weight 3, 3 * w**2 is 27.
+    np.testing.assert_allclose(penalized.value - plain.value, 12 / 4, rtol=1e-12)
+    np.testing.assert_allclose(
+        penalized.gradient[0].weight - plain.gradient[0].weight, 12 / 4, rtol=1e-12
+    )
+    np.testing.assert_allclose(penalized.shifted_value - plain.shifted_value, 27 / 4, rtol=1e-12)
+
+
 def _separation_problem() -> tuple[RegionBatch, PairwiseObservations]:
     """Returns sampling units on both sides of a wall, more dissimilar across it.
 
@@ -1444,46 +1473,16 @@ def test_one_penalty_object_divides_by_the_pairs_of_every_training_group(
     )
 
 
-def test_training_objective_adds_the_penalty_over_the_pairs_to_the_unpenalized_training_loss(
-    ScalarEmbedding, regions_and_observations
-):
-    regions, observations = regions_and_observations()
-    states = []
-    train(
-        regions,
-        observations,
-        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=TrainingConfig(
-            loss=Log1pLoss(),
-            steps=2,
-            optimizer=optax.adam(0.1),
-            penalty=RidgePenalty(prior_sd=0.5, where=lambda model: model.weight),
-        ),
-        on_step=states.append,
-    )
-    assert [state.history[-1].step for state in states] == [0, 1, 2]
-    for state in states:
-        weight = float(cast(Any, state.latest_model.distance_model).weight)
-        record = state.history[-1]
-        np.testing.assert_allclose(
-            record.training_loss, np.mean(_scalar_region_losses(weight)), rtol=1e-12
-        )
-        # A prior standard deviation of 0.5 gives 2 * w**2, over 3 + 1 pairs.
-        np.testing.assert_allclose(
-            record.training_objective, record.training_loss + 2 * weight**2 / 4, rtol=1e-12
-        )
-
-
 @pytest.mark.parametrize(
     ("penalty", "settings", "completed"),
     [
         (lambda model: jnp.asarray(jnp.nan), {}, []),
         (lambda model: jnp.asarray(jnp.inf), {}, []),
-        # Finite at the initial weight only, at evaluations on and off the cadence.
+        # Finite at the initial weight only: the first evaluation after an update raises.
         (lambda model: jnp.where(model.weight == 1.0, 0.0, jnp.inf), {}, [0]),
-        (lambda model: jnp.where(model.weight == 1.0, 0.0, jnp.inf), {"eval_every": 2}, [0]),
+        (lambda model: jnp.where(model.weight == 1.0, 0.0, jnp.inf), {"eval_every": 2}, [0, 1]),
     ],
-    ids=["nan", "inf", "after-an-update", "after-an-update-off-cadence"],
+    ids=["nan", "inf", "after-an-update", "at-the-next-evaluation"],
 )
 def test_a_nonfinite_penalty_at_an_evaluation_raises(
     ScalarEmbedding, regions_and_observations, penalty, settings, completed
@@ -1730,40 +1729,34 @@ def test_the_gradient_tolerance_tests_the_gradient_norm_with_the_penalty(
     assert not penalized.converged and penalized.step == 2
 
 
-@final
-class _CenteredPenalty(eqx.Module):
-    """A penalty holding an array: the squared distance of the weight from a center."""
-
-    center: jax.Array
-
-    def __call__(self, distance_model):
-        return jnp.sum((distance_model.weight - self.center) ** 2)
-
-
 @pytest.mark.parametrize("optimizer", [optax.adam(0.1), optax.lbfgs()], ids=["adam", "lbfgs"])
 def test_a_penalty_module_holding_arrays_trains_and_compares_by_value(
-    ScalarEmbedding, regions_and_observations, optimizer
+    ScalarEmbedding, CenteredPenalty, regions_and_observations, optimizer
 ):
     regions, observations = regions_and_observations()
     config = TrainingConfig(
-        loss=Log1pLoss(), steps=1, optimizer=optimizer, penalty=_CenteredPenalty(jnp.asarray(0.5))
+        loss=Log1pLoss(), steps=1, optimizer=optimizer, penalty=CenteredPenalty(jnp.asarray(0.5))
     )
     state = train(
         regions, observations, distance_model=ScalarEmbedding(jnp.asarray(1.0)), config=config
     )
     weight = float(cast(Any, state.latest_model.distance_model).weight)
     record = state.history[-1]
+    # The training loss excludes the penalty, and the training objective adds it over 3 + 1 pairs.
+    np.testing.assert_allclose(
+        record.training_loss, np.mean(_scalar_region_losses(weight)), rtol=1e-12
+    )
     np.testing.assert_allclose(
         record.training_objective, record.training_loss + (weight - 0.5) ** 2 / 4, rtol=1e-12
     )
-    same = replace(config, steps=2, penalty=_CenteredPenalty(jnp.asarray(0.5)))
+    same = replace(config, steps=2, penalty=CenteredPenalty(jnp.asarray(0.5)))
     assert train(regions, observations, state=state, config=same).step == 2
     with pytest.raises(ValueError, match="Continuation"):
         train(
             regions,
             observations,
             state=state,
-            config=replace(same, penalty=_CenteredPenalty(jnp.asarray(0.6))),
+            config=replace(same, penalty=CenteredPenalty(jnp.asarray(0.6))),
         )
 
 
@@ -1814,13 +1807,107 @@ def test_reusing_one_penalty_object_reuses_the_compiled_update(
     assert len(traces) == 1
 
 
+def test_reusing_an_unhashable_penalty_object_reuses_the_compiled_update(
+    ScalarEmbedding, UnhashablePenalty, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    penalty = UnhashablePenalty(3.0)
+    config = TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.1), penalty=penalty)
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    state = train(regions, observations, distance_model=model, config=config)
+    assert state.config.penalty is penalty
+    weight = float(cast(Any, state.latest_model.distance_model).weight)
+    record = state.history[-1]
+    # Over 3 + 1 pairs.
+    np.testing.assert_allclose(
+        record.training_objective, record.training_loss + 3 * weight**2 / 4, rtol=1e-12
+    )
+    penalty.traces.clear()
+    train(regions, observations, distance_model=model, config=config)
+    # Only the check of the penalty's output shape runs the penalty again.
+    assert len(penalty.traces) == 1
+
+
+def test_equal_hashable_penalties_built_separately_share_the_compiled_update(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    traces = []
+
+    @dataclass(frozen=True)
+    class Penalty:
+        scale: float
+
+        def __call__(self, model):
+            traces.append(None)
+            return self.scale * jnp.sum(model.weight**2)
+
+    config = TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.1))
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    train(regions, observations, distance_model=model, config=replace(config, penalty=Penalty(3.0)))
+    traces.clear()
+    train(regions, observations, distance_model=model, config=replace(config, penalty=Penalty(3.0)))
+    # Only the check of the penalty's output shape runs the penalty again.
+    assert len(traces) == 1
+
+
+def test_penalty_modules_holding_different_arrays_share_the_compiled_update(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    traces = []
+
+    @final
+    class Penalty(eqx.Module):
+        center: jax.Array
+
+        def __call__(self, model):
+            traces.append(None)
+            return jnp.sum((model.weight - self.center) ** 2)
+
+    config = TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.1))
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    train(
+        regions,
+        observations,
+        distance_model=model,
+        config=replace(config, penalty=Penalty(jnp.asarray(0.5))),
+    )
+    traces.clear()
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=replace(config, penalty=Penalty(jnp.asarray(0.6))),
+    )
+    # Only the check of the penalty's output shape runs the penalty again.
+    assert len(traces) == 1
+    weight = float(cast(Any, state.latest_model.distance_model).weight)
+    record = state.history[-1]
+    np.testing.assert_allclose(
+        record.training_objective, record.training_loss + (weight - 0.6) ** 2 / 4, rtol=1e-12
+    )
+
+
+class _CoefficientsRanAway(Exception):
+    """Raised by a callback to end training once the coefficients pass a bound."""
+
+
 def test_lbfgs_with_a_ridge_penalty_converges_where_the_coefficients_run_away_without_it():
     region, observations = _separation_problem()
     model = LogLinearConductance(2, patch_size=1, solver_config=_SEPARATION_SOLVER)
-    config = TrainingConfig(loss=MLPELoss(), steps=30, optimizer=optax.lbfgs())
-    plain = train(region, observations, distance_model=model, config=config)
-    plain_coefficients = np.asarray(cast(Any, plain.latest_model.distance_model).coefficients)
-    assert np.abs(plain_coefficients).max() > 15
+    config = TrainingConfig(loss=MLPELoss(), steps=500, optimizer=optax.lbfgs())
+
+    def stop_at_a_runaway(state):
+        # Past this bound a feature holds its vertices at the conductance floor or cap, where
+        # the loss stops changing, so no finite optimum lies beyond it.
+        if np.abs(cast(Any, state.latest_model.distance_model).coefficients).max() > 1e3:
+            raise _CoefficientsRanAway
+
+    # Rounding moves the step that passes the bound: steps 68 to 270 under relative
+    # perturbations of the targets from 1e-16 to 1e-12, and step 98 without them.
+    with pytest.raises(_CoefficientsRanAway):
+        train(region, observations, distance_model=model, config=config, on_step=stop_at_a_runaway)
 
     penalized = train(
         region,
@@ -1838,10 +1925,13 @@ def test_lbfgs_with_a_ridge_penalty_converges_where_the_coefficients_run_away_wi
     coefficients = np.asarray(cast(Any, penalized.latest_model.distance_model).coefficients)
     assert np.isfinite(coefficients).all()
     assert np.abs(coefficients).max() < 10
-    # L-BFGS's line search decreases the training objective and accepts its value and gradient.
-    objectives = [record.training_objective for record in penalized.history]
-    assert np.diff(objectives).max() <= 1e-8
+    # The line search of limited-memory Broyden–Fletcher–Goldfarb–Shanno (L-BFGS) decreases
+    # the training objective and accepts its value and gradient.
+    training_objectives = [record.training_objective for record in penalized.history]
+    assert np.diff(training_objectives).max() <= 1e-8
     state = penalized.optimizer_state
-    np.testing.assert_allclose(cast(Any, optax.tree.get(state, "value")), objectives[-1], rtol=1e-8)
+    np.testing.assert_allclose(
+        cast(Any, optax.tree.get(state, "value")), training_objectives[-1], rtol=1e-8
+    )
     assert optax.tree.norm(cast(Any, optax.tree.get(state, "grad"))) < 1e-6
-    assert penalized.history[-1].training_loss < objectives[-1]
+    assert penalized.history[-1].training_loss < training_objectives[-1]

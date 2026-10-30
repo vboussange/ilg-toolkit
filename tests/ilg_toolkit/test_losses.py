@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
@@ -105,19 +106,62 @@ def test_summed_value_gradient_through_predict_matches_central_differences(
     state = _trained(region, observations, WeightedEmbedding(jnp.asarray([0.3, -0.2])), loss)
     trained = state.latest_model.distance_model
 
-    def objective(distance_model):
+    def summed_loss(distance_model):
         distances = distance_model.predict(region, observations.observed_pairs).values
         return loss.summed_value(region, observations, distances, state.loss_state)
 
     def shifted(index, shift):
         weights = trained.log_weights.at[index].add(shift)
-        return objective(eqx.tree_at(lambda model: model.log_weights, trained, weights))
+        return summed_loss(eqx.tree_at(lambda model: model.log_weights, trained, weights))
 
     step = 1e-6
     differences = [(shifted(i, step) - shifted(i, -step)) / (2 * step) for i in range(2)]
-    gradient = eqx.filter_grad(objective)(trained).log_weights
+    gradient = eqx.filter_grad(summed_loss)(trained).log_weights
     assert np.abs(gradient).min() > 1e-2
     np.testing.assert_allclose(gradient, differences, rtol=1e-7)
+
+
+def test_central_differences_of_the_summed_mlpe_gradient_match_second_differences_of_the_value(
+    WeightedEmbedding, embedding_problem
+):
+    region, observations = embedding_problem()
+    loss = MLPELoss()
+    state = _trained(region, observations, WeightedEmbedding(jnp.asarray([0.3, -0.2])), loss)
+    trained = state.latest_model.distance_model
+
+    @eqx.filter_jit
+    def value(log_weights):
+        distance_model = eqx.tree_at(lambda model: model.log_weights, trained, log_weights)
+        distances = distance_model.predict(region, observations.observed_pairs).values
+        return loss.summed_value(region, observations, distances, state.loss_state)
+
+    gradient = eqx.filter_jit(jax.grad(value))
+    start = trained.log_weights
+    basis = jnp.eye(2)
+    gradient_step = 1e-5
+    from_gradient = np.column_stack(
+        [
+            (gradient(start + gradient_step * unit) - gradient(start - gradient_step * unit))
+            / (2 * gradient_step)
+            for unit in basis
+        ]
+    )
+    value_step = 1e-4
+
+    def second_difference(first, second):
+        shift, other = value_step * first, value_step * second
+        return (
+            value(start + shift + other)
+            - value(start + shift - other)
+            - value(start - shift + other)
+            + value(start - shift - other)
+        ) / (4 * value_step**2)
+
+    from_value = np.asarray([[second_difference(a, b) for b in basis] for a in basis])
+    np.testing.assert_allclose(from_gradient, from_value, rtol=1e-6)
+    # Second-order automatic differentiation is conditional on the coefficients.
+    conditional = jax.jacfwd(gradient)(start)
+    assert np.abs(conditional - from_value).max() > 0.5 * np.abs(from_value).max()
 
 
 @both_losses
@@ -224,23 +268,20 @@ def test_summed_value_rejects_pairs_with_a_sampling_unit_of_another_species(
 
 
 @both_losses
-def test_summed_value_compiles_inside_a_penalized_objective(
-    loss, WeightedEmbedding, embedding_problem
-):
+def test_summed_value_plus_the_penalty_compiles(loss, WeightedEmbedding, embedding_problem):
     region, observations = embedding_problem()
     state = _trained(region, observations, WeightedEmbedding(jnp.asarray([0.3, -0.2])), loss)
     penalty = RidgePenalty(prior_sd=0.5, where=lambda model: model.log_weights)
 
-    def objective(distance_model):
+    def summed_loss_plus_penalty(distance_model):
         distances = distance_model.predict(region, observations.observed_pairs).values
         summed = loss.summed_value(region, observations, distances, state.loss_state)
         return summed + penalty(distance_model)
 
     trained = state.latest_model.distance_model
-    value, gradient = eqx.filter_value_and_grad(objective)(trained)
-    compiled_value, compiled_gradient = eqx.filter_jit(eqx.filter_value_and_grad(objective))(
-        trained
-    )
+    value_and_gradient = eqx.filter_value_and_grad(summed_loss_plus_penalty)
+    value, gradient = value_and_gradient(trained)
+    compiled_value, compiled_gradient = eqx.filter_jit(value_and_gradient)(trained)
     assert float(compiled_value) == pytest.approx(float(value), rel=1e-12)
     np.testing.assert_allclose(compiled_gradient.log_weights, gradient.log_weights, rtol=1e-10)
 

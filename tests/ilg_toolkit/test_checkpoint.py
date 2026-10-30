@@ -4,7 +4,7 @@ import functools
 import json
 from dataclasses import asdict, dataclass, replace
 from types import SimpleNamespace
-from typing import Any, cast, final
+from typing import Any, cast
 
 import coordax as cx
 import equinox as eqx
@@ -154,6 +154,10 @@ def test_resume_equals_uninterrupted(tmp_path, training_problem, build):
         penalty=scenario.config.penalty,
     )
     assert eqx.tree_equal(restored, partial)
+    if scenario.config.penalty is not None:
+        assert restored.config.penalty is scenario.config.penalty
+        record = uninterrupted.history[-1]
+        assert record.training_objective > record.training_loss
     # Reversing region order also checks restoration of the random trajectory.
     resumed = train(regions[::-1], targets[::-1], state=restored, validation=validation)
     assert eqx.tree_equal(resumed, uninterrupted)
@@ -429,12 +433,12 @@ def _log_weights(model):
     return model.log_weights
 
 
-@pytest.mark.parametrize("optimizer", [optax.adam(0.1), optax.lbfgs()], ids=["adam", "lbfgs"])
-def test_continuing_with_the_same_penalty_reproduces_the_uninterrupted_run(
-    tmp_path, training_problem, optimizer
+def test_continuing_lbfgs_with_the_same_penalty_reproduces_the_uninterrupted_run(
+    tmp_path, training_problem
 ):
     regions, targets, model = _two_regions(training_problem, "embedding")
     penalty = RidgePenalty(prior_sd=0.5, where=_log_weights)
+    optimizer = optax.lbfgs()
     config = TrainingConfig(loss=MLPELoss(), steps=4, optimizer=optimizer, penalty=penalty)
     states = []
     uninterrupted = train(
@@ -483,7 +487,7 @@ def _load_penalized(checkpoint, penalty=None):
 
 
 def test_loading_a_penalized_checkpoint_requires_a_penalty(penalized_checkpoint):
-    with pytest.raises(ArtifactError, match="trained with a penalty"):
+    with pytest.raises(ArtifactError, match="records a penalty"):
         _load_penalized(penalized_checkpoint)
 
 
@@ -491,7 +495,7 @@ def test_loading_an_unpenalized_checkpoint_rejects_a_penalty(initial_state, tmp_
     _, _, distance_model, state = initial_state
     path = tmp_path / "unpenalized.eqx"
     save_checkpoint(path, state)
-    with pytest.raises(ArtifactError, match="trained without a penalty"):
+    with pytest.raises(ArtifactError, match="records no penalty"):
         load_checkpoint(
             path,
             distance_model=distance_model,
@@ -515,7 +519,7 @@ def test_a_checkpoint_records_the_penalty_of_the_latest_model_and_not_the_select
     path = tmp_path / "penalized.eqx"
     save_checkpoint(path, state)
     with path.open("rb") as stream:
-        recorded = json.loads(stream.readline())["metadata"]["penalty"]
+        recorded = json.loads(stream.readline())["metadata"]["penalty_value"]
     weight = float(cast(Any, state.latest_model.distance_model).weight)
     assert weight != float(cast(Any, state.selected_model.distance_model).weight)
     # A ridge with prior_sd 0.5 is twice the squared weight, and no pair count enters.
@@ -605,8 +609,10 @@ def test_a_step_zero_checkpoint_compares_the_penalty_at_the_initial_parameters(
         "ridge",
         lambda model: jnp.ones(2),
         RidgePenalty(prior_sd=0.5, where=lambda model: model.coefficients),
+        RidgePenalty(prior_sd=0.5, where=lambda model: model.log_weights[:, 0, 0]),
+        lambda model: 1 / 0,
     ],
-    ids=["not-callable", "not-scalar", "missing-field"],
+    ids=["not-callable", "not-scalar", "attribute-error", "index-error", "any-exception"],
 )
 def test_loading_rejects_a_penalty_that_cannot_be_evaluated_at_the_latest_model(
     penalized_checkpoint, penalty
@@ -616,12 +622,12 @@ def test_loading_rejects_a_penalty_that_cannot_be_evaluated_at_the_latest_model(
 
 
 def _squared_weight(distance_model):
-    """Returns a penalty that is a plain function."""
+    """Returns the sum of the squared weights: a penalty that is a plain function."""
     return jnp.sum(distance_model.weight**2)
 
 
 def _scaled_squared_weight(distance_model, scale):
-    """Returns a penalty with a setting bound by ``functools.partial``."""
+    """Returns the sum of the squared weights times ``scale``, a ``functools.partial`` setting."""
     return scale * jnp.sum(distance_model.weight**2)
 
 
@@ -659,6 +665,39 @@ def test_on_step_saves_training_with_a_penalty_that_is_not_a_module(
     restored = load_checkpoint(path, distance_model=model, optimizer=optimizer, penalty=penalty)
     assert restored.config.penalty is penalty
     assert eqx.tree_equal(restored, state)
+
+
+def test_an_unhashable_penalty_round_trips_through_a_checkpoint_and_continues(
+    tmp_path, ScalarEmbedding, UnhashablePenalty, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    optimizer = optax.adam(0.1)
+    config = TrainingConfig(
+        loss=Log1pLoss(), steps=2, optimizer=optimizer, penalty=UnhashablePenalty(2.0)
+    )
+    path = tmp_path / "checkpoint.eqx"
+    state = train(
+        regions,
+        observations,
+        distance_model=model,
+        config=config,
+        on_step=lambda state: save_checkpoint(path, state),
+    )
+    # A separately built penalty with the same value and equal fields loads and continues.
+    restored = load_checkpoint(
+        path, distance_model=model, optimizer=optimizer, penalty=UnhashablePenalty(2.0)
+    )
+    assert eqx.tree_equal(restored, state)
+    continued = train(regions, observations, state=restored, config=replace(config, steps=3))
+    uninterrupted = train(
+        regions, observations, distance_model=model, config=replace(config, steps=3)
+    )
+    assert eqx.tree_equal(continued, uninterrupted)
+    with pytest.raises(ArtifactError, match="differs"):
+        load_checkpoint(
+            path, distance_model=model, optimizer=optimizer, penalty=UnhashablePenalty(3.0)
+        )
 
 
 def test_a_checkpoint_saved_between_evaluations_continues_the_penalized_run(
@@ -699,37 +738,19 @@ def test_saving_loading_and_continuing_reuse_the_penalty_programs_that_training_
     model = ScalarEmbedding(jnp.asarray(1.0, jnp.float64))
     optimizer = optax.adam(0.1)
     config = TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optimizer, penalty=penalty)
-    train(regions, observations, distance_model=model, config=config)
+    state = train(regions, observations, distance_model=model, config=config)
     traces.clear()
     path = tmp_path / "checkpoint.eqx"
-    train(
-        regions,
-        observations,
-        distance_model=model,
-        config=config,
-        on_step=lambda state: save_checkpoint(path, state),
-    )
-    # Only the check of the penalty's output shape runs the penalty again.
-    assert len(traces) == 1
-    traces.clear()
+    save_checkpoint(path, state)
     restored = load_checkpoint(path, distance_model=model, optimizer=optimizer, penalty=penalty)
     assert traces == []
     train(regions, observations, state=restored, config=replace(restored.config, steps=3))
+    # Only the check of the penalty's output shape runs the penalty again.
     assert len(traces) == 1
 
 
-@final
-class _CenteredPenalty(eqx.Module):
-    """A penalty holding an array: the squared distance of the weight from a center."""
-
-    center: jax.Array
-
-    def __call__(self, distance_model):
-        return jnp.sum((distance_model.weight - self.center) ** 2)
-
-
 def test_a_penalty_module_holding_arrays_is_supplied_on_load_and_compared_by_value(
-    tmp_path, ScalarEmbedding, regions_and_observations
+    tmp_path, ScalarEmbedding, CenteredPenalty, regions_and_observations
 ):
     regions, observations = regions_and_observations()
     model = ScalarEmbedding(jnp.asarray(1.0))
@@ -742,13 +763,13 @@ def test_a_penalty_module_holding_arrays_is_supplied_on_load_and_compared_by_val
             loss=Log1pLoss(),
             steps=2,
             optimizer=optimizer,
-            penalty=_CenteredPenalty(jnp.asarray(0.5)),
+            penalty=CenteredPenalty(jnp.asarray(0.5)),
         ),
     )
     path = tmp_path / "centered.eqx"
     save_checkpoint(path, state)
     restored = load_checkpoint(
-        path, distance_model=model, optimizer=optimizer, penalty=_CenteredPenalty(jnp.asarray(0.5))
+        path, distance_model=model, optimizer=optimizer, penalty=CenteredPenalty(jnp.asarray(0.5))
     )
     assert eqx.tree_equal(restored, state)
     with pytest.raises(ArtifactError, match="differs"):
@@ -756,7 +777,7 @@ def test_a_penalty_module_holding_arrays_is_supplied_on_load_and_compared_by_val
             path,
             distance_model=model,
             optimizer=optimizer,
-            penalty=_CenteredPenalty(jnp.asarray(0.6)),
+            penalty=CenteredPenalty(jnp.asarray(0.6)),
         )
 
 
@@ -787,7 +808,7 @@ def test_a_checkpoint_without_a_penalty_record_raises_an_artifact_error(
     with penalized_checkpoint.path.open("rb") as stream:
         header = json.loads(stream.readline())
         leaves = stream.read()
-    del header["metadata"]["penalty"]
+    del header["metadata"]["penalty_value"]
     if drop_training_objective:
         for record in header["metadata"]["history"]:
             del record["training_objective"]

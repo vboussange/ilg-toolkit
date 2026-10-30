@@ -1,10 +1,8 @@
 """Losses: statistical criteria of region–species groups and their numerical settings."""
 
-import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
-from numbers import Real
 from typing import Any, final, TYPE_CHECKING
 
 import equinox as eqx
@@ -12,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._checks import _positive_integer, _require_float64
+from ._checks import _is_finite_real, _positive_integer, _require_float64
 from ._training_utils import _RegionSpeciesKey
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 
@@ -104,7 +102,10 @@ class AbstractLoss(ABC):
         The value is differentiable with respect to ``distances`` and compiles with
         ``eqx.filter_jit``. ``MLPELoss`` holds its generalized least squares
         coefficients fixed under differentiation: first derivatives are those of the
-        profiled likelihood, and second derivatives are conditional on the coefficients.
+        profiled likelihood, ``jax.hessian`` and similar second-order automatic
+        differentiation are conditional on the coefficients, and central finite
+        differences of the gradient give the second derivatives of the profiled
+        likelihood.
 
         Args:
             region: Region batch holding the observed sampling units. In a region batch
@@ -131,14 +132,16 @@ class AbstractLoss(ABC):
             RuntimeError: If float64 is disabled.
 
         Examples:
-            The penalized objective of one region–species group, and its gradient at the
-            distance model that ``train`` returns:
+            The summed loss plus the penalty of one region–species group, which is the
+            number of pairs times the training objective, and its gradient at the distance
+            model that ``train`` returns:
 
-            >>> def objective(distance_model):
+            >>> def summed_loss_plus_penalty(distance_model):
             ...     distances = distance_model.predict(region, observations.observed_pairs).values
             ...     summed = loss.summed_value(region, observations, distances, state.loss_state)
             ...     return summed + penalty(distance_model)
-            >>> gradient = eqx.filter_grad(objective)(state.latest_model.distance_model)
+            >>> model = state.latest_model.distance_model
+            >>> gradient = eqx.filter_grad(summed_loss_plus_penalty)(model)
         """
         from .models.base import _region_for_species
 
@@ -344,7 +347,7 @@ class MLPELoss(AbstractLoss):
     def __post_init__(self):
         for name in ("variance_floor", "min_distance_scale", "jitter"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+            if not _is_finite_real(value):
                 raise ValueError(f"{name} must be finite and numeric")
             value = float(value)
             if name == "jitter":

@@ -1,14 +1,13 @@
 """Training configuration and effective-resistance solver settings."""
 
-import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any
 
 import optax
 
-from ._checks import _positive_integer
+from ._checks import _is_finite_real, _positive_integer
 from .losses import AbstractLoss
 
 
@@ -39,12 +38,7 @@ class ResistanceSolverConfig:
 
     def __post_init__(self):
         for name, value in (("rtol", self.rtol), ("atol", self.atol)):
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, Real)
-                or not math.isfinite(value)
-                or value < 0
-            ):
+            if not _is_finite_real(value) or value < 0:
                 raise ValueError(f"solver {name} must be finite and nonnegative")
             object.__setattr__(self, name, float(value))
         if self.rtol == 0 and self.atol == 0:
@@ -79,7 +73,8 @@ class TrainingConfig:
     equality covers the penalty: two separately written functions compare unequal,
     and ``dataclasses.replace(config, steps=...)`` keeps the same object. Training
     compiles its update for each penalty object, so reusing one penalty object across
-    folds, runs and checkpoint loads reuses the compiled update.
+    folds, runs and checkpoint loads reuses the compiled update. Changing a penalty
+    object's attributes after its first use does not change the compiled update.
 
     Args:
         loss: Loss of every region–species group.
@@ -140,12 +135,7 @@ class TrainingConfig:
         if not isinstance(self.optimizer, optax.GradientTransformation):
             raise ValueError("optimizer must be an optax.GradientTransformation")
         if self.gradient_tolerance is not None:
-            if (
-                isinstance(self.gradient_tolerance, bool)
-                or not isinstance(self.gradient_tolerance, Real)
-                or not math.isfinite(self.gradient_tolerance)
-                or self.gradient_tolerance < 0
-            ):
+            if not _is_finite_real(self.gradient_tolerance) or self.gradient_tolerance < 0:
                 raise ValueError("gradient_tolerance must be finite and nonnegative, or None")
             object.__setattr__(self, "gradient_tolerance", float(self.gradient_tolerance))
         if self.penalty is not None and not callable(self.penalty):

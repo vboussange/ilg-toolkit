@@ -1,9 +1,19 @@
 """Argument checks shared by the public constructors and entry points."""
 
-from numbers import Integral
+import math
+from numbers import Integral, Real
 from typing import Literal, overload
 
 import jax
+
+
+def _is_finite_real(value: object) -> bool:
+    """Returns whether ``value`` is a finite real number; booleans are not.
+
+    Args:
+        value: Value to check.
+    """
+    return not isinstance(value, bool) and isinstance(value, Real) and math.isfinite(value)
 
 
 @overload

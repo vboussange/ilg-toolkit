@@ -211,10 +211,11 @@ distance-model parameters, without the additive constant.
 _Paper_: none.
 
 **Training objective**:
-The value that training minimizes: the aggregate loss plus the penalty divided by
-the number of training pairs across all training region–species groups. Without a
-penalty it equals the aggregate loss. Validation losses, model selection, calibration
-heads and genetic predictions exclude the penalty.
+The value that training minimizes: the aggregate loss, which averages the losses of
+region–species groups over regions within each species and then over species, plus the
+penalty divided by the number of training pairs across all training region–species
+groups. Without a penalty it equals the aggregate loss. Validation losses, model
+selection, calibration heads and genetic predictions exclude the penalty.
 _Paper_: none; the paper's objective is the loss.
 _Avoid_: Penalized loss; objective, without a qualifier.
 

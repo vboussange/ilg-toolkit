@@ -3,8 +3,6 @@
 from dataclasses import replace
 from typing import Any
 
-import equinox as eqx
-import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
@@ -122,12 +120,15 @@ def test_configuration_equality_covers_the_penalty():
     )
 
 
-def test_configuration_stays_hashable_with_a_penalty_holding_arrays():
-    class _Centered(eqx.Module):
-        center: jax.Array
+def test_configuration_equality_compares_an_unhashable_penalty_by_its_own_equality(
+    UnhashablePenalty,
+):
+    config = TrainingConfig(loss=Log1pLoss(), penalty=UnhashablePenalty(1.0))
+    assert config == TrainingConfig(loss=Log1pLoss(), penalty=UnhashablePenalty(1.0))
+    assert config != TrainingConfig(loss=Log1pLoss(), penalty=UnhashablePenalty(2.0))
+    assert hash(config) == hash(TrainingConfig(loss=Log1pLoss()))
 
-        def __call__(self, distance_model):
-            return jnp.sum((distance_model.coefficients - self.center) ** 2)
 
-    config = TrainingConfig(loss=Log1pLoss(), penalty=_Centered(jnp.ones(2)))
+def test_configuration_stays_hashable_with_a_penalty_holding_arrays(CenteredPenalty):
+    config = TrainingConfig(loss=Log1pLoss(), penalty=CenteredPenalty(jnp.ones(2)))
     assert hash(config) == hash(TrainingConfig(loss=Log1pLoss()))

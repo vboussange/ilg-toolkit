@@ -258,7 +258,7 @@ class _Contribution(NamedTuple):
     loss_weight: jax.Array
 
 
-def _microbatch_objective(parameters, contributions, loss, context, key):
+def _microbatch_loss(parameters, contributions, loss, context, key):
     """Returns the weighted loss of a species microbatch within one region."""
     model, latent, states = parameters
     configured = _training_model(model, key)
@@ -273,7 +273,7 @@ def _microbatch_objective(parameters, contributions, loss, context, key):
     )
 
 
-_microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_objective))
+_microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_loss))
 
 
 def _regional_gradient(parameters, contributions, groups, config, context, key):
@@ -319,6 +319,38 @@ _penalty_gradient = eqx.filter_jit(eqx.filter_grad(_penalty_term))
 _compiled_penalty_term = eqx.filter_jit(_penalty_term)
 
 
+@final
+@dataclass(frozen=True, eq=False)
+class _KeyedByIdentity:
+    """A penalty that compiled programs key by the identity of the wrapped object."""
+
+    penalty: Callable[[Any], Any]
+
+    def __call__(self, distance_model: AbstractDistanceModel) -> Any:
+        return self.penalty(distance_model)
+
+    def __hash__(self) -> int:
+        return id(self.penalty)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _KeyedByIdentity) and self.penalty is other.penalty
+
+
+def _compilable_penalty(penalty: Callable[[Any], Any] | None) -> Callable[[Any], Any] | None:
+    """Returns the penalty in the form that compiled programs take as an argument.
+
+    Compiled programs trace a penalty's arrays and key on the hash of everything else.
+    A penalty with an unhashable part is wrapped, and they key on its identity instead.
+    """
+    if penalty is None:
+        return None
+    try:
+        hash(tuple(leaf for leaf in jax.tree.leaves(penalty) if not eqx.is_array(leaf)))
+    except TypeError:
+        return _KeyedByIdentity(penalty)
+    return penalty
+
+
 def _check_penalty(penalty, distance_model) -> None:
     """Raises a ``ValueError`` unless the penalty of the distance model is a real scalar."""
     output = eqx.filter_eval_shape(penalty, distance_model)
@@ -355,8 +387,8 @@ class _TrainingObjective(eqx.Module):
     """One update's training objective as a function of the parameters.
 
     It evaluates the same regions, species and random keys as the update's gradient:
-    one deterministic objective within an update. It holds every training group and
-    skips the groups not sampled for the update, which carry zero weight; its
+    one deterministic training objective within an update. It holds every training
+    group and skips the groups not sampled for the update, which carry zero weight; its
     structure and the compiled update stay fixed across updates. The penalty enters
     once, whichever groups the update samples.
     """
@@ -376,7 +408,7 @@ class _TrainingObjective(eqx.Module):
             states = (self.loss._group_state(loss_state, group),)
             return cast(
                 jax.Array,
-                _microbatch_objective(
+                _microbatch_loss(
                     (model, latent, states),
                     (item,),
                     self.loss,
@@ -477,18 +509,18 @@ def _apply_update(
     optimizer: optax.GradientTransformation,
     optimizer_state: optax.OptState,
     gradient: _Parameters,
-    objective: _TrainingObjective,
+    training_objective: _TrainingObjective,
 ) -> tuple[_Parameters, optax.OptState]:
-    """Applies one optimizer update, passing the objective's value, gradient and function.
+    """Applies one optimizer update with the training objective's value, gradient and function.
 
     The gradient comes from the regional and microbatch programs, and the value from
-    the objective that line searches evaluate. XLA removes the value when the
+    the training objective that line searches evaluate. XLA removes the value when the
     optimizer ignores it.
     """
     trainable, fixed = eqx.partition(parameters, eqx.is_inexact_array)
 
     def value_fn(candidate):
-        return objective(eqx.combine(candidate, fixed))
+        return training_objective(eqx.combine(candidate, fixed))
 
     value = value_fn(trainable)
     # Optax accepts registered Equinox pytrees; its array-container alias omits Modules.
@@ -671,15 +703,6 @@ def train[DistanceModel: AbstractDistanceModel](
         >>> state.converged
         True
 
-        A ridge penalty on the coefficients of a log-linear patch encoder enters
-        ``training_objective``, and ``training_loss`` excludes it:
-
-        >>> penalty = RidgePenalty(prior_sd=1.5, where=lambda model: model.coefficients)
-        >>> config = TrainingConfig(loss=MLPELoss(), optimizer=optax.lbfgs(), penalty=penalty)
-        >>> state = train(region, observations, distance_model=distance_model, config=config)
-        >>> state.history[-1].training_loss
-        >>> state.history[-1].training_objective
-
         Zero steps initializes the statistical parameters and fits the coefficients
         at those parameters; ``fit_calibration_head`` optimizes a calibration head
         for a frozen distance model. Validation uses the coefficients and distance
@@ -705,6 +728,7 @@ def train[DistanceModel: AbstractDistanceModel](
     _reject_stateful_layers(distance_model)
     if config.penalty is not None:
         _check_penalty(config.penalty, distance_model)
+    penalty = _compilable_penalty(config.penalty)
     if on_step is not None and not callable(on_step):
         raise ValueError("on_step must be callable or None")
     if state is not None:
@@ -872,14 +896,14 @@ def train[DistanceModel: AbstractDistanceModel](
                     )
                 )
             assert accumulated is not None
-            if config.penalty is not None:
+            if penalty is not None:
                 model_gradient, state_gradient = accumulated
-                penalty_gradient = _penalty_gradient(parameters[0], config.penalty, pair_count)
+                penalty_gradient = _penalty_gradient(parameters[0], penalty, pair_count)
                 accumulated = (
                     jax.tree.map(lambda a, b: a + b, model_gradient, penalty_gradient),
                     state_gradient,
                 )
-            objective = _TrainingObjective(
+            training_objective = _TrainingObjective(
                 tuple(
                     tuple(
                         _Contribution(
@@ -893,7 +917,7 @@ def train[DistanceModel: AbstractDistanceModel](
                 ),
                 regional_contexts,
                 keys,
-                config.penalty,
+                penalty,
                 pair_count,
                 regional_groups,
                 config.loss,
@@ -901,13 +925,13 @@ def train[DistanceModel: AbstractDistanceModel](
             if config.gradient_tolerance is not None:
                 converged = float(_gradient_norm(accumulated)) <= config.gradient_tolerance
             parameters, optimizer_state = _apply_update(
-                parameters, config.optimizer, optimizer_state, accumulated, objective
+                parameters, config.optimizer, optimizer_state, accumulated, training_objective
             )
         if step == 0 or step % config.eval_every == 0 or step == config.steps or converged:
             training_loss, regional_training, calibrations, species_training = _evaluate_regions(
                 parameters, training_batches, config, step
             )
-            penalty_term = _evaluate_penalty(parameters[0], config.penalty, pair_count, step)
+            penalty_term = _evaluate_penalty(parameters[0], penalty, pair_count, step)
             validation_loss, regional_validation, _, species_validation = (
                 (None, {}, {}, None if len(_model_species(distance_model)) == 1 else {})
                 if not validation_batches
@@ -933,7 +957,6 @@ def train[DistanceModel: AbstractDistanceModel](
             _, _, current_calibrations, _ = _evaluate_regions(
                 parameters, training_batches, config, step
             )
-            _evaluate_penalty(parameters[0], config.penalty, pair_count, step)
             latest = make_model(current_calibrations)
         if on_step is not None:
             on_step(continuation())

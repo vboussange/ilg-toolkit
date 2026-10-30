@@ -4,7 +4,7 @@ import contextlib
 import itertools
 import re
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import final
 
@@ -513,6 +513,29 @@ class _ScalarEmbedding(EmbeddingDistanceModel):
 
 
 @final
+class _CenteredPenalty(eqx.Module):
+    """A penalty holding an array: the squared distance of the weight from a center."""
+
+    center: jax.Array
+
+    def __call__(self, distance_model):
+        return jnp.sum((distance_model.weight - self.center) ** 2)
+
+
+@final
+@dataclass
+class _UnhashablePenalty:
+    """A penalty that is a non-frozen dataclass, which has no hash; it records its traces."""
+
+    scale: float
+    traces: list = field(default_factory=list, compare=False)
+
+    def __call__(self, distance_model):
+        self.traces.append(None)
+        return self.scale * jnp.sum(distance_model.weight**2)
+
+
+@final
 class _SharedParameterEmbedding(EmbeddingDistanceModel):
     weights: jax.Array
     species: tuple[str, ...] = eqx.field(static=True)
@@ -829,6 +852,16 @@ def feature_conductance_fixture():
 @pytest.fixture(name="ScalarEmbedding", scope="session")
 def scalar_embedding_fixture():
     return _ScalarEmbedding
+
+
+@pytest.fixture(name="CenteredPenalty", scope="session")
+def centered_penalty_fixture():
+    return _CenteredPenalty
+
+
+@pytest.fixture(name="UnhashablePenalty", scope="session")
+def unhashable_penalty_fixture():
+    return _UnhashablePenalty
 
 
 @pytest.fixture(name="SharedParameterEmbedding", scope="session")

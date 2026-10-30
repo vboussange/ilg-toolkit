@@ -25,6 +25,7 @@ from .persistence import (
     ArtifactError,
 )
 from .training import (
+    _compilable_penalty,
     _compiled_penalty_term,
     _optimizer_state_signature,
     _validate_state,
@@ -40,7 +41,9 @@ def _penalty_at_latest_model(state: TrainingState) -> float | None:
     # A pair count of one gives the penalty itself from the program that training compiled.
     return float(
         _compiled_penalty_term(
-            state.latest_model.distance_model, state.config.penalty, jnp.ones((), jnp.float64)
+            state.latest_model.distance_model,
+            _compilable_penalty(state.config.penalty),
+            jnp.ones((), jnp.float64),
         )
     )
 
@@ -79,7 +82,7 @@ def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
         >>> continued = train(region, observations, state=restored,
         ...                   config=dataclasses.replace(restored.config, steps=1000))
 
-        A state trained with a penalty takes the same penalty on load:
+        A checkpoint that records a penalty takes the same penalty on load:
 
         >>> restored = load_checkpoint(
         ...     "training.eqx", distance_model=template, optimizer=optimizer, penalty=penalty
@@ -98,7 +101,7 @@ def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
         "config": options,
         "optimizer_state": _optimizer_state_signature(state.optimizer_state),
         "loss_state": state.config.loss._state_metadata(state.loss_state),
-        "penalty": _penalty_at_latest_model(state),
+        "penalty_value": _penalty_at_latest_model(state),
         "history": [asdict(record) for record in state.history],
         "training_groups": state.training_groups,
         "validation_groups": state.validation_groups,
@@ -123,8 +126,8 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
     functions). The optimizer rebuilds the optimizer-state template, whose state
     types, leaf paths, shapes and dtypes match the saved optimizer state, and becomes
     the optimizer of the restored training configuration. The penalty becomes the
-    penalty of the restored training configuration: a checkpoint trained with a
-    penalty requires one, a checkpoint trained without a penalty rejects one, and
+    penalty of the restored training configuration: a checkpoint that records a
+    penalty requires one, a checkpoint that records no penalty rejects one, and
     the penalty's value at the latest model must match the value that
     [`save_checkpoint`][ilg_toolkit.save_checkpoint] recorded, at a relative tolerance
     of 1e-9. Continuing with the original inputs, penalty, validation arguments,
@@ -139,8 +142,8 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
         optimizer: Optax optimizer whose state matches the saved optimizer state,
             such as the optimizer the checkpoint was trained with.
         penalty: Callable of the distance model returning a scalar, with the value
-            of the penalty the checkpoint was trained with; ``None`` for a checkpoint
-            trained without a penalty.
+            that the checkpoint records; ``None`` for a checkpoint that records no
+            penalty.
 
     Returns:
         The saved training state.
@@ -155,16 +158,14 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
     try:
         with Path(path).open("rb") as stream:
             metadata, weak_leaves = _read_header(stream, kind="training_checkpoint")
-            if "penalty" not in metadata:
+            if "penalty_value" not in metadata:
+                raise ArtifactError("The checkpoint has no penalty record")
+            recorded_value = metadata["penalty_value"]
+            if (recorded_value is None) != (penalty is None):
                 raise ArtifactError(
-                    "The checkpoint has no penalty record, so this toolkit version cannot load it"
-                )
-            recorded_penalty = metadata["penalty"]
-            if (recorded_penalty is None) != (penalty is None):
-                raise ArtifactError(
-                    "The checkpoint was trained with a penalty; supply the same penalty"
+                    "The checkpoint records a penalty; supply the same penalty"
                     if penalty is None
-                    else "The checkpoint was trained without a penalty; omit penalty"
+                    else "The checkpoint records no penalty; omit penalty"
                 )
             options = dict(metadata["config"])
             options["loss"] = _loss_from_metadata(options["loss"])
@@ -201,15 +202,19 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
             )
             state = _read_native(stream, template, weak_leaves)
             _validate_state(state)
-            value = _penalty_at_latest_model(state)
-            if value is not None and not math.isclose(value, recorded_penalty, rel_tol=1e-9):
+            try:
+                value = _penalty_at_latest_model(state)
+            except Exception as error:
+                raise ArtifactError(
+                    f"The supplied penalty cannot be evaluated at the latest model: {error}"
+                ) from error
+            if value is not None and not math.isclose(value, recorded_value, rel_tol=1e-9):
                 raise ArtifactError(
                     f"The supplied penalty's value at the latest model, {value}, differs from "
-                    f"the checkpoint's recorded value, {recorded_penalty}; supply the penalty "
-                    "the checkpoint was trained with"
+                    f"the checkpoint's recorded value, {recorded_value}; supply the same penalty"
                 )
             return state
-    except (AttributeError, KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:
+    except (KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:
         if isinstance(error, ArtifactError):
             raise
         raise ArtifactError(
