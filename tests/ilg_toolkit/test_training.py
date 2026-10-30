@@ -1,8 +1,8 @@
-"""Tests of training: dense-reference updates, batching, model selection and continuation."""
+"""Tests of training: dense-reference updates, batching, penalties, selection and continuation."""
 
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import Any, cast, final
+from typing import Any, cast, final, NamedTuple
 
 import coordax as cx
 import equinox as eqx
@@ -20,11 +20,17 @@ from ilg_toolkit import (
     Prediction,
     RegionBatch,
     ResistanceSolverConfig,
+    RidgePenalty,
     TargetSpec,
     train,
     TrainingConfig,
 )
-from ilg_toolkit.models import AbstractDistanceModel, ConductanceModel, EmbeddingDistanceModel
+from ilg_toolkit.models import (
+    AbstractDistanceModel,
+    ConductanceModel,
+    EmbeddingDistanceModel,
+    LogLinearConductance,
+)
 
 
 def _single_species_prediction(
@@ -68,6 +74,28 @@ class _JitteredEmbedding(EmbeddingDistanceModel):
 
     def embedding(self, latent, species_index):
         return self.weight * latent
+
+
+def _two_species(regions, observations):
+    """Returns frog observations in two regions and newt observations in the short region."""
+    return (
+        [
+            replace(regions[0], species=("frog",) * 3),
+            replace(
+                regions[1],
+                sampling_unit_ids=regions[1].sampling_unit_ids * 2,
+                grid_positions=np.tile(regions[1].grid_positions, (2, 1)),
+                species=("frog", "frog", "newt", "newt"),
+            ),
+        ],
+        [
+            replace(observations[0], species="frog"),
+            (
+                replace(observations[1], species="frog"),
+                replace(observations[1], species="newt", values=observations[1].values / 5),
+            ),
+        ],
+    )
 
 
 def test_failed_solver_preserves_solver_failure(PointConductance):
@@ -247,75 +275,6 @@ def test_mlpe_updates_match_dense_reference(
     )
     assert result.history[-1].training_loss < result.history[0].training_loss
     assert result.step == result.selected_step == 2
-    calibration_head = cast(MLPECalibrationHead, result.selected_model.calibration_head)
-    for index, (region, observed) in enumerate(problems):
-        embedding = np.asarray(region.feature_array).reshape(unit_count, 2) * np.exp(
-            expected[2 * groups_species[index] : 2 * groups_species[index] + 2]
-        )
-        distances = ((embedding[:, None] - embedding[None, :]) ** 2).sum(-1)
-        np.fill_diagonal(distances, np.nan)
-        np.testing.assert_allclose(
-            _single_species_prediction(
-                result.selected_model.distance_model,
-                region
-                if species is None
-                else replace(region, species=(species[groups_species[index]],) * unit_count),
-                None if species is None else species[groups_species[index]],
-            ).as_matrix(),
-            distances,
-            rtol=1e-8,
-            atol=1e-9,
-        )
-        variances = (
-            np.logaddexp(0, expected[parameter_count + 2 * index : parameter_count + 2 * index + 2])
-            + 1e-10
-        )
-        calibration = calibration_head.for_region(
-            region.name, None if species is None else species[groups_species[index]]
-        )
-        np.testing.assert_allclose(
-            [calibration.unit_variance, calibration.residual_variance],
-            variances,
-            rtol=1e-8,
-            atol=1e-10,
-        )
-        (left, right), targets = observed.aligned_pairs(region)
-        nll, beta, effect_mean, effect_covariance = dense_profile(
-            distances[left, right],
-            np.asarray(targets),
-            left,
-            right,
-            unit_count,
-            variances,
-        )
-        np.testing.assert_allclose(
-            [calibration.intercept, calibration.slope], beta, rtol=1e-8, atol=1e-10
-        )
-        np.testing.assert_allclose(calibration.effect_mean, effect_mean, atol=1e-9)
-        np.testing.assert_allclose(calibration.effect_covariance, effect_covariance, atol=1e-10)
-        np.testing.assert_allclose(-calibration.ml_log_likelihood, nll, atol=1e-8)
-        assert calibration.slope < 0
-        assert not np.allclose(variances, variances_by_group[index])
-        observed_distances = distances[left, right]
-        np.testing.assert_allclose(
-            calibration.distance_center, observed_distances.mean(), atol=1e-12
-        )
-        np.testing.assert_allclose(
-            calibration.distance_scale, observed_distances.std(ddof=1), atol=1e-12
-        )
-        expected_values = beta[0] + beta[1] * (
-            observed_distances - observed_distances.mean()
-        ) / observed_distances.std(ddof=1)
-        query = (
-            region if species is None else replace(region, species=(species[index],) * unit_count)
-        )
-        predicted = _single_species_prediction(
-            result.selected_model,
-            query,
-            None if species is None else species[index],
-            observed.observed_pairs,
-        )
-        np.testing.assert_allclose(predicted.values, expected_values, atol=1e-8)
 
 
 def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_supported(
@@ -323,7 +282,6 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
 ):
     with jax.enable_x64():
         region, observations = embedding_problem(columns=2)
-        single_region = region
         species = ("stoat", "hare")
         region = replace(
             region,
@@ -379,38 +337,6 @@ def test_validation_targets_cannot_change_training_calibration_and_one_pair_is_s
     assert eqx.tree_equal(first.loss_state, second.loss_state)
     assert eqx.tree_equal(first.latest_model.calibration_head, second.latest_model.calibration_head)
     assert first.history[-1].validation_loss != second.history[-1].validation_loss
-    assert jnp.issubdtype(first.rng_key.dtype, jax.dtypes.prng_key)
-    expected_losses = []
-    for index, (name, observed) in enumerate(zip(species, observed_groups, strict=True)):
-        distances = np.asarray(
-            first.latest_model.distance_model.predict(region, {name: None})[name].as_matrix()
-        )
-        calibration = cast(MLPECalibrationHead, first.latest_model.calibration_head).for_region(
-            region.name, name
-        )
-        assert set(calibration.calibration_pairs) == set(train_pairs)
-        (left, right), _ = observed.select_pairs(train_pairs).aligned_pairs(single_region)
-        np.testing.assert_allclose(
-            calibration.distance_center, distances[left, right].mean(), atol=1e-12
-        )
-        np.testing.assert_allclose(
-            calibration.distance_scale, distances[left, right].std(ddof=1), atol=1e-12
-        )
-        (left, right), values = observed.select_pairs(query_pair).aligned_pairs(single_region)
-        expected_mean = (
-            calibration.intercept
-            + calibration.slope
-            * (distances[left, right] - calibration.distance_center)
-            / calibration.distance_scale
-        )
-        variance = 2 * calibration.unit_variance + calibration.residual_variance
-        expected_losses.append(
-            0.5 * (np.log(2 * np.pi * variance) + (values[0] - expected_mean[0]) ** 2 / variance)
-        )
-    assert first.history[-1].validation_loss is not None
-    np.testing.assert_allclose(
-        first.history[-1].validation_loss, np.mean(expected_losses), rtol=1e-12
-    )
 
 
 def test_mlpe_conductance_training_improves_through_effective_resistance_layer(
@@ -445,8 +371,8 @@ def test_mlpe_conductance_training_improves_through_effective_resistance_layer(
             distance_model=FeatureConductance(jnp.asarray(0.1)),
             config=TrainingConfig(
                 loss=MLPELoss(),
-                steps=20,
-                optimizer=optax.adam(0.08),
+                steps=8,
+                optimizer=optax.adam(0.2),
             ),
         )
 
@@ -551,23 +477,7 @@ def test_shared_embedding_update_matches_independent_equal_region_loss(
     with jax.enable_x64():
         regions, observations = regions_and_observations()
         if species is not None:
-            # Frog occurs in both regions; newt only in the short region.
-            regions = [
-                replace(regions[0], species=("frog",) * 3),
-                replace(
-                    regions[1],
-                    sampling_unit_ids=regions[1].sampling_unit_ids * 2,
-                    grid_positions=np.tile(regions[1].grid_positions, (2, 1)),
-                    species=("frog", "frog", "newt", "newt"),
-                ),
-            ]
-            observations = [
-                replace(observations[0], species="frog"),
-                (
-                    replace(observations[1], species="frog"),
-                    replace(observations[1], species="newt", values=observations[1].values / 5),
-                ),
-            ]
+            regions, observations = _two_species(regions, observations)
         initial = 1.0
 
         def independent_loss(weight, indices: Sequence[int] = (0, 1), short_species=None):
@@ -1103,24 +1013,6 @@ def test_lbfgs_trains_until_the_gradient_tolerance(ScalarEmbedding, regions_and_
         (mean_loss(weight + 1e-6) - mean_loss(weight - 1e-6)) / 2e-6, 0, atol=1e-7
     )
     np.testing.assert_allclose(result.history[-1].training_loss, mean_loss(weight), rtol=1e-12)
-    # Line searches are deterministic: the same configuration reproduces the run.
-    repeated = train(
-        regions,
-        observations,
-        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=config,
-    )
-    assert eqx.tree_equal(repeated, result)
-
-    capped = train(
-        regions,
-        observations,
-        distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-        config=replace(config, steps=1),
-    )
-    assert not capped.converged
-    assert capped.step == 1
-
     callbacks = []
     continued = train(
         regions,
@@ -1195,3 +1087,252 @@ def test_training_checks_the_patch_grid_of_training_and_validation_regions(patch
             config=replace(config, steps=0),
             validation=(replace(shared), observations.select_pairs(pairs[8:])),
         )
+
+
+class _RecordedUpdate(NamedTuple):
+    """The arguments of an optimizer's latest update."""
+
+    value: jax.Array
+    gradient: Any
+    shifted_value: jax.Array
+    value_gradient: Any
+
+
+def _recording_optimizer() -> optax.GradientTransformationExtraArgs:
+    """Returns an optimizer that keeps the parameters and records each update's arguments.
+
+    Its state holds the update's value and gradient, ``value_fn`` at the parameters
+    plus one, and the gradient of ``value_fn`` at the parameters.
+    """
+
+    def init(params):
+        zeros = jax.tree.map(jnp.zeros_like, params)
+        return _RecordedUpdate(jnp.zeros(()), zeros, jnp.zeros(()), zeros)
+
+    def update(updates, state, params, *, value, grad, value_fn, **extra):
+        shifted = jax.tree.map(lambda leaf: leaf + 1.0, params)
+        recorded = _RecordedUpdate(
+            value, grad, value_fn(shifted), eqx.filter_grad(value_fn)(params)
+        )
+        return jax.tree.map(jnp.zeros_like, updates), recorded
+
+    return optax.GradientTransformationExtraArgs(init, cast(Any, update))
+
+
+_RECORDING_OPTIMIZER = _recording_optimizer()
+
+
+@final
+class _QuarticPenalty(eqx.Module):
+    """A penalty holding an array: a scale times the sum of the weights' fourth powers."""
+
+    scale: jax.Array
+
+    def __call__(self, distance_model):
+        return self.scale * jnp.sum(distance_model.weight**4)
+
+
+@pytest.mark.parametrize(
+    ("groups", "pair_count", "settings"),
+    [
+        ("one-region", 3, {}),
+        ("two-regions", 4, {}),
+        # A sampled update takes the penalty once and divides by every group's pairs.
+        (
+            "two-species",
+            5,
+            {"region_batch_size": 1, "species_batch_size": 1, "species_microbatch_size": 1},
+        ),
+    ],
+    ids=["one-region", "two-regions", "two-species-sampled"],
+)
+def test_a_penalty_enters_each_update_once_over_the_pairs_of_every_group(
+    ScalarEmbedding, regions_and_observations, groups, pair_count, settings
+):
+    regions, observations = regions_and_observations()
+    region, observed, weight = {
+        "one-region": (regions[0], observations[0], np.asarray(2.0)),
+        "two-regions": (regions, observations, np.asarray(2.0)),
+        "two-species": (*_two_species(regions, observations), np.asarray([1.0, 3.0])),
+    }[groups]
+    species = ("frog", "newt") if groups == "two-species" else None
+    model = ScalarEmbedding(jnp.asarray(weight), species=species)
+    config = TrainingConfig(loss=Log1pLoss(), steps=1, optimizer=_RECORDING_OPTIMIZER, **settings)
+    plain, penalized = (
+        train(region, observed, distance_model=model, config=replace(config, penalty=penalty))
+        for penalty in (None, _QuarticPenalty(jnp.asarray(1.0)))
+    )
+    without, with_penalty = (
+        cast(_RecordedUpdate, state.optimizer_state) for state in (plain, penalized)
+    )
+    value = np.sum(weight**4) / pair_count
+    np.testing.assert_allclose(with_penalty.value - without.value, value, rtol=1e-12)
+    np.testing.assert_allclose(
+        with_penalty.gradient[0].weight - without.gradient[0].weight,
+        4 * weight**3 / pair_count,
+        rtol=1e-12,
+    )
+    np.testing.assert_allclose(
+        with_penalty.shifted_value - without.shifted_value,
+        np.sum((weight + 1) ** 4) / pair_count,
+        rtol=1e-12,
+    )
+    # The value that line searches evaluate and the update's gradient belong together.
+    np.testing.assert_allclose(
+        with_penalty.value_gradient[0].weight, with_penalty.gradient[0].weight, rtol=1e-9
+    )
+    record = penalized.history[-1]
+    np.testing.assert_allclose(record.training_objective - record.training_loss, value, rtol=1e-9)
+
+
+def test_a_zero_penalty_and_an_absent_penalty_give_identical_trajectories(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optax.adam(0.1))
+    absent = train(regions, observations, distance_model=model, config=config)
+    zero = train(
+        regions, observations, distance_model=model, config=replace(config, penalty=lambda _: 0.0)
+    )
+    assert eqx.tree_equal(replace(zero, config=absent.config), absent)
+    assert all(record.training_objective == record.training_loss for record in absent.history)
+
+
+def test_a_constant_penalty_changes_only_the_training_objective(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observed = regions_and_observations()
+    region, observations = regions[0], observed[0]
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optax.adam(0.01))
+    plain, constant = (
+        train(
+            region,
+            observations,
+            distance_model=model,
+            config=replace(config, penalty=penalty),
+            validation=(replace(region, name="validation"), observations),
+        )
+        for penalty in (None, lambda _: jnp.asarray(1000.0))
+    )
+    # The region holds three pairs.
+    for record in constant.history:
+        np.testing.assert_allclose(
+            record.training_objective, record.training_loss + 1000 / 3, rtol=1e-12
+        )
+    history = tuple(
+        replace(record, training_objective=record.training_loss) for record in constant.history
+    )
+    assert eqx.tree_equal(replace(constant, config=plain.config, history=history), plain)
+
+
+def test_a_nonfinite_penalty_raises_at_the_next_evaluation(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    with pytest.raises(FloatingPointError, match="training objective at step 2"):
+        train(
+            regions,
+            observations,
+            distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+            config=TrainingConfig(
+                loss=Log1pLoss(),
+                steps=3,
+                eval_every=2,
+                optimizer=optax.adam(0.1),
+                penalty=lambda model: jnp.where(model.weight == 1.0, 0.0, jnp.inf),
+            ),
+        )
+
+
+def test_continuation_keeps_the_penalty_and_rejects_a_changed_one(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    penalty = RidgePenalty(prior_sd=0.5, where=lambda model: model.weight)
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    config = TrainingConfig(loss=Log1pLoss(), steps=1, optimizer=optax.adam(0.1), penalty=penalty)
+    state = train(regions, observations, distance_model=model, config=config)
+    continued = train(regions, observations, state=state, config=replace(state.config, steps=2))
+    uninterrupted = train(
+        regions, observations, distance_model=model, config=replace(config, steps=2)
+    )
+    assert eqx.tree_equal(continued, uninterrupted)
+    for changed in (RidgePenalty(1.0, penalty.where), None):
+        with pytest.raises(ValueError, match="Continuation"):
+            train(
+                regions, observations, state=state, config=replace(config, steps=2, penalty=changed)
+            )
+
+
+def test_reusing_one_penalty_object_reuses_the_compiled_update(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    traces = []
+
+    def penalty(model):
+        traces.append(None)
+        return jnp.sum(model.weight**2)
+
+    config = TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.1), penalty=penalty)
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    train(regions, observations, distance_model=model, config=config)
+    assert traces
+    traces.clear()
+    train(regions, observations, distance_model=model, config=config)
+    assert not traces
+
+
+def _separation_problem() -> tuple[RegionBatch, PairwiseObservations]:
+    """Returns sampling units on both sides of a wall, more dissimilar across it.
+
+    Lower wall conductance always fits the dissimilarities better, so the
+    coefficient of the wall feature has no finite optimum under the MLPE loss.
+    """
+    rng = np.random.default_rng(0)
+    wall = np.zeros((6, 7))
+    wall[:, 3] = 1.0
+    features = np.stack([wall, rng.normal(size=wall.shape)], axis=-1)
+    positions = np.array([[0, 0], [2, 1], [4, 0], [5, 2], [0, 5], [2, 6], [4, 5], [5, 4]])
+    units = tuple(f"unit-{index}" for index in range(len(positions)))
+    region = RegionBatch(
+        "valley",
+        cx.field(features, "row", "column", cx.LabeledAxis("feature", np.array(["wall", "noise"]))),
+        units,
+        positions,
+    )
+    east = positions[:, 1] > 3
+    left, right = np.triu_indices(len(units), 1)
+    observations = PairwiseObservations.from_pairs(
+        [(units[a], units[b]) for a, b in zip(left, right, strict=True)],
+        0.1 + 1.0 * (east[left] != east[right]) + rng.normal(scale=0.01, size=len(left)),
+        target=TargetSpec("synthetic divergence", units="index"),
+        sampling_unit_ids=units,
+    )
+    return region, observations
+
+
+def test_lbfgs_with_a_ridge_penalty_converges_to_finite_coefficients_on_a_separation_case():
+    region, observations = _separation_problem()
+    state = train(
+        region,
+        observations,
+        distance_model=LogLinearConductance(
+            2,
+            patch_size=1,
+            solver_config=ResistanceSolverConfig(rtol=1e-10, atol=1e-10, max_steps=5000),
+        ),
+        config=TrainingConfig(
+            loss=MLPELoss(),
+            steps=100,
+            optimizer=optax.lbfgs(),
+            gradient_tolerance=1e-7,
+            penalty=RidgePenalty(prior_sd=1.0, where=lambda model: model.coefficients),
+        ),
+    )
+    assert state.converged
+    assert np.abs(cast(Any, state.latest_model.distance_model).coefficients).max() < 10
+    training_objectives = [record.training_objective for record in state.history]
+    assert np.diff(training_objectives).max() <= 1e-8

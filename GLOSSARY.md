@@ -179,7 +179,7 @@ _Avoid_: Pooled backbone; distance model pooled across regions.
 Training one distance model per region, using only that region's genetic observations.
 
 **Training configuration**:
-The chosen loss, optimizer, joint optimization budget, optional gradient tolerance, and batching settings for training a distance model and its statistical parameters.
+The chosen loss, optimizer, joint optimization budget, optional gradient tolerance, optional penalty, and batching settings for training a distance model and its statistical parameters.
 _Avoid_: Calibration settings, when referring to the training budget.
 
 **Training**:
@@ -188,13 +188,36 @@ _Paper_: fit.
 _Avoid_: Fitting, when naming this optimization workflow.
 
 **Checkpoint**:
-A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, convergence, and selected model, for continuing training. The optimizer itself is not saved; it is supplied when loading, like the distance-model template.
+A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, convergence, and selected model, for continuing training. The optimizer and the penalty are not saved; each is supplied when loading, like the distance-model template.
 _Paper_: none.
 
 **Loss**:
 A statistical criterion relating a region–species group's ecological distances to its genetic observations, together with the criterion's numerical settings.
 _Paper_: objective.
 _Avoid_: Objective name, when referring to the criterion and its settings.
+
+**Summed loss**:
+The loss of one region–species group times its number of pairs
+(`AbstractLoss.sum_over_pairs`): the MLPE negative log likelihood for the MLPE loss, and
+the sum of squared differences for the log1p loss. For one region–species group, the
+summed loss plus the penalty is the number of pairs times the training objective.
+_Paper_: none.
+
+**Penalty**:
+A scalar function of a distance model added to the training objective
+(`TrainingConfig.penalty`), such as a prior's negative log density. A ridge penalty
+(`RidgePenalty`) is the negative log density of a zero-mean Gaussian on selected
+distance-model parameters, without the additive constant.
+_Paper_: none.
+
+**Training objective**:
+The value that training minimizes: the aggregate loss, which averages the losses of
+region–species groups over regions within each species and then over species, plus the
+penalty divided by the number of training pairs across all training region–species
+groups. Without a penalty it equals the aggregate loss. Validation losses, model
+selection, calibration heads and genetic predictions exclude the penalty.
+_Paper_: none; the paper's objective is the loss.
+_Avoid_: Penalized loss; objective, without a qualifier.
 
 **Statistical parameter state**:
 The current statistical parameters estimated jointly with distance-model parameters during training, as required by the chosen loss.

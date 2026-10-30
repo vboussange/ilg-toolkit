@@ -19,7 +19,7 @@ from ._training_utils import (
 )
 from .config import TrainingConfig
 from .data import PairwiseObservations, RegionBatch
-from .losses import _LossContext, AbstractLoss
+from .losses import _criterion, _LossContext, AbstractLoss
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .models.base import (
@@ -44,7 +44,10 @@ class StepRecord(eqx.Module):
 
     Attributes:
         step: Number of updates before the evaluation.
-        training_loss: Aggregate loss of the training groups.
+        training_loss: Aggregate loss of the training groups, without the penalty.
+        training_objective: Training objective at the evaluated parameters:
+            ``training_loss`` plus the penalty divided by the number of training
+            pairs, and ``training_loss`` without a penalty.
         validation_loss: Aggregate loss of the validation groups, or ``None``
             without validation.
         training_by_region: Mean training loss of each region over its species.
@@ -57,6 +60,7 @@ class StepRecord(eqx.Module):
 
     step: int
     training_loss: float
+    training_objective: float
     validation_loss: float | None = None
     training_by_region: dict[str, float] = eqx.field(default_factory=dict)
     validation_by_region: dict[str, float] = eqx.field(default_factory=dict)
@@ -253,7 +257,7 @@ class _Contribution(NamedTuple):
     loss_weight: jax.Array
 
 
-def _microbatch_objective(parameters, contributions, loss, context, key):
+def _microbatch_loss(parameters, contributions, loss, context, key):
     """Returns the weighted loss of a species microbatch within one region."""
     model, latent, states = parameters
     configured = _training_model(model, key)
@@ -268,11 +272,11 @@ def _microbatch_objective(parameters, contributions, loss, context, key):
     )
 
 
-_microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_objective))
+_microbatch_gradient = eqx.filter_jit(eqx.filter_grad(_microbatch_loss))
 
 
 def _regional_gradient(parameters, contributions, groups, config, context, key):
-    """Returns one region's objective gradient, accumulated over species microbatches."""
+    """Returns one region's weighted loss gradient, accumulated over species microbatches."""
     model, loss_state = parameters
     features = contributions[0].payload.features
     latent, backward = eqx.filter_vjp(lambda m: _backbone(m, features, key), model)
@@ -305,6 +309,15 @@ def _regional_gradient(parameters, contributions, groups, config, context, key):
     return model_gradient, state_gradient
 
 
+@eqx.filter_jit
+def _penalty_term(distance_model, penalty, pair_count) -> jax.Array:
+    """Returns the penalty of a distance model divided by the number of training pairs."""
+    return jnp.asarray(penalty(distance_model), jnp.float64) / pair_count
+
+
+_penalty_gradient = eqx.filter_jit(eqx.filter_grad(_penalty_term))
+
+
 def _when(condition: jax.Array, value: Callable[[], jax.Array]) -> jax.Array:
     """Returns ``value()`` when ``condition`` holds and zero otherwise, running one branch."""
     result = jax.eval_shape(value)
@@ -316,14 +329,17 @@ class _TrainingObjective(eqx.Module):
     """One update's training objective as a function of the parameters.
 
     It evaluates the same regions, species and random keys as the update's gradient:
-    one deterministic objective within an update. It holds every training group and
-    skips the groups not sampled for the update, which carry zero weight; its
-    structure and the compiled update stay fixed across updates.
+    one deterministic training objective within an update. It holds every training
+    group and skips the groups not sampled for the update, which carry zero weight; its
+    structure and the compiled update stay fixed across updates. The penalty enters
+    once, whichever groups the update samples.
     """
 
     regions: tuple[tuple[_Contribution, ...], ...]
     contexts: tuple[_ResistanceSolverContext | None, ...]
     keys: jax.Array
+    penalty: Callable[[Any], Any] | None
+    pair_count: jax.Array
     groups: tuple[tuple[_RegionSpeciesKey, ...], ...] = eqx.field(static=True)
     loss: AbstractLoss = eqx.field(static=True)
 
@@ -334,7 +350,7 @@ class _TrainingObjective(eqx.Module):
             states = (self.loss._group_state(loss_state, group),)
             return cast(
                 jax.Array,
-                _microbatch_objective(
+                _microbatch_loss(
                     (model, latent, states),
                     (item,),
                     self.loss,
@@ -358,7 +374,10 @@ class _TrainingObjective(eqx.Module):
             )
             for index, contributions in enumerate(self.regions)
         ]
-        return cast(jax.Array, sum(values))
+        value = cast(jax.Array, sum(values))
+        if self.penalty is None:
+            return value
+        return value + _penalty_term(model, self.penalty, self.pair_count)
 
 
 def _labeled_pairs(batch: _RegionSpeciesTrainingBatch) -> tuple[tuple[str, str], ...]:
@@ -432,18 +451,18 @@ def _apply_update(
     optimizer: optax.GradientTransformation,
     optimizer_state: optax.OptState,
     gradient: _Parameters,
-    objective: _TrainingObjective,
+    training_objective: _TrainingObjective,
 ) -> tuple[_Parameters, optax.OptState]:
-    """Applies one optimizer update, passing the objective's value, gradient and function.
+    """Applies one optimizer update with the training objective's value, gradient and function.
 
     The gradient comes from the regional and microbatch programs, and the value from
-    the objective that line searches evaluate. XLA removes the value when the
+    the training objective that line searches evaluate. XLA removes the value when the
     optimizer ignores it.
     """
     trainable, fixed = eqx.partition(parameters, eqx.is_inexact_array)
 
     def value_fn(candidate):
-        return objective(eqx.combine(candidate, fixed))
+        return training_objective(eqx.combine(candidate, fixed))
 
     value = value_fn(trainable)
     # Optax accepts registered Equinox pytrees; its array-container alias omits Modules.
@@ -463,12 +482,6 @@ def _apply_update(
 def _gradient_norm(gradient: _Parameters) -> jax.Array:
     """Returns the global L2 norm of a gradient."""
     return optax.tree.norm(gradient)
-
-
-@eqx.filter_jit
-def _criterion(loss, distances, context, state, fixed):
-    """Returns the loss of one region–species group."""
-    return loss._value(distances, context, state, fixed)
 
 
 def _evaluate_regions(
@@ -564,12 +577,18 @@ def train[DistanceModel: AbstractDistanceModel](
     the lowest validation loss, or the final model without validation. ``state``
     continues training from its latest parameters and random state.
 
-    ``config.optimizer`` applies each update and receives the update's objective
-    value, gradient and a function evaluating the same objective (same regions,
-    species and random key), so ``optax.lbfgs()`` line-searches deterministically
-    within an update. With ``config.gradient_tolerance``, training stops after the
-    first update whose gradient norm is at or below it, evaluates that step and sets
-    ``converged=True``; continuing a converged state makes no updates.
+    ``config.optimizer`` applies each update and receives the update's training
+    objective value, gradient and a function evaluating the same training objective
+    (same regions, species and random key), so ``optax.lbfgs()`` line-searches
+    deterministically within an update. With ``config.gradient_tolerance``, training
+    stops after the first update whose gradient norm is at or below it, evaluates
+    that step and sets ``converged=True``; continuing a converged state makes no
+    updates.
+
+    The training objective is the aggregate loss plus ``config.penalty`` divided by
+    the number of training pairs (see [`TrainingConfig`][ilg_toolkit.TrainingConfig]).
+    Training losses, validation losses and model selection exclude the penalty; each
+    record's ``training_objective`` includes it.
 
     Training compiles its update and evaluation steps; ``with jax.disable_jit():``
     runs them eagerly for debugging.
@@ -599,7 +618,8 @@ def train[DistanceModel: AbstractDistanceModel](
         TypeError: If the distance model has stateful layers.
         ValueError: If the inputs, settings or continuation state are invalid, or a
             raster is not a multiple of the distance model's patch size.
-        FloatingPointError: If an evaluation produces a nonfinite loss.
+        FloatingPointError: If an evaluation produces a nonfinite loss or training
+            objective.
         RuntimeError: If float64 is disabled.
 
     Examples:
@@ -670,6 +690,9 @@ def train[DistanceModel: AbstractDistanceModel](
     )
     training_batches, validation_batches = _prepare_batches(
         prepared.training, prepared.validation, distance_model, config
+    )
+    pair_count = jnp.asarray(
+        sum(len(batch.payload.context.targets) for batch in training_batches), jnp.float64
     )
 
     loss_state = (
@@ -807,7 +830,14 @@ def train[DistanceModel: AbstractDistanceModel](
                     )
                 )
             assert accumulated is not None
-            objective = _TrainingObjective(
+            if config.penalty is not None:
+                model_gradient, state_gradient = accumulated
+                penalty_gradient = _penalty_gradient(parameters[0], config.penalty, pair_count)
+                accumulated = (
+                    jax.tree.map(lambda a, b: a + b, model_gradient, penalty_gradient),
+                    state_gradient,
+                )
+            training_objective = _TrainingObjective(
                 tuple(
                     tuple(
                         _Contribution(
@@ -821,18 +851,27 @@ def train[DistanceModel: AbstractDistanceModel](
                 ),
                 regional_contexts,
                 keys,
+                config.penalty,
+                pair_count,
                 regional_groups,
                 config.loss,
             )
             if config.gradient_tolerance is not None:
                 converged = float(_gradient_norm(accumulated)) <= config.gradient_tolerance
             parameters, optimizer_state = _apply_update(
-                parameters, config.optimizer, optimizer_state, accumulated, objective
+                parameters, config.optimizer, optimizer_state, accumulated, training_objective
             )
         if step == 0 or step % config.eval_every == 0 or step == config.steps or converged:
             training_loss, regional_training, calibrations, species_training = _evaluate_regions(
                 parameters, training_batches, config, step
             )
+            training_objective = training_loss
+            if config.penalty is not None:
+                training_objective += float(
+                    _penalty_term(parameters[0], config.penalty, pair_count)
+                )
+            if not np.isfinite(training_objective):
+                raise FloatingPointError(f"Nonfinite training objective at step {step}")
             validation_loss, regional_validation, _, species_validation = (
                 (None, {}, {}, None if len(_model_species(distance_model)) == 1 else {})
                 if not validation_batches
@@ -842,6 +881,7 @@ def train[DistanceModel: AbstractDistanceModel](
                 StepRecord(
                     step,
                     training_loss,
+                    training_objective,
                     validation_loss,
                     regional_training,
                     regional_validation,

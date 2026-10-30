@@ -1,12 +1,13 @@
 """Training configuration and effective-resistance solver settings."""
 
-import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from numbers import Integral, Real
+from numbers import Integral
+from typing import Any
 
 import optax
 
-from ._checks import _positive_integer
+from ._checks import _is_finite_real, _positive_integer
 from .losses import AbstractLoss
 
 
@@ -37,12 +38,7 @@ class ResistanceSolverConfig:
 
     def __post_init__(self):
         for name, value in (("rtol", self.rtol), ("atol", self.atol)):
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, Real)
-                or not math.isfinite(value)
-                or value < 0
-            ):
+            if not _is_finite_real(value) or value < 0:
                 raise ValueError(f"solver {name} must be finite and nonnegative")
             object.__setattr__(self, name, float(value))
         if self.rtol == 0 and self.atol == 0:
@@ -54,7 +50,7 @@ class ResistanceSolverConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Training configuration: loss, optimizer, update budget and batching settings.
+    """Training configuration: loss, optimizer, update budget, batching settings and penalty.
 
     Each update samples up to ``region_batch_size`` regions, then up to
     ``species_batch_size`` species within each sampled region, and processes
@@ -62,13 +58,22 @@ class TrainingConfig:
     Training evaluates at step zero, every ``eval_every`` updates and at the final
     step, and selects the model among these evaluations.
 
-    The optimizer receives, with each update, the objective value, its gradient and
-    a function evaluating the same objective (same regions, species and random key),
-    so line-search optimizers such as ``optax.lbfgs()`` work through
-    [`train`][ilg_toolkit.train]. Configuration equality ignores the optimizer.
-    Training compiles its update for each optimizer object, so reusing one
-    optimizer object across folds, runs and checkpoint loads reuses the compiled
+    The optimizer receives, with each update, the training objective's value, its
+    gradient and a function evaluating the same training objective (same regions,
+    species and random key), so line-search optimizers such as ``optax.lbfgs()``
+    work through [`train`][ilg_toolkit.train]. Configuration equality ignores the
+    optimizer. Training compiles its update for each optimizer object, so reusing
+    one optimizer object across folds, runs and checkpoint loads reuses the compiled
     update.
+
+    The training objective is the aggregate loss plus ``penalty`` divided by the
+    number of training pairs across all training region–species groups. The penalty
+    enters once per update, whichever regions and species the update samples, and a
+    prior's negative log density keeps its meaning at any pair count. Configuration
+    equality covers the penalty: two separately written functions compare unequal,
+    and ``dataclasses.replace(config, steps=...)`` keeps the same object. Training
+    compiles its update for each penalty object, so reusing one penalty object across
+    folds, runs and checkpoint loads reuses the compiled update.
 
     Args:
         loss: Loss of every region–species group.
@@ -79,8 +84,8 @@ class TrainingConfig:
             1e-3 by default.
         gradient_tolerance: Gradient-norm threshold ending training: training stops
             after the first update whose gradient norm (global L2 norm over the
-            trainable parameters for that update's objective) is at or below it;
-            ``None`` runs all ``steps``.
+            trainable parameters for that update's training objective) is at or below
+            it; ``None`` runs all ``steps``.
         region_batch_size: Maximum number of regions sampled per update; ``None``
             samples every region.
         species_batch_size: Maximum number of species sampled per region; ``None``
@@ -88,6 +93,9 @@ class TrainingConfig:
         species_microbatch_size: Maximum number of species processed together;
             ``None`` processes all sampled species of a region together.
         seed: Seed of the random sampling and random layers, in ``[0, 2**32)``.
+        penalty: Function or Equinox module of the distance model returning a scalar,
+            such as [`RidgePenalty`][ilg_toolkit.RidgePenalty]; ``None`` trains on the
+            aggregate loss alone.
 
     Raises:
         ValueError: If a setting is invalid.
@@ -102,6 +110,7 @@ class TrainingConfig:
     species_batch_size: int | None = None
     species_microbatch_size: int | None = None
     seed: int = 0
+    penalty: Callable[[Any], Any] | None = None
 
     def __post_init__(self):
         if not isinstance(self.loss, AbstractLoss):
@@ -124,11 +133,8 @@ class TrainingConfig:
         if not isinstance(self.optimizer, optax.GradientTransformation):
             raise ValueError("optimizer must be an optax.GradientTransformation")
         if self.gradient_tolerance is not None:
-            if (
-                isinstance(self.gradient_tolerance, bool)
-                or not isinstance(self.gradient_tolerance, Real)
-                or not math.isfinite(self.gradient_tolerance)
-                or self.gradient_tolerance < 0
-            ):
+            if not _is_finite_real(self.gradient_tolerance) or self.gradient_tolerance < 0:
                 raise ValueError("gradient_tolerance must be finite and nonnegative, or None")
             object.__setattr__(self, "gradient_tolerance", float(self.gradient_tolerance))
+        if self.penalty is not None and not callable(self.penalty):
+            raise ValueError("penalty must be callable or None")

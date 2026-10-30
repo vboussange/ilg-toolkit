@@ -1,8 +1,10 @@
 """Checkpoints: saved training states for continuing training."""
 
 import os
+from collections.abc import Callable
 from dataclasses import asdict, fields
 from pathlib import Path
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -29,9 +31,9 @@ def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
     The checkpoint holds the latest parameters, statistical parameter state,
     optimizer and random state, history, training configuration, convergence,
     training and validation groups, and the latest and selected models. It holds
-    no optimizer, observations or rasters: [`load_checkpoint`][ilg_toolkit.load_checkpoint]
-    takes the optimizer, and continuation takes the original inputs. The write
-    goes to a temporary file that atomically replaces the destination, so a
+    no optimizer, penalty, observations or rasters: [`load_checkpoint`][ilg_toolkit.load_checkpoint]
+    takes the optimizer and the penalty, and continuation takes the original inputs.
+    The write goes to a temporary file that atomically replaces the destination, so a
     failed write keeps the previous file.
     ``train(..., on_step=lambda state: save_checkpoint(path, state))`` saves after
     initialization and after each update.
@@ -42,8 +44,8 @@ def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
 
     Raises:
         ArtifactError: If ``state`` is not a training state.
-        ValueError: If the state's steps, history or convergence are inconsistent,
-            or its loss is not [`Log1pLoss`][ilg_toolkit.Log1pLoss] or
+        ValueError: If the state's steps, history or convergence are inconsistent, or
+            its loss is not [`Log1pLoss`][ilg_toolkit.Log1pLoss] or
             [`MLPELoss`][ilg_toolkit.MLPELoss].
 
     Examples:
@@ -60,7 +62,7 @@ def save_checkpoint(path: str | os.PathLike[str], state: TrainingState) -> None:
     options = {
         field.name: getattr(state.config, field.name)
         for field in fields(state.config)
-        if field.name != "optimizer"
+        if field.name not in ("optimizer", "penalty")
     }
     options["loss"] = _loss_metadata(state.config.loss)
     metadata = {
@@ -81,6 +83,7 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
     *,
     distance_model: DistanceModel,
     optimizer: optax.GradientTransformation,
+    penalty: Callable[[Any], Any] | None = None,
 ) -> TrainingState[DistanceModel]:
     """Loads a training state from a checkpoint file.
 
@@ -89,11 +92,11 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
     settings (patch size, patch microbatch size, dropout, species and activation
     functions). The optimizer rebuilds the optimizer-state template, whose state
     types, leaf paths, shapes and dtypes match the saved optimizer state, and becomes
-    the optimizer of the restored training configuration. Continuing with the
-    original inputs, validation arguments, library versions, device and execution
-    settings reproduces the uninterrupted run; continuation accepts a larger step
-    budget and an optimizer whose state has the saved structure. Continuing with
-    the saved step budget returns the saved state.
+    the optimizer of the restored training configuration, and the penalty becomes its
+    penalty. Continuing with the original inputs, penalty, validation arguments,
+    library versions, device and execution settings reproduces the uninterrupted run;
+    continuation accepts a larger step budget and an optimizer whose state has the
+    saved structure. Continuing with the saved step budget returns the saved state.
 
     Args:
         path: File written by [`save_checkpoint`][ilg_toolkit.save_checkpoint].
@@ -101,6 +104,8 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
             static settings, array shapes and dtypes.
         optimizer: Optax optimizer whose state matches the saved optimizer state,
             such as the optimizer the checkpoint was trained with.
+        penalty: Penalty of the training run, as in
+            [`TrainingConfig`][ilg_toolkit.TrainingConfig]; ``None`` without a penalty.
 
     Returns:
         The saved training state.
@@ -115,7 +120,7 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
             metadata, weak_leaves = _read_header(stream, kind="training_checkpoint")
             options = dict(metadata["config"])
             options["loss"] = _loss_from_metadata(options["loss"])
-            config = TrainingConfig(**options, optimizer=optimizer)
+            config = TrainingConfig(**options, optimizer=optimizer, penalty=penalty)
             latest = _model_template(metadata["latest_model"], distance_model)
             selected = _model_template(metadata["selected_model"], distance_model)
             loss_state = config.loss._state_template(metadata["loss_state"])
@@ -130,8 +135,6 @@ def load_checkpoint[DistanceModel: AbstractDistanceModel](
                     "trained with"
                 )
             history = tuple(StepRecord(**record) for record in metadata["history"])
-            if not 1 <= len(history) <= config.steps + 1:
-                raise ArtifactError("Checkpoint history length must be within the step budget")
             template = TrainingState(
                 loss_state=loss_state,
                 optimizer_state=optimizer_state,
