@@ -756,13 +756,16 @@ def train[DistanceModel: AbstractDistanceModel](
         TypeError: If the distance model has stateful layers.
         ValueError: If the inputs, settings or continuation state are invalid, or a
             raster is not a multiple of the distance model's patch size.
+        ImportError: If the distance model's ``solver_config`` selects ``"cudss"``
+            without spineax.
         FloatingPointError: If an evaluation produces a nonfinite loss. The message
             names the region, species and step.
-        RuntimeError: If float64 is disabled, or a compiled step fails, such as an
-            effective-resistance solve that reaches ``max_steps`` or a cuDSS
-            factorization that fails. The message names the region, species and step,
-            with every region–species group sampled for the update when a line-search
-            candidate fails.
+        RuntimeError: If float64 is disabled, the distance model's ``solver_config``
+            selects ``"cudss"`` without a CUDA-enabled GPU backend, or a compiled step
+            fails, such as an effective-resistance solve that reaches ``max_steps`` or a
+            cuDSS factorization that fails. The message of a failed step names the
+            region, species and step, with every region–species group sampled for the
+            update when a line-search candidate fails.
 
     Examples:
         >>> loss = MLPELoss()
