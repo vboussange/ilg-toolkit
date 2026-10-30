@@ -49,7 +49,7 @@ def _resistance_context(
     )
     with jax.ensure_compile_time_eval():
         template = GridGraph(jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance)
-        state = ResistanceDistance(solver=solver).init_preconditioner(template)
+        state = ResistanceDistance(solver=solver).init(template)
     return _ResistanceSolverContext(graph_shape, solver, state)
 
 
