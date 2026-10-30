@@ -20,7 +20,7 @@ from ._training_utils import (
 )
 from .config import TrainingConfig
 from .data import PairwiseObservations, RegionBatch
-from .losses import _LossContext, AbstractLoss
+from .losses import _criterion, _LossContext, AbstractLoss
 from .model import LandscapeGeneticsModel
 from .models import AbstractDistanceModel
 from .models.base import (
@@ -508,12 +508,6 @@ def _apply_update(
 def _gradient_norm(gradient: _Parameters) -> jax.Array:
     """Returns the global L2 norm of a gradient."""
     return optax.tree.norm(gradient)
-
-
-@eqx.filter_jit
-def _criterion(loss, distances, context, state, fixed):
-    """Returns the loss of one region–species group."""
-    return loss._value(distances, context, state, fixed)
 
 
 def _evaluate_regions(
