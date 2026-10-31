@@ -1138,8 +1138,13 @@ def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_trainin
         config=replace(result.config, steps=result.step + 1, optimizer=optax.adam(0.1)),
     )
     assert continued.step == result.step + 1
-    # AdaBelief keeps Adam's leaf paths, shapes and dtypes in another state type.
-    for other in (optax.sgd(0.1), optax.adabelief(0.1)):
+    # AdaBelief keeps Adam's leaf paths, shapes and dtypes in another state type, and
+    # mu_dtype keeps Adam's state type with another leaf dtype.
+    for other in (
+        optax.sgd(0.1),
+        optax.adabelief(0.1),
+        optax.adam(0.1, mu_dtype=jnp.float32),
+    ):
         with pytest.raises(ValueError, match="optimizer"):
             train(
                 region,
