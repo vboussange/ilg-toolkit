@@ -360,6 +360,25 @@ def test_model_reload_uses_native_shape_and_dtype_compatibility(WeightedEmbeddin
             load_model(truncated, distance_model=distance_model)
 
 
+def test_saving_a_typed_random_key_names_it_and_keeps_the_previous_file(
+    WeightedEmbedding, tmp_path
+):
+    def model(log_weights):
+        return LandscapeGeneticsModel(
+            WeightedEmbedding(log_weights),
+            DirectCalibrationHead(TargetSpec("divergence")),
+            ("elevation", "canopy"),
+        )
+
+    path = tmp_path / "model.eqx"
+    save_model(path, model(jnp.asarray([0.2, -0.7])))
+    original = path.read_bytes()
+    with pytest.raises(ArtifactError, match=r"typed random key.*\.distance_model\.log_weights"):
+        save_model(path, model(jax.random.key(0)))
+    assert path.read_bytes() == original
+    assert set(tmp_path.iterdir()) == {path}
+
+
 def test_interrupted_model_replacement_preserves_previous_predictions(
     persistence_problem, WeightedEmbedding, tmp_path, monkeypatch
 ):

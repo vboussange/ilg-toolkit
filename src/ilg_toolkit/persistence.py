@@ -31,6 +31,12 @@ def _write_native(path, tree, *, metadata):
 
     A failed write keeps the previous file.
     """
+    for leaf_path, leaf in jax.tree_util.tree_leaves_with_path(tree):
+        if isinstance(leaf, jax.Array) and jnp.issubdtype(leaf.dtype, jax.dtypes.prng_key):
+            raise ArtifactError(
+                "A saved model holds no typed random key; found one at "
+                f"{jax.tree_util.keystr(leaf_path)}"
+            )
     arrays = [
         (index, leaf)
         for index, leaf in enumerate(jax.tree.leaves(tree))
@@ -219,16 +225,16 @@ def save_model(path: str | os.PathLike[str], model: LandscapeGeneticsModel) -> N
     calibration head with its target contract, species, feature names, and the
     region, species and calibration pairs of each MLPE calibration. The write goes
     to a temporary file that atomically replaces the destination, so a failed write
-    keeps the previous file. Custom distance models are saved the same way. Each
-    ensemble member is saved separately.
+    keeps the previous file. Custom distance models without a typed random key are
+    saved the same way. Each ensemble member is saved separately.
 
     Args:
         path: Destination file in an existing directory.
         model: Landscape genetics model to save.
 
     Raises:
-        ArtifactError: If ``model`` is not a landscape genetics model or holds an
-            unsupported calibration head.
+        ArtifactError: If ``model`` is not a landscape genetics model, or holds an
+            unsupported calibration head or a typed random key.
 
     Examples:
         >>> save_model("analysis.eqx", state.selected_model)

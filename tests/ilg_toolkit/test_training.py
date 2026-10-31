@@ -529,6 +529,12 @@ def test_failed_training_leaves_the_last_saved_model_intact(
     np.testing.assert_allclose(
         restored.predict(region).values, latest.predict(region).values, rtol=1e-9
     )
+    new_run = train(region, observations, distance_model=restored.distance_model, config=config)
+    assert [record.step for record in new_run.history] == [0, 1, 2, 3, 4]
+    assert states[-1].history[-1].step == 2
+    np.testing.assert_allclose(
+        new_run.history[0].training_loss, states[-1].history[-1].training_loss, rtol=1e-9
+    )
 
 
 @pytest.mark.parametrize("optimizer", [optax.adam(0.05), optax.lbfgs()], ids=["adam", "lbfgs"])
@@ -1132,13 +1138,15 @@ def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_trainin
         config=replace(result.config, steps=result.step + 1, optimizer=optax.adam(0.1)),
     )
     assert continued.step == result.step + 1
-    with pytest.raises(ValueError, match="optimizer"):
-        train(
-            region,
-            observations,
-            state=result,
-            config=replace(result.config, steps=result.step + 1, optimizer=optax.sgd(0.1)),
-        )
+    # AdaBelief keeps Adam's leaf paths, shapes and dtypes in another state type.
+    for other in (optax.sgd(0.1), optax.adabelief(0.1)):
+        with pytest.raises(ValueError, match="optimizer"):
+            train(
+                region,
+                observations,
+                state=result,
+                config=replace(result.config, steps=result.step + 1, optimizer=other),
+            )
     with pytest.raises(ValueError):
         train(
             region, observations, state=result, config=replace(result.config, region_batch_size=1)

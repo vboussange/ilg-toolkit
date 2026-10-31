@@ -148,32 +148,18 @@ def _validate_state(state: TrainingState) -> None:
         raise ValueError("Training convergence must be recorded as a boolean")
 
 
-def _node_types(structure: Any) -> str:
-    """Returns the node type names of a tree structure, with ``*`` for each leaf."""
-    node = structure.node_data()
-    if node is None:
-        return "*"
-    return f"{node[0].__name__}({','.join(map(_node_types, structure.children()))})"
-
-
-def _optimizer_state_signature(optimizer_state: optax.OptState) -> dict[str, Any]:
-    """Returns the node types of an optimizer state and the path, shape and dtype of its leaves."""
-    return {
-        "nodes": _node_types(jax.tree.structure(optimizer_state)),
-        "leaves": [
-            [jax.tree_util.keystr(path), list(leaf.shape), str(leaf.dtype)]
-            if hasattr(leaf, "dtype")
-            else [jax.tree_util.keystr(path), type(leaf).__name__]
-            for path, leaf in jax.tree_util.tree_leaves_with_path(optimizer_state)
-        ],
-    }
+def _leaf_signature(leaf: Any) -> tuple[Any, ...]:
+    """Returns the shape and dtype of an array leaf, or the type name of another leaf."""
+    return (leaf.shape, leaf.dtype) if hasattr(leaf, "dtype") else (type(leaf).__name__,)
 
 
 def _same_optimizer_state_structure(first: optax.OptState, second: optax.OptState) -> bool:
     """Returns whether two optimizer states share their tree structure, leaf shapes and dtypes."""
     if jax.tree.structure(first) != jax.tree.structure(second):
         return False
-    return _optimizer_state_signature(first) == _optimizer_state_signature(second)
+    return list(map(_leaf_signature, jax.tree.leaves(first))) == list(
+        map(_leaf_signature, jax.tree.leaves(second))
+    )
 
 
 def _match_update_weak_types(
@@ -731,9 +717,9 @@ def train[DistanceModel: AbstractDistanceModel](
     ``state`` continues training within one process from its latest parameters,
     statistical parameter state, optimizer state and random key, and keeps its history
     and selected model. Continuing with the original inputs and validation arguments
-    reproduces the uninterrupted run. Training from the distance model of a loaded
-    model is a new run: its optimizer state, statistical parameter state, history and
-    selected model start anew.
+    reproduces the uninterrupted run, within rounding for conjugate gradient solves on a
+    GPU. Training from the distance model of a loaded model is a new run: its optimizer
+    state, statistical parameter state, history and selected model start anew.
 
     ``config.optimizer`` applies each update and receives the update's training
     objective value, gradient and a function evaluating the same training objective
