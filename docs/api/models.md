@@ -41,12 +41,12 @@ analysis on every solve. Genetic prediction, calibration-head fitting and
 ### Failures and saved models
 
 A failed solve during training raises an error naming the region, species and
-training step, and the last checkpoint written by `on_step` remains. Without the
+training step, and the last model saved from `on_step` remains. Without the
 `cudss` extra or a CUDA-enabled GPU backend, preparing `"cudss"` raises an error
 naming the extra.
 
-Saved models and checkpoints record the solver settings, and loading restores them
-over the template's. A model saved with `"cudss"` computes ecological distances and
+Saved models record the solver settings, and loading restores them over the
+template's. A model saved with `"cudss"` computes ecological distances and
 genetic predictions on an NVIDIA GPU with the `cudss` extra; its conductance
 surfaces need neither.
 

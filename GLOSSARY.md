@@ -208,10 +208,6 @@ Joint estimation of distance-model parameters and the statistical parameters req
 _Paper_: fit.
 _Avoid_: Fitting, when naming this optimization workflow.
 
-**Checkpoint**:
-A saved training state, holding the latest parameters, statistical parameter state, optimizer and random state, convergence, and selected model, for continuing training. The optimizer and the penalty are not saved; each is supplied when loading, like the distance-model template.
-_Paper_: none.
-
 **Loss**:
 A statistical criterion relating a region–species group's ecological distances to its genetic observations, together with the criterion's numerical settings.
 _Paper_: objective.

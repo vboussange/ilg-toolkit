@@ -14,7 +14,7 @@ import optax
 import pytest
 from ilg_toolkit import (
     LandscapeGeneticsModel,
-    load_checkpoint,
+    load_model,
     Log1pLoss,
     MLPECalibrationHead,
     MLPELoss,
@@ -23,7 +23,7 @@ from ilg_toolkit import (
     RegionBatch,
     ResistanceSolverConfig,
     RidgePenalty,
-    save_checkpoint,
+    save_model,
     TargetSpec,
     train,
     TrainingConfig,
@@ -499,16 +499,18 @@ def test_failed_microbatch_names_every_group_when_no_solve_fails_again(training_
     assert ": step 1: backward pass failed" in message
 
 
-def test_failed_training_leaves_the_last_checkpoint_intact(
+def test_failed_training_leaves_the_last_saved_model_intact(
     cudss_double, PointConductance, training_problem, tmp_path
 ):
     region, observations, _ = training_problem("conductance")
-    path = tmp_path / "checkpoint.eqx"
+    path = tmp_path / "model.eqx"
     model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
     config = TrainingConfig(loss=Log1pLoss(), steps=4, optimizer=optax.adam(0.05))
+    states = []
 
-    def checkpoint_and_fail_after_step_two(state):
-        save_checkpoint(path, state)
+    def save_and_fail_after_step_two(state):
+        save_model(path, state.latest_model)
+        states.append(state)
         cudss_double.failing = state.step == 2
 
     with pytest.raises(RuntimeError, match="region 'alpine', species 0: step 3: "):
@@ -517,18 +519,21 @@ def test_failed_training_leaves_the_last_checkpoint_intact(
             observations,
             distance_model=model,
             config=config,
-            on_step=checkpoint_and_fail_after_step_two,
+            on_step=save_and_fail_after_step_two,
         )
     cudss_double.failing = False
-    restored = load_checkpoint(path, distance_model=model, optimizer=config.optimizer)
-    assert restored.step == 2
-    continued = train(region, observations, state=restored)
-    uninterrupted = train(region, observations, distance_model=model, config=config)
-    assert continued.step == uninterrupted.step == 4
+    assert [state.step for state in states] == [0, 1, 2]
+    latest = states[-1].latest_model
+    restored = load_model(path, distance_model=model)
+    assert eqx.tree_equal(restored, latest)
     np.testing.assert_allclose(
-        cast(Any, continued.latest_model.distance_model).log_scale,
-        cast(Any, uninterrupted.latest_model.distance_model).log_scale,
-        rtol=1e-10,
+        restored.predict(region).values, latest.predict(region).values, rtol=1e-9
+    )
+    new_run = train(region, observations, distance_model=restored.distance_model, config=config)
+    assert [record.step for record in new_run.history] == [0, 1, 2, 3, 4]
+    assert states[-1].history[-1].step == 2
+    np.testing.assert_allclose(
+        new_run.history[0].training_loss, states[-1].history[-1].training_loss, rtol=1e-9
     )
 
 
@@ -1125,7 +1130,7 @@ def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_trainin
         mlpe_embedding_training.state,
     )
     assert result.loss_state is not None
-    # The optimizer may change while its state keeps the saved structure.
+    # The optimizer may change while its state keeps its structure.
     continued = train(
         region,
         observations,
@@ -1133,13 +1138,20 @@ def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_trainin
         config=replace(result.config, steps=result.step + 1, optimizer=optax.adam(0.1)),
     )
     assert continued.step == result.step + 1
-    with pytest.raises(ValueError, match="optimizer"):
-        train(
-            region,
-            observations,
-            state=result,
-            config=replace(result.config, steps=result.step + 1, optimizer=optax.sgd(0.1)),
-        )
+    # AdaBelief keeps Adam's leaf paths, shapes and dtypes in another state type, and
+    # mu_dtype keeps Adam's state type with another leaf dtype.
+    for other in (
+        optax.sgd(0.1),
+        optax.adabelief(0.1),
+        optax.adam(0.1, mu_dtype=jnp.float32),
+    ):
+        with pytest.raises(ValueError, match="optimizer"):
+            train(
+                region,
+                observations,
+                state=result,
+                config=replace(result.config, steps=result.step + 1, optimizer=other),
+            )
     with pytest.raises(ValueError):
         train(
             region, observations, state=result, config=replace(result.config, region_batch_size=1)
@@ -1151,6 +1163,117 @@ def test_continuation_rejects_changed_optimization_policy(mlpe_embedding_trainin
             state=result,
             distance_model=result.latest_model.distance_model,
         )
+
+
+def _two_species_regions(training_problem):
+    """Returns two regions of two species, with region and species sampling and MLPE."""
+    region, groups, model = training_problem("embedding", species=("frog", "newt"))
+    regions = (region, replace(region, name="valley"))
+    observations = (groups, tuple(replace(o, values=o.values * 1.2) for o in groups))
+    config = TrainingConfig(
+        loss=MLPELoss(),
+        steps=2,
+        eval_every=2,
+        seed=21,
+        optimizer=optax.adam(1e-4),
+        region_batch_size=1,
+        species_batch_size=1,
+        species_microbatch_size=1,
+    )
+    return regions, observations, model, config, None
+
+
+def _dropout_validation(training_problem):
+    """Returns dropout keys and validation, with the model selected at step 0."""
+    region, observations, model = training_problem("dropout")
+    # Initial predictions as validation targets give step 0 the lowest validation loss.
+    prediction = model.predict(region)
+    validation = (
+        replace(region, name="validation"),
+        PairwiseObservations.from_pairs(
+            prediction.pairs, prediction.values, target=observations.target
+        ),
+    )
+    config = TrainingConfig(
+        loss=Log1pLoss(), steps=2, eval_every=2, seed=21, optimizer=optax.adam(0.002)
+    )
+    return region, observations, model, config, validation
+
+
+@pytest.mark.parametrize(
+    "build", [_two_species_regions, _dropout_validation], ids=["sampled-species", "validation"]
+)
+def test_continuing_from_an_on_step_state_equals_the_uninterrupted_run(training_problem, build):
+    region, observations, model, config, validation = build(training_problem)
+    states = []
+    uninterrupted = train(
+        region,
+        observations,
+        distance_model=model,
+        config=config,
+        validation=validation,
+        on_step=states.append,
+    )
+    continued = train(region, observations, state=states[1], validation=validation)
+    assert eqx.tree_equal(continued, uninterrupted)
+
+
+def test_continuing_lbfgs_with_the_penalty_reproduces_the_uninterrupted_run(
+    ScalarEmbedding, regions_and_observations
+):
+    regions, observations = regions_and_observations()
+    model = ScalarEmbedding(jnp.asarray(1.0))
+    penalty = RidgePenalty(prior_sd=0.5, where=lambda current: current.weight)
+    config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optax.lbfgs(), penalty=penalty)
+    states = []
+    uninterrupted = train(
+        regions, observations, distance_model=model, config=config, on_step=states.append
+    )
+    assert eqx.tree_equal(train(regions, observations, state=states[1]), uninterrupted)
+
+
+def test_continuing_with_each_solver_choice_reproduces_the_uninterrupted_run(
+    solver_choice, PointConductance, training_problem
+):
+    region, observations, _ = training_problem("conductance")
+    solver_config = ResistanceSolverConfig(solver=solver_choice)
+    model = PointConductance(jnp.asarray(0.0), solver_config=solver_config)
+    config = TrainingConfig(loss=Log1pLoss(), steps=1, optimizer=optax.sgd(1e-3))
+    state = train(region, observations, distance_model=model, config=config)
+    continued = train(region, observations, state=state, config=replace(state.config, steps=2))
+    uninterrupted = train(
+        region, observations, distance_model=model, config=replace(config, steps=2)
+    )
+    assert continued.step == uninterrupted.step == 2
+    for trained in (continued.latest_model, continued.selected_model):
+        assert isinstance(trained.distance_model, ConductanceModel)
+        assert trained.distance_model.solver_config == solver_config
+    # Repeated conjugate gradient solves on a GPU differ by rounding.
+    np.testing.assert_allclose(
+        cast(Any, continued.latest_model.distance_model).log_scale,
+        cast(Any, uninterrupted.latest_model.distance_model).log_scale,
+        rtol=1e-9,
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"step": 1}, "Training step"),
+        ({"selected_step": 1}, "Selected step"),
+        ({"history": ()}, "History"),
+    ],
+)
+def test_continuation_rejects_an_inconsistent_state(training_problem, change, message):
+    region, observations, distance_model = training_problem("embedding")
+    state = train(
+        region,
+        observations,
+        distance_model=distance_model,
+        config=TrainingConfig(loss=Log1pLoss(), steps=0),
+    )
+    with pytest.raises(ValueError, match=message):
+        train(region, observations, state=replace(state, **change))
 
 
 @pytest.mark.parametrize(

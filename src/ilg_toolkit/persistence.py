@@ -23,27 +23,20 @@ from .models.base import _species_names, _species_rows
 
 
 class ArtifactError(ValueError):
-    """Error raised for an incompatible saved model, checkpoint or loading template."""
+    """Error raised for an incompatible saved model or loading template."""
 
 
-def _is_typed_key(leaf) -> bool:
-    """Returns whether ``leaf`` is a typed JAX random key."""
-    return isinstance(leaf, jax.Array) and jnp.issubdtype(leaf.dtype, jax.dtypes.prng_key)
-
-
-def _key_data(tree):
-    """Returns the tree with typed random keys replaced by their raw key data."""
-    return jax.tree.map(
-        lambda leaf: jax.random.key_data(leaf) if _is_typed_key(leaf) else leaf, tree
-    )
-
-
-def _write_native(path, tree, *, kind, metadata):
+def _write_native(path, tree, *, metadata):
     """Writes the metadata header and the tree's arrays to ``path`` atomically.
 
     A failed write keeps the previous file.
     """
-    tree = _key_data(tree)
+    for leaf_path, leaf in jax.tree_util.tree_leaves_with_path(tree):
+        if isinstance(leaf, jax.Array) and jnp.issubdtype(leaf.dtype, jax.dtypes.prng_key):
+            raise ArtifactError(
+                "A saved model holds no typed random key; found one at "
+                f"{jax.tree_util.keystr(leaf_path)}"
+            )
     arrays = [
         (index, leaf)
         for index, leaf in enumerate(jax.tree.leaves(tree))
@@ -51,7 +44,7 @@ def _write_native(path, tree, *, kind, metadata):
     ]
     header = {
         "format": "ilg-toolkit-equinox",
-        "kind": kind,
+        "kind": "model",
         # NumPy storage drops JAX weak types, which change dtype promotion.
         "weak_leaves": [index for index, leaf in arrays if leaf.weak_type],
         "metadata": metadata,
@@ -75,21 +68,13 @@ def _write_native(path, tree, *, kind, metadata):
 
 def _read_native(stream, template, weak_leaves):
     """Reads saved leaves into a template, restoring the weak types recorded when saving."""
-    loaded = eqx.tree_deserialise_leaves(stream, _key_data(template))
+    loaded = eqx.tree_deserialise_leaves(stream, template)
     leaves, structure = jax.tree.flatten(loaded)
     for index in weak_leaves:
         if not 0 <= index < len(leaves) or not isinstance(leaves[index], jax.Array):
             raise ArtifactError(f"Recorded weakly typed leaf {index} is not a saved JAX array")
         leaves[index] = _weakly_typed(leaves[index])
-    return jax.tree.map(
-        lambda leaf, reference: (
-            jax.random.wrap_key_data(leaf, impl=jax.random.key_impl(reference))
-            if _is_typed_key(reference)
-            else leaf
-        ),
-        jax.tree.unflatten(structure, leaves),
-        template,
-    )
+    return jax.tree.unflatten(structure, leaves)
 
 
 def _weakly_typed(leaf):
@@ -106,19 +91,19 @@ def _weakly_typed(leaf):
     return zeros.at[...].set(leaf)
 
 
-def _read_header(stream, *, kind):
+def _read_header(stream):
     """Returns the metadata and weakly typed leaf indices after checking the file kind."""
     try:
         header = json.loads(stream.readline())
     except (ValueError, UnicodeError) as error:
-        raise ArtifactError("Unsupported or incomplete saved-model or checkpoint header") from error
+        raise ArtifactError("Unsupported or incomplete saved-model header") from error
     if not isinstance(header, dict) or header.get("format") != "ilg-toolkit-equinox":
-        raise ArtifactError("Unsupported saved-model or checkpoint format")
-    if header.get("kind") != kind:
-        raise ArtifactError(f"Expected {kind} file, found {header.get('kind')!r}")
+        raise ArtifactError("Unsupported saved-model format")
+    if header.get("kind") != "model":
+        raise ArtifactError(f"Expected a saved model file, found kind {header.get('kind')!r}")
     weak_leaves = header.get("weak_leaves")
     if not isinstance(weak_leaves, list) or any(type(index) is not int for index in weak_leaves):
-        raise ArtifactError("Missing or invalid saved-model or checkpoint weak-type record")
+        raise ArtifactError("Missing or invalid saved-model weak-type record")
     return header["metadata"], weak_leaves
 
 
@@ -240,18 +225,16 @@ def save_model(path: str | os.PathLike[str], model: LandscapeGeneticsModel) -> N
     calibration head with its target contract, species, feature names, and the
     region, species and calibration pairs of each MLPE calibration. The write goes
     to a temporary file that atomically replaces the destination, so a failed write
-    keeps the previous file. Custom distance models are saved the same way. Each
-    ensemble member is saved separately;
-    [`save_checkpoint`][ilg_toolkit.save_checkpoint] also saves the optimizer and
-    random state for continuing training.
+    keeps the previous file. Custom distance models without a typed random key are
+    saved the same way. Each ensemble member is saved separately.
 
     Args:
         path: Destination file in an existing directory.
         model: Landscape genetics model to save.
 
     Raises:
-        ArtifactError: If ``model`` is not a landscape genetics model or holds an
-            unsupported calibration head.
+        ArtifactError: If ``model`` is not a landscape genetics model, or holds an
+            unsupported calibration head or a typed random key.
 
     Examples:
         >>> save_model("analysis.eqx", state.selected_model)
@@ -263,7 +246,7 @@ def save_model(path: str | os.PathLike[str], model: LandscapeGeneticsModel) -> N
     """
     if not isinstance(model, LandscapeGeneticsModel):
         raise ArtifactError("save_model requires a LandscapeGeneticsModel")
-    _write_native(path, model, kind="model", metadata=_model_metadata(model))
+    _write_native(path, model, metadata=_model_metadata(model))
 
 
 def load_model[DistanceModel: AbstractDistanceModel](
@@ -293,7 +276,7 @@ def load_model[DistanceModel: AbstractDistanceModel](
     _require_float64()
     try:
         with Path(path).open("rb") as stream:
-            metadata, weak_leaves = _read_header(stream, kind="model")
+            metadata, weak_leaves = _read_header(stream)
             template = _model_template(metadata, distance_model)
             return _read_native(stream, template, weak_leaves)
     except (KeyError, TypeError, ValueError, RuntimeError, EOFError) as error:
