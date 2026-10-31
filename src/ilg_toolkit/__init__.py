@@ -6,7 +6,6 @@ from .calibration import (
     fit_calibration_head,
     MLPECalibrationHead,
 )
-from .checkpoint import load_checkpoint, save_checkpoint
 from .config import ResistanceSolverConfig, TrainingConfig
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 from .ensemble import Ensemble, EnsemblePrediction
@@ -39,9 +38,7 @@ __all__ = [
     "TrainingConfig",
     "TrainingState",
     "fit_calibration_head",
-    "load_checkpoint",
     "load_model",
-    "save_checkpoint",
     "save_model",
     "train",
 ]

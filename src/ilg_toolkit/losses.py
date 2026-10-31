@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, final, TYPE_CHECKING
 
 import equinox as eqx
@@ -75,12 +75,6 @@ class AbstractLoss(ABC):
         *,
         max_iterations: int | None,
     ) -> Any: ...
-
-    @abstractmethod
-    def _state_metadata(self, state) -> Any: ...
-
-    @abstractmethod
-    def _state_template(self, metadata) -> Any: ...
 
     def sum_over_pairs(
         self,
@@ -227,14 +221,6 @@ class Log1pLoss(AbstractLoss):
         return None
 
     def _fit_group(self, distances, observations, *, max_iterations):
-        return None
-
-    def _state_metadata(self, state):
-        return None
-
-    def _state_template(self, metadata):
-        if metadata is not None:
-            raise ValueError("Log1pLoss checkpoints have no statistical state")
         return None
 
 
@@ -444,37 +430,3 @@ class MLPELoss(AbstractLoss):
 
         assert max_iterations is not None
         return _fit_mlpe(distances(), observations, loss=self, max_iterations=max_iterations)
-
-    def _state_metadata(self, state):
-        return [
-            dict(
-                region=region,
-                species_index=index,
-                shape=list(group.raw_variances.shape),
-                dtype=str(group.raw_variances.dtype),
-            )
-            for (region, index), group in state.groups.items()
-        ]
-
-    def _state_template(self, metadata):
-        return _MLPEState(
-            {
-                (item["region"], item["species_index"]): _MLPEGroupState(
-                    jnp.zeros(tuple(item["shape"]), dtype=item["dtype"])
-                )
-                for item in metadata
-            }
-        )
-
-
-def _loss_metadata(loss):
-    """Returns the kind and settings of a built-in loss for a checkpoint header."""
-    if not isinstance(loss, (Log1pLoss, MLPELoss)):
-        raise ValueError("Saving requires a built-in loss")
-    return {"kind": type(loss).__name__, "settings": asdict(loss)}
-
-
-def _loss_from_metadata(metadata):
-    """Returns the built-in loss described by checkpoint metadata."""
-    factories = {"Log1pLoss": Log1pLoss, "MLPELoss": MLPELoss}
-    return factories[metadata["kind"]](**metadata["settings"])

@@ -1,4 +1,4 @@
-"""Tests of saving and loading landscape genetics models and checkpoints."""
+"""Tests of saving and loading landscape genetics models."""
 
 import json
 from dataclasses import replace
@@ -15,7 +15,6 @@ from ilg_toolkit import (
     ArtifactError,
     DirectCalibrationHead,
     LandscapeGeneticsModel,
-    load_checkpoint,
     load_model,
     Log1pLoss,
     MLPECalibrationHead,
@@ -23,7 +22,6 @@ from ilg_toolkit import (
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
-    save_checkpoint,
     save_model,
     TargetSpec,
     train,
@@ -43,34 +41,22 @@ def test_saved_precision_is_preserved(tmp_path, training_problem, loss, species,
             distance_model=distance_model,
             config=TrainingConfig(loss=loss, steps=0),
         )
-        for kind in ("model", "checkpoint"):
-            path = tmp_path / f"{kind}.eqx"
-            if kind == "model":
-                save_model(path, state.selected_model)
-                model = load_model(path, distance_model=distance_model)
-                assert eqx.tree_equal(model, state.selected_model)
-            else:
-                save_checkpoint(path, state)
-                restored = load_checkpoint(
-                    path, distance_model=distance_model, optimizer=state.config.optimizer
-                )
-                assert eqx.tree_equal(restored, state)
-                model = restored.selected_model
-            query = None if species is None else dict.fromkeys(species)
-            expected = state.selected_model.predict(region, query)
-            assert eqx.tree_equal(model.predict(region, query), expected)
-            for values in jax.tree.leaves(eqx.filter(expected, eqx.is_inexact_array)):
-                assert values.dtype == jnp.float64
-            with jax.enable_x64(False):
-                narrow = jax.tree.map(
-                    lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,
-                    distance_model,
-                )
-            with float64_required():
-                if kind == "model":
-                    load_model(path, distance_model=narrow)
-                else:
-                    load_checkpoint(path, distance_model=narrow, optimizer=state.config.optimizer)
+        path = tmp_path / "model.eqx"
+        save_model(path, state.selected_model)
+        model = load_model(path, distance_model=distance_model)
+        assert eqx.tree_equal(model, state.selected_model)
+        query = None if species is None else dict.fromkeys(species)
+        expected = state.selected_model.predict(region, query)
+        assert eqx.tree_equal(model.predict(region, query), expected)
+        for values in jax.tree.leaves(eqx.filter(expected, eqx.is_inexact_array)):
+            assert values.dtype == jnp.float64
+        with jax.enable_x64(False):
+            narrow = jax.tree.map(
+                lambda leaf: leaf.astype(jnp.float32) if eqx.is_inexact_array(leaf) else leaf,
+                distance_model,
+            )
+        with float64_required():
+            load_model(path, distance_model=narrow)
 
 
 def test_species_names_round_trip_and_predictions_are_identical(tmp_path, training_problem):
@@ -83,33 +69,23 @@ def test_species_names_round_trip_and_predictions_are_identical(tmp_path, traini
         config=TrainingConfig(loss=MLPELoss(), steps=1),
     )
     renamed = type(distance_model)(jnp.zeros((2, 2)), species=("frog", "newt"))
-    model_path, checkpoint_path = tmp_path / "model.eqx", tmp_path / "checkpoint.eqx"
-    save_model(model_path, state.selected_model)
-    save_checkpoint(checkpoint_path, state)
-    model = load_model(model_path, distance_model=renamed)
-    checkpoint = load_checkpoint(
-        checkpoint_path, distance_model=renamed, optimizer=state.config.optimizer
-    )
-    for restored, saved in (
-        (model, state.selected_model),
-        (checkpoint.selected_model, state.selected_model),
-        (checkpoint.latest_model, state.latest_model),
-    ):
-        assert restored.species == restored.distance_model.species == names
-        assert eqx.tree_equal(restored.distance_model, saved.distance_model)
-        assert eqx.tree_equal(restored.calibration_head, saved.calibration_head)
-        assert set(cast(MLPECalibrationHead, restored.calibration_head).calibrations) == {
-            (region.name, name) for name in names
-        }
-        expected = saved.predict(region, dict.fromkeys(names))
-        for name, prediction in restored.predict(region, dict.fromkeys(names)).items():
-            assert prediction.species == name
-            np.testing.assert_array_equal(prediction.values, expected[name].values)
+    path = tmp_path / "model.eqx"
+    saved = state.selected_model
+    save_model(path, saved)
+    restored = load_model(path, distance_model=renamed)
+    assert restored.species == restored.distance_model.species == names
+    assert eqx.tree_equal(restored.distance_model, saved.distance_model)
+    assert eqx.tree_equal(restored.calibration_head, saved.calibration_head)
+    assert set(cast(MLPECalibrationHead, restored.calibration_head).calibrations) == {
+        (region.name, name) for name in names
+    }
+    expected = saved.predict(region, dict.fromkeys(names))
+    for name, prediction in restored.predict(region, dict.fromkeys(names)).items():
+        assert prediction.species == name
+        np.testing.assert_array_equal(prediction.values, expected[name].values)
     unnamed = type(distance_model)(jnp.zeros(2))
     with pytest.raises(ArtifactError, match="species"):
-        load_model(model_path, distance_model=unnamed)
-    with pytest.raises(ArtifactError, match="species"):
-        load_checkpoint(checkpoint_path, distance_model=unnamed, optimizer=state.config.optimizer)
+        load_model(path, distance_model=unnamed)
 
 
 # NumPy storage drops weak types, and eqx.tree_equal ignores them.
@@ -118,37 +94,22 @@ def test_saved_weak_types_are_restored_whatever_the_template(
 ):
     with jax.enable_x64():
         region, observations, _ = training_problem("embedding")
-        # The initial parameter is weakly typed; after one Adam step only its
-        # first moment still is.
-        initial, trained = (
-            train(
-                region,
-                observations,
-                distance_model=ScalarEmbedding(jnp.asarray(1.0)),
-                config=TrainingConfig(loss=Log1pLoss(), steps=steps),
-            )
-            for steps in (0, 1)
+        # The initial parameter is weakly typed.
+        initial = train(
+            region,
+            observations,
+            distance_model=ScalarEmbedding(jnp.asarray(1.0)),
+            config=TrainingConfig(loss=Log1pLoss(), steps=0),
         )
         template = ScalarEmbedding(jnp.zeros(()))
         assert not template.weight.weak_type
         save_model(tmp_path / "model.eqx", initial.selected_model)
-        save_checkpoint(tmp_path / "checkpoint.eqx", trained)
         model = load_model(tmp_path / "model.eqx", distance_model=template)
-        restored = load_checkpoint(
-            tmp_path / "checkpoint.eqx", distance_model=template, optimizer=trained.config.optimizer
-        )
 
         def weak_types(tree):
-            # Typed random keys have no weak type.
-            return [
-                leaf.weak_type
-                for leaf in jax.tree.leaves(eqx.filter(tree, eqx.is_array))
-                if not jnp.issubdtype(leaf.dtype, jax.dtypes.prng_key)
-            ]
+            return [leaf.weak_type for leaf in jax.tree.leaves(eqx.filter(tree, eqx.is_array))]
 
         assert weak_types(model) == weak_types(initial.selected_model) == [True]
-        assert 0 < sum(weak_types(trained)) < len(weak_types(trained))
-        assert weak_types(restored) == weak_types(trained)
         # A weakly typed float64 parameter keeps float32 features in float32.
         predictions = initial.selected_model.predict(region).values
         assert predictions.dtype == jnp.float32
@@ -361,6 +322,19 @@ def test_loading_a_saved_use_amg_setting_names_its_replacement(
     )
     path.write_bytes(json.dumps(header).encode() + b"\n" + arrays)
     with pytest.raises(ArtifactError, match=r"use_amg.*solver='cg'.*solver='amg'"):
+        load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
+
+
+def test_loading_a_file_of_another_kind_names_its_kind(
+    PointConductance, training_problem, tmp_path
+):
+    path = tmp_path / "conductance.eqx"
+    _saved_conductance_model(PointConductance, training_problem, ResistanceSolverConfig(), path)
+    line, arrays = path.read_bytes().split(b"\n", 1)
+    header = json.loads(line)
+    header["kind"] = "training_checkpoint"
+    path.write_bytes(json.dumps(header).encode() + b"\n" + arrays)
+    with pytest.raises(ArtifactError, match="saved model file, found kind 'training_checkpoint'"):
         load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
 
 

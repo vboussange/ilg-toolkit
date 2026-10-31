@@ -89,8 +89,8 @@ class TrainingState[DistanceModel: AbstractDistanceModel](eqx.Module):
 
     [`train`][ilg_toolkit.train] returns a training state and continues from one.
     Continuation takes unchanged inputs and settings, apart from a larger step
-    budget and an optimizer whose state keeps the saved structure. The class is
-    generic in its distance model type, like
+    budget and an optimizer whose state keeps the structure of ``optimizer_state``.
+    The class is generic in its distance model type, like
     [`LandscapeGeneticsModel`][ilg_toolkit.LandscapeGeneticsModel].
 
     Attributes:
@@ -726,8 +726,14 @@ def train[DistanceModel: AbstractDistanceModel](
     Training averages the losses of region–species groups over regions within each
     species, then over species. It evaluates at step zero, every
     ``config.eval_every`` updates and at the final step, and selects the model with
-    the lowest validation loss, or the final model without validation. ``state``
-    continues training from its latest parameters and random state.
+    the lowest validation loss, or the final model without validation.
+
+    ``state`` continues training within one process from its latest parameters,
+    statistical parameter state, optimizer state and random key, and keeps its history
+    and selected model. Continuing with the original inputs and validation arguments
+    reproduces the uninterrupted run. Training from the distance model of a loaded
+    model is a new run: its optimizer state, statistical parameter state, history and
+    selected model start anew.
 
     ``config.optimizer`` applies each update and receives the update's training
     objective value, gradient and a function evaluating the same training objective
@@ -748,7 +754,7 @@ def train[DistanceModel: AbstractDistanceModel](
     the resistance solver repeats no analysis. A distance model that composes a
     conductance model solves through ``ConductanceModel.ecological_distances``, which
     prepares its solver state itself and repeats the analysis on every solve. A failed
-    compiled step raises at once, so the last checkpoint ``on_step`` wrote stays as it
+    compiled step raises at once, so the last model saved from ``on_step`` stays as it
     is.
 
     Training compiles its update and evaluation steps; ``with jax.disable_jit():``
@@ -762,9 +768,10 @@ def train[DistanceModel: AbstractDistanceModel](
             may supply observations for several species.
         distance_model: Initial distance model, which carries the species names;
             ``None`` when continuing from ``state``.
-        config: Training configuration; ``None`` when continuing with the saved
-            configuration. When continuing, only the step budget may increase, and
-            the optimizer may change if its state keeps the saved structure.
+        config: Training configuration; ``None`` when continuing with the configuration
+            of ``state``. When continuing, only the step budget may increase, and the
+            optimizer may change if its state keeps the structure of
+            ``state.optimizer_state``.
         validation: Regions and observations disjoint from the training
             observations, selecting the model by validation loss with the
             calibration estimated on the training observations.
@@ -809,6 +816,15 @@ def train[DistanceModel: AbstractDistanceModel](
         >>> state = train(region, observations, distance_model=distance_model, config=config)
         >>> state.converged
         True
+
+        ``on_step`` saves the latest model after initialization and after each update,
+        and a new run starts from the distance model of the saved model:
+
+        >>> state = train(region, observations, distance_model=distance_model, config=config,
+        ...               on_step=lambda state: save_model("latest.eqx", state.latest_model))
+        >>> restored = load_model("latest.eqx", distance_model=distance_model)
+        >>> state = train(region, observations, distance_model=restored.distance_model,
+        ...               config=config)
 
         Zero steps initializes the statistical parameters and fits the coefficients
         at those parameters; ``fit_calibration_head`` optimizes a calibration head
@@ -880,7 +896,8 @@ def train[DistanceModel: AbstractDistanceModel](
         expected = eqx.filter_eval_shape(config.optimizer.init, trainable)
         if not _same_optimizer_state_structure(expected, state.optimizer_state):
             raise ValueError(
-                "Continuation requires an optimizer whose state has the saved structure"
+                "Continuation requires an optimizer whose state keeps the structure of "
+                "the training state's optimizer state"
             )
         optimizer_state = state.optimizer_state
     optimizer_state = _match_update_weak_types(config.optimizer, optimizer_state, trainable)
