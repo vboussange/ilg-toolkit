@@ -10,7 +10,7 @@ import jax
 
 from ._checks import _require_float64
 from .data import PairwiseObservations, RegionBatch, TargetSpec
-from .mlpe import MLPECalibration
+from .mlpe import MLPECalibration, MLPEError
 from .mlpe.prediction import _predict_mlpe
 from .prediction import Prediction
 
@@ -357,7 +357,6 @@ def fit_calibration_head(
     """
     from ._training_utils import _prepare_training_inputs, _RegionSpeciesTrainingInput
     from .losses import AbstractLoss
-    from .mlpe import MLPEError
     from .models import AbstractDistanceModel
     from .models.base import (
         _check_regions,
@@ -404,7 +403,8 @@ def fit_calibration_head(
                 partial(group_distances, group), group.observations, max_iterations=budget
             )
         except MLPEError as error:
-            raise MLPEError(f"Region–species group {group.key}: {error}") from error
+            species = distance_model.species and distance_model.species[group.species_index]
+            raise MLPEError(f"Region {group.region.name}, species {species}: {error}") from error
 
     fitted = {group.key: fit_group(group) for group in groups}
     return loss._calibration_head(
