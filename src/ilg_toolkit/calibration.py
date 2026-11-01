@@ -403,7 +403,11 @@ def fit_calibration_head(
                 partial(group_distances, group), group.observations, max_iterations=budget
             )
         except MLPEError as error:
-            species = distance_model.species and distance_model.species[group.species_index]
+            species = (
+                None
+                if distance_model.species is None
+                else distance_model.species[group.species_index]
+            )
             raise MLPEError(f"Region {group.region.name}, species {species}: {error}") from error
 
     fitted = {group.key: fit_group(group) for group in groups}

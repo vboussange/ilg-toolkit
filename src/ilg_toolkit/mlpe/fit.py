@@ -19,15 +19,16 @@ if TYPE_CHECKING:
     from ..losses import MLPELoss
 
 
-# Largest projected gradient of the negative log likelihood, per observed pair, that counts
-# as a local optimum.
+# Largest projected gradient of the negative log likelihood that counts as a local optimum,
+# per observed pair and overall. The overall term clears rounding on a few pairs.
 _GRADIENT_TOLERANCE_PER_PAIR = 1e-5
+_GRADIENT_TOLERANCE = 1e-2
 # Fractions of the response variance in the population effects at the optimization's starts,
 # with variance ratios u / e from 0.005 to 2500. The last two reach a mode at a large ratio,
 # where a large u cancels an additive term of the distances.
 _START_FRACTIONS = (0.01, 0.1, 0.25, 0.5, 0.8, 0.998, 0.9998)
-# Difference in negative log likelihood within which starts have reached the same optimum.
-_SAME_OPTIMUM_TOLERANCE = 1e-4
+# Difference in negative log likelihood within which runs have reached the same optimum.
+_SAME_OPTIMUM_TOLERANCE = 1e-3
 # Exponent of the smooth maximum of the optimizer's parameters: at a tenth of its larger
 # argument, the smaller one moves the maximum by a relative 1e-9.
 _SMOOTH_MAXIMUM_EXPONENT = 8
@@ -44,6 +45,12 @@ def _raw_from_log_variances(log_variances):
     return variances + jnp.log(-jnp.expm1(-variances))
 
 
+def _log_limit_share(parameters, *, max_log_ratio, jitter):
+    """Returns the log of ``u / exp(max_log_ratio)`` over ``z + j`` at ``parameters``."""
+    log_unit, log_remainder = parameters
+    return log_unit - max_log_ratio - jnp.log(jnp.exp(log_remainder) + jitter)
+
+
 def _log_variances(parameters, *, max_log_ratio, jitter):
     """Returns the log unit and residual variances of the optimizer's parameters.
 
@@ -53,12 +60,14 @@ def _log_variances(parameters, *, max_log_ratio, jitter):
     """
     log_unit, log_remainder = parameters
     remainder = jnp.exp(log_remainder)
-    total = remainder + jitter
-    log_share = log_unit - max_log_ratio - jnp.log(total)
     excess = jnp.expm1(
-        jax.nn.softplus(_SMOOTH_MAXIMUM_EXPONENT * log_share) / _SMOOTH_MAXIMUM_EXPONENT
+        jax.nn.softplus(
+            _SMOOTH_MAXIMUM_EXPONENT
+            * _log_limit_share(parameters, max_log_ratio=max_log_ratio, jitter=jitter)
+        )
+        / _SMOOTH_MAXIMUM_EXPONENT
     )
-    return jnp.stack((log_unit, jnp.log(remainder + total * excess)))
+    return jnp.stack((log_unit, jnp.log(remainder + (remainder + jitter) * excess)))
 
 
 @partial(jax.jit, static_argnames=("n_populations",))
@@ -233,11 +242,11 @@ def _fit_mlpe(
     that bound, so no trial is rejected for its ratio, and the variance floor bounds both
     ``u`` and ``z``. ``u`` has no upper bound, so the first trial has unit length, and it
     lengthens only while the likelihood improves. A trial of an extreme value can still
-    reduce L-BFGS-B's step to nothing, which stops it away from a local optimum, so
-    L-BFGS-B restarts from there while it makes progress, within ``max_iterations``.
-    Failed factorizations, nonfinite inputs, constant distances, and a retained start
-    with ``u / (z + j)`` above half the limit or with a projected gradient above
-    tolerance raise ``MLPEError``.
+    reduce L-BFGS-B's step to nothing, and at the limit ``e`` no longer depends on ``z``.
+    Either stops L-BFGS-B away from a local optimum, so it restarts with ``z`` at the
+    fitted ``e`` while it makes progress, within ``max_iterations``. Failed factorizations,
+    nonfinite inputs, constant distances, and a retained start with ``u / (z + j)`` above
+    half the limit or with a projected gradient above tolerance raise ``MLPEError``.
     """
     # The optimizer's starts and bounds are prepared in NumPy on the host, compiling
     # no XLA program for new shapes; the compiled kernels evaluate the likelihood.
@@ -293,7 +302,12 @@ def _fit_mlpe(
         projected_gradient = result.x - np.clip(
             result.x - result.jac, log_floor, [np.inf, log_upper]
         )
-        return np.abs(projected_gradient).max() <= _GRADIENT_TOLERANCE_PER_PAIR * len(distances)
+        tolerance = _GRADIENT_TOLERANCE + _GRADIENT_TOLERANCE_PER_PAIR * len(distances)
+        return np.abs(projected_gradient).max() <= tolerance
+
+    def at_ratio_limit(result):
+        share = _log_limit_share(result.x, max_log_ratio=max_log_ratio, jitter=loss.jitter)
+        return share > -math.log(2)
 
     def descend(parameters):
         iterations, value = 0, math.inf
@@ -308,14 +322,18 @@ def _fit_mlpe(
             )
             iterations += result.nit
             if (
-                stationary(result)
+                (stationary(result) and not at_ratio_limit(result))
                 or iterations >= max_iterations
-                or result.fun >= value
-                or np.array_equal(result.x, parameters)
+                or result.fun >= value - _SAME_OPTIMUM_TOLERANCE
             ):
                 result.nit = iterations
                 return result
-            parameters, value = result.x, result.fun
+            parameters = np.asarray(
+                _log_variances(
+                    jnp.asarray(result.x), max_log_ratio=max_log_ratio, jitter=loss.jitter
+                )
+            )
+            value = result.fun
 
     results = []
     for fraction in _START_FRACTIONS:
@@ -338,7 +356,7 @@ def _fit_mlpe(
             candidate.fun,
         ),
     )
-    if result.x[0] - max_log_ratio > math.log((math.exp(result.x[1]) + loss.jitter) / 2):
+    if at_ratio_limit(result):
         raise MLPEError(
             "The highest MLPE likelihood lies at the variance ratio limit "
             f"(eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= {_MAX_ROUNDOFF_BOUND})"

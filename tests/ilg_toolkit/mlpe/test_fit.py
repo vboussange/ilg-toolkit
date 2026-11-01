@@ -156,6 +156,8 @@ def _additive_distance_problem(*, additive_sd, unit, residual, slope, seed, coun
         pytest.param(12, 40.0, 1e-3, 2e-4, 0.5, 1, 119.389, id="line-search-ends-abnormally"),
         pytest.param(6, 20.0, 1e-3, 2e-4, 200.0, 1, -21.622, id="mode-reached-by-one-start"),
         pytest.param(30, 1000.0, 1e-3, 2e-4, 0.02, 0, 1027.199, id="mode-at-a-large-ratio"),
+        pytest.param(12, 100.0, 1.0, 1e-3, 200.0, 2, -12.551, id="starts-stranded-at-the-limit"),
+        pytest.param(30, 100.0, 1e-3, 1e-3, 0.02, 1, 805.219, id="start-stranded-below-the-best"),
     ],
 )
 def test_converged_calibration_is_a_local_optimum_of_the_dense_likelihood(
