@@ -357,6 +357,7 @@ def fit_calibration_head(
     """
     from ._training_utils import _prepare_training_inputs, _RegionSpeciesTrainingInput
     from .losses import AbstractLoss
+    from .mlpe import MLPEError
     from .models import AbstractDistanceModel
     from .models.base import (
         _check_regions,
@@ -397,12 +398,15 @@ def fit_calibration_head(
         )
         return distances
 
-    fitted = {
-        group.key: loss._fit_group(
-            partial(group_distances, group), group.observations, max_iterations=budget
-        )
-        for group in groups
-    }
+    def fit_group(group: _RegionSpeciesTrainingInput):
+        try:
+            return loss._fit_group(
+                partial(group_distances, group), group.observations, max_iterations=budget
+            )
+        except MLPEError as error:
+            raise MLPEError(f"Region–species group {group.key}: {error}") from error
+
+    fitted = {group.key: fit_group(group) for group in groups}
     return loss._calibration_head(
         prepared.inputs[0].observations.target, fitted, distance_model.species
     )

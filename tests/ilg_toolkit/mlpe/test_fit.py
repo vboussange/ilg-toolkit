@@ -15,6 +15,7 @@ from ilg_toolkit import (
     TargetSpec,
 )
 from ilg_toolkit.mlpe import fit, MLPECalibration, MLPEError
+from scipy.optimize import minimize
 
 
 def _fit(mlpe_reference, observations, distances, **options) -> MLPECalibration:
@@ -151,6 +152,7 @@ def _additive_distance_problem(*, additive_sd, unit, residual, slope, seed, coun
         pytest.param(30, 20.0, 1e-3, 2e-5, 0.08, 0, 1568.009, id="stalled-away-from-a-start"),
         pytest.param(12, 40.0, 1e-3, 2e-4, 0.5, 1, 119.389, id="line-search-ends-abnormally"),
         pytest.param(6, 20.0, 1e-3, 2e-4, 200.0, 1, -21.622, id="mode-reached-by-one-start"),
+        pytest.param(30, 1000.0, 1e-3, 2e-4, 0.02, 0, 1027.199, id="mode-at-a-large-ratio"),
     ],
 )
 def test_converged_calibration_is_a_local_optimum_of_the_dense_likelihood(
@@ -204,24 +206,22 @@ def test_calibration_keeps_an_optimum_on_the_variance_floor(
     assert getattr(calibration, component) == pytest.approx(loss.variance_floor)
 
 
-def test_calibration_limits_the_variance_ratio_with_the_jitter(mlpe_reference):
-    # The unit variance of about 1e3 is a ratio of 1e13 over the variance floor of 1e-10,
-    # and of 1e9 over the floor plus the jitter.
+def test_calibration_restarts_a_start_that_stops_away_from_a_local_optimum(
+    monkeypatch, mlpe_reference
+):
+    # Every run stops after three iterations, as a collapsed line search does.
     observations, distances, *_ = _additive_distance_problem(
-        additive_sd=3.0, unit=1e3, residual=0.0, slope=0.02, seed=0
+        additive_sd=40.0, unit=1e-3, residual=2e-4, slope=0.02, seed=0
     )
-    loss = MLPELoss(jitter=1e-6)
-    calibration = _fit(mlpe_reference, observations, distances, loss=loss)
-    assert calibration.residual_variance == pytest.approx(loss.variance_floor)
 
+    def stopping_early(objective, start, **options):
+        return minimize(
+            objective, start, **options | {"options": options["options"] | {"maxiter": 3}}
+        )
 
-def test_calibration_restarts_a_start_that_stops_away_from_a_local_optimum(mlpe_reference):
-    # Its first run stops at a log likelihood of -1336.124, and the other starts reach -1352.357.
-    observations, distances, *_ = _additive_distance_problem(
-        additive_sd=300.0, unit=1e14, residual=1e12, slope=2e8, seed=731, count=12
-    )
-    calibration = _fit(mlpe_reference, observations, distances, loss=MLPELoss(jitter=1e-8))
-    assert calibration.ml_log_likelihood == pytest.approx(-1114.399, abs=1e-3)
+    monkeypatch.setattr(fit, "minimize", stopping_early)
+    calibration = _fit(mlpe_reference, observations, distances, loss=MLPELoss())
+    assert calibration.ml_log_likelihood == pytest.approx(1121.234, abs=1e-3)
 
 
 @pytest.mark.parametrize(
@@ -230,6 +230,8 @@ def test_calibration_restarts_a_start_that_stops_away_from_a_local_optimum(mlpe_
         # The unit variance of 1e5 over the variance floor of 1e-10 is a ratio of 1e15.
         pytest.param(30, 3.0, 1e5, 200.0, id="every-start-at-the-limit"),
         pytest.param(6, 40.0, 1e-3, 200.0, id="other-starts-at-a-lower-optimum"),
+        # The unit variance of 1 holds the residual variance about 1% above its floor.
+        pytest.param(30, 3.0, 1.0, 0.2, id="residual-variance-on-its-floor"),
     ],
 )
 def test_calibration_raises_when_the_optimum_exceeds_the_supported_variance_ratio(
@@ -238,7 +240,7 @@ def test_calibration_raises_when_the_optimum_exceeds_the_supported_variance_rati
     observations, distances, *_ = _additive_distance_problem(
         additive_sd=additive_sd, unit=unit, residual=0.0, slope=slope, seed=0, count=count
     )
-    with pytest.raises(MLPEError, match="beyond the supported variance ratio"):
+    with pytest.raises(MLPEError, match="at the variance ratio limit"):
         _fit(mlpe_reference, observations, distances, loss=MLPELoss())
 
 
@@ -253,7 +255,7 @@ def test_calibration_raises_when_rejected_trials_keep_every_start_from_the_optim
 
     def rejecting(parameters, *args, **kwargs):
         value, gradient = evaluate(parameters, *args, **kwargs)
-        return jnp.where(parameters[0] > 2.0, jnp.nan, value), gradient
+        return jnp.where(parameters[0] - parameters[1] > 2.0, jnp.nan, value), gradient
 
     monkeypatch.setattr(fit, "_optimizer_value_and_gradient", rejecting)
     with pytest.raises(MLPEError, match="stopped away from a local optimum"):
