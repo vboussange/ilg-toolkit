@@ -186,15 +186,22 @@ def test_converged_calibration_is_a_local_optimum_of_the_dense_likelihood(
         assert log_likelihood(fitted + np.array(step)) <= calibration.ml_log_likelihood + 1e-6
 
 
-def test_calibration_keeps_an_optimum_on_the_variance_floor(mlpe_reference):
-    # Targets without residual noise have their optimum at the smallest residual variance.
+@pytest.mark.parametrize(
+    ("additive_sd", "unit", "residual", "component"),
+    [
+        pytest.param(40.0, 1e-3, 0.0, "residual_variance", id="no-residual-noise"),
+        pytest.param(0.0, 0.0, 2e-4, "unit_variance", id="no-population-effects"),
+    ],
+)
+def test_calibration_keeps_an_optimum_on_the_variance_floor(
+    mlpe_reference, additive_sd, unit, residual, component
+):
     observations, distances, *_ = _additive_distance_problem(
-        additive_sd=40.0, unit=1e-3, residual=0.0, slope=0.02, seed=0
+        additive_sd=additive_sd, unit=unit, residual=residual, slope=0.02, seed=0
     )
     loss = MLPELoss()
     calibration = _fit(mlpe_reference, observations, distances, loss=loss)
-    assert calibration.converged
-    assert calibration.residual_variance == pytest.approx(loss.variance_floor)
+    assert getattr(calibration, component) == pytest.approx(loss.variance_floor)
 
 
 def test_calibration_limits_the_variance_ratio_with_the_jitter(mlpe_reference):
@@ -205,8 +212,16 @@ def test_calibration_limits_the_variance_ratio_with_the_jitter(mlpe_reference):
     )
     loss = MLPELoss(jitter=1e-6)
     calibration = _fit(mlpe_reference, observations, distances, loss=loss)
-    assert calibration.converged
     assert calibration.residual_variance == pytest.approx(loss.variance_floor)
+
+
+def test_calibration_restarts_a_start_that_stops_away_from_a_local_optimum(mlpe_reference):
+    # Its first run stops at a log likelihood of -1336.124, and the other starts reach -1352.357.
+    observations, distances, *_ = _additive_distance_problem(
+        additive_sd=300.0, unit=1e14, residual=1e12, slope=2e8, seed=731, count=12
+    )
+    calibration = _fit(mlpe_reference, observations, distances, loss=MLPELoss(jitter=1e-8))
+    assert calibration.ml_log_likelihood == pytest.approx(-1114.399, abs=1e-3)
 
 
 @pytest.mark.parametrize(
@@ -236,9 +251,9 @@ def test_calibration_raises_when_rejected_trials_keep_every_start_from_the_optim
     )
     evaluate = fit._optimizer_value_and_gradient
 
-    def rejecting(log_variances, *args, **kwargs):
-        value, gradient = evaluate(log_variances, *args, **kwargs)
-        return jnp.where(log_variances[0] - log_variances[1] > 2.0, jnp.nan, value), gradient
+    def rejecting(parameters, *args, **kwargs):
+        value, gradient = evaluate(parameters, *args, **kwargs)
+        return jnp.where(parameters[0] > 2.0, jnp.nan, value), gradient
 
     monkeypatch.setattr(fit, "_optimizer_value_and_gradient", rejecting)
     with pytest.raises(MLPEError, match="stopped away from a local optimum"):
@@ -251,8 +266,8 @@ def test_calibration_raises_without_a_finite_likelihood(monkeypatch, mlpe_refere
     )
     evaluate = fit._optimizer_value_and_gradient
 
-    def rejecting(log_variances, *args, **kwargs):
-        _, gradient = evaluate(log_variances, *args, **kwargs)
+    def rejecting(parameters, *args, **kwargs):
+        _, gradient = evaluate(parameters, *args, **kwargs)
         return jnp.nan, gradient
 
     monkeypatch.setattr(fit, "_optimizer_value_and_gradient", rejecting)

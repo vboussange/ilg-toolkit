@@ -12,18 +12,18 @@ from jax.scipy.linalg import cho_solve
 # eps * cond(I + (u/d) Z.T Z) for complete, incomplete and bipartite pair sets.
 # Calculations beyond it return nonfinite results.
 _MAX_ROUNDOFF_BOUND = 0.01
-# Log-scale margin that keeps a limit on u/d within the bound through rounding.
-_RATIO_LIMIT_MARGIN = 1e-9
 
 
 def _max_log_variance_ratio(max_degree, eps):
     """Returns the log of a variance ratio u/d just within the roundoff bound.
 
+    A margin of 1024 eps keeps the ratio within the bound through rounding.
+
     Args:
         max_degree: Maximum pairs per sampling unit.
         eps: Machine epsilon of the factorization's data type.
     """
-    return math.log((_MAX_ROUNDOFF_BOUND / eps - 1) / (2 * max_degree)) - _RATIO_LIMIT_MARGIN
+    return math.log((_MAX_ROUNDOFF_BOUND / eps - 1) / (2 * max_degree)) - 1024 * eps
 
 
 def _endpoint_sums(values, left, right, n_populations):

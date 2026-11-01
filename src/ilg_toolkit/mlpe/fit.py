@@ -11,7 +11,7 @@ import numpy as np
 from scipy.optimize import minimize
 
 from ..data import PairwiseObservations
-from .covariance import _max_log_variance_ratio
+from .covariance import _max_log_variance_ratio, _MAX_ROUNDOFF_BOUND
 from .likelihood import _finalize_mlpe_fit, _MLPEFit, _profiled_mlpe_ml_fit
 
 
@@ -19,9 +19,16 @@ if TYPE_CHECKING:
     from ..losses import MLPELoss
 
 
-# Largest projected gradient of the negative log likelihood in log variances, per observed
-# pair, at a local optimum. L-BFGS-B's reduction tolerance stops well within it.
+# Largest projected gradient of the negative log likelihood, per observed pair, that counts
+# as a local optimum.
 _GRADIENT_TOLERANCE_PER_PAIR = 1e-5
+# Distance from the limit of the log variance ratio that counts as at the limit.
+_RATIO_LIMIT_SLACK = 1e-6
+# Restarts of a start that stops away from a local optimum.
+_MAX_RESTARTS = 3
+_SUPPORTED_RATIO = (
+    f"eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= {_MAX_ROUNDOFF_BOUND}"
+)
 
 
 class MLPEError(ValueError):
@@ -35,39 +42,37 @@ def _raw_from_log_variances(log_variances):
     return variances + jnp.log(-jnp.expm1(-variances))
 
 
-def _log_ratio_excess(log_variances, *, max_log_ratio, jitter):
-    """Returns how far the log variance ratio of ``log_variances`` exceeds ``max_log_ratio``."""
-    log_ratio = log_variances[0] - jnp.log(jnp.exp(log_variances[1]) + jitter)
-    return jnp.maximum(log_ratio - max_log_ratio, 0.0)
+def _log_variances(parameters, *, log_floor, jitter):
+    """Returns the log unit and residual variances of the optimizer's parameters.
+
+    The parameters are the log variance ratio ``u / (e + j)`` and the log residual
+    variance ``e``, with jitter ``j``. Below the variance floor ``u`` stays at the floor.
+    """
+    log_ratio, log_residual = parameters
+    log_unit = log_ratio + jnp.log(jnp.exp(log_residual) + jitter)
+    return jnp.stack((jnp.maximum(log_unit, log_floor), log_residual))
 
 
 @partial(jax.jit, static_argnames=("n_populations",))
 def _optimizer_value_and_gradient(
-    log_variances, distances, targets, left, right, *, max_log_ratio, jitter, **options
+    parameters, distances, targets, left, right, *, log_floor, jitter, **options
 ):
-    """Returns the optimizer's objective and its gradient in log variances.
-
-    Within ``max_log_ratio`` the objective is the profiled negative log likelihood.
-    Beyond it, the objective is that likelihood at the unit variance reduced to the
-    limit, plus a quadratic penalty on the excess. A trial beyond the limit thus has
-    a finite value and gradient for the line search, and the objective has no
-    stationary point there.
-    """
+    """Returns the profiled negative log likelihood and its gradient in ``parameters``."""
 
     def objective(parameters):
-        excess = _log_ratio_excess(parameters, max_log_ratio=max_log_ratio, jitter=jitter)
-        nll = _profiled_mlpe_ml_fit(
+        return _profiled_mlpe_ml_fit(
             distances,
             targets,
             left,
             right,
-            raw_variances=_raw_from_log_variances(parameters.at[0].add(-excess)),
+            raw_variances=_raw_from_log_variances(
+                _log_variances(parameters, log_floor=log_floor, jitter=jitter)
+            ),
             jitter=jitter,
             **options,
         )[0]
-        return nll + distances.size * excess**2
 
-    return jax.value_and_grad(objective)(log_variances)
+    return jax.value_and_grad(objective)(parameters)
 
 
 @final
@@ -109,7 +114,8 @@ class MLPECalibration(eqx.Module):
         optimizer_message: Final message of the variance optimizer, or training's
             description of its step budget.
         converged: Whether the variance optimizer reached a local optimum of the
-            marginal likelihood; ``False`` for a calibration that training produced.
+            marginal likelihood; ``False`` for a calibration from training or from a
+            saved model.
 
     Raises:
         MLPEError: A fitted value is nonfinite, the distance scale or a variance
@@ -212,6 +218,13 @@ def _fit_mlpe(
     ``max_iterations``, and the start with the highest marginal likelihood is retained.
     ``max_iterations`` is a positive integer.
 
+    L-BFGS-B searches the log variance ratio and the log residual variance. The upper
+    bound on the ratio holds every trial at a supported ratio, so each trial has a value
+    and a gradient. The ratio has no lower bound, so the first trial has unit length
+    and stays near its start. A trial of an extreme value can still reduce L-BFGS-B's
+    step to nothing, which stops it away from a local optimum, so it restarts from there
+    with its curvature pairs discarded, within ``max_iterations``.
+
     Covariance algebra is population-sized, with no dense pair-by-pair covariance
     matrix. For population variance u, residual variance e, jitter j and maximum
     observed population degree dmax, supported precision requires
@@ -260,59 +273,66 @@ def _fit_mlpe(
         jitter=loss.jitter,
     )
 
-    def objective(log_variances):
+    def objective(parameters):
         value, gradient = _optimizer_value_and_gradient(
-            jnp.asarray(log_variances),
-            *kernel_inputs,
-            max_log_ratio=max_log_ratio,
-            **kernel_options,
+            jnp.asarray(parameters), *kernel_inputs, log_floor=lower, **kernel_options
         )
         value, gradient = float(value), np.asarray(gradient)
         if not math.isfinite(value) or not np.isfinite(gradient).all():
-            return float("inf"), np.zeros_like(log_variances)
+            return float("inf"), np.zeros_like(parameters)
         return value, gradient
+
+    def stationary(result):
+        projected_gradient = result.x - np.clip(
+            result.x - result.jac, [-np.inf, lower], [max_log_ratio, upper]
+        )
+        return np.abs(projected_gradient).max() <= _GRADIENT_TOLERANCE_PER_PAIR * len(distances)
+
+    def descend(parameters):
+        iterations, restarts = 0, 0
+        while True:
+            result = minimize(
+                objective,
+                parameters,
+                jac=True,
+                method="L-BFGS-B",
+                bounds=[(None, max_log_ratio), (lower, upper)],
+                options={"maxiter": max_iterations - iterations, "ftol": 1e-12, "gtol": 1e-9},
+            )
+            iterations += result.nit
+            if stationary(result) or iterations >= max_iterations or restarts == _MAX_RESTARTS:
+                result.nit = iterations
+                return result
+            parameters, restarts = result.x, restarts + 1
 
     results = []
     for fraction in (0.01, 0.1, 0.25, 0.5, 0.8):
-        start = np.log(
-            [
-                max(response_variance * fraction / 2, loss.variance_floor * 10),
-                max(response_variance * (1 - fraction), loss.variance_floor * 10),
-            ]
-        )
-        results.append(
-            minimize(
-                objective,
-                start,
-                jac=True,
-                method="L-BFGS-B",
-                bounds=[(lower, upper)] * 2,
-                options={"maxiter": max_iterations, "ftol": 1e-12, "gtol": 1e-9},
-            )
-        )
+        unit = max(response_variance * fraction / 2, loss.variance_floor * 10)
+        residual = max(response_variance * (1 - fraction), loss.variance_floor * 10)
+        results.append(descend(np.log([unit / (residual + loss.jitter), residual])))
     result = min(results, key=lambda candidate: candidate.fun)
     if not math.isfinite(result.fun):
         raise MLPEError(
             "No deterministic MLPE optimization start reached a finite likelihood"
-            "; check distance variation and variance conditioning "
-            "(eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= 0.01)"
+            f"; check distance variation and variance conditioning ({_SUPPORTED_RATIO})"
         )
-    if _log_ratio_excess(result.x, max_log_ratio=max_log_ratio, jitter=loss.jitter) > 0.0:
+    if result.x[0] >= max_log_ratio - _RATIO_LIMIT_SLACK:
         raise MLPEError(
             "The highest MLPE likelihood lies beyond the supported variance ratio "
-            "(eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= 0.01)"
+            f"({_SUPPORTED_RATIO})"
         )
-    projected_gradient = result.x - np.clip(result.x - result.jac, lower, upper)
-    if np.abs(projected_gradient).max() > _GRADIENT_TOLERANCE_PER_PAIR * len(distances):
+    if not stationary(result):
         raise MLPEError(
             "The MLPE optimization start with the highest likelihood stopped away from a "
             f"local optimum after {result.nit} iterations: {result.message}"
         )
-    raw = _raw_from_log_variances(jnp.asarray(result.x))
-    fit = _finalize_mlpe_fit(*kernel_inputs, raw_variances=raw, **kernel_options)
+    log_variances = _log_variances(jnp.asarray(result.x), log_floor=lower, jitter=loss.jitter)
+    fit = _finalize_mlpe_fit(
+        *kernel_inputs, raw_variances=_raw_from_log_variances(log_variances), **kernel_options
+    )
     # Retain the fitted variances: rounding during inverse softplus can place
     # reconstructed values slightly below the configured variance floor.
-    fit = fit._replace(variances=np.exp(result.x))
+    fit = fit._replace(variances=np.exp(log_variances))
     if not all(np.isfinite(value).all() for value in jax.tree.leaves(fit)):
         raise MLPEError("Fitted population-effect posterior is nonfinite")
     return _calibration_from_fit(
