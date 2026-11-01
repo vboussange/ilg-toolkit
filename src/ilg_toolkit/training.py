@@ -16,6 +16,7 @@ from jaxscape.solvers import SparseDirectState
 
 from ._checks import _require_float64
 from ._training_utils import (
+    _group_name,
     _prepare_training_inputs,
     _RegionSpeciesKey,
     _RegionSpeciesTrainingInput,
@@ -244,12 +245,6 @@ def _group_distances(model, latent, payload, species_index, context):
         species_index=species_index,
         context=context,
     )
-
-
-def _group_name(species: tuple[str, ...] | None, group: _RegionSpeciesKey) -> str:
-    """Returns the name of a region–species group in error messages."""
-    region, index = group
-    return f"region {region!r}, species {index if species is None else repr(species[index])}"
 
 
 def _failure_reason(error: Exception) -> str:

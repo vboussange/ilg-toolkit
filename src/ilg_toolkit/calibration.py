@@ -10,7 +10,7 @@ import jax
 
 from ._checks import _require_float64
 from .data import PairwiseObservations, RegionBatch, TargetSpec
-from .mlpe import MLPECalibration
+from .mlpe import MLPECalibration, MLPEError
 from .mlpe.prediction import _predict_mlpe
 from .prediction import Prediction
 
@@ -355,7 +355,11 @@ def fit_calibration_head(
         [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
         conditions population effects without refitting.
     """
-    from ._training_utils import _prepare_training_inputs, _RegionSpeciesTrainingInput
+    from ._training_utils import (
+        _group_name,
+        _prepare_training_inputs,
+        _RegionSpeciesTrainingInput,
+    )
     from .losses import AbstractLoss
     from .models import AbstractDistanceModel
     from .models.base import (
@@ -397,12 +401,15 @@ def fit_calibration_head(
         )
         return distances
 
-    fitted = {
-        group.key: loss._fit_group(
-            partial(group_distances, group), group.observations, max_iterations=budget
-        )
-        for group in groups
-    }
+    def fit_group(group: _RegionSpeciesTrainingInput):
+        try:
+            return loss._fit_group(
+                partial(group_distances, group), group.observations, max_iterations=budget
+            )
+        except MLPEError as error:
+            raise MLPEError(f"{_group_name(distance_model.species, group.key)}: {error}") from error
+
+    fitted = {group.key: fit_group(group) for group in groups}
     return loss._calibration_head(
         prepared.inputs[0].observations.target, fitted, distance_model.species
     )
