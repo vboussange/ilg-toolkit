@@ -355,7 +355,11 @@ def fit_calibration_head(
         [`LandscapeGeneticsModel.predict`][ilg_toolkit.LandscapeGeneticsModel.predict]
         conditions population effects without refitting.
     """
-    from ._training_utils import _prepare_training_inputs, _RegionSpeciesTrainingInput
+    from ._training_utils import (
+        _group_name,
+        _prepare_training_inputs,
+        _RegionSpeciesTrainingInput,
+    )
     from .losses import AbstractLoss
     from .models import AbstractDistanceModel
     from .models.base import (
@@ -403,12 +407,7 @@ def fit_calibration_head(
                 partial(group_distances, group), group.observations, max_iterations=budget
             )
         except MLPEError as error:
-            species = (
-                None
-                if distance_model.species is None
-                else distance_model.species[group.species_index]
-            )
-            raise MLPEError(f"Region {group.region.name}, species {species}: {error}") from error
+            raise MLPEError(f"{_group_name(distance_model.species, group.key)}: {error}") from error
 
     fitted = {group.key: fit_group(group) for group in groups}
     return loss._calibration_head(

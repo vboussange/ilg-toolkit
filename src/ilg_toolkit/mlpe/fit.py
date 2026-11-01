@@ -243,7 +243,7 @@ def _fit_mlpe(
     ``u`` and ``z``. ``u`` has no upper bound, so the first trial has unit length, and it
     lengthens only while the likelihood improves. A trial of an extreme value can still
     reduce L-BFGS-B's step to nothing, and at the limit ``e`` no longer depends on ``z``.
-    Either stops L-BFGS-B away from a local optimum, so it restarts with ``z`` at the
+    Either stops L-BFGS-B away from a local optimum, so it restarts with ``z`` set to the
     fitted ``e`` while it makes progress, within ``max_iterations``. Failed factorizations,
     nonfinite inputs, constant distances, and a retained start with ``u / (z + j)`` above
     half the limit or with a projected gradient above tolerance raise ``MLPEError``.
@@ -310,7 +310,7 @@ def _fit_mlpe(
         return share > -math.log(2)
 
     def descend(parameters):
-        iterations, value = 0, math.inf
+        iterations, best = 0, None
         while True:
             result = minimize(
                 objective,
@@ -321,19 +321,22 @@ def _fit_mlpe(
                 options={"maxiter": max_iterations - iterations, "ftol": 1e-12, "gtol": 1e-9},
             )
             iterations += result.nit
+            limited = at_ratio_limit(result)
+            progress = math.inf if best is None else best.fun - result.fun
+            if best is None or progress > 0.0:
+                best = result
             if (
-                (stationary(result) and not at_ratio_limit(result))
+                (stationary(result) and not limited)
                 or iterations >= max_iterations
-                or result.fun >= value - _SAME_OPTIMUM_TOLERANCE
+                or progress <= (_SAME_OPTIMUM_TOLERANCE if limited else 0.0)
             ):
-                result.nit = iterations
-                return result
+                best.nit = iterations
+                return best
             parameters = np.asarray(
                 _log_variances(
                     jnp.asarray(result.x), max_log_ratio=max_log_ratio, jitter=loss.jitter
                 )
             )
-            value = result.fun
 
     results = []
     for fraction in _START_FRACTIONS:
@@ -346,11 +349,12 @@ def _fit_mlpe(
             "No deterministic MLPE optimization start reached a finite likelihood"
             "; check distance variation"
         )
-    # Of the starts at the same optimum, keep the one that L-BFGS-B stopped cleanly.
+    # Of the starts at the same optimum, keep one at a supported ratio that stopped cleanly.
     result = min(
         results,
         key=lambda candidate: (
             candidate.fun - best > _SAME_OPTIMUM_TOLERANCE,
+            at_ratio_limit(candidate),
             not stationary(candidate),
             not candidate.success,
             candidate.fun,
@@ -358,7 +362,7 @@ def _fit_mlpe(
     )
     if at_ratio_limit(result):
         raise MLPEError(
-            "The highest MLPE likelihood lies at the variance ratio limit "
+            "The highest MLPE likelihood lies above half the variance ratio limit "
             f"(eps * (1 + 2 * max_degree * unit / (residual + jitter)) <= {_MAX_ROUNDOFF_BOUND})"
         )
     if not stationary(result):

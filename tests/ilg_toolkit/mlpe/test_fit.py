@@ -252,7 +252,7 @@ def test_calibration_raises_when_the_optimum_exceeds_the_supported_variance_rati
     observations, distances, *_ = _additive_distance_problem(
         additive_sd=additive_sd, unit=unit, residual=0.0, slope=slope, seed=0, count=count
     )
-    with pytest.raises(MLPEError, match="alpine, species None: .* at the variance ratio limit"):
+    with pytest.raises(MLPEError, match="'alpine', species 0: .* half the variance ratio limit"):
         _fit(mlpe_reference, observations, distances, loss=MLPELoss())
 
 

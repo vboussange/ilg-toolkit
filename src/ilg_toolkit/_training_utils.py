@@ -11,6 +11,12 @@ from .data import _ObservationCollection, _RegionCollection, PairwiseObservation
 type _RegionSpeciesKey = tuple[str, int]
 
 
+def _group_name(species: tuple[str, ...] | None, group: _RegionSpeciesKey) -> str:
+    """Returns the name of a region–species group in error messages."""
+    region, index = group
+    return f"region {region!r}, species {index if species is None else repr(species[index])}"
+
+
 class _RegionWithGeneticObservations(NamedTuple):
     """One region batch paired with one species' genetic observations."""
 
