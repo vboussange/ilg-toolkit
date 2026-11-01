@@ -110,14 +110,14 @@ def test_explicit_numerical_constraints_and_optimization_failure_are_visible(
             )
 
 
-def _additive_distance_problem(*, additive_sd, unit, residual, slope, seed):
+def _additive_distance_problem(*, additive_sd, unit, residual, slope, seed, count=30):
     """Returns observations and distances with an additive term the targets do not share.
 
-    The targets of 30 populations on a 40 x 40 grid follow Euclidean distance. The
-    distances add a per-population term, as a terminal's own resistance does on a
+    The targets of ``count`` populations on a 40 x 40 grid follow Euclidean distance.
+    The distances add a per-population term, as a terminal's own resistance does on a
     conductance surface.
     """
-    count, side = 30, 40
+    side = 40
     rng = np.random.default_rng(seed)
     labels = [f"p{index:02d}" for index in range(count)]
     grid = np.column_stack(
@@ -145,24 +145,37 @@ def _additive_distance_problem(*, additive_sd, unit, residual, slope, seed):
 
 
 @pytest.mark.parametrize(
-    ("additive_sd", "unit", "residual", "slope", "dense_optimum"),
+    ("count", "additive_sd", "unit", "residual", "slope", "seed", "dense_optimum"),
     [
-        pytest.param(40.0, 1e-3, 2e-4, 0.02, 1121.234, id="stalled-at-a-start"),
-        pytest.param(20.0, 1e-3, 2e-5, 0.08, 1568.009, id="stalled-away-from-a-start"),
+        pytest.param(30, 40.0, 1e-3, 2e-4, 0.02, 0, 1121.234, id="stalled-at-a-start"),
+        pytest.param(30, 20.0, 1e-3, 2e-5, 0.08, 0, 1568.009, id="stalled-away-from-a-start"),
+        pytest.param(12, 40.0, 1e-3, 2e-4, 0.5, 1, 119.389, id="line-search-ends-abnormally"),
+        pytest.param(6, 20.0, 1e-3, 2e-4, 200.0, 1, -21.622, id="mode-reached-by-one-start"),
     ],
 )
 def test_converged_calibration_is_a_local_optimum_of_the_dense_likelihood(
-    mlpe_reference, dense_jax_profile, additive_sd, unit, residual, slope, dense_optimum
+    mlpe_reference,
+    dense_jax_profile,
+    count,
+    additive_sd,
+    unit,
+    residual,
+    slope,
+    seed,
+    dense_optimum,
 ):
     observations, distances, targets, left, right = _additive_distance_problem(
-        additive_sd=additive_sd, unit=unit, residual=residual, slope=slope, seed=0
+        additive_sd=additive_sd, unit=unit, residual=residual, slope=slope, seed=seed, count=count
     )
     calibration = _fit(mlpe_reference, observations, distances, loss=MLPELoss())
 
     def log_likelihood(log_variances):
-        raw = jnp.log(jnp.expm1(jnp.exp(jnp.asarray(log_variances)) - 1e-10))
+        positive = jnp.exp(jnp.asarray(log_variances)) - 1e-10
+        raw = positive + jnp.log(-jnp.expm1(-positive))
         return -float(
-            dense_jax_profile(jnp.asarray(distances), jnp.asarray(targets), left, right, 30, raw)[0]
+            dense_jax_profile(
+                jnp.asarray(distances), jnp.asarray(targets), left, right, count, raw
+            )[0]
         )
 
     fitted = np.log([calibration.unit_variance, calibration.residual_variance])
@@ -184,16 +197,40 @@ def test_calibration_keeps_an_optimum_on_the_variance_floor(mlpe_reference):
     assert calibration.residual_variance == pytest.approx(loss.variance_floor)
 
 
-def test_calibration_raises_when_the_optimum_exceeds_the_supported_variance_ratio(mlpe_reference):
-    # The unit variance of 1e5 over the variance floor of 1e-10 is a ratio of 1e15.
+def test_calibration_limits_the_variance_ratio_with_the_jitter(mlpe_reference):
+    # The unit variance of about 1e3 is a ratio of 1e13 over the variance floor of 1e-10,
+    # and of 1e9 over the floor plus the jitter.
     observations, distances, *_ = _additive_distance_problem(
-        additive_sd=3.0, unit=1e5, residual=0.0, slope=200.0, seed=0
+        additive_sd=3.0, unit=1e3, residual=0.0, slope=0.02, seed=0
     )
-    with pytest.raises(MLPEError, match="No deterministic MLPE optimization start converged"):
+    loss = MLPELoss(jitter=1e-6)
+    calibration = _fit(mlpe_reference, observations, distances, loss=loss)
+    assert calibration.converged
+    assert calibration.residual_variance == pytest.approx(loss.variance_floor)
+
+
+@pytest.mark.parametrize(
+    ("count", "additive_sd", "unit", "slope"),
+    [
+        # The unit variance of 1e5 over the variance floor of 1e-10 is a ratio of 1e15.
+        pytest.param(30, 3.0, 1e5, 200.0, id="every-start-at-the-limit"),
+        pytest.param(6, 40.0, 1e-3, 200.0, id="other-starts-at-a-lower-optimum"),
+    ],
+)
+def test_calibration_raises_when_the_optimum_exceeds_the_supported_variance_ratio(
+    mlpe_reference, count, additive_sd, unit, slope
+):
+    observations, distances, *_ = _additive_distance_problem(
+        additive_sd=additive_sd, unit=unit, residual=0.0, slope=slope, seed=0, count=count
+    )
+    with pytest.raises(MLPEError, match="beyond the supported variance ratio"):
         _fit(mlpe_reference, observations, distances, loss=MLPELoss())
 
 
-def test_calibration_raises_when_rejected_trials_stop_every_start(monkeypatch, mlpe_reference):
+def test_calibration_raises_when_rejected_trials_keep_every_start_from_the_optimum(
+    monkeypatch, mlpe_reference
+):
+    # The dense optimum has a log variance ratio of 3.36, so no trial reaches it.
     observations, distances, *_ = _additive_distance_problem(
         additive_sd=40.0, unit=1e-3, residual=2e-4, slope=0.02, seed=0
     )
@@ -201,10 +238,25 @@ def test_calibration_raises_when_rejected_trials_stop_every_start(monkeypatch, m
 
     def rejecting(log_variances, *args, **kwargs):
         value, gradient = evaluate(log_variances, *args, **kwargs)
-        return jnp.where(log_variances[0] - log_variances[1] > 5.0, jnp.nan, value), gradient
+        return jnp.where(log_variances[0] - log_variances[1] > 2.0, jnp.nan, value), gradient
 
     monkeypatch.setattr(fit, "_optimizer_value_and_gradient", rejecting)
-    with pytest.raises(MLPEError, match="No deterministic MLPE optimization start converged"):
+    with pytest.raises(MLPEError, match="stopped away from a local optimum"):
+        _fit(mlpe_reference, observations, distances, loss=MLPELoss())
+
+
+def test_calibration_raises_without_a_finite_likelihood(monkeypatch, mlpe_reference):
+    observations, distances, *_ = _additive_distance_problem(
+        additive_sd=40.0, unit=1e-3, residual=2e-4, slope=0.02, seed=0
+    )
+    evaluate = fit._optimizer_value_and_gradient
+
+    def rejecting(log_variances, *args, **kwargs):
+        _, gradient = evaluate(log_variances, *args, **kwargs)
+        return jnp.nan, gradient
+
+    monkeypatch.setattr(fit, "_optimizer_value_and_gradient", rejecting)
+    with pytest.raises(MLPEError, match="reached a finite likelihood"):
         _fit(mlpe_reference, observations, distances, loss=MLPELoss())
 
 
