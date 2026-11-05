@@ -78,6 +78,7 @@ def summed_training_objective(
             rejects the observations.
         RuntimeError: If float64 is disabled.
     """
+    _region_species_group(region, observations, distance_model, "The summed training objective")
     summed = config.loss.sum_over_pairs(region, observations, distance_model, loss_state)
     if config.penalty is None:
         return summed

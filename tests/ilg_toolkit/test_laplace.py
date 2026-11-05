@@ -263,6 +263,8 @@ def test_several_regions_raise(ScalarEmbedding, regions_and_observations):
     state = train(regions, observations, distance_model=model, config=config)
 
     with pytest.raises(ValueError, match="one region–species group"):
+        summed_training_objective(regions, observations, model, None, config=config)
+    with pytest.raises(ValueError, match="one region–species group"):
         laplace_approximation(regions, observations, state, where=lambda model: model.weight)
     with pytest.raises(ValueError, match="one region–species group"):
         laplace_approximation(regions[0], observations[0], state, where=lambda model: model.weight)
@@ -283,6 +285,8 @@ def test_several_species_raise(training_problem):
     config = TrainingConfig(loss=Log1pLoss(), steps=0)
     state = train(region, observations, distance_model=model, config=config)
 
+    with pytest.raises(ValueError, match="one region–species group"):
+        summed_training_objective(region, observations, model, None, config=config)
     with pytest.raises(ValueError, match="one region–species group"):
         laplace_approximation(region, observations, state, where=lambda model: model.log_weights)
     with pytest.raises(ValueError, match="one region–species group"):
