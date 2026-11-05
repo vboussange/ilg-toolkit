@@ -1,16 +1,8 @@
-"""Region–species groups and the errors naming them.
+"""Region–species groups shared by training and calibration fitting."""
 
-Training, calibration fitting and the Laplace approximation share them.
-"""
-
-import contextlib
-import re
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import NamedTuple
-
-import equinox as eqx
-import jax
 
 from .data import _ObservationCollection, _RegionCollection, PairwiseObservations, RegionBatch
 
@@ -18,64 +10,11 @@ from .data import _ObservationCollection, _RegionCollection, PairwiseObservation
 # Region name and species index in the distance model's parameter order.
 type _RegionSpeciesKey = tuple[str, int]
 
-# What `eqx.error_if` raises from a compiled call and from a call under `jax.disable_jit()`, and
-# what a failed native call raises, such as one of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
-_COMPILED_CALL_ERRORS = (
-    eqx.EquinoxRuntimeError,
-    eqx.EquinoxTracetimeError,
-    jax.errors.JaxRuntimeError,
-)
-# What JAX appends to the message of a compiled call failing on a GPU.
-_EXECUTABLE_NAME = re.compile(r"\s*\[executable_name='[^']*'\]\s*$")
-
 
 def _group_name(species: tuple[str, ...] | None, group: _RegionSpeciesKey) -> str:
     """Returns the name of a region–species group in error messages."""
     region, index = group
     return f"region {region!r}, species {index if species is None else repr(species[index])}"
-
-
-def _group_names(species: tuple[str, ...] | None, groups: Sequence[_RegionSpeciesKey]) -> str:
-    """Returns the names of region–species groups in error messages, separated by semicolons."""
-    return "; ".join(_group_name(species, group) for group in groups)
-
-
-def _failure_reason(error: Exception) -> str:
-    """Returns the line of a compiled call's error that states why the call failed.
-
-    That line follows Equinox's marker for ``eqx.error_if``, ends the traceback of a
-    failed callback, and opens the message of a failed native call. It excludes the
-    name of the compiled program.
-    """
-    message = _EXECUTABLE_NAME.sub("", str(error))
-    lines = message.rpartition("equinox.EquinoxRuntimeError: ")[2].strip().split("\n")
-    return lines[-1] if lines[0].endswith("Traceback (most recent call last):") else lines[0]
-
-
-def _training_failure(
-    species: tuple[str, ...] | None,
-    groups: Sequence[_RegionSpeciesKey],
-    stage: str,
-    error: Exception,
-) -> RuntimeError:
-    """Returns the error naming the region–species groups and stage of a failed compiled call.
-
-    The stage is a training step, such as ``"step 3"`` or ``"step 3: line search"``,
-    or a computation at a training state, such as ``"Laplace approximation"``. The
-    message ends with the reason of ``error``, which raises from the returned error.
-    """
-    return RuntimeError(f"{_group_names(species, groups)}: {stage}: {_failure_reason(error)}")
-
-
-@contextlib.contextmanager
-def _naming_failures(
-    species: tuple[str, ...] | None, groups: Sequence[_RegionSpeciesKey], stage: str
-) -> Iterator[None]:
-    """Raises the error naming the groups and stage of a call failing in the block."""
-    try:
-        yield
-    except _COMPILED_CALL_ERRORS as error:
-        raise _training_failure(species, groups, stage, error) from error
 
 
 class _RegionWithGeneticObservations(NamedTuple):

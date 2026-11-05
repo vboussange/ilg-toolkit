@@ -229,7 +229,7 @@ _Paper_: none.
 
 **Selector**:
 A function returning one leaf of a distance model, an array, or a tuple of leaves, as
-in `eqx.tree_at`: the `where` argument of `RidgePenalty` and `laplace_approximation`.
+in `eqx.tree_at`: the `where` argument of `RidgePenalty`.
 _Paper_: none.
 
 **Penalty**:
@@ -253,29 +253,6 @@ _Avoid_: Penalized loss; objective, without a qualifier.
 The current statistical parameters estimated jointly with distance-model parameters during training, as required by the chosen loss.
 For maximum-likelihood population effects (MLPE) these are variance parameters; the direct log1p criterion has none.
 _Avoid_: MLPE calibration, when referring only to the parameters being optimized.
-
-**Summed training objective**:
-The summed loss of one region–species group plus the penalty
-(`summed_training_objective`): the number of pairs times the training objective. On
-this scale, the inverse of its Hessian at a distance model trained with a penalty is the
-posterior covariance of the Laplace approximation.
-_Paper_: none.
-
-**Laplace approximation**:
-The Gaussian approximation of the posterior at a distance model trained with a penalty
-on one region–species group (`laplace_approximation`, `LaplaceApproximation`), over the
-distance-model leaves a selector selects and the statistical parameters. Its covariance
-is the inverse of the Hessian of the summed training objective. Leaves the selector
-does not select, such as an intercept pinned by the penalty, stay fixed.
-_Paper_: none.
-
-**Newton step**:
-The update $-H^{-1}g$ of Newton's method at the latest model of a training state
-(`newton_step`), with $g$ the gradient of the summed training objective over the
-parameters of a Laplace approximation and $H$ the approximation's Hessian, possibly
-from training on other pairs. In standard deviations of the Laplace approximation, the
-Newton step that remains shows whether training reached an optimum.
-_Paper_: none.
 
 **Landscape genetics model**:
 A distance model composed with a calibration head. The distance model maps

@@ -23,18 +23,3 @@
 ::: ilg_toolkit.DirectCalibrationHead
 
 ::: ilg_toolkit.MLPECalibrationHead
-
-## Laplace approximation
-
-After training with a penalty on one region–species group, the Laplace approximation gives
-the posterior covariance and standard deviations of selected distance-model parameters
-and the statistical parameters, and the Newton step shows whether training reached an
-optimum.
-
-::: ilg_toolkit.summed_training_objective
-
-::: ilg_toolkit.laplace_approximation
-
-::: ilg_toolkit.LaplaceApproximation
-
-::: ilg_toolkit.newton_step

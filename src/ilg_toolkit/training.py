@@ -1,6 +1,8 @@
 """Training of distance models and statistical parameters across regions and species."""
 
-from collections.abc import Callable, Mapping, Sequence
+import contextlib
+import re
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast, final, NamedTuple
@@ -14,13 +16,10 @@ from jaxscape.solvers import SparseDirectState
 
 from ._checks import _require_float64
 from ._training_utils import (
-    _COMPILED_CALL_ERRORS,
     _group_name,
-    _naming_failures,
     _prepare_training_inputs,
     _RegionSpeciesKey,
     _RegionSpeciesTrainingInput,
-    _training_failure,
 )
 from .config import TrainingConfig
 from .data import PairwiseObservations, RegionBatch
@@ -41,6 +40,15 @@ _Parameters = tuple[AbstractDistanceModel, Any]
 _RasterShape = tuple[int, int]
 _Contexts = dict[_RasterShape, _ResistanceSolverContext | None]
 _SolverStates = dict[_RasterShape, SparseDirectState | None]
+# What `eqx.error_if` raises from a compiled call and from a call under `jax.disable_jit()`, and
+# what a failed native call raises, such as one of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
+_COMPILED_CALL_ERRORS = (
+    eqx.EquinoxRuntimeError,
+    eqx.EquinoxTracetimeError,
+    jax.errors.JaxRuntimeError,
+)
+# What JAX appends to the message of a compiled call failing on a GPU.
+_EXECUTABLE_NAME = re.compile(r"\s*\[executable_name='[^']*'\]\s*$")
 
 
 @final
@@ -239,6 +247,53 @@ def _group_distances(model, latent, payload, species_index, context):
     )
 
 
+def _failure_reason(error: Exception) -> str:
+    """Returns the line of a compiled call's error that states why the call failed.
+
+    That line follows Equinox's marker for ``eqx.error_if``, ends the traceback of a
+    failed callback, and opens the message of a failed native call. It excludes the
+    name of the compiled program.
+    """
+    message = _EXECUTABLE_NAME.sub("", str(error))
+    lines = message.rpartition("equinox.EquinoxRuntimeError: ")[2].strip().split("\n")
+    return lines[-1] if lines[0].endswith("Traceback (most recent call last):") else lines[0]
+
+
+def _training_failure(
+    species: tuple[str, ...] | None,
+    groups: Sequence[_RegionSpeciesKey],
+    step: int,
+    error: Exception,
+    *,
+    in_line_search: bool = False,
+) -> RuntimeError:
+    """Returns the error naming the region–species groups and step of a failed compiled call.
+
+    The message ends with the reason of ``error``, which raises from the returned
+    error.
+    """
+    names = "; ".join(_group_name(species, group) for group in groups)
+    phase = "line search: " if in_line_search else ""
+    return RuntimeError(f"{names}: step {step}: {phase}{_failure_reason(error)}")
+
+
+@contextlib.contextmanager
+def _naming_failures(
+    species: tuple[str, ...] | None,
+    groups: Sequence[_RegionSpeciesKey],
+    step: int,
+    *,
+    in_line_search: bool = False,
+) -> Iterator[None]:
+    """Raises the error naming the region–species groups and step of a call failing in the block."""
+    try:
+        yield
+    except _COMPILED_CALL_ERRORS as error:
+        raise _training_failure(
+            species, groups, step, error, in_line_search=in_line_search
+        ) from error
+
+
 class _Contribution(NamedTuple):
     """One region–species group's arrays entering a compiled gradient.
 
@@ -308,7 +363,7 @@ def _regional_gradient(parameters, contributions, groups, config, context, key, 
             )
         except _COMPILED_CALL_ERRORS as error:
             failing = _failing_groups(model, latent, microbatch, selected, context, key)
-            raise _training_failure(model.species, failing, f"step {step}", error) from error
+            raise _training_failure(model.species, failing, step, error) from error
         gradient = (model_gradient, latent_gradient, state_backward(selected_gradient)[0])
         accumulated = (
             gradient
@@ -578,7 +633,7 @@ def _evaluate_regions(
                 "Validation requires a training calibration for the same region–species group"
             )
         fixed = None if calibration is None else config.loss._fixed_parameters(calibration)
-        with _naming_failures(species, (batch.key,), f"step {step}"):
+        with _naming_failures(species, (batch.key,), step):
             if batch.region.name != previous_region:
                 latent = _backbone(parameters[0], batch.payload.features, None)
                 previous_region = batch.region.name
@@ -930,7 +985,7 @@ def train[DistanceModel: AbstractDistanceModel](
                 )
                 chosen_groups = tuple(groups[i].key for i in chosen)
                 sampled.extend(chosen_groups)
-                with _naming_failures(distance_model.species, chosen_groups, f"step {step}"):
+                with _naming_failures(distance_model.species, chosen_groups, step):
                     gradient, contexts[regional_shapes[index]] = _regional_gradient(
                         parameters,
                         contributions,
@@ -978,7 +1033,7 @@ def train[DistanceModel: AbstractDistanceModel](
             if config.gradient_tolerance is not None:
                 converged = float(_gradient_norm(accumulated)) <= config.gradient_tolerance
             # The training objective just passed at the current parameters, so a candidate failed.
-            with _naming_failures(distance_model.species, sampled, f"step {step}: line search"):
+            with _naming_failures(distance_model.species, sampled, step, in_line_search=True):
                 parameters, optimizer_state, solver_states = _apply_update(
                     parameters,
                     config.optimizer,
