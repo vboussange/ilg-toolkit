@@ -84,16 +84,55 @@ def test_saturation_flags_feature_vectors_below_the_floor_and_at_the_cap(
     np.testing.assert_array_equal(model.is_saturated(features, species_index), expected)
 
 
-def test_saturation_at_the_cap_is_where_the_conductance_is_the_cap():
+def _predictors_around_the_ceiling(model):
+    """Returns predictors from 0 to where exp overflows, dense within 64 ulps of log(max - min)."""
+    ceiling = float(jnp.log(model.max_conductance - model.min_conductance))
+    return jnp.asarray(
+        np.concatenate(
+            [ceiling + np.spacing(ceiling) * np.arange(-64, 65), [0.0, ceiling + 1.0, 1e3]]
+        )
+    )
+
+
+def test_conductance_stops_the_exponential_at_the_ceiling_then_clips():
     model = eqx.tree_at(
         lambda model: model.coefficients, LogLinearConductance(1), jnp.array([[1.0]])
     )
-    ceiling = np.log(model.max_conductance - model.min_conductance)
-    # Predictors within 64 units in the last place of the cap, then up to where exp overflows.
-    predictors = np.concatenate(
-        [ceiling + np.spacing(ceiling) * np.arange(-64, 65), [0.0, ceiling + 1.0, 1e3]]
+    features = jnp.concatenate(
+        [jnp.linspace(-10.0, 10.0, 41), _predictors_around_the_ceiling(model)]
+    )[:, None]
+    ceiling = jnp.log(model.max_conductance - model.min_conductance)
+
+    def conductance(coefficients):
+        return eqx.tree_at(lambda model: model.coefficients, model, coefficients).conductance(
+            features, 0
+        )
+
+    def capped_exponential(coefficients):
+        predictor = features @ coefficients[0] + model.intercepts[0]
+        return jnp.clip(
+            jnp.exp(jnp.minimum(predictor, ceiling)) + model.min_conductance,
+            model.min_conductance,
+            model.max_conductance,
+        )
+
+    np.testing.assert_array_equal(
+        conductance(model.coefficients), capped_exponential(model.coefficients)
     )
-    features = jnp.asarray(predictors)[:, None]
+    np.testing.assert_array_equal(
+        jax.jacobian(conductance)(model.coefficients),
+        jax.jacobian(capped_exponential)(model.coefficients),
+    )
+
+
+def test_saturation_at_the_cap_is_where_the_conductance_is_the_cap():
+    # With these bounds, exp(log(max - min)) + min reaches the cap.
+    model = eqx.tree_at(
+        lambda model: model.coefficients,
+        LogLinearConductance(1, min_conductance=0.25, max_conductance=5.0),
+        jnp.array([[1.0]]),
+    )
+    features = _predictors_around_the_ceiling(model)[:, None]
 
     at_cap = np.asarray(model.conductance(features, 0)) == model.max_conductance
 
@@ -101,23 +140,15 @@ def test_saturation_at_the_cap_is_where_the_conductance_is_the_cap():
     np.testing.assert_array_equal(model.is_saturated(features, 0), at_cap)
 
 
-def test_coefficient_gradient_is_zero_at_the_cap():
+def test_saturation_leaves_a_sum_that_rounds_below_the_cap_unflagged():
     model = eqx.tree_at(
         lambda model: model.coefficients, LogLinearConductance(1), jnp.array([[1.0]])
     )
-    # Both predictors are beyond the cap, and exp overflows at the second.
-    features = jnp.array([[10.0], [1e3]])
+    # With the default bounds, min + exp(log(max - min)) rounds below the cap.
+    features = jnp.log(model.max_conductance - model.min_conductance)[None, None]
 
-    gradient = jax.grad(
-        lambda coefficients: (
-            eqx.tree_at(lambda model: model.coefficients, model, coefficients)
-            .conductance(features, 0)
-            .sum()
-        )
-    )(model.coefficients)
-
-    assert model.is_saturated(features, 0).all()
-    np.testing.assert_array_equal(gradient, [[0.0]])
+    assert model.conductance(features, 0)[0] < model.max_conductance
+    assert not model.is_saturated(features, 0)[0]
 
 
 @pytest.mark.parametrize("leading_shape", [(), (6,), (2, 3), (2, 3, 4)])

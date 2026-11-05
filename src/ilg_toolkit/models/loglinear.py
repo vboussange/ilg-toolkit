@@ -152,7 +152,13 @@ class LogLinearConductance(ConductanceModel):
             Conductances between ``min_conductance`` and ``max_conductance``, one
             per vertex.
         """
-        return self._bounded_conductance(self._linear_predictor(latent, species_index))
+        predictor = self._linear_predictor(latent, species_index)
+        ceiling = jnp.log(self.max_conductance - self.min_conductance)
+        return jnp.clip(
+            jnp.exp(jnp.minimum(predictor, ceiling)) + self.min_conductance,
+            self.min_conductance,
+            self.max_conductance,
+        )
 
     def is_saturated(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Returns where one species' conductance sits at the conductance floor or cap.
@@ -170,26 +176,15 @@ class LogLinearConductance(ConductanceModel):
 
         Returns:
             A boolean array with shape ``(...)``, true where the exponential of the
-            linear predictor is below ``min_conductance``, or where ``conductance``
-            returns ``max_conductance``.
+            linear predictor is below ``min_conductance``, or where
+            ``min_conductance`` plus that exponential reaches ``max_conductance``.
         """
-        predictor = self._linear_predictor(latent, species_index)
-        below_floor = jnp.exp(predictor) < self.min_conductance
-        return below_floor | (self._bounded_conductance(predictor) == self.max_conductance)
+        exponential = jnp.exp(self._linear_predictor(latent, species_index))
+        below_floor = exponential < self.min_conductance
+        return below_floor | (self.min_conductance + exponential >= self.max_conductance)
 
     def _linear_predictor(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         return latent @ self.coefficients[species_index] + self.intercepts[species_index]
-
-    def _bounded_conductance(self, predictor: jax.Array) -> jax.Array:
-        ceiling = jnp.log(self.max_conductance - self.min_conductance)
-        # The exponential stops at the ceiling, so that neither it nor its gradient overflows.
-        conductance = jnp.clip(
-            jnp.exp(jnp.minimum(predictor, ceiling)) + self.min_conductance,
-            self.min_conductance,
-            self.max_conductance,
-        )
-        # exp(ceiling) + min_conductance can round below the cap, as with the default bounds.
-        return jnp.where(predictor >= ceiling, self.max_conductance, conductance)
 
     def feature_effects(self, feature_names: Sequence[str]) -> dict[str, tuple[float, ...]]:
         """Returns each feature's log-conductance coefficient per species, by feature name.
