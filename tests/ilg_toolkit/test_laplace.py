@@ -36,7 +36,7 @@ _PINNED_INTERCEPT = 1.0
 _PENALTY = RidgePenalty(
     prior_sd=(1.0, 0.1),
     where=lambda model: (model.coefficients, model.intercepts),
-    mean=(0.0, _PINNED_INTERCEPT),
+    prior_mean=(0.0, _PINNED_INTERCEPT),
 )
 
 

@@ -1,7 +1,6 @@
 """Tests of penalties: the ridge penalty's value, gradient, arguments and training."""
 
 from dataclasses import replace
-from typing import cast
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -28,7 +27,7 @@ def _distance_model() -> LogLinearConductance:
         # The selector reaches slices and several fields.
         (lambda model: model.coefficients[:, 1:], 16 / 8),
         (lambda model: (model.coefficients, model.intercepts), 50 / 8),
-        # A selected subtree is one leaf holding all its arrays.
+        # A selected subtree takes one prior standard deviation for all its leaves.
         (lambda model: model, 50 / 8),
         # An empty selection is a zero penalty.
         (lambda model: (), 0.0),
@@ -40,7 +39,7 @@ def test_a_default_ridge_penalty_is_a_zero_mean_gaussian_with_one_prior_sd(where
 
 
 @pytest.mark.parametrize(
-    ("prior_sd", "where", "mean", "expected"),
+    ("prior_sd", "where", "prior_mean", "expected"),
     [
         # (5 - 1)^2 / (2 * 2^2)
         (2.0, lambda model: model.intercepts, 1.0, 16 / 8),
@@ -51,18 +50,26 @@ def test_a_default_ridge_penalty_is_a_zero_mean_gaussian_with_one_prior_sd(where
             (1.0, 4.0),
             13 / 8 + 2,
         ),
-        # Each mean is broadcast over its leaf's entries.
+        # Each prior mean is broadcast over its leaf's entries.
         (2.0, lambda model: model.coefficients, 1.0, 13 / 8),
-        # One number serves every leaf.
+        # One number serves every leaf, given alone or in a tuple of one.
         ((2.0, 0.5), lambda model: (model.coefficients, model.intercepts), 1.0, 13 / 8 + 32),
         (2.0, lambda model: (model.coefficients, model.intercepts), (1.0, 4.0), 13 / 8 + 1 / 8),
+        ((2.0,), lambda model: (model.coefficients, model.intercepts), (1.0,), 13 / 8 + 16 / 8),
     ],
-    ids=["one-leaf", "several-leaves", "broadcast-mean", "one-mean", "one-prior-sd"],
+    ids=[
+        "one-leaf",
+        "several-leaves",
+        "broadcast-prior-mean",
+        "one-prior-mean",
+        "one-prior-sd",
+        "tuples-of-one",
+    ],
 )
-def test_ridge_penalty_is_the_gaussian_negative_log_density_about_its_means(
-    prior_sd, where, mean, expected
+def test_ridge_penalty_is_the_gaussian_negative_log_density_about_its_prior_means(
+    prior_sd, where, prior_mean, expected
 ):
-    penalty = RidgePenalty(prior_sd=prior_sd, where=where, mean=mean)
+    penalty = RidgePenalty(prior_sd=prior_sd, where=where, prior_mean=prior_mean)
     assert float(penalty(_distance_model())) == expected
 
 
@@ -84,13 +91,13 @@ def test_ridge_penalty_rejects_a_prior_sd_that_is_not_finite_and_positive(prior_
 
 
 @pytest.mark.parametrize("in_tuple", [False, True], ids=["number", "tuple"])
-@pytest.mark.parametrize("mean", [float("nan"), float("inf"), -float("inf")])
-def test_ridge_penalty_rejects_a_mean_that_is_not_finite(mean, in_tuple):
-    with pytest.raises(ValueError, match="mean must be finite"):
+@pytest.mark.parametrize("prior_mean", [float("nan"), float("inf"), -float("inf")])
+def test_ridge_penalty_rejects_a_prior_mean_that_is_not_finite(prior_mean, in_tuple):
+    with pytest.raises(ValueError, match="prior_mean must be finite"):
         RidgePenalty(
             prior_sd=1.0,
             where=lambda model: (model.coefficients, model.intercepts),
-            mean=(0.0, mean) if in_tuple else mean,
+            prior_mean=(0.0, prior_mean) if in_tuple else prior_mean,
         )
 
 
@@ -100,20 +107,20 @@ def test_ridge_penalty_rejects_a_mean_that_is_not_finite(mean, in_tuple):
         (
             {"prior_sd": (1.0, 2.0)},
             lambda model: model.coefficients,
-            "where selects, 1, differs from the length of prior_sd, 2",
+            "prior_sd has 2 numbers for the 1 leaves the selector selects",
         ),
         (
-            {"prior_sd": 1.0, "mean": (0.0, 1.0)},
+            {"prior_sd": 1.0, "prior_mean": (0.0, 1.0)},
             lambda model: (model.coefficients, model.intercepts, model.coefficients),
-            "where selects, 3, differs from the length of mean, 2",
+            "prior_mean has 2 numbers for the 3 leaves the selector selects",
         ),
         (
-            {"prior_sd": (1.0,), "mean": (0.0,)},
+            {"prior_sd": (1.0, 2.0), "prior_mean": (0.0, 1.0, 2.0)},
             lambda model: (model.coefficients, model.intercepts),
-            "where selects, 2, differs from the length of prior_sd and mean, 1",
+            "prior_mean has 3 numbers for the 2 leaves the selector selects",
         ),
     ],
-    ids=["prior-sd", "mean", "both"],
+    ids=["prior-sd", "prior-mean", "both"],
 )
 def test_ridge_penalty_rejects_a_selection_of_another_number_of_leaves(numbers, where, message):
     penalty = RidgePenalty(where=where, **numbers)
@@ -121,33 +128,19 @@ def test_ridge_penalty_rejects_a_selection_of_another_number_of_leaves(numbers, 
         penalty(_distance_model())
 
 
-def test_ridge_penalty_rejects_tuples_of_prior_sd_and_mean_of_different_lengths():
-    with pytest.raises(ValueError, match="prior_sd has 2 numbers and mean has 3"):
-        RidgePenalty(
-            prior_sd=(1.0, 2.0),
-            where=lambda model: (model.coefficients, model.intercepts),
-            mean=(0.0, 1.0, 2.0),
-        )
-
-
-def test_training_keeps_a_pinned_intercept_within_a_few_standard_deviations_of_its_mean(
-    training_problem,
+def test_training_keeps_a_pinned_leaf_within_a_few_standard_deviations_of_its_prior_mean(
+    ScalarEmbedding, regions_and_observations
 ):
-    region, observations, _ = training_problem("conductance")
-    # The intercept starts at 0, a hundred standard deviations below its mean.
-    penalty = RidgePenalty(
-        prior_sd=(1.5, 0.01),
-        where=lambda model: (model.coefficients, model.intercepts),
-        mean=(0.0, 1.0),
-    )
+    regions, observations = regions_and_observations()
+    # The weight starts at 0, a hundred prior standard deviations below its prior mean.
+    penalty = RidgePenalty(prior_sd=0.01, where=lambda model: model.weight, prior_mean=1.0)
     state = train(
-        region,
-        observations,
-        distance_model=LogLinearConductance(2, patch_size=1),
+        regions[0],
+        observations[0],
+        distance_model=ScalarEmbedding(jnp.asarray(0.0)),
         config=TrainingConfig(loss=Log1pLoss(), steps=5, optimizer=optax.lbfgs(), penalty=penalty),
     )
-    distance_model = cast(LogLinearConductance, state.latest_model.distance_model)
-    np.testing.assert_allclose(distance_model.intercepts, [1.0], atol=3 * 0.01)
+    np.testing.assert_allclose(state.latest_model.distance_model.weight, 1.0, atol=3 * 0.01)
 
 
 def test_a_second_ridge_penalty_with_equal_numbers_reuses_the_compiled_update(
@@ -164,12 +157,13 @@ def test_a_second_ridge_penalty_with_equal_numbers_reuses_the_compiled_update(
         loss=Log1pLoss(),
         steps=2,
         optimizer=optax.adam(0.1),
-        penalty=RidgePenalty(prior_sd=(0.5,), where=where, mean=(2,)),
+        penalty=RidgePenalty(prior_sd=(0.5,), where=where, prior_mean=(2,)),
     )
     model = ScalarEmbedding(jnp.asarray(1.0))
     train(regions, observations, distance_model=model, config=config)
     assert traces
     traces.clear()
-    second = RidgePenalty(prior_sd=(np.float64(0.5),), where=where, mean=(2.0,))
+    # A number and a tuple of one number are equal numbers.
+    second = RidgePenalty(prior_sd=np.float64(0.5), where=where, prior_mean=2.0)
     train(regions, observations, distance_model=model, config=replace(config, penalty=second))
     assert not traces
