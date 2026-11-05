@@ -223,8 +223,8 @@ _Paper_: none.
 **Penalty**:
 A scalar function of a distance model added to the training objective
 (`TrainingConfig.penalty`), such as a prior's negative log density. A ridge penalty
-(`RidgePenalty`) is the negative log density of a zero-mean Gaussian on selected
-distance-model parameters, without the additive constant.
+(`RidgePenalty`) is the negative log density of a Gaussian on selected distance-model
+parameters, centered at 0 unless a mean is given, without the additive constant.
 _Paper_: none.
 
 **Training objective**:
