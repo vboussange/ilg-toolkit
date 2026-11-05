@@ -144,8 +144,9 @@ magnitude.
 **Saturation**:
 Where a log-linear patch encoder's conductance sits at its floor or cap
 (`LogLinearConductance.is_saturated`): the exponential of the linear predictor is
-below `min_conductance`, or `min_conductance` plus that exponential reaches
-`max_conductance`. There, the coefficients do not act as they do elsewhere.
+below `min_conductance`, or the conductance sits at its cap, where the linear
+predictor reaches log(`max_conductance` − `min_conductance`). There, the
+coefficients do not act as they do elsewhere.
 
 **Resistance surface**:
 Local resistance $Q = 1/C$ at each vertex, the inverse of the conductance surface.

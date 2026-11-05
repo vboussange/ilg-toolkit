@@ -125,30 +125,18 @@ def test_conductance_stops_the_exponential_at_the_ceiling_then_clips():
     )
 
 
-def test_saturation_at_the_cap_is_where_the_conductance_is_the_cap():
-    # With these bounds, exp(log(max - min)) + min reaches the cap.
-    model = eqx.tree_at(
-        lambda model: model.coefficients,
-        LogLinearConductance(1, min_conductance=0.25, max_conductance=5.0),
-        jnp.array([[1.0]]),
-    )
-    features = _predictors_around_the_ceiling(model)[:, None]
-
-    at_cap = np.asarray(model.conductance(features, 0)) == model.max_conductance
-
-    assert at_cap.any() and not at_cap.all()
-    np.testing.assert_array_equal(model.is_saturated(features, 0), at_cap)
-
-
-def test_saturation_leaves_a_sum_that_rounds_below_the_cap_unflagged():
+def test_saturation_at_the_cap_is_where_the_conductance_is_capped():
     model = eqx.tree_at(
         lambda model: model.coefficients, LogLinearConductance(1), jnp.array([[1.0]])
     )
-    # With the default bounds, min + exp(log(max - min)) rounds below the cap.
-    features = jnp.log(model.max_conductance - model.min_conductance)[None, None]
+    features = _predictors_around_the_ceiling(model)[:, None]
+    # With the default bounds, the capped conductance rounds below max_conductance.
+    capped = model.conductance(jnp.array([[1e3]]), 0)[0]
 
-    assert model.conductance(features, 0)[0] < model.max_conductance
-    assert not model.is_saturated(features, 0)[0]
+    at_cap = np.asarray(model.conductance(features, 0)) == capped
+
+    assert at_cap.any() and not at_cap.all()
+    np.testing.assert_array_equal(model.is_saturated(features, 0), at_cap)
 
 
 @pytest.mark.parametrize("leading_shape", [(), (6,), (2, 3), (2, 3, 4)])
