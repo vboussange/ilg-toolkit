@@ -1,4 +1,4 @@
-"""The Laplace approximation and the Newton step at a penalized fit of one region–species group."""
+"""The Laplace approximation and the Newton step at a distance model trained with a penalty."""
 
 from collections.abc import Callable
 from typing import Any, final
@@ -19,19 +19,22 @@ from .training import _naming_failures, TrainingState
 
 @final
 class LaplaceApproximation(eqx.Module):
-    """A Laplace approximation: the Gaussian approximation of the posterior at a penalized fit.
+    """A Laplace approximation: the Gaussian approximation of a posterior at its mode.
 
-    The parameters are the distance-model leaves a selector picks, followed by the
-    statistical parameters of one region–species group. The Hessian is that of the
-    summed training objective, on whose scale its inverse is the posterior covariance.
+    The posterior is that of training with a penalty on one region–species group, at
+    a distance model trained to convergence. The parameters are the distance-model
+    leaves a selector selects, followed by the statistical parameters of the
+    region–species group. The Hessian is that of the summed training objective, on whose
+    scale its inverse is the posterior covariance.
 
     Attributes:
+        where: Selector of the distance-model leaves, as given to
+            [`laplace_approximation`][ilg_toolkit.laplace_approximation].
         parameter_names: Name of each parameter, in order: the path of a selected leaf in
-            the distance model with the element's index, such as ``coefficients[0, 1]``,
-            then the path of a statistical parameter in the region–species group's state.
-            The maximum-likelihood population effects (MLPE) loss has ``raw_variances[0]``
-            and ``raw_variances[1]``: the population and residual variances are each the
-            loss's ``variance_floor`` plus the softplus of their parameter.
+            the distance model with the entry's index, such as ``coefficients[0, 1]``,
+            then the path of a statistical parameter in the region–species group's
+            statistical parameter state, such as ``raw_variances[0]`` of
+            [`MLPELoss`][ilg_toolkit.MLPELoss].
         hessian: Hessian of the summed training objective, shape ``(n, n)`` for ``n``
             parameters, symmetrized.
         covariance: Inverse of the Hessian, shape ``(n, n)``.
@@ -40,6 +43,7 @@ class LaplaceApproximation(eqx.Module):
         positive_definite: Whether the Hessian is finite and positive definite.
     """
 
+    where: Callable[[Any], Any] = eqx.field(static=True)
     parameter_names: tuple[str, ...]
     hessian: jax.Array
     covariance: jax.Array
@@ -59,7 +63,7 @@ def summed_training_objective(
 
     For one region–species group, the summed training objective is the number of
     pairs times the training objective. On this scale, the inverse of its Hessian at a
-    penalized fit is the covariance of the Laplace approximation.
+    distance model trained with a penalty is the covariance of the Laplace approximation.
 
     Args:
         region: Region batch holding the observed sampling units.
@@ -95,9 +99,9 @@ def laplace_approximation(
 ) -> LaplaceApproximation:
     """Computes the Laplace approximation at the latest model of a training state.
 
-    The parameters are the distance-model leaves ``where`` selects, followed by the
-    statistical parameters of the training state's region–species group. Leaves that
-    ``where`` does not select stay fixed at their values.
+    The parameters are the distance-model leaves the selector selects, followed by the
+    statistical parameters of the training state's region–species group. Leaves the
+    selector does not select stay fixed at their values.
 
     The Hessian comes from central differences of the exact gradient of the summed
     training objective, and is symmetrized. The MLPE loss profiles its generalized least
@@ -108,10 +112,10 @@ def laplace_approximation(
     Args:
         region: Region batch of the training state's region–species group.
         observations: Pairwise genetic observations the training state was trained on.
-        state: Training state on one region–species group, such as a penalized fit
-            with ``optax.lbfgs()`` to a gradient tolerance.
-        where: Function returning the selected leaves of a distance model, as in
-            ``eqx.tree_at``.
+        state: Training state on one region–species group, such as one trained with a
+            penalty and ``optax.lbfgs()`` to a gradient tolerance.
+        where: Selector: a function returning one leaf of a distance model, an array, or
+            a tuple of leaves, as in ``eqx.tree_at``.
         step: Step of the central differences, in units of the parameters, finite and
             positive. A resistance solver's error reaches the Hessian divided by the step,
             so conjugate gradient needs tolerances of 1e-10 or tighter for the default.
@@ -124,38 +128,14 @@ def laplace_approximation(
             one region–species group the training state was trained on.
         RuntimeError: If float64 is disabled, or a solve fails at a perturbed point, with
             the error ``train`` raises for a failed solve.
-
-    Examples:
-        The Laplace approximation over the coefficients of a log-linear patch encoder,
-        with its intercept fixed, and the Newton step that remains at the fit, in
-        standard deviations:
-
-        >>> where = lambda model: model.coefficients
-        >>> approximation = laplace_approximation(region, observations, state, where=where)
-        >>> step = newton_step(region, observations, state.latest_model.distance_model,
-        ...                    state.loss_state, config=state.config, where=where,
-        ...                    hessian=approximation.hessian)
-        >>> float(jnp.max(jnp.abs(step) / approximation.standard_deviations)) < 0.01
-        True
     """
     _require_float64()
     if not _is_finite_real(step) or step <= 0:
         raise ValueError("step must be finite and positive")
-    distance_model = state.latest_model.distance_model
-    group = _region_species_group(region, observations, distance_model, "The Laplace approximation")
-    if state.training_groups != (group,):
-        trained = "; ".join(
-            _group_name(distance_model.species, trained) for trained in state.training_groups
-        )
-        raise ValueError(
-            "The Laplace approximation covers the one region–species group of its training "
-            f"state: the inputs form {_group_name(distance_model.species, group)}, and the "
-            f"training state was trained on {trained}"
-        )
-    gradient, parameters = _summed_gradient(
-        region, observations, distance_model, state.loss_state, state.config, where, group
-    )
+    group = _trained_group(region, observations, state, "The Laplace approximation")
+    gradient, parameters = _summed_gradient(region, observations, state, where, group)
     compiled = eqx.filter_jit(gradient)
+    distance_model = state.latest_model.distance_model
     with _naming_failures(distance_model.species, (group,), "Laplace approximation"):
         # A loop, not `vmap`: a sparse direct solver factorizes one surface at a time.
         columns = [
@@ -172,6 +152,7 @@ def laplace_approximation(
         jnp.sqrt(jnp.diag(covariance)) if positive_definite else jnp.full(parameters.size, jnp.nan)
     )
     return LaplaceApproximation(
+        where,
         _parameter_names(
             distance_model, where, state.config.loss._group_state(state.loss_state, group)
         ),
@@ -185,62 +166,52 @@ def laplace_approximation(
 def newton_step(
     region: RegionBatch,
     observations: PairwiseObservations,
-    distance_model: AbstractDistanceModel,
-    loss_state: Any,
-    *,
-    config: TrainingConfig,
-    where: Callable[[Any], Any],
-    hessian: jax.Array,
+    state: TrainingState,
+    approximation: LaplaceApproximation,
 ) -> jax.Array:
-    """Returns the Newton step at a distance model and statistical parameter state.
+    """Returns the Newton step at the latest model of a training state.
 
     The Newton step is ``-H⁻¹g``: the update of Newton's method, with ``g`` the gradient
-    of the summed training objective over the parameters of the Laplace approximation
-    and ``H`` a Hessian over the same parameters. At the latest model of a training
-    state, the Newton step that remains, in standard deviations of the Laplace
-    approximation, shows whether training reached an optimum. The Hessian may come from
-    a fit on other pairs, as a proxy, such as the Laplace approximation from all pairs at
-    the fit of a population-holdout fold.
+    of the summed training objective over the parameters of the Laplace approximation,
+    at the training state's latest model and statistical parameter state, and ``H`` the
+    approximation's Hessian. In standard deviations of the Laplace approximation, the
+    Newton step that remains shows whether training reached an optimum. The Laplace
+    approximation may come from training on other pairs, as a proxy: a training state of
+    a population-holdout fold can use the approximation from all pairs.
 
     The gradient is not compiled as a whole, and its compiled parts take the pairs as
     arguments, so a later call on as many pairs of the same region compiles nothing.
 
     Args:
-        region: Region batch holding the observed sampling units.
-        observations: Pairwise genetic observations of one region–species group.
-        distance_model: Distance model, evaluated in inference mode.
-        loss_state: Statistical parameter state holding the region–species group, as in
-            ``TrainingState.loss_state``.
-        config: Training configuration holding the loss and the penalty.
-        where: Function returning the selected leaves of a distance model, as in
-            ``eqx.tree_at``; the same as the Laplace approximation's.
-        hessian: Hessian over the parameters, shape ``(n, n)``, such as
-            ``LaplaceApproximation.hessian``.
+        region: Region batch of the training state's region–species group.
+        observations: Pairwise genetic observations of the region–species group, such as
+            those the training state was trained on.
+        state: Training state on one region–species group.
+        approximation: Laplace approximation whose selector and Hessian the Newton step
+            uses.
 
     Returns:
-        The Newton step, shape ``(n,)``, in the order of the Laplace approximation's
+        The Newton step, shape ``(n,)``, in the order of the approximation's
         ``parameter_names``.
 
     Raises:
-        ValueError: If the inputs form other than one region–species group, or the
-            Hessian does not have one row and one column per parameter.
+        ValueError: If the inputs do not form the one region–species group the training
+            state was trained on, or the training state has another number of parameters
+            than the approximation.
         RuntimeError: If float64 is disabled, or a solve fails, with the error ``train``
             raises for a failed solve.
     """
     _require_float64()
-    group = _region_species_group(region, observations, distance_model, "The Newton step")
-    gradient, parameters = _summed_gradient(
-        region, observations, distance_model, loss_state, config, where, group
-    )
-    hessian = jnp.asarray(hessian)
-    if hessian.shape != (parameters.size, parameters.size):
+    group = _trained_group(region, observations, state, "The Newton step")
+    gradient, parameters = _summed_gradient(region, observations, state, approximation.where, group)
+    if approximation.hessian.shape != (parameters.size, parameters.size):
         raise ValueError(
-            f"hessian must have shape {(parameters.size, parameters.size)}, one row and one "
-            f"column per parameter, got {hessian.shape}"
+            f"The Laplace approximation has {len(approximation.parameter_names)} parameters, "
+            f"and the training state has {parameters.size}"
         )
-    with _naming_failures(distance_model.species, (group,), "Newton step"):
+    with _naming_failures(state.latest_model.distance_model.species, (group,), "Newton step"):
         value = jax.block_until_ready(gradient(parameters))
-    return -jnp.linalg.solve(hessian, value)
+    return -jnp.linalg.solve(approximation.hessian, value)
 
 
 def _region_species_group(
@@ -260,35 +231,59 @@ def _region_species_group(
     return groups[0].key
 
 
+def _trained_group(
+    region: RegionBatch,
+    observations: PairwiseObservations,
+    state: TrainingState,
+    computation: str,
+) -> _RegionSpeciesKey:
+    """Returns the one region–species group of the inputs, the training state's group."""
+    distance_model = state.latest_model.distance_model
+    group = _region_species_group(region, observations, distance_model, computation)
+    if state.training_groups != (group,):
+        trained = "; ".join(
+            _group_name(distance_model.species, trained) for trained in state.training_groups
+        )
+        raise ValueError(
+            f"{computation} covers the one region–species group of its training state: "
+            f"the inputs form {_group_name(distance_model.species, group)}, and the "
+            f"training state was trained on {trained}"
+        )
+    return group
+
+
 def _summed_gradient(
     region: RegionBatch,
     observations: PairwiseObservations,
-    distance_model: AbstractDistanceModel,
-    loss_state: Any,
-    config: TrainingConfig,
+    state: TrainingState,
     where: Callable[[Any], Any],
     group: _RegionSpeciesKey,
 ) -> tuple[Callable[[jax.Array], jax.Array], jax.Array]:
     """Returns the gradient of the summed training objective over the flat parameters.
 
-    The parameters are the selected leaves, then the group's statistical parameters,
-    at the distance model and statistical parameter state.
+    The parameters are the selected leaves of the training state's latest model, then
+    the group's statistical parameters.
     """
-    loss = config.loss
-    group_state = loss._group_state(loss_state, group)
+    distance_model = state.latest_model.distance_model
+    loss = state.config.loss
+    group_state = loss._group_state(state.loss_state, group)
     parameters, unravel = ravel_pytree((where(distance_model), group_state))
 
     def objective(flat: jax.Array) -> jax.Array:
         leaves, perturbed_state = unravel(flat)
         model = eqx.tree_at(where, distance_model, leaves)
-        perturbed = (
-            loss_state
+        loss_state = (
+            state.loss_state
             if group_state is None
             else eqx.tree_at(
-                lambda state: loss._group_state(state, group), loss_state, perturbed_state
+                lambda current: loss._group_state(current, group),
+                state.loss_state,
+                perturbed_state,
             )
         )
-        return summed_training_objective(region, observations, model, perturbed, config=config)
+        return summed_training_objective(
+            region, observations, model, loss_state, config=state.config
+        )
 
     return jax.grad(objective), parameters
 
@@ -296,7 +291,7 @@ def _summed_gradient(
 def _parameter_names(
     distance_model: AbstractDistanceModel, where: Callable[[Any], Any], group_state: Any
 ) -> tuple[str, ...]:
-    """Returns the name of each element of the selected leaves and of the group's state."""
+    """Returns the name of each entry of the selected leaves and of the group's state."""
     paths = jax.tree_util.tree_map_with_path(
         lambda path, _: jax.tree_util.keystr(path), distance_model
     )

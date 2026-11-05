@@ -3,7 +3,7 @@
 import itertools
 import logging
 import math
-from types import SimpleNamespace
+from typing import NamedTuple
 
 import coordax as cx
 import equinox as eqx
@@ -14,6 +14,7 @@ import optax
 import pytest
 from ilg_toolkit import (
     laplace_approximation,
+    LaplaceApproximation,
     Log1pLoss,
     MLPELoss,
     newton_step,
@@ -25,12 +26,14 @@ from ilg_toolkit import (
     TargetSpec,
     train,
     TrainingConfig,
+    TrainingState,
 )
 from ilg_toolkit.models import LogLinearConductance
 
 
 # Central differences of the gradient resolve the solver's error divided by their step.
 _TIGHT_SOLVER = ResistanceSolverConfig(rtol=1e-10, atol=1e-10, max_steps=5000)
+_GENERATING_COEFFICIENTS = jnp.asarray([[1.0, -0.6]])
 _PINNED_INTERCEPT = 1.0
 # A ridge on the coefficients and a pin of the intercept.
 _PENALTY = RidgePenalty(
@@ -53,7 +56,11 @@ def _smooth_field(rng: np.random.Generator, shape: tuple[int, int]) -> np.ndarra
 
 
 def _region_and_observations() -> tuple[RegionBatch, PairwiseObservations]:
-    """Returns a small region whose dissimilarities follow MLPE on a log-linear surface."""
+    """Returns a small region whose dissimilarities follow a log-linear surface.
+
+    The dissimilarities follow maximum-likelihood population effects (MLPE) on the
+    surface's effective resistances.
+    """
     rng = np.random.default_rng(1)
     shape = (6, 7)
     features = np.stack([_smooth_field(rng, shape), _smooth_field(rng, shape)], axis=-1)
@@ -70,7 +77,7 @@ def _region_and_observations() -> tuple[RegionBatch, PairwiseObservations]:
     truth = eqx.tree_at(
         lambda model: model.coefficients,
         LogLinearConductance(2, patch_size=1, solver_config=_TIGHT_SOLVER),
-        jnp.asarray([[1.0, -0.6]]),
+        _GENERATING_COEFFICIENTS,
     )
     pairs = list(itertools.combinations(units, 2))
     resistance = np.asarray(truth.predict(region, pairs).values)
@@ -90,14 +97,26 @@ def _region_and_observations() -> tuple[RegionBatch, PairwiseObservations]:
     return region, observations
 
 
+class _TrainedWithPenalty(NamedTuple):
+    """A region–species group, a training state on it and the state's Laplace approximation."""
+
+    region: RegionBatch
+    observations: PairwiseObservations
+    state: TrainingState[LogLinearConductance]
+    approximation: LaplaceApproximation
+
+
 @pytest.fixture(scope="module")
-def penalized_fit() -> SimpleNamespace:
-    """Returns a penalized fit of the log-linear patch encoder with MLPE, trained to convergence."""
+def trained_with_penalty() -> _TrainedWithPenalty:
+    """Returns the log-linear patch encoder trained with MLPE and a penalty to convergence.
+
+    Training starts from the generating coefficients and the pinned intercept.
+    """
     region, observations = _region_and_observations()
     start = eqx.tree_at(
-        lambda model: model.intercepts,
+        lambda model: (model.coefficients, model.intercepts),
         LogLinearConductance(2, patch_size=1, solver_config=_TIGHT_SOLVER),
-        jnp.asarray([_PINNED_INTERCEPT]),
+        (_GENERATING_COEFFICIENTS, jnp.asarray([_PINNED_INTERCEPT])),
     )
     config = TrainingConfig(
         loss=MLPELoss(),
@@ -110,41 +129,34 @@ def penalized_fit() -> SimpleNamespace:
     state = train(region, observations, distance_model=start, config=config)
     assert state.converged
     approximation = laplace_approximation(region, observations, state, where=_coefficients)
-    return SimpleNamespace(
-        region=region, observations=observations, state=state, approximation=approximation
+    return _TrainedWithPenalty(region, observations, state, approximation)
+
+
+def _identity_approximation(where, size: int) -> LaplaceApproximation:
+    """Returns a Laplace approximation with an identity Hessian over ``size`` parameters."""
+    identity = jnp.eye(size)
+    return LaplaceApproximation(
+        where=where,
+        parameter_names=tuple(f"parameter {index}" for index in range(size)),
+        hessian=identity,
+        covariance=identity,
+        standard_deviations=jnp.ones(size),
+        positive_definite=True,
     )
 
 
-def _newton_step(
-    fit: SimpleNamespace,
-    distance_model: LogLinearConductance,
-    observations: PairwiseObservations | None = None,
-) -> jax.Array:
-    """Returns the Newton step of a distance model, with the fit's statistical parameters.
-
-    The observations are the fit's unless given.
-    """
-    return newton_step(
-        fit.region,
-        fit.observations if observations is None else observations,
-        distance_model,
-        fit.state.loss_state,
-        config=fit.state.config,
-        where=_coefficients,
-        hessian=fit.approximation.hessian,
-    )
-
-
-def test_summed_training_objective_is_the_pair_count_times_the_training_objective(penalized_fit):
-    state = penalized_fit.state
+def test_summed_training_objective_is_the_pair_count_times_the_training_objective(
+    trained_with_penalty,
+):
+    region, observations, state, _ = trained_with_penalty
     value = summed_training_objective(
-        penalized_fit.region,
-        penalized_fit.observations,
+        region,
+        observations,
         state.latest_model.distance_model,
         state.loss_state,
         config=state.config,
     )
-    pair_count = len(penalized_fit.observations.observed_pairs)
+    pair_count = len(observations.observed_pairs)
     assert float(value) == pytest.approx(
         pair_count * state.history[-1].training_objective, rel=1e-12
     )
@@ -192,10 +204,10 @@ def test_where_the_hessian_is_not_positive_definite_no_standard_deviation_is_a_n
     assert np.isnan(approximation.standard_deviations).all()
 
 
-def test_at_a_converged_penalized_fit_the_hessian_is_positive_definite_and_the_step_small(
-    penalized_fit,
+def test_after_converged_training_with_a_penalty_the_hessian_is_positive_definite_and_step_small(
+    trained_with_penalty,
 ):
-    approximation = penalized_fit.approximation
+    region, observations, state, approximation = trained_with_penalty
     assert approximation.positive_definite
     assert np.all(np.linalg.eigvalsh(approximation.hessian) > 0)
     np.testing.assert_allclose(
@@ -205,34 +217,37 @@ def test_at_a_converged_penalized_fit_the_hessian_is_positive_definite_and_the_s
         approximation.standard_deviations, np.sqrt(np.diag(approximation.covariance))
     )
 
-    step = _newton_step(penalized_fit, penalized_fit.state.latest_model.distance_model)
+    step = newton_step(region, observations, state, approximation)
 
     assert step.shape == (4,)
     assert np.abs(step / approximation.standard_deviations).max() < 1e-6
 
 
-def test_from_a_perturbed_model_the_newton_step_points_back_to_the_fit(penalized_fit):
-    fit = penalized_fit.state.latest_model.distance_model
-    deviations = penalized_fit.approximation.standard_deviations
+def test_from_a_perturbed_model_the_newton_step_points_back_to_the_trained_model(
+    trained_with_penalty,
+):
+    region, observations, state, approximation = trained_with_penalty
+    deviations = approximation.standard_deviations
     perturbation = jnp.asarray([0.1, -0.1]) * deviations[:2]
-    perturbed = eqx.tree_at(_coefficients, fit, fit.coefficients + perturbation)
+    perturbed = eqx.tree_at(
+        lambda current: current.latest_model.distance_model.coefficients,
+        state,
+        state.latest_model.distance_model.coefficients + perturbation,
+    )
 
-    step = _newton_step(penalized_fit, perturbed)
+    step = newton_step(region, observations, perturbed, approximation)
 
     # Newton's method leaves an error of second order in the perturbation.
     remaining = (np.concatenate([perturbation, np.zeros(2)]) + step) / deviations
     assert np.abs(remaining).max() < 0.02
 
 
-def test_leaves_the_selector_does_not_pick_are_no_parameters_and_keep_their_values(
-    penalized_fit,
+def test_leaves_the_selector_does_not_select_are_no_parameters_and_keep_their_values(
+    trained_with_penalty,
 ):
-    approximation = penalized_fit.approximation
+    region, observations, state, approximation = trained_with_penalty
     with_intercept = laplace_approximation(
-        penalized_fit.region,
-        penalized_fit.observations,
-        penalized_fit.state,
-        where=lambda model: (model.coefficients, model.intercepts),
+        region, observations, state, where=lambda model: (model.coefficients, model.intercepts)
     )
 
     assert approximation.parameter_names == (
@@ -248,12 +263,21 @@ def test_leaves_the_selector_does_not_pick_are_no_parameters_and_keep_their_valu
         "raw_variances[0]",
         "raw_variances[1]",
     )
-    # Holding the intercept at its fitted value gives the same second derivatives as
+    # Holding the intercept at its trained value gives the same second derivatives as
     # differentiating through it at that value.
     kept = [0, 1, 3, 4]
     np.testing.assert_allclose(
         approximation.hessian, with_intercept.hessian[np.ix_(kept, kept)], rtol=1e-7, atol=1e-7
     )
+
+
+@pytest.mark.parametrize("step", [0.0, -1e-4, float("nan"), float("inf")])
+def test_laplace_approximation_rejects_a_step_that_is_not_finite_and_positive(
+    trained_with_penalty, step
+):
+    region, observations, state, _ = trained_with_penalty
+    with pytest.raises(ValueError, match="step must be finite and positive"):
+        laplace_approximation(region, observations, state, where=_coefficients, step=step)
 
 
 def test_several_regions_raise(ScalarEmbedding, regions_and_observations):
@@ -268,16 +292,11 @@ def test_several_regions_raise(ScalarEmbedding, regions_and_observations):
         laplace_approximation(regions, observations, state, where=lambda model: model.weight)
     with pytest.raises(ValueError, match="one region–species group"):
         laplace_approximation(regions[0], observations[0], state, where=lambda model: model.weight)
+    approximation = _identity_approximation(lambda model: model.weight, 1)
     with pytest.raises(ValueError, match="one region–species group"):
-        newton_step(
-            regions,
-            observations,
-            model,
-            None,
-            config=config,
-            where=lambda model: model.weight,
-            hessian=jnp.eye(1),
-        )
+        newton_step(regions, observations, state, approximation)
+    with pytest.raises(ValueError, match="one region–species group"):
+        newton_step(regions[0], observations[0], state, approximation)
 
 
 def test_several_species_raise(training_problem):
@@ -293,11 +312,8 @@ def test_several_species_raise(training_problem):
         newton_step(
             region,
             observations,
-            model,
-            None,
-            config=config,
-            where=lambda model: model.log_weights,
-            hessian=jnp.eye(4),
+            state,
+            _identity_approximation(lambda model: model.log_weights, 4),
         )
 
 
@@ -339,29 +355,35 @@ def test_a_failed_solve_raises_the_failure_that_training_raises(PointConductance
         newton_step(
             region,
             observations,
-            exhausted,
-            None,
-            config=config,
-            where=lambda model: model.log_scale,
-            hessian=jnp.eye(1),
+            state,
+            _identity_approximation(lambda model: model.log_scale, 1),
         )
     assert caught.type is RuntimeError
     assert str(caught.value).startswith(f"region 'bad-solve', species 0: Newton step: {reason}")
 
 
-def test_a_later_fold_on_as_many_pairs_compiles_nothing(penalized_fit, caplog):
-    observations = penalized_fit.observations
-    # Two population-holdout folds, each without one sampling unit's pairs.
+def test_a_later_fold_on_as_many_pairs_compiles_nothing(trained_with_penalty, caplog):
+    region, observations, state, approximation = trained_with_penalty
+    # Two population-holdout folds, each without one sampling unit's pairs, and a
+    # training state of each, with its own latest model.
     first, second = (
         observations.select_pairs(
             [pair for pair in observations.observed_pairs if unit not in pair]
         )
-        for unit in penalized_fit.region.sampling_unit_ids[:2]
+        for unit in region.sampling_unit_ids[:2]
     )
-    fit = penalized_fit.state.latest_model.distance_model
-    _newton_step(penalized_fit, fit, first)
+    coefficients = state.latest_model.distance_model.coefficients
+    first_state, second_state = (
+        eqx.tree_at(
+            lambda current: current.latest_model.distance_model.coefficients,
+            state,
+            coefficients + shift,
+        )
+        for shift in (0.01, -0.01)
+    )
+    newton_step(region, first, first_state, approximation)
 
     with jax.log_compiles(), caplog.at_level(logging.WARNING):
-        _newton_step(penalized_fit, fit, second)
+        newton_step(region, second, second_state, approximation)
 
     assert not [record for record in caplog.records if "Compiling" in record.getMessage()]
