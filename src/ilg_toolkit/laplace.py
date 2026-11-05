@@ -25,13 +25,12 @@ from .training import TrainingState
 
 @final
 class LaplaceApproximation(eqx.Module):
-    """A Laplace approximation: the Gaussian approximation of a posterior at its mode.
+    """A Laplace approximation: the Gaussian posterior approximation at a trained distance model.
 
-    The posterior is that of training with a penalty on one region–species group, at
-    a distance model trained to convergence. The parameters are the distance-model
-    leaves a selector selects, followed by the statistical parameters of the
-    region–species group. The Hessian is that of the summed training objective, on whose
-    scale its inverse is the posterior covariance.
+    The posterior is that of training with a penalty on one region–species group. The
+    parameters are the distance-model leaves a selector selects, followed by the group's
+    statistical parameters. The Hessian is that of the summed training objective, on
+    whose scale its inverse is the posterior covariance.
 
     Attributes:
         where: Selector of the distance-model leaves, as given to
