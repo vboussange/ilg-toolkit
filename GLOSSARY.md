@@ -141,6 +141,12 @@ A spatial grid of positive values describing how readily a landscape permits mov
 The ratio of a conductance surface's largest to smallest conductance, in orders of
 magnitude.
 
+**Saturation**:
+Where a log-linear patch encoder's conductance sits at its floor or cap
+(`LogLinearConductance.is_saturated`): the exponential of the linear predictor is
+below `min_conductance`, or the conductance is `max_conductance`. There, the
+coefficients do not act as they do elsewhere.
+
 **Resistance surface**:
 Local resistance $Q = 1/C$ at each vertex, the inverse of the conductance surface.
 A trained patch encoder yields a learned resistance surface, the main result of
