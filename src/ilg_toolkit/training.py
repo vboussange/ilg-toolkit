@@ -1,8 +1,6 @@
 """Training of distance models and statistical parameters across regions and species."""
 
-import contextlib
-import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, cast, final, NamedTuple
@@ -16,10 +14,13 @@ from jaxscape.solvers import SparseDirectState
 
 from ._checks import _require_float64
 from ._training_utils import (
+    _COMPILED_CALL_ERRORS,
     _group_name,
+    _naming_failures,
     _prepare_training_inputs,
     _RegionSpeciesKey,
     _RegionSpeciesTrainingInput,
+    _training_failure,
 )
 from .config import TrainingConfig
 from .data import PairwiseObservations, RegionBatch
@@ -40,15 +41,6 @@ _Parameters = tuple[AbstractDistanceModel, Any]
 _RasterShape = tuple[int, int]
 _Contexts = dict[_RasterShape, _ResistanceSolverContext | None]
 _SolverStates = dict[_RasterShape, SparseDirectState | None]
-# What `eqx.error_if` raises from a compiled call and from a call under `jax.disable_jit()`, and
-# what a failed native call raises, such as one of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
-_COMPILED_CALL_ERRORS = (
-    eqx.EquinoxRuntimeError,
-    eqx.EquinoxTracetimeError,
-    jax.errors.JaxRuntimeError,
-)
-# What JAX appends to the message of a compiled call failing on a GPU.
-_EXECUTABLE_NAME = re.compile(r"\s*\[executable_name='[^']*'\]\s*$")
 
 
 @final
@@ -245,45 +237,6 @@ def _group_distances(model, latent, payload, species_index, context):
         species_index=species_index,
         context=context,
     )
-
-
-def _failure_reason(error: Exception) -> str:
-    """Returns the line of a compiled call's error that states why the call failed.
-
-    That line follows Equinox's marker for ``eqx.error_if``, ends the traceback of a
-    failed callback, and opens the message of a failed native call. It excludes the
-    name of the compiled program.
-    """
-    message = _EXECUTABLE_NAME.sub("", str(error))
-    lines = message.rpartition("equinox.EquinoxRuntimeError: ")[2].strip().split("\n")
-    return lines[-1] if lines[0].endswith("Traceback (most recent call last):") else lines[0]
-
-
-def _training_failure(
-    species: tuple[str, ...] | None,
-    groups: Sequence[_RegionSpeciesKey],
-    stage: str,
-    error: Exception,
-) -> RuntimeError:
-    """Returns the error naming the region–species groups and stage of a failed compiled call.
-
-    The stage is a training step, such as ``"step 3"`` or ``"step 3: line search"``,
-    or a computation at a training state, such as ``"Laplace approximation"``. The
-    message ends with the reason of ``error``, which raises from the returned error.
-    """
-    names = "; ".join(_group_name(species, group) for group in groups)
-    return RuntimeError(f"{names}: {stage}: {_failure_reason(error)}")
-
-
-@contextlib.contextmanager
-def _naming_failures(
-    species: tuple[str, ...] | None, groups: Sequence[_RegionSpeciesKey], stage: str
-) -> Iterator[None]:
-    """Raises the error naming the groups and stage of a call failing in the block."""
-    try:
-        yield
-    except _COMPILED_CALL_ERRORS as error:
-        raise _training_failure(species, groups, stage, error) from error
 
 
 class _Contribution(NamedTuple):

@@ -10,11 +10,17 @@ import numpy as np
 from jax.flatten_util import ravel_pytree
 
 from ._checks import _is_finite_real, _require_float64
-from ._training_utils import _group_name, _prepare_training_inputs, _RegionSpeciesKey
+from ._training_utils import (
+    _group_name,
+    _group_names,
+    _naming_failures,
+    _prepare_training_inputs,
+    _RegionSpeciesKey,
+)
 from .config import TrainingConfig
 from .data import PairwiseObservations, RegionBatch
 from .models import AbstractDistanceModel
-from .training import _naming_failures, TrainingState
+from .training import TrainingState
 
 
 @final
@@ -223,7 +229,7 @@ def _region_species_group(
     """Returns the one region–species group of the inputs of a computation."""
     groups = _prepare_training_inputs(region, observations, distance_model.species).training
     if len(groups) != 1:
-        names = "; ".join(_group_name(distance_model.species, group.key) for group in groups)
+        names = _group_names(distance_model.species, [group.key for group in groups])
         raise ValueError(
             f"{computation} covers one region–species group, and the inputs form "
             f"{len(groups)}: {names}"
@@ -241,9 +247,7 @@ def _trained_group(
     distance_model = state.latest_model.distance_model
     group = _region_species_group(region, observations, distance_model, computation)
     if state.training_groups != (group,):
-        trained = "; ".join(
-            _group_name(distance_model.species, trained) for trained in state.training_groups
-        )
+        trained = _group_names(distance_model.species, state.training_groups)
         raise ValueError(
             f"{computation} covers the one region–species group of its training state: "
             f"the inputs form {_group_name(distance_model.species, group)}, and the "
