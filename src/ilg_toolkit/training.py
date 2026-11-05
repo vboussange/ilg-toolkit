@@ -262,36 +262,28 @@ def _failure_reason(error: Exception) -> str:
 def _training_failure(
     species: tuple[str, ...] | None,
     groups: Sequence[_RegionSpeciesKey],
-    step: int,
+    stage: str,
     error: Exception,
-    *,
-    in_line_search: bool = False,
 ) -> RuntimeError:
-    """Returns the error naming the region–species groups and step of a failed compiled call.
+    """Returns the error naming the region–species groups and stage of a failed compiled call.
 
-    The message ends with the reason of ``error``, which raises from the returned
-    error.
+    The stage is a training step, such as ``"step 3"`` or ``"step 3: line search"``,
+    or a computation at a training state, such as ``"Laplace approximation"``. The
+    message ends with the reason of ``error``, which raises from the returned error.
     """
     names = "; ".join(_group_name(species, group) for group in groups)
-    phase = "line search: " if in_line_search else ""
-    return RuntimeError(f"{names}: step {step}: {phase}{_failure_reason(error)}")
+    return RuntimeError(f"{names}: {stage}: {_failure_reason(error)}")
 
 
 @contextlib.contextmanager
 def _naming_failures(
-    species: tuple[str, ...] | None,
-    groups: Sequence[_RegionSpeciesKey],
-    step: int,
-    *,
-    in_line_search: bool = False,
+    species: tuple[str, ...] | None, groups: Sequence[_RegionSpeciesKey], stage: str
 ) -> Iterator[None]:
-    """Raises the error naming the region–species groups and step of a call failing in the block."""
+    """Raises the error naming the groups and stage of a call failing in the block."""
     try:
         yield
     except _COMPILED_CALL_ERRORS as error:
-        raise _training_failure(
-            species, groups, step, error, in_line_search=in_line_search
-        ) from error
+        raise _training_failure(species, groups, stage, error) from error
 
 
 class _Contribution(NamedTuple):
@@ -363,7 +355,7 @@ def _regional_gradient(parameters, contributions, groups, config, context, key, 
             )
         except _COMPILED_CALL_ERRORS as error:
             failing = _failing_groups(model, latent, microbatch, selected, context, key)
-            raise _training_failure(model.species, failing, step, error) from error
+            raise _training_failure(model.species, failing, f"step {step}", error) from error
         gradient = (model_gradient, latent_gradient, state_backward(selected_gradient)[0])
         accumulated = (
             gradient
@@ -633,7 +625,7 @@ def _evaluate_regions(
                 "Validation requires a training calibration for the same region–species group"
             )
         fixed = None if calibration is None else config.loss._fixed_parameters(calibration)
-        with _naming_failures(species, (batch.key,), step):
+        with _naming_failures(species, (batch.key,), f"step {step}"):
             if batch.region.name != previous_region:
                 latent = _backbone(parameters[0], batch.payload.features, None)
                 previous_region = batch.region.name
@@ -985,7 +977,7 @@ def train[DistanceModel: AbstractDistanceModel](
                 )
                 chosen_groups = tuple(groups[i].key for i in chosen)
                 sampled.extend(chosen_groups)
-                with _naming_failures(distance_model.species, chosen_groups, step):
+                with _naming_failures(distance_model.species, chosen_groups, f"step {step}"):
                     gradient, contexts[regional_shapes[index]] = _regional_gradient(
                         parameters,
                         contributions,
@@ -1033,7 +1025,7 @@ def train[DistanceModel: AbstractDistanceModel](
             if config.gradient_tolerance is not None:
                 converged = float(_gradient_norm(accumulated)) <= config.gradient_tolerance
             # The training objective just passed at the current parameters, so a candidate failed.
-            with _naming_failures(distance_model.species, sampled, step, in_line_search=True):
+            with _naming_failures(distance_model.species, sampled, f"step {step}: line search"):
                 parameters, optimizer_state, solver_states = _apply_update(
                     parameters,
                     config.optimizer,
