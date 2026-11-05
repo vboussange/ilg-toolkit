@@ -31,18 +31,18 @@ from ilg_toolkit.models import LogLinearConductance
 
 # Central differences of the gradient resolve the solver's error divided by their step.
 _TIGHT_SOLVER = ResistanceSolverConfig(rtol=1e-10, atol=1e-10, max_steps=5000)
-_RIDGE = RidgePenalty(prior_sd=1.0, where=lambda model: model.coefficients)
 _PINNED_INTERCEPT = 1.0
+# A ridge on the coefficients and a pin of the intercept.
+_PENALTY = RidgePenalty(
+    prior_sd=(1.0, 0.1),
+    where=lambda model: (model.coefficients, model.intercepts),
+    mean=(0.0, _PINNED_INTERCEPT),
+)
 
 
 def _coefficients(model: LogLinearConductance) -> jax.Array:
     """Selects the coefficients of a log-linear patch encoder, leaving its intercept fixed."""
     return model.coefficients
-
-
-def _penalty(model: LogLinearConductance) -> jnp.ndarray:
-    """Returns the ridge penalty on the coefficients plus a pin of the intercept."""
-    return _RIDGE(model) + jnp.sum((model.intercepts - _PINNED_INTERCEPT) ** 2) / (2 * 0.1**2)
 
 
 def _smooth_field(rng: np.random.Generator, shape: tuple[int, int]) -> np.ndarray:
@@ -105,7 +105,7 @@ def penalized_fit() -> SimpleNamespace:
         eval_every=100,
         optimizer=optax.lbfgs(),
         gradient_tolerance=1e-9,
-        penalty=_penalty,
+        penalty=_PENALTY,
     )
     state = train(region, observations, distance_model=start, config=config)
     assert state.converged
