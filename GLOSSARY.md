@@ -241,6 +241,33 @@ The current statistical parameters estimated jointly with distance-model paramet
 For maximum-likelihood population effects (MLPE) these are variance parameters; the direct log1p criterion has none.
 _Avoid_: MLPE calibration, when referring only to the parameters being optimized.
 
+**Summed training objective**:
+The summed loss of one region–species group plus the penalty
+(`summed_training_objective`): the number of pairs times the training objective. On
+this scale, the inverse of its Hessian at a penalized fit is the posterior covariance
+of the Laplace approximation.
+_Paper_: none.
+
+**Laplace approximation**:
+The Gaussian approximation of the posterior at a penalized fit of one region–species
+group (`laplace_approximation`, `LaplaceApproximation`), over the distance-model
+parameters a selector picks and the statistical parameters. Its covariance is the
+inverse of the Hessian of the summed training objective. The MLPE loss profiles its
+generalized least squares coefficients, so the Hessian comes from central differences
+of the exact gradient; `jax.hessian` holds those coefficients fixed. Distance-model
+parameters the selector does not pick, such as an intercept pinned by the penalty,
+stay fixed.
+_Paper_: none.
+
+**Newton step**:
+The update $-H^{-1}g$ of Newton's method at a distance model and statistical parameter
+state (`newton_step`), with $g$ the gradient of the summed training objective over the
+parameters of a Laplace approximation and $H$ a Hessian over the same parameters,
+possibly from a fit on other pairs. In standard deviations of the Laplace
+approximation, the Newton step that remains at the latest model shows whether training
+reached an optimum.
+_Paper_: none.
+
 **Landscape genetics model**:
 A distance model composed with a calibration head. The distance model maps
 landscape features to ecological distances; the calibration head maps
