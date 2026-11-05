@@ -152,13 +152,44 @@ class LogLinearConductance(ConductanceModel):
             Conductances between ``min_conductance`` and ``max_conductance``, one
             per vertex.
         """
-        predictor = latent @ self.coefficients[species_index] + self.intercepts[species_index]
-        ceiling = jnp.log(self.max_conductance - self.min_conductance)
+        predictor = self._linear_predictor(latent, species_index)
         return jnp.clip(
-            jnp.exp(jnp.minimum(predictor, ceiling)) + self.min_conductance,
+            jnp.exp(jnp.minimum(predictor, self._ceiling())) + self.min_conductance,
             self.min_conductance,
             self.max_conductance,
         )
+
+    def is_saturated(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
+        """Returns where one species' conductance sits at the conductance floor or cap.
+
+        There, the coefficients do not act as they do elsewhere: below the floor,
+        the conductance stops following the landscape features, and at the cap, it
+        stops changing with them.
+
+        Args:
+            latent: Feature vectors with shape ``(..., in_channels)``, at any grain:
+                the patch means returned by ``backbone``, or landscape features at
+                their own resolution.
+            species_index: Parameter row of the species, an integer or a scalar
+                integer array.
+
+        Returns:
+            A boolean array with shape ``(...)``, true where the exponential of the
+            linear predictor is below ``min_conductance``, or where the conductance
+            sits at its cap: the linear predictor reaches
+            ``log(max_conductance - min_conductance)``, beyond which ``conductance``
+            holds the exponential.
+        """
+        predictor = self._linear_predictor(latent, species_index)
+        below_floor = jnp.exp(predictor) < self.min_conductance
+        return below_floor | (predictor >= self._ceiling())
+
+    def _linear_predictor(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
+        return latent @ self.coefficients[species_index] + self.intercepts[species_index]
+
+    def _ceiling(self) -> jax.Array:
+        """Returns the linear predictor at which the conductance reaches its cap."""
+        return jnp.log(self.max_conductance - self.min_conductance)
 
     def feature_effects(self, feature_names: Sequence[str]) -> dict[str, tuple[float, ...]]:
         """Returns each feature's log-conductance coefficient per species, by feature name.

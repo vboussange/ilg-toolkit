@@ -141,6 +141,13 @@ A spatial grid of positive values describing how readily a landscape permits mov
 The ratio of a conductance surface's largest to smallest conductance, in orders of
 magnitude.
 
+**Saturation**:
+Where a log-linear patch encoder's conductance sits at its floor or cap
+(`LogLinearConductance.is_saturated`): the exponential of the linear predictor is
+below `min_conductance`, or the conductance sits at its cap, where the linear
+predictor reaches log(`max_conductance` − `min_conductance`). There, the
+coefficients do not act as they do elsewhere.
+
 **Resistance surface**:
 Local resistance $Q = 1/C$ at each vertex, the inverse of the conductance surface.
 A trained patch encoder yields a learned resistance surface, the main result of
@@ -220,11 +227,17 @@ the sum of squared differences for the log1p loss. For one region–species grou
 summed loss plus the penalty is the number of pairs times the training objective.
 _Paper_: none.
 
+**Selector**:
+A function returning one leaf of a distance model, an array, or a tuple of leaves, as
+in `eqx.tree_at`: the `where` argument of `RidgePenalty`.
+_Paper_: none.
+
 **Penalty**:
 A scalar function of a distance model added to the training objective
 (`TrainingConfig.penalty`), such as a prior's negative log density. A ridge penalty
-(`RidgePenalty`) is the negative log density of a zero-mean Gaussian on selected
-distance-model parameters, without the additive constant.
+(`RidgePenalty`) is the negative log density of a Gaussian on the distance-model leaves
+a selector selects, centered at 0 unless a prior mean is given, without the additive
+constant.
 _Paper_: none.
 
 **Training objective**:
