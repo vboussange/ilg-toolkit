@@ -144,9 +144,18 @@ magnitude.
 **Saturation**:
 Where a log-linear patch encoder's conductance sits at its floor or cap
 (`LogLinearConductance.is_saturated`): the exponential of the linear predictor is
-below `min_conductance`, or the conductance sits at its cap, where the linear
-predictor reaches log(`max_conductance` − `min_conductance`). There, the
-coefficients do not act as they do elsewhere.
+below `min_conductance`, or the linear predictor reaches the ceiling,
+log(`max_conductance` − `min_conductance`), where the hard cap holds the
+conductance at its cap and the smooth cap at least halves the predictor's effect.
+There, the coefficients do not act as they do elsewhere.
+
+**Smooth cap**:
+The cap of a log-linear patch encoder that its conductance approaches smoothly
+(`LogLinearConductance(cap="smooth")`): a softplus of scale 0.1 in log
+conductance replaces the hard cap's minimum of the linear predictor and the
+ceiling, so conductance is infinitely differentiable in the coefficients. The
+hard cap (`cap="hard"`) is the default.
+_Avoid_: Soft cap; soft clip.
 
 **Resistance surface**:
 Local resistance $Q = 1/C$ at each vertex, the inverse of the conductance surface.
