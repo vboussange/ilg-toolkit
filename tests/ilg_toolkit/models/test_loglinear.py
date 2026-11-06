@@ -1,6 +1,8 @@
 """Tests of the log-linear patch encoder and its uniform-conductance initialization."""
 
 import itertools
+import math
+from typing import cast
 
 import coordax as cx
 import equinox as eqx
@@ -15,11 +17,14 @@ from ilg_toolkit import (
     PairwiseObservations,
     RegionBatch,
     ResistanceSolverConfig,
+    RidgePenalty,
     TargetSpec,
     train,
     TrainingConfig,
+    TrainingState,
 )
 from ilg_toolkit.models import initialize_uniform_conductance, LogLinearConductance
+from jax.flatten_util import ravel_pytree
 
 
 @pytest.mark.parametrize("patch_microbatch_size", [None, 3])
@@ -61,6 +66,7 @@ def test_patch_mean_predictor_obeys_conductance_bounds(patch_microbatch_size):
     np.testing.assert_allclose(np.asarray(extreme.conductance_surface(region).data), [[0.25, 5.0]])
 
 
+@pytest.mark.parametrize("cap", ["hard", "smooth"])
 @pytest.mark.parametrize(
     ("species", "coefficients", "species_index", "expected"),
     [
@@ -70,11 +76,13 @@ def test_patch_mean_predictor_obeys_conductance_bounds(patch_microbatch_size):
     ],
 )
 def test_saturation_flags_feature_vectors_below_the_floor_and_at_the_cap(
-    species, coefficients, species_index, expected
+    species, coefficients, species_index, expected, cap
 ):
     model = eqx.tree_at(
         lambda model: model.coefficients,
-        LogLinearConductance(1, species=species, min_conductance=0.25, max_conductance=5.0),
+        LogLinearConductance(
+            1, species=species, min_conductance=0.25, max_conductance=5.0, cap=cap
+        ),
         jnp.array(coefficients),
     )
     # The floor holds below the predictor log 0.25 = -1.39, the cap from log 4.75 = 1.56.
@@ -94,9 +102,10 @@ def _predictors_around_the_ceiling(model):
     )
 
 
-def test_conductance_stops_the_exponential_at_the_ceiling_then_clips():
+@pytest.mark.parametrize("settings", [{}, {"cap": "hard"}], ids=["default", "hard"])
+def test_conductance_stops_the_exponential_at_the_ceiling_then_clips(settings):
     model = eqx.tree_at(
-        lambda model: model.coefficients, LogLinearConductance(1), jnp.array([[1.0]])
+        lambda model: model.coefficients, LogLinearConductance(1, **settings), jnp.array([[1.0]])
     )
     features = jnp.concatenate(
         [jnp.linspace(-10.0, 10.0, 41), _predictors_around_the_ceiling(model)]
@@ -155,6 +164,173 @@ def test_saturation_keeps_the_leading_dimensions(leading_shape):
     )
 
 
+# The scale of the smooth cap, in log conductance, that `LogLinearConductance` documents.
+_SMOOTH_CAP_SCALE = 0.1
+
+
+def _predictor_model(cap):
+    """Returns a one-feature model with the default bounds whose linear predictor is the feature."""
+    return eqx.tree_at(
+        lambda model: model.coefficients, LogLinearConductance(1, cap=cap), jnp.array([[1.0]])
+    )
+
+
+def _ceiling(model):
+    """Returns the linear predictor at which min_conductance + exp(predictor) reaches the cap."""
+    return math.log(model.max_conductance - model.min_conductance)
+
+
+def _scalar_conductance(model):
+    """Returns the conductance of a one-feature model as a function of one linear predictor."""
+    return lambda predictor: model.conductance(jnp.reshape(predictor, (1, 1)), 0)[0]
+
+
+def test_the_hard_cap_is_the_default():
+    assert LogLinearConductance(1).cap == "hard"
+    assert eqx.tree_equal(LogLinearConductance(1), LogLinearConductance(1, cap="hard"))
+    assert not eqx.tree_equal(LogLinearConductance(1), LogLinearConductance(1, cap="smooth"))
+
+
+def test_the_smooth_cap_matches_the_hard_cap_below_the_ceiling_within_the_documented_bound():
+    hard, smooth = (_predictor_model(cap) for cap in ("hard", "smooth"))
+    # Depths of the linear predictor below the ceiling, in log units, down to below the floor.
+    depths = np.concatenate([np.linspace(1.0, 4.0, 31), np.linspace(5.0, 20.0, 16)])
+    features = jnp.asarray(_ceiling(hard) - depths)[:, None]
+
+    deviation = np.abs(
+        np.asarray(smooth.conductance(features, 0)) / np.asarray(hard.conductance(features, 0)) - 1
+    )
+
+    bound = _SMOOTH_CAP_SCALE * np.exp(-depths / _SMOOTH_CAP_SCALE)
+    np.testing.assert_array_less(deviation, bound + 1e-14)
+    # One log unit below the ceiling, the bound is tight: the cap there has this scale.
+    assert 0.9 * bound[0] < deviation[0] < 5e-6
+
+
+def test_the_smooth_cap_rises_monotonically_toward_max_conductance():
+    model = _predictor_model("smooth")
+    ceiling = _ceiling(model)
+    conductance = _scalar_conductance(model)
+    predictors = jnp.linspace(ceiling - 3.0, ceiling + 6.0, 901)
+
+    values = np.asarray(jax.vmap(conductance)(predictors))
+    slopes = np.asarray(jax.vmap(jax.grad(conductance))(predictors))
+
+    assert np.all(np.diff(values) >= 0)
+    assert np.all(np.diff(values)[predictors[1:] <= ceiling + 1.0] > 0)
+    assert np.all(values <= model.max_conductance)
+    assert np.all(slopes[predictors <= ceiling + 3.0] > 0)
+    # The cap lowers the slope of the exponential, and the conductance reaches its cap only
+    # in rounding.
+    np.testing.assert_array_less(slopes, np.exp(np.asarray(predictors)))
+    np.testing.assert_allclose(values[-1], model.max_conductance, rtol=1e-15)
+    # At the ceiling, the conductance in excess of min_conductance is 2**-scale of its cap.
+    np.testing.assert_allclose(
+        conductance(ceiling) - model.min_conductance,
+        (model.max_conductance - model.min_conductance) * 2**-_SMOOTH_CAP_SCALE,
+        rtol=1e-14,
+    )
+
+
+@pytest.mark.parametrize("cap", ["hard", "smooth"])
+def test_only_the_smooth_cap_is_continuous_in_gradient_across_the_ceiling(cap):
+    model = _predictor_model(cap)
+    ceiling = _ceiling(model)
+    conductance = _scalar_conductance(model)
+    slope = jax.grad(conductance)
+    excess = model.max_conductance - model.min_conductance
+    for gap in (1e-3, 1e-5, 1e-7):
+        below, above = jnp.asarray(ceiling - gap), jnp.asarray(ceiling + gap)
+        assert abs(conductance(above) - conductance(below)) <= 2 * gap * excess
+        jump = abs(float(slope(above) - slope(below)))
+        if cap == "hard":
+            # The slope drops from the exponential's to 0.
+            np.testing.assert_allclose(jump, excess, rtol=1e-3)
+        else:
+            # The second derivative of the smooth cap is at most excess * (1 + 1 / (4 * scale)).
+            assert jump <= 2 * gap * excess * (1 + 1 / (4 * _SMOOTH_CAP_SCALE))
+
+
+def _finite_difference_hessians(model, limit, steps):
+    """Returns central-difference Hessians of a weighted conductance sum near a conductance limit.
+
+    The parameters are the two coefficients and the intercept. The first feature vector puts
+    its linear predictor 1e-8 below the ceiling, or below log(min_conductance); the others put
+    theirs within 2 log units of it.
+    """
+    location = _ceiling(model) if limit == "ceiling" else math.log(model.min_conductance)
+    coefficients, intercept = np.array([0.5, -0.25]), location - 0.2
+    features = np.array([[0.0, 0.3], [1.2, -0.4], [-2.0, 1.5], [1.5, 2.0]])
+    features[0, 0] = (location - 1e-8 - intercept - coefficients[1] * features[0, 1]) / 0.5
+    weights = jnp.array([1.0, -0.7, 0.4, 0.2])
+
+    def objective(parameters):
+        configured = eqx.tree_at(
+            lambda model: (model.coefficients, model.intercepts),
+            model,
+            (parameters[None, :2], parameters[2:]),
+        )
+        return weights @ configured.conductance(jnp.asarray(features), 0)
+
+    gradient = jax.jit(jax.grad(objective))
+    point = jnp.array([*coefficients, intercept])
+    return [
+        np.stack(
+            [
+                (gradient(point + step * unit) - gradient(point - step * unit)) / (2 * step)
+                for unit in jnp.eye(point.size)
+            ],
+            axis=1,
+        )
+        for step in steps
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cap", "limit"), [("hard", "floor"), ("smooth", "floor"), ("smooth", "ceiling")]
+)
+def test_the_finite_difference_hessian_at_a_smooth_limit_is_symmetric_and_stable_in_the_step(
+    cap, limit
+):
+    hessians = _finite_difference_hessians(_predictor_model(cap), limit, (1e-3, 1e-4, 1e-5))
+
+    scale = np.abs(hessians[-1]).max()
+    assert scale > 0
+    for hessian in hessians:
+        assert np.abs(hessian - hessian.T).max() <= 1e-3 * scale
+        np.testing.assert_allclose(hessian, hessians[-1], rtol=0, atol=1e-3 * scale)
+
+
+def test_the_finite_difference_hessian_at_the_hard_cap_grows_as_the_step_shrinks():
+    coarse, fine = _finite_difference_hessians(_predictor_model("hard"), "ceiling", (1e-3, 1e-5))
+
+    assert np.abs(fine).max() > 50 * np.abs(coarse).max()
+    assert np.abs(fine - fine.T).max() > 0.1 * np.abs(fine).max()
+
+
+def test_under_the_smooth_cap_saturation_flags_where_the_predictor_acts_at_most_half_as_much():
+    model = _predictor_model("smooth")
+    conductance = _scalar_conductance(model)
+    # Grids around log(min_conductance) and the ceiling that skip both points.
+    offsets = np.linspace(-2.0, 2.0, 400)
+    floor_predictors = jnp.asarray(math.log(model.min_conductance) + offsets)
+    cap_predictors = jnp.asarray(_ceiling(model) + offsets)
+
+    # Below the floor, the predictor moves log conductance by less than half.
+    log_slope = jax.vmap(jax.grad(lambda predictor: jnp.log(conductance(predictor))))
+    np.testing.assert_array_equal(
+        model.is_saturated(floor_predictors[:, None], 0),
+        np.asarray(log_slope(floor_predictors)) < 0.5,
+    )
+    # At the cap, it moves log conductance in excess of min_conductance by at most half.
+    excess_slope = jax.vmap(jax.grad(conductance))(cap_predictors) / (
+        jax.vmap(conductance)(cap_predictors) - model.min_conductance
+    )
+    np.testing.assert_array_equal(
+        model.is_saturated(cap_predictors[:, None], 0), np.asarray(excess_slope) <= 0.5
+    )
+
+
 @pytest.mark.parametrize(
     "settings",
     [
@@ -172,6 +348,8 @@ def test_saturation_keeps_the_leading_dimensions(leading_shape):
         {"max_conductance": float("inf")},
         {"max_conductance": float("nan")},
         {"solver_config": "default"},
+        {"cap": "soft"},
+        {"cap": None},
     ],
 )
 def test_invalid_model_configuration_is_rejected(settings):
@@ -365,11 +543,17 @@ def _training_loss(model, region, observations, loss):
     return state.history[0].training_loss
 
 
-def test_uniform_initialization_recovers_the_generating_conductance(dense_resistance):
+@pytest.mark.parametrize(
+    ("cap", "max_conductance"), [("hard", 1000.0), ("smooth", 1000.0), ("smooth", 4.0)]
+)
+def test_uniform_initialization_recovers_the_generating_conductance(
+    dense_resistance, cap, max_conductance
+):
+    # Under a cap of 4, the smooth cap lowers the conductance at intercept log(3.69) by about 4%.
     region, observations = _uniform_problem(dense_resistance, 3.7)
     model = eqx.tree_at(
         lambda model: model.coefficients,
-        LogLinearConductance(2, patch_size=2),
+        LogLinearConductance(2, patch_size=2, max_conductance=max_conductance, cap=cap),
         jnp.array([[0.4, -0.2]]),
     )
     initialized = initialize_uniform_conductance(model, region, observations, Log1pLoss())
@@ -412,10 +596,15 @@ def test_uniform_initialization_minimizes_the_region_weighted_loss(dense_resista
         assert initialized_loss <= _training_loss(neighbor, regions, observations, Log1pLoss())
 
 
+@pytest.mark.parametrize("cap", ["hard", "smooth"])
 @pytest.mark.parametrize("generating", [1e5, 1e-5])
-def test_uniform_initialization_stays_inside_the_conductance_bounds(dense_resistance, generating):
+def test_uniform_initialization_stays_inside_the_conductance_bounds(
+    dense_resistance, generating, cap
+):
     region, observations = _uniform_problem(dense_resistance, generating)
-    model = LogLinearConductance(2, patch_size=2, min_conductance=0.01, max_conductance=1000.0)
+    model = LogLinearConductance(
+        2, patch_size=2, min_conductance=0.01, max_conductance=1000.0, cap=cap
+    )
     initialized = initialize_uniform_conductance(model, region, observations, Log1pLoss())
     surface = np.asarray(initialized.conductance_surface(region).data)
     assert np.all(np.isfinite(initialized.intercepts))
@@ -561,3 +750,147 @@ def test_uniform_initialization_shares_one_solver_across_regions_of_one_shape(cu
         initialize_uniform_conductance(iterative, regions, observations, Log1pLoss()).intercepts,
         rtol=1e-6,
     )
+
+
+def _corridor_problem(dense_resistance) -> tuple[RegionBatch, PairwiseObservations]:
+    """Returns sampling units around a corridor that conducts beyond a cap at 5.
+
+    The genetic observations are effective resistances on the surface
+    ``0.01 + exp(5 * corridor + 0.3 * noise)``, whose corridor conducts about 150 times more
+    than its background. Under a cap at 5, the corridor cannot follow, and a ridge penalty
+    on the coefficients pulls its coefficient down: under the hard cap, the optimum of the
+    training objective puts a corridor vertex at the ceiling.
+    """
+    rng = np.random.default_rng(0)
+    corridor = np.zeros((6, 8))
+    corridor[2:4] = 1.0
+    features = np.stack([corridor, rng.normal(size=corridor.shape)], axis=-1)
+    positions = np.array([[2, 0], [3, 7], [0, 1], [5, 6], [0, 6], [5, 1], [2, 4]])
+    units = tuple(f"unit-{index}" for index in range(len(positions)))
+    region = RegionBatch(
+        "valley",
+        cx.field(
+            features, "row", "column", cx.LabeledAxis("feature", np.array(["corridor", "noise"]))
+        ),
+        units,
+        positions,
+    )
+    surface = 0.01 + np.exp(features @ np.array([5.0, 0.3]))
+    resistance = dense_resistance(surface, positions[:, 0] * corridor.shape[1] + positions[:, 1])
+    left, right = np.triu_indices(len(units), 1)
+    observations = PairwiseObservations.from_pairs(
+        [(units[i], units[j]) for i, j in zip(left, right, strict=True)],
+        resistance[left, right],
+        target=TargetSpec("synthetic divergence", units="index"),
+    )
+    return region, observations
+
+
+# One optimizer and one penalty object share the compiled update across the corridor tests.
+_CORRIDOR_OPTIMIZER = optax.lbfgs()
+_CORRIDOR_PENALTY = RidgePenalty(prior_sd=3.0, where=lambda model: model.coefficients)
+
+
+def _train_on_the_corridor(dense_resistance, cap, **settings) -> TrainingState:
+    """Trains a log-linear patch encoder capped at 5 on the corridor problem with L-BFGS."""
+    region, observations = _corridor_problem(dense_resistance)
+    return train(
+        region,
+        observations,
+        distance_model=LogLinearConductance(
+            2,
+            patch_size=1,
+            max_conductance=5.0,
+            cap=cap,
+            solver_config=ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=5000),
+        ),
+        config=TrainingConfig(
+            loss=MLPELoss(),
+            steps=40,
+            optimizer=_CORRIDOR_OPTIMIZER,
+            gradient_tolerance=1e-8,
+            penalty=_CORRIDOR_PENALTY,
+            **settings,
+        ),
+    )
+
+
+def _ceiling_gaps(state: TrainingState, dense_resistance) -> np.ndarray:
+    """Returns how far below the ceiling the latest model puts each vertex's linear predictor."""
+    region, _ = _corridor_problem(dense_resistance)
+    model = cast(LogLinearConductance, state.latest_model.distance_model)
+    predictors = model.backbone(region.feature_array) @ model.coefficients[0] + model.intercepts[0]
+    return _ceiling(model) - np.asarray(predictors)
+
+
+def _summed_objective_hessian(dense_resistance, state: TrainingState, step: float) -> np.ndarray:
+    """Returns the central-difference Hessian of the summed training objective at a trained model.
+
+    The parameters are those training updates: the coefficients, the intercept and the
+    statistical parameters of the maximum-likelihood population effects (MLPE) loss.
+    """
+    region, observations = _corridor_problem(dense_resistance)
+    loss, penalty = state.config.loss, state.config.penalty
+    assert penalty is not None
+    trainable, fixed = eqx.partition(
+        (state.latest_model.distance_model, state.loss_state), eqx.is_inexact_array
+    )
+    point, unravel = ravel_pytree(trainable)
+
+    def objective(flat):
+        model, loss_state = eqx.combine(unravel(flat), fixed)
+        return loss.sum_over_pairs(region, observations, model, loss_state) + penalty(model)
+
+    gradient = eqx.filter_jit(jax.grad(objective))
+    return np.stack(
+        [
+            (gradient(point + step * unit) - gradient(point - step * unit)) / (2 * step)
+            for unit in jnp.eye(point.size)
+        ],
+        axis=1,
+    )
+
+
+def _eigenvalues(hessian: np.ndarray) -> np.ndarray:
+    """Returns the eigenvalues of a finite-difference Hessian's symmetric part, ascending."""
+    return np.linalg.eigvalsh((hessian + hessian.T) / 2)
+
+
+@pytest.mark.parametrize(
+    ("objective_tolerance", "stop_reason"), [(None, "steps"), (1e-8, "objective_tolerance")]
+)
+def test_a_hard_cap_at_the_optimum_keeps_the_gradient_above_the_tolerance(
+    dense_resistance, objective_tolerance, stop_reason
+):
+    state = _train_on_the_corridor(
+        dense_resistance, "hard", objective_tolerance=objective_tolerance
+    )
+
+    # No update reached the gradient tolerance: the gradient jumps across the ceiling.
+    assert not state.converged
+    assert state.stop_reason == stop_reason
+    assert (state.step == state.config.steps) == (objective_tolerance is None)
+    assert np.abs(_ceiling_gaps(state, dense_resistance)).min() < 1e-6
+    # A negative eigenvalue of the finite-difference Hessian grows as the step shrinks.
+    coarse, fine = (
+        _eigenvalues(_summed_objective_hessian(dense_resistance, state, step)).min()
+        for step in (1e-4, 1e-5)
+    )
+    assert fine < 5 * coarse < 0
+
+
+def test_a_smooth_cap_trains_to_the_gradient_tolerance_with_a_positive_definite_hessian(
+    dense_resistance,
+):
+    state = _train_on_the_corridor(dense_resistance, "smooth")
+
+    assert state.converged
+    assert state.stop_reason == "gradient_tolerance"
+    assert state.step < state.config.steps
+    # The corridor still sits beyond the ceiling.
+    assert (_ceiling_gaps(state, dense_resistance) < 0).any()
+    hessians = [_summed_objective_hessian(dense_resistance, state, step) for step in (1e-4, 1e-5)]
+    for hessian in hessians:
+        assert np.abs(hessian - hessian.T).max() <= 1e-6 * np.abs(hessian).max()
+        assert _eigenvalues(hessian).min() > 0
+    np.testing.assert_allclose(*map(_eigenvalues, hessians), rtol=1e-5)

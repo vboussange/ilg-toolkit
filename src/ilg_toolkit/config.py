@@ -80,7 +80,7 @@ class ResistanceSolverConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Training configuration: loss, optimizer, update budget, batching settings and penalty.
+    """Training configuration: loss, optimizer, update budget and tolerances, batching and penalty.
 
     Each update samples up to ``region_batch_size`` regions, then up to
     ``species_batch_size`` species within each sampled region, and processes
@@ -104,17 +104,22 @@ class TrainingConfig:
     compiles its update for each penalty object, so reusing one penalty object across
     folds and runs reuses the compiled update.
 
+    Training stops at ``steps`` updates, or earlier at the gradient tolerance or the
+    objective tolerance; [`TrainingState.stop_reason`][ilg_toolkit.TrainingState.stop_reason]
+    names what ended training.
+
     Args:
         loss: Loss of every region–species group.
         steps: Total number of updates, including completed updates when continuing;
-            with ``gradient_tolerance``, the maximum number of updates.
+            with ``gradient_tolerance`` or ``objective_tolerance``, the maximum number
+            of updates.
         eval_every: Number of updates between evaluations.
         optimizer: Optax optimizer applying the updates; Adam with learning rate
             1e-3 by default.
         gradient_tolerance: Gradient-norm threshold ending training: training stops
             after the first update whose gradient norm (global L2 norm over the
             trainable parameters for that update's training objective) is at or below
-            it; ``None`` runs all ``steps``.
+            it; ``None`` (default) sets no threshold.
         region_batch_size: Maximum number of regions sampled per update; ``None``
             samples every region.
         species_batch_size: Maximum number of species sampled per region; ``None``
@@ -125,6 +130,16 @@ class TrainingConfig:
         penalty: Function or Equinox module of the distance model returning a scalar,
             such as [`RidgePenalty`][ilg_toolkit.RidgePenalty]; ``None`` trains on the
             aggregate loss alone.
+        objective_tolerance: Relative tolerance on the change of the training objective
+            ending training: training stops after the first update at which the
+            training objectives of the latest ``objective_window + 1`` updates, each at
+            the parameters its update starts from, span at most ``objective_tolerance``
+            times the largest of 1 and their absolute values. Each value covers the
+            regions, species and random key its update samples. ``None`` (default)
+            sets no tolerance. With ``objective_window=1``, the criterion is that of
+            ``ftol`` in SciPy's L-BFGS-B.
+        objective_window: Number of updates over which ``objective_tolerance`` bounds
+            the change of the training objective, default 10.
 
     Raises:
         ValueError: If a setting is invalid.
@@ -140,6 +155,8 @@ class TrainingConfig:
     species_microbatch_size: int | None = None
     seed: int = 0
     penalty: Callable[[Any], Any] | None = None
+    objective_tolerance: float | None = None
+    objective_window: int = 10
 
     def __post_init__(self):
         if not isinstance(self.loss, AbstractLoss):
@@ -167,3 +184,10 @@ class TrainingConfig:
             object.__setattr__(self, "gradient_tolerance", float(self.gradient_tolerance))
         if self.penalty is not None and not callable(self.penalty):
             raise ValueError("penalty must be callable or None")
+        if self.objective_tolerance is not None:
+            if not _is_finite_real(self.objective_tolerance) or self.objective_tolerance < 0:
+                raise ValueError("objective_tolerance must be finite and nonnegative, or None")
+            object.__setattr__(self, "objective_tolerance", float(self.objective_tolerance))
+        object.__setattr__(
+            self, "objective_window", _positive_integer("objective_window", self.objective_window)
+        )

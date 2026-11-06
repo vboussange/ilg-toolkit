@@ -144,9 +144,18 @@ magnitude.
 **Saturation**:
 Where a log-linear patch encoder's conductance sits at its floor or cap
 (`LogLinearConductance.is_saturated`): the exponential of the linear predictor is
-below `min_conductance`, or the conductance sits at its cap, where the linear
-predictor reaches log(`max_conductance` − `min_conductance`). There, the
-coefficients do not act as they do elsewhere.
+below `min_conductance`, or the linear predictor reaches the ceiling,
+log(`max_conductance` − `min_conductance`), where the hard cap holds the
+conductance at its cap and the smooth cap at least halves the predictor's effect.
+There, the coefficients do not act as they do elsewhere.
+
+**Smooth cap**:
+The cap of a log-linear patch encoder that its conductance approaches smoothly
+(`LogLinearConductance(cap="smooth")`): a softplus of scale 0.1 in log
+conductance replaces the hard cap's minimum of the linear predictor and the
+ceiling, so conductance is infinitely differentiable in the coefficients. The
+hard cap (`cap="hard"`) is the default.
+_Avoid_: Soft cap; soft clip.
 
 **Resistance surface**:
 Local resistance $Q = 1/C$ at each vertex, the inverse of the conductance surface.
@@ -207,8 +216,14 @@ _Avoid_: Pooled backbone; distance model pooled across regions.
 Training one distance model per region, using only that region's genetic observations.
 
 **Training configuration**:
-The chosen loss, optimizer, joint optimization budget, optional gradient tolerance, optional penalty, and batching settings for training a distance model and its statistical parameters.
+The chosen loss, optimizer, joint optimization budget, optional gradient and objective tolerances, optional penalty, and batching settings for training a distance model and its statistical parameters.
 _Avoid_: Calibration settings, when referring to the training budget.
+
+**Stop reason**:
+What ends training (`TrainingState.stop_reason`): the gradient tolerance, which
+an update reaches when its gradient norm falls to it (`converged`); the objective
+tolerance, which the training objective meets when its relative change over a
+window of updates falls to it; or the step budget.
 
 **Training**:
 Joint estimation of distance-model parameters and the statistical parameters required by a loss, using supplied genetic observations.

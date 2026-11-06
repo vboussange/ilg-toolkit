@@ -4,7 +4,7 @@ import math
 from collections.abc import Mapping, Sequence
 from functools import partial
 from numbers import Real
-from typing import final
+from typing import final, Literal
 
 import equinox as eqx
 import jax
@@ -33,15 +33,17 @@ _SEARCH_GRID_SIZE = 256
 _REFINEMENT_STEPS = 40
 # Relative loss improvement required to move a scale-invariant loss's intercept.
 _IMPROVEMENT_RTOL = 1e-9
+# Scale of the smooth cap, in log conductance; the Notes of `LogLinearConductance` justify it.
+_SMOOTH_CAP_SCALE = 0.1
 
 
 @final
 class LogLinearConductance(ConductanceModel):
-    """A log-linear patch encoder with species-specific coefficients.
+    r"""A log-linear patch encoder with species-specific coefficients.
 
     Patch-averaged landscape features form a linear predictor for each species.
-    Conductance is ``min_conductance + exp(predictor)``, capped at
-    ``max_conductance``. Coefficient columns follow the order of the landscape
+    Conductance is ``min_conductance + exp(predictor)``, capped at ``max_conductance``
+    as ``cap`` selects. Coefficient columns follow the order of the landscape
     features; coefficients and intercepts start at zero.
     ``initialize_uniform_conductance`` starts the intercepts at the best uniform
     conductance instead.
@@ -58,10 +60,17 @@ class LogLinearConductance(ConductanceModel):
             patches at once. It bounds the peak memory of the backbone.
         min_conductance: Positive floor, default 0.01, added to the exponentiated linear
             predictor.
-        max_conductance: Positive cap, default 1000. Conductance is
-            ``min(max_conductance, min_conductance + exp(features @ coefficients + intercept))``.
+        max_conductance: Positive cap, default 1000.
+        cap: How conductance reaches ``max_conductance``: ``"hard"`` (default) stops the
+            linear predictor at the ceiling, and ``"smooth"`` approaches it smoothly
+            (see Notes).
         solver_config: Resistance solver of the effective-resistance layer and its
             settings; see ``ResistanceSolverConfig``.
+
+    Raises:
+        ValueError: If ``cap`` is neither ``"hard"`` nor ``"smooth"``, or another
+            setting is invalid.
+        TypeError: If ``solver_config`` is not a ``ResistanceSolverConfig``.
 
     Notes:
         Prepare feature scaling and categorical reference levels before building a
@@ -74,6 +83,31 @@ class LogLinearConductance(ConductanceModel):
         limits change relative conductances near them. Maximum-likelihood
         population effects (MLPE) losses standardize ecological distances, so
         they identify conductances up to a common factor.
+
+        With $c_{\min}$ = ``min_conductance`` and $c_{\max}$ = ``max_conductance``,
+        both caps act on the linear predictor $\eta$ through the ceiling
+        $L = \log(c_{\max} - c_{\min})$, where $c_{\min} + e^{\eta}$ reaches
+        $c_{\max}$. The hard cap gives the conductance $c_{\min} + e^{\min(\eta, L)}$.
+        Its derivative in $\eta$ drops from $c_{\max} - c_{\min}$ to 0 at the ceiling,
+        so a training objective whose optimum puts a vertex at the ceiling has a kink
+        there: the gradient norm stays above a small gradient tolerance, and a
+        finite-difference Hessian grows as its step shrinks.
+
+        The smooth cap replaces $\min(\eta, L)$ by the softplus
+        $L - s \log(1 + e^{(L - \eta) / s})$ with scale $s = 0.1$, in log conductance.
+        The conductance in excess of $c_{\min}$ is then
+        $(e^{-\eta / s} + e^{-L / s})^{-s}$, a smooth minimum of $e^{\eta}$ and
+        $c_{\max} - c_{\min}$: it is infinitely differentiable and strictly increasing
+        in $\eta$, and approaches $c_{\max}$ as $\eta$ grows. A linear predictor $d$
+        log units below the ceiling gives a conductance within a relative
+        $s e^{-d/s}$ of the hard cap's, below $5 \times 10^{-6}$ at $d = 1$ and
+        $3 \times 10^{-10}$ at $d = 2$. At the ceiling, the conductance in excess of
+        $c_{\min}$ is $2^{-s} \approx 0.93$ times $c_{\max} - c_{\min}$. The scale
+        bounds the second derivative of the logarithm of that excess in $\eta$ by
+        $1 / (4 s) = 2.5$: the Hessian of a training objective varies over changes of
+        the linear predictor of order 0.1, a hundred times those of central
+        differences with step 1e-3 on landscape features of unit scale. The floor has
+        no kink under either cap: $c_{\min} + e^{\eta}$ is infinitely differentiable.
     """
 
     coefficients: jax.Array
@@ -84,6 +118,7 @@ class LogLinearConductance(ConductanceModel):
     patch_microbatch_size: int | None = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
     max_conductance: float = eqx.field(static=True)
+    cap: Literal["hard", "smooth"] = eqx.field(static=True)
     solver_config: ResistanceSolverConfig = eqx.field(static=True)
 
     def __init__(
@@ -95,6 +130,7 @@ class LogLinearConductance(ConductanceModel):
         patch_microbatch_size: int | None = None,
         min_conductance: float = 0.01,
         max_conductance: float = 1000.0,
+        cap: Literal["hard", "smooth"] = "hard",
         solver_config: ResistanceSolverConfig | None = None,
     ):
         in_channels = _positive_integer("in_channels", in_channels)
@@ -110,6 +146,8 @@ class LogLinearConductance(ConductanceModel):
             raise ValueError(
                 "Require finite conductance bounds 0 < min_conductance < max_conductance"
             )
+        if cap not in ("hard", "smooth"):
+            raise ValueError(f"cap must be 'hard' or 'smooth', got {cap!r}")
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
@@ -121,6 +159,7 @@ class LogLinearConductance(ConductanceModel):
         self.patch_microbatch_size = patch_microbatch_size
         self.min_conductance = float(min_conductance)
         self.max_conductance = float(max_conductance)
+        self.cap = cap
         self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
         count = _species_rows(species)
         self.coefficients = jnp.zeros((count, in_channels))
@@ -153,8 +192,9 @@ class LogLinearConductance(ConductanceModel):
             per vertex.
         """
         predictor = self._linear_predictor(latent, species_index)
+        # Under the smooth cap, the clip acts only within rounding of the bounds.
         return jnp.clip(
-            jnp.exp(jnp.minimum(predictor, self._ceiling())) + self.min_conductance,
+            jnp.exp(self._capped(predictor)) + self.min_conductance,
             self.min_conductance,
             self.max_conductance,
         )
@@ -162,9 +202,11 @@ class LogLinearConductance(ConductanceModel):
     def is_saturated(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
         """Returns where one species' conductance sits at the conductance floor or cap.
 
-        There, the coefficients do not act as they do elsewhere: below the floor,
-        the conductance stops following the landscape features, and at the cap, it
-        stops changing with them.
+        There, the coefficients do not act as they do elsewhere. Below the floor, a
+        change of the linear predictor moves log conductance by less than half as
+        much. At the hard cap, it leaves the conductance unchanged; at the smooth cap,
+        it moves log conductance in excess of ``min_conductance`` by at most half as
+        much.
 
         Args:
             latent: Feature vectors with shape ``(..., in_channels)``, at any grain:
@@ -175,10 +217,9 @@ class LogLinearConductance(ConductanceModel):
 
         Returns:
             A boolean array with shape ``(...)``, true where the exponential of the
-            linear predictor is below ``min_conductance``, or where the conductance
-            sits at its cap: the linear predictor reaches
-            ``log(max_conductance - min_conductance)``, beyond which ``conductance``
-            holds the exponential.
+            linear predictor is below ``min_conductance``, or where the linear
+            predictor reaches the ceiling ``log(max_conductance - min_conductance)``,
+            beyond which the hard cap holds the exponential.
         """
         predictor = self._linear_predictor(latent, species_index)
         below_floor = jnp.exp(predictor) < self.min_conductance
@@ -188,8 +229,27 @@ class LogLinearConductance(ConductanceModel):
         return latent @ self.coefficients[species_index] + self.intercepts[species_index]
 
     def _ceiling(self) -> jax.Array:
-        """Returns the linear predictor at which the conductance reaches its cap."""
+        """Returns the linear predictor at which ``min_conductance + exp`` reaches the cap."""
         return jnp.log(self.max_conductance - self.min_conductance)
+
+    def _capped(self, predictor: jax.Array) -> jax.Array:
+        """Returns the log conductance in excess of ``min_conductance``: the capped predictor."""
+        ceiling = self._ceiling()
+        if self.cap == "hard":
+            return jnp.minimum(predictor, ceiling)
+        # Written from the ceiling, the value stays at most the ceiling for any predictor.
+        return ceiling - _SMOOTH_CAP_SCALE * jax.nn.softplus(
+            (ceiling - predictor) / _SMOOTH_CAP_SCALE
+        )
+
+    def _uncapped(self, excess: jax.Array) -> jax.Array:
+        """Returns the linear predictor whose capped value is ``excess``, below the ceiling."""
+        if self.cap == "hard":
+            return excess
+        ceiling = self._ceiling()
+        return excess - _SMOOTH_CAP_SCALE * jnp.log(
+            -jnp.expm1((excess - ceiling) / _SMOOTH_CAP_SCALE)
+        )
 
     def feature_effects(self, feature_names: Sequence[str]) -> dict[str, tuple[float, ...]]:
         """Returns each feature's log-conductance coefficient per species, by feature name.
@@ -245,7 +305,7 @@ def initialize_uniform_conductance(
     Coefficients are set to zero, so every vertex of the conductance grid graph
     has the same conductance ``C``. Each species' intercept is set to the ``C``
     minimizing ``loss`` on that species' pairwise genetic observations, with the
-    region and species weighting of ``train``.
+    region and species weighting of ``train``, under the model's cap.
 
     On a uniform conductance grid graph, effective resistance scales as ``1 / C``.
     The search runs one effective-resistance solve per region at unit
@@ -382,13 +442,17 @@ def _species_loss(log_conductance, loss, distances, contexts, states, weights):
 @eqx.filter_jit
 def _best_intercept(loss, distances, contexts, states, weights, bounds, model, species_index):
     """Returns a species' intercept at the uniform conductance minimizing its loss."""
-    current = jnp.log(model.min_conductance + jnp.exp(model.intercepts[species_index]))
+    intercept = model.intercepts[species_index]
+    # The hard cap's current conductance ignores the cap, so an intercept beyond the
+    # ceiling falls outside the bounds of the search.
+    excess = intercept if model.cap == "hard" else model._capped(intercept)
+    current = jnp.log(model.min_conductance + jnp.exp(excess))
     log_conductance = _best_log_conductance(
         loss, distances, contexts, states, weights, bounds, current
     )
-    # Conductance min_conductance + exp(intercept), written stably near the floor.
-    intercept = bounds[0] + jnp.log(jnp.expm1(log_conductance - bounds[0]))
-    return intercept.astype(model.intercepts.dtype)
+    # Conductance min_conductance + exp(excess), written stably near the floor.
+    excess = bounds[0] + jnp.log(jnp.expm1(log_conductance - bounds[0]))
+    return model._uncapped(excess).astype(model.intercepts.dtype)
 
 
 def _best_log_conductance(loss, distances, contexts, states, weights, bounds, current):
