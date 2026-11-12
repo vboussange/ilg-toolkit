@@ -1,6 +1,7 @@
 """Tests of the log-linear patch encoder and its uniform-conductance initialization."""
 
 import itertools
+import math
 
 import coordax as cx
 import equinox as eqx
@@ -52,10 +53,11 @@ def test_patch_mean_predictor_obeys_conductance_bounds(patch_microbatch_size):
         model,
         (jnp.array([[0.5, 2.0]]), jnp.array([0.3])),
     )
-    # Patch means of the features are (-2, 0) and (2, 0), giving predictors -0.7 and 1.3.
+    # Patch means of the features are (-2, 0) and (2, 0), giving predictors -0.7 and 1.3,
+    # the second 0.26 below the ceiling log 4.75.
     np.testing.assert_allclose(
         np.asarray(model.conductance_surface(region).data),
-        [[0.7465853037914095, 3.9192966676192444]],
+        [[0.7465853037836652, 3.892630694759483]],
     )
     extreme = eqx.tree_at(lambda model: model.coefficients, model, jnp.array([[1e4, 2.0]]))
     np.testing.assert_allclose(np.asarray(extreme.conductance_surface(region).data), [[0.25, 5.0]])
@@ -84,59 +86,31 @@ def test_saturation_flags_feature_vectors_below_the_floor_and_at_the_cap(
     np.testing.assert_array_equal(model.is_saturated(features, species_index), expected)
 
 
-def _predictors_around_the_ceiling(model):
-    """Returns predictors from 0 to where exp overflows, dense within 64 ulps of log(max - min)."""
-    ceiling = float(jnp.log(model.max_conductance - model.min_conductance))
-    return jnp.asarray(
-        np.concatenate(
-            [ceiling + np.spacing(ceiling) * np.arange(-64, 65), [0.0, ceiling + 1.0, 1e3]]
-        )
-    )
-
-
-def test_conductance_stops_the_exponential_at_the_ceiling_then_clips():
+def test_conductance_approaches_the_cap_smoothly():
     model = eqx.tree_at(
         lambda model: model.coefficients, LogLinearConductance(1), jnp.array([[1.0]])
     )
-    features = jnp.concatenate(
-        [jnp.linspace(-10.0, 10.0, 41), _predictors_around_the_ceiling(model)]
-    )[:, None]
-    ceiling = jnp.log(model.max_conductance - model.min_conductance)
+    excess = model.max_conductance - model.min_conductance
+    ceiling = math.log(excess)
 
-    def conductance(coefficients):
-        return eqx.tree_at(lambda model: model.coefficients, model, coefficients).conductance(
-            features, 0
-        )
+    def conductance(predictor):
+        return model.conductance(jnp.reshape(predictor, (1, 1)), 0)[0]
 
-    def capped_exponential(coefficients):
-        predictor = features @ coefficients[0] + model.intercepts[0]
-        return jnp.clip(
-            jnp.exp(jnp.minimum(predictor, ceiling)) + model.min_conductance,
-            model.min_conductance,
-            model.max_conductance,
-        )
+    predictors = jnp.linspace(ceiling - 10.0, ceiling + 10.0, 2001)
+    values = np.asarray(jax.vmap(conductance)(predictors))
+    slopes = np.asarray(jax.vmap(jax.grad(conductance))(predictors))
 
-    np.testing.assert_array_equal(
-        conductance(model.coefficients), capped_exponential(model.coefficients)
+    # One log unit and more below the ceiling, the cap changes conductance by under 5e-6.
+    below = np.asarray(predictors) <= ceiling - 1.0
+    np.testing.assert_allclose(
+        values[below], model.min_conductance + np.exp(predictors[below]), rtol=5e-6
     )
-    np.testing.assert_array_equal(
-        jax.jacobian(conductance)(model.coefficients),
-        jax.jacobian(capped_exponential)(model.coefficients),
-    )
-
-
-def test_saturation_at_the_cap_is_where_the_conductance_is_capped():
-    model = eqx.tree_at(
-        lambda model: model.coefficients, LogLinearConductance(1), jnp.array([[1.0]])
-    )
-    features = _predictors_around_the_ceiling(model)[:, None]
-    # With the default bounds, the capped conductance rounds below max_conductance.
-    capped = model.conductance(jnp.array([[1e3]]), 0)[0]
-
-    at_cap = np.asarray(model.conductance(features, 0)) == capped
-
-    assert at_cap.any() and not at_cap.all()
-    np.testing.assert_array_equal(model.is_saturated(features, 0), at_cap)
+    # Conductance rises to max_conductance, with a slope that changes by at most
+    # 3.5 * excess per log unit, so by under 0.05 * excess between grid points.
+    assert np.all(np.diff(values) >= 0)
+    assert np.all(values <= model.max_conductance)
+    np.testing.assert_allclose(values[-1], model.max_conductance, rtol=1e-12)
+    assert np.abs(np.diff(slopes)).max() < 0.05 * excess
 
 
 @pytest.mark.parametrize("leading_shape", [(), (6,), (2, 3), (2, 3, 4)])
@@ -366,10 +340,11 @@ def _training_loss(model, region, observations, loss):
 
 
 def test_uniform_initialization_recovers_the_generating_conductance(dense_resistance):
+    # A cap at 4 lowers the conductance at intercept log(3.69) by about 4%.
     region, observations = _uniform_problem(dense_resistance, 3.7)
     model = eqx.tree_at(
         lambda model: model.coefficients,
-        LogLinearConductance(2, patch_size=2),
+        LogLinearConductance(2, patch_size=2, max_conductance=4.0),
         jnp.array([[0.4, -0.2]]),
     )
     initialized = initialize_uniform_conductance(model, region, observations, Log1pLoss())

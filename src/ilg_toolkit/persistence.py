@@ -256,9 +256,9 @@ def load_model[DistanceModel: AbstractDistanceModel](
 
     The template supplies the distance model's class, static settings, array shapes
     and dtypes: build it with the original constructor settings (patch size, patch
-    microbatch size, dropout, species and activation functions). Its
-    parameter values may differ. The saved parameters, species names and solver
-    settings replace the template's.
+    microbatch size, conductance bounds, dropout, species and activation
+    functions). Its parameter values may differ. The saved parameters, species names
+    and solver settings replace the template's.
 
     Args:
         path: File written by [`save_model`][ilg_toolkit.save_model].
