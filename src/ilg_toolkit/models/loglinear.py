@@ -33,7 +33,7 @@ _SEARCH_GRID_SIZE = 256
 _REFINEMENT_STEPS = 40
 # Relative loss improvement required to move a scale-invariant loss's intercept.
 _IMPROVEMENT_RTOL = 1e-9
-# Scale of the cap, in log conductance; the Notes of `LogLinearConductance` justify it.
+# Scale of the cap's softplus, in log conductance.
 _CAP_SCALE = 0.1
 
 
@@ -76,21 +76,12 @@ class LogLinearConductance(ConductanceModel):
         population effects (MLPE) losses standardize ecological distances, so
         they identify conductances up to a common factor.
 
-        With $c_{\min}$ = ``min_conductance`` and $c_{\max}$ = ``max_conductance``,
-        the cap acts on the linear predictor $\eta$ through the ceiling
-        $L = \log(c_{\max} - c_{\min})$, where $c_{\min} + e^{\eta}$ reaches
-        $c_{\max}$. The log conductance in excess of $c_{\min}$ is the softplus
-        $L - s \log(1 + e^{(L - \eta) / s})$ with scale $s = 0.1$, so the excess is
-        $(e^{-\eta / s} + e^{-L / s})^{-s}$, a smooth minimum of $e^{\eta}$ and
-        $c_{\max} - c_{\min}$. It is infinitely differentiable and strictly increasing
-        in $\eta$, and approaches $c_{\max}$ as $\eta$ grows, so a training objective
-        whose optimum puts a vertex at the ceiling has no kink there and gradient-based
-        training reaches a small gradient tolerance. A linear predictor $d$ log units
-        below the ceiling gives a conductance within a relative $s e^{-d/s}$ of
-        $c_{\min} + e^{\eta}$, below $5 \times 10^{-6}$ at $d = 1$. At the ceiling,
-        the excess is $2^{-s} \approx 0.93$ times $c_{\max} - c_{\min}$. The scale
-        bounds the second derivative of the log excess in $\eta$ by $1 / (4 s) = 2.5$.
-        The floor has no kink: $c_{\min} + e^{\eta}$ is infinitely differentiable.
+        With $c_{\min}$ = ``min_conductance``, $c_{\max}$ = ``max_conductance`` and
+        the ceiling $L = \log(c_{\max} - c_{\min})$, conductance is
+        $c_{\min} + \exp(L - s \log(1 + e^{(L - \eta) / s}))$ with $s = 0.1$. It is
+        infinitely differentiable in the linear predictor $\eta$, within a relative
+        $5 \times 10^{-6}$ of $c_{\min} + e^{\eta}$ one log unit or more below the
+        ceiling, and approaches $c_{\max}$ above it.
     """
 
     coefficients: jax.Array
