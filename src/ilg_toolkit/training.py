@@ -5,7 +5,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Any, cast, final, Literal, NamedTuple
+from typing import Any, cast, final, NamedTuple
 
 import equinox as eqx
 import jax
@@ -96,9 +96,7 @@ class TrainingState[DistanceModel: AbstractDistanceModel](eqx.Module):
 
     Attributes:
         loss_state: Statistical parameter state after the latest update.
-        optimizer_state: Optimizer state after the latest update. With
-            ``optax.lbfgs()``, ``optax.tree.get(optimizer_state, "info")`` reads the
-            latest line search.
+        optimizer_state: Optimizer state after the latest update.
         rng_key: Random key for the next update.
         config: Training configuration.
         history: Evaluation records, in step order.
@@ -107,16 +105,11 @@ class TrainingState[DistanceModel: AbstractDistanceModel](eqx.Module):
             validation loss, or the final evaluated model without validation.
         selected_step: Step of the selected model.
         step: Number of completed updates.
-        converged: Whether an update reached the configuration's gradient tolerance;
-            false when the objective tolerance or the step budget ends training.
+        converged: Whether an update reached the configuration's gradient tolerance.
         training_groups: Region name and species index of each training
             region–species group.
         validation_groups: Region name and species index of each validation
             region–species group.
-        recent_objectives: Training objectives of the latest updates, each at the
-            parameters its update starts from, oldest first: the latest
-            ``config.objective_window + 1`` with ``config.objective_tolerance``,
-            otherwise none.
     """
 
     loss_state: Any
@@ -131,23 +124,6 @@ class TrainingState[DistanceModel: AbstractDistanceModel](eqx.Module):
     converged: bool
     training_groups: tuple[tuple[str, int], ...]
     validation_groups: tuple[tuple[str, int], ...]
-    recent_objectives: tuple[float, ...] = ()
-
-    @property
-    def stop_reason(self) -> Literal["gradient_tolerance", "objective_tolerance", "steps"] | None:
-        """What ends training at this state, or ``None`` before training ends.
-
-        ``"gradient_tolerance"`` when an update reached ``config.gradient_tolerance``
-        (``converged``), ``"objective_tolerance"`` when the training objective stayed
-        within ``config.objective_tolerance`` over ``config.objective_window`` updates,
-        and ``"steps"`` when training completed ``config.steps`` updates, in that order
-        of precedence. ``on_step`` receives the states before the last with ``None``.
-        """
-        if self.converged:
-            return "gradient_tolerance"
-        if _objective_stalled(self.recent_objectives, self.config):
-            return "objective_tolerance"
-        return "steps" if self.step == self.config.steps else None
 
     @property
     def selection(self) -> str:
@@ -171,24 +147,6 @@ def _validate_state(state: TrainingState) -> None:
         raise ValueError("History length must be within the completed training steps plus one")
     if not isinstance(state.converged, bool):
         raise ValueError("Training convergence must be recorded as a boolean")
-    config = state.config
-    limit = 0 if config.objective_tolerance is None else config.objective_window + 1
-    if not isinstance(state.recent_objectives, tuple) or len(state.recent_objectives) > limit:
-        raise ValueError(f"Recent training objectives must be a tuple of at most {limit} values")
-
-
-def _objective_stalled(objectives: Sequence[float], config: TrainingConfig) -> bool:
-    """Returns whether the training objective stayed within the objective tolerance.
-
-    The window holds the training objectives of the latest ``config.objective_window + 1``
-    updates. Their span is relative to the largest of 1 and their absolute values; a
-    nonfinite value never stalls.
-    """
-    if config.objective_tolerance is None or len(objectives) <= config.objective_window:
-        return False
-    window = np.asarray(objectives[-(config.objective_window + 1) :], dtype=np.float64)
-    scale = np.maximum(1.0, np.abs(window).max())
-    return bool(np.ptp(window) <= config.objective_tolerance * scale)
 
 
 def _leaf_signature(leaf: Any) -> tuple[Any, ...]:
@@ -590,13 +548,12 @@ def _apply_update(
     gradient: _Parameters,
     training_objective: _TrainingObjective,
     solver_states: _SolverStates,
-) -> tuple[_Parameters, optax.OptState, _SolverStates, jax.Array]:
+) -> tuple[_Parameters, optax.OptState, _SolverStates]:
     """Applies one optimizer update with the training objective's value, gradient and function.
 
     The gradient comes from the regional and microbatch programs, and the value from
     the training objective that line searches evaluate. The update returns the carried
-    solver states after its last evaluation of the training objective, and the
-    training objective at the parameters it starts from.
+    solver states after its last evaluation of the training objective.
 
     Optax calls the function inside a closed ``while_loop`` that takes a scalar back,
     so each evaluation reads the carried solver states from references and writes
@@ -625,7 +582,7 @@ def _apply_update(
         value_fn=value_fn,
     )
     parameters = eqx.apply_updates(parameters, updates)
-    return parameters, optimizer_state, jax.tree.map(lambda ref: ref[...], references), value
+    return parameters, optimizer_state, jax.tree.map(lambda ref: ref[...], references)
 
 
 @eqx.filter_jit
@@ -764,11 +721,8 @@ def train[DistanceModel: AbstractDistanceModel](
     (same regions, species and random key), so ``optax.lbfgs()`` line-searches
     deterministically within an update. With ``config.gradient_tolerance``, training
     stops after the first update whose gradient norm is at or below it, evaluates
-    that step and sets ``converged=True``. With ``config.objective_tolerance``,
-    training stops after the first update at which the training objective stayed
-    within it over ``config.objective_window`` updates, evaluates that step and
-    leaves ``converged`` false. ``TrainingState.stop_reason`` names what ended
-    training; continuing a state that either tolerance stopped makes no updates.
+    that step and sets ``converged=True``; continuing a converged state makes no
+    updates.
 
     The training objective is the aggregate loss plus ``config.penalty`` divided by
     the number of training pairs (see [`TrainingConfig`][ilg_toolkit.TrainingConfig]).
@@ -974,15 +928,12 @@ def train[DistanceModel: AbstractDistanceModel](
             converged=converged,
             training_groups=training_groups,
             validation_groups=validation_groups,
-            recent_objectives=tuple(recent_objectives),
         )
 
     step = state.step if state is not None else 0
     converged = state.converged if state is not None else False
-    recent_objectives = list(state.recent_objectives) if state is not None else []
-    stalled = _objective_stalled(recent_objectives, config)
     start_step = state.step + 1 if state is not None else 0
-    for step in range(start_step, 0 if converged or stalled else config.steps + 1):
+    for step in range(start_step, 0 if converged else config.steps + 1):
         if step:
             random_key, update_key = jax.random.split(random_key)
             keys = jax.random.split(update_key, region_count)
@@ -1083,7 +1034,7 @@ def train[DistanceModel: AbstractDistanceModel](
                 converged = float(_gradient_norm(accumulated)) <= config.gradient_tolerance
             # The training objective just passed at the current parameters, so a candidate failed.
             with _naming_failures(distance_model.species, sampled, step, in_line_search=True):
-                parameters, optimizer_state, solver_states, update_objective = _apply_update(
+                parameters, optimizer_state, solver_states = _apply_update(
                     parameters,
                     config.optimizer,
                     optimizer_state,
@@ -1091,16 +1042,11 @@ def train[DistanceModel: AbstractDistanceModel](
                     training_objective,
                     _solver_states(contexts),
                 )
-            if config.objective_tolerance is not None:
-                recent_objectives = [*recent_objectives, float(update_objective)]
-                recent_objectives = recent_objectives[-(config.objective_window + 1) :]
-                stalled = _objective_stalled(recent_objectives, config)
             contexts = {
                 shape: _with_carried_state(context, solver_states[shape])
                 for shape, context in contexts.items()
             }
-        stopping = converged or stalled
-        if step == 0 or step % config.eval_every == 0 or step == config.steps or stopping:
+        if step == 0 or step % config.eval_every == 0 or step == config.steps or converged:
             evaluation = _evaluate_regions(parameters, training_batches, config, step, contexts)
             contexts = evaluation.contexts
             training_objective = evaluation.loss
@@ -1147,6 +1093,6 @@ def train[DistanceModel: AbstractDistanceModel](
             latest = make_model(evaluation.calibrations)
         if on_step is not None:
             on_step(continuation())
-        if stopping:
+        if converged:
             break
     return continuation()

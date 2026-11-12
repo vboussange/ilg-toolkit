@@ -1262,7 +1262,6 @@ def test_continuing_with_each_solver_choice_reproduces_the_uninterrupted_run(
         ({"step": 1}, "Training step"),
         ({"selected_step": 1}, "Selected step"),
         ({"history": ()}, "History"),
-        ({"recent_objectives": (0.5,)}, "Recent training objectives"),
     ],
 )
 def test_continuation_rejects_an_inconsistent_state(training_problem, change, message):
@@ -1804,8 +1803,6 @@ def test_adam_with_learning_rate_1e_3_is_the_default_optimizer(
     )
     assert eqx.tree_equal(default, explicit)
     assert not default.converged
-    assert default.stop_reason == "steps"
-    assert default.recent_objectives == ()
 
 
 def test_lbfgs_trains_until_the_gradient_tolerance(ScalarEmbedding, regions_and_observations):
@@ -1825,7 +1822,6 @@ def test_lbfgs_trains_until_the_gradient_tolerance(ScalarEmbedding, regions_and_
     assert 0 < result.step < config.steps
     assert [state.step for state in states] == list(range(result.step + 1))
     assert [state.converged for state in states] == [False] * result.step + [True]
-    assert [state.stop_reason for state in states] == [None] * result.step + ["gradient_tolerance"]
     assert eqx.tree_equal(states[-1], result)
     # The final step is evaluated although it is not on the evaluation cadence.
     assert result.history[-1].step == result.selected_step == result.step
@@ -1848,98 +1844,8 @@ def test_lbfgs_trains_until_the_gradient_tolerance(ScalarEmbedding, regions_and_
     )
     assert callbacks == []
     assert continued.converged
-    assert continued.stop_reason == "gradient_tolerance"
     assert continued.step == result.step
     assert eqx.tree_equal(continued.latest_model, result.latest_model)
-
-
-def test_the_objective_tolerance_ends_a_flat_run_with_its_own_stop_reason(
-    ScalarEmbedding, regions_and_observations
-):
-    regions, observations = regions_and_observations()
-    model = ScalarEmbedding(jnp.asarray(1.0))
-    config = TrainingConfig(
-        loss=Log1pLoss(),
-        steps=100,
-        eval_every=50,
-        optimizer=optax.lbfgs(),
-        objective_tolerance=1e-12,
-        objective_window=3,
-    )
-    states = []
-    result = train(
-        regions, observations, distance_model=model, config=config, on_step=states.append
-    )
-
-    # L-BFGS reaches the optimum within a few updates, after which the objective stays flat.
-    assert result.stop_reason == "objective_tolerance"
-    assert not result.converged
-    assert config.objective_window < result.step < 30
-    assert [state.stop_reason for state in states] == [None] * result.step + ["objective_tolerance"]
-    assert eqx.tree_equal(states[-1], result)
-    # The final step is evaluated although it is not on the evaluation cadence.
-    assert [record.step for record in result.history] == [0, result.step]
-    window = np.asarray(result.recent_objectives)
-    assert window.shape == (config.objective_window + 1,)
-    assert np.ptp(window) <= 1e-12 * max(1.0, np.abs(window).max())
-    # Each update receives the training objective at the parameters it starts from.
-    weight = float(cast(Any, states[-2].latest_model.distance_model).weight)
-    np.testing.assert_allclose(window[-1], np.mean(_scalar_region_losses(weight)), rtol=1e-12)
-    # The tolerance only stops training: without it, training follows the same updates.
-    unstopped = train(
-        regions,
-        observations,
-        distance_model=model,
-        config=replace(config, steps=result.step, objective_tolerance=None),
-    )
-    assert unstopped.stop_reason == "steps"
-    assert unstopped.recent_objectives == ()
-    assert eqx.tree_equal(unstopped.latest_model, result.latest_model)
-    assert unstopped.history == result.history
-    # Continuing a state the objective tolerance stopped makes no updates.
-    callbacks = []
-    continued = train(
-        regions,
-        observations,
-        state=result,
-        config=replace(config, steps=200),
-        on_step=callbacks.append,
-    )
-    assert callbacks == []
-    assert continued.step == result.step
-    assert continued.stop_reason == "objective_tolerance"
-    assert eqx.tree_equal(continued.latest_model, result.latest_model)
-
-
-@pytest.mark.parametrize(
-    ("objectives", "stop_reason"),
-    [
-        # The change is relative to the largest absolute training objective of the window.
-        ((1000.0, 1000.0005, 1000.0), "objective_tolerance"),
-        ((1000.0, 1000.002, 1000.0), "steps"),
-        ((-2.0, -2.000001, -2.0), "objective_tolerance"),
-        # Below 1, the change is relative to 1.
-        ((0.0, 5e-7, -4e-7), "objective_tolerance"),
-        ((1e-3, 1.5e-3, 1e-3), "steps"),
-        # A window needs objective_window + 1 values, all finite.
-        ((5.0, 5.0), "steps"),
-        ((5.0, float("nan"), 5.0), "steps"),
-    ],
-)
-def test_the_objective_tolerance_bounds_the_relative_change_over_the_window(
-    training_problem, objectives, stop_reason
-):
-    region, observations, distance_model = training_problem("embedding")
-    state = train(
-        region,
-        observations,
-        distance_model=distance_model,
-        config=TrainingConfig(
-            loss=Log1pLoss(), steps=0, objective_tolerance=1e-6, objective_window=2
-        ),
-    )
-    assert state.stop_reason == "steps"
-    assert replace(state, recent_objectives=objectives).stop_reason == stop_reason
 
 
 def test_line_searches_evaluate_the_regions_sampled_for_the_update(

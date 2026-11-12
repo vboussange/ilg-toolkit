@@ -79,30 +79,6 @@ def test_gradient_tolerance_is_optional_finite_and_nonnegative():
             TrainingConfig(loss=Log1pLoss(), gradient_tolerance=invalid)  # type: ignore[arg-type]
 
 
-def test_objective_tolerance_is_optional_finite_and_nonnegative_over_a_positive_window():
-    default = TrainingConfig(loss=Log1pLoss())
-    assert default.objective_tolerance is None
-    assert default.objective_window == 10
-    tolerance = TrainingConfig(
-        loss=Log1pLoss(),
-        objective_tolerance=np.float64(1e-9),
-        objective_window=np.int64(3),  # type: ignore[arg-type]
-    )
-    assert type(tolerance.objective_tolerance) is float
-    assert type(tolerance.objective_window) is int
-    assert TrainingConfig(loss=Log1pLoss(), objective_tolerance=0).objective_tolerance == 0.0
-    assert tolerance != TrainingConfig(loss=Log1pLoss(), objective_tolerance=1e-9)
-    assert tolerance != TrainingConfig(
-        loss=Log1pLoss(), objective_tolerance=1e-8, objective_window=3
-    )
-    for invalid in (-1e-3, float("nan"), float("inf"), True, "1e-3"):
-        with pytest.raises(ValueError, match="objective_tolerance"):
-            TrainingConfig(loss=Log1pLoss(), objective_tolerance=invalid)  # type: ignore[arg-type]
-    for invalid in (0, -1, True, 1.5, "2"):
-        with pytest.raises(ValueError, match="objective_window"):
-            TrainingConfig(loss=Log1pLoss(), objective_window=invalid)  # type: ignore[arg-type]
-
-
 def test_integer_settings_accept_numpy_integers():
     options: dict[str, Any] = dict(steps=np.int64(5), seed=np.uint32(7), eval_every=np.int32(2))
     config = TrainingConfig(loss=Log1pLoss(), **options)
