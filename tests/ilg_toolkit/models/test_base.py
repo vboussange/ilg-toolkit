@@ -7,7 +7,6 @@ from typing import cast, final
 import coordax as cx
 import equinox as eqx
 import jax.numpy as jnp
-import lineax as lx
 import numpy as np
 import optax
 import pytest
@@ -30,6 +29,7 @@ from ilg_toolkit.models import (
     LogLinearConductance,
 )
 from jaxscape import GridGraph, ResistanceDistance
+from jaxscape.solvers import GridMultigridSolver
 
 
 def test_distance_models_carry_unique_species_names(PointConductance):
@@ -230,7 +230,7 @@ def test_float32_patch_encoders_give_float64_resistances_matching_jaxscape(Featu
             surface = distance_model.conductance_surface(region).data
             graph = GridGraph(surface.astype(jnp.float64), fun=lambda a, b: (a + b) / 2)
             config = distance_model.solver_config
-            solver = lx.CG(rtol=config.rtol, atol=config.atol, max_steps=config.max_steps)
+            solver = GridMultigridSolver(rtol=config.rtol, max_steps=config.max_steps)
             matrix = ResistanceDistance(solver=solver).nodes_to_nodes_distance(
                 graph, jnp.array([5, 0, 2, 2, 3])
             )
@@ -383,7 +383,7 @@ def test_species_of_one_prediction_share_a_solver_state(
         PointConductance(scales, species=species, solver_config=config)
         for config in (
             ResistanceSolverConfig(solver="cudss"),
-            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+            ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
         )
     )
     with cudss_double.one_analysis():

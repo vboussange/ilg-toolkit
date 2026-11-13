@@ -526,7 +526,7 @@ def test_uniform_initialization_shares_one_solver_across_regions_of_one_shape(cu
         LogLinearConductance(1, patch_size=1, solver_config=config)
         for config in (
             ResistanceSolverConfig(solver="cudss"),
-            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+            ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
         )
     )
     with cudss_double.one_analysis():

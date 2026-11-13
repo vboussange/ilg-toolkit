@@ -42,7 +42,9 @@ CELLS = 48  # Raster side length in cells.
 PATCH_SIZE = 8  # Groups 8x8 cells into one vertex: a 6x6 conductance grid graph.
 UNITS = 12  # Sampling units per species and region, each at its own vertex.
 target = TargetSpec("genetic dissimilarity", units="index")
-solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
+solver_config = ResistanceSolverConfig(
+    solver="cudss" if jax.default_backend() == "gpu" else "multigrid"
+)
 ```
 
 ## Simulate two regions
@@ -192,15 +194,15 @@ display(Markdown("\n".join(rows)))
 
     Species: ('newt', 'frog')
     MLPE loss at step 0: newt -1.751, frog -1.831
-    MLPE loss at step 300: newt -3.305, frog -3.338
+    MLPE loss at step 300: newt -3.304, frog -3.346
 
 
 
 | Region | Species | Slope | Population-effect variance | Residual variance |
 | --- | --- | ---: | ---: | ---: |
-| valley | newt | 0.0903 | 1.06e-04 | 2.11e-04 |
-| valley | frog | 0.0606 | 4.91e-05 | 1.07e-04 |
-| upland | newt | 0.0501 | 3.02e-05 | 7.32e-05 |
+| valley | newt | 0.0905 | 1.05e-04 | 2.11e-04 |
+| valley | frog | 0.0614 | 4.93e-05 | 1.07e-04 |
+| upland | newt | 0.0500 | 3.02e-05 | 7.33e-05 |
 
 
 ## Predict by species
@@ -247,7 +249,7 @@ print("Newt pairs predicted:", len(predictions["newt"].pairs))
 
 
     Frog pairs: (('frog-1', 'frog-2'), ('frog-3', 'frog-4'))
-    Frog predictions: [0.4417 0.3133]
+    Frog predictions: [0.4443 0.312 ]
     Newt pairs predicted: 66
 
 

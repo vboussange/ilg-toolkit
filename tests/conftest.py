@@ -842,10 +842,12 @@ class _CuDSSDouble(AbstractSparseDirectSolver[_DenseFactorization]):
 
     Its callbacks are unordered, as spineax's calls are, so a failed call leaves later
     calls unaffected on a GPU. The token passed between them orders refactorizations.
+    The analysis takes the matrix values, as spineax's does, so a compiled program
+    analyzes on each call.
     """
 
     def factorize(self, pattern: CSRPattern, values: jax.Array) -> _DenseFactorization:
-        token, failing = io_callback(_CUDSS_TOKENS.analyze, _TOKEN_RESULT)
+        token, failing = io_callback(lambda _: _CUDSS_TOKENS.analyze(), _TOKEN_RESULT, values)
         return _dense_factorization(token, failing, pattern, values)
 
     def refactorize(
@@ -884,7 +886,7 @@ def cudss_gpu_fixture():
     return importlib.import_module("spineax.cudss")
 
 
-@pytest.fixture(name="solver_choice", params=["cg", "amg", "cudss"])
+@pytest.fixture(name="solver_choice", params=["cg", "amg", "multigrid", "cudss"])
 def solver_choice_fixture(request) -> str:
     """Returns each solver choice, with cuDSS on the CPU double."""
     if request.param == "amg":

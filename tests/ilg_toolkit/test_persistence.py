@@ -257,7 +257,7 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(
         ("west", "north", "east"),
         np.array([[0, 0], [0, 7], [7, 7]]),
     )
-    solver_config = ResistanceSolverConfig(rtol=1e-9, atol=1e-10)
+    solver_config = ResistanceSolverConfig(solver="cg", rtol=1e-9, atol=1e-10)
     assert solver_config != ResistanceSolverConfig()
     model = LandscapeGeneticsModel(
         PointConductance(jnp.asarray(0.3), solver_config=solver_config),

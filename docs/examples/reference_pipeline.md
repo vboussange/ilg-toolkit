@@ -54,7 +54,9 @@ from matplotlib.patches import Patch
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
 print(jax.devices())
-solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
+solver_config = ResistanceSolverConfig(
+    solver="cudss" if jax.default_backend() == "gpu" else "multigrid"
+)
 ```
 
     [CudaDevice(id=0)]
@@ -1243,7 +1245,5 @@ print(
 ```
 
     Members equal: True
-
-
     Predictions equal: True
 

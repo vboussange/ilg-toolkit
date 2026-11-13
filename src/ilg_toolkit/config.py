@@ -15,24 +15,27 @@ from .losses import AbstractLoss
 class ResistanceSolverConfig:
     """Settings of the float64 resistance solver of the effective-resistance layer.
 
-    ``solver`` selects one of three resistance solvers:
+    ``solver`` selects one of four resistance solvers:
 
-    - ``"cg"`` runs conjugate gradient (CG) on a CPU or a GPU, with no optional
-      dependency. Choose it for small conductance grid graphs with low conductance
-      contrast. Its iterations grow with both grid size and conductance contrast.
-    - ``"amg"`` runs CG preconditioned with algebraic multigrid (AMG) on a CPU or a
-      GPU, through the ``amg`` extra. Its hierarchy is prepared once on a uniform
-      conductance grid graph. Choose it for larger conductance grid graphs with
-      conductance contrast below 4 orders of magnitude. Its iterations grow with
-      conductance contrast and not with grid size.
+    - ``"multigrid"`` (default) runs conjugate gradient (CG) preconditioned with
+      geometric multigrid on a CPU or a GPU, with no optional dependency. Each solve
+      builds its hierarchy from the conductances it solves. Choose it on a CPU, and on
+      a GPU without the ``cudss`` extra or when the cuDSS factorization does not fit
+      in GPU memory. Its iterations grow on conductance surfaces that vary by orders
+      of magnitude from one vertex to the next.
     - ``"cudss"`` runs the NVIDIA CUDA Direct Sparse Solver (cuDSS) on an NVIDIA GPU,
       through the ``cudss`` extra. Choose it on an NVIDIA GPU when the factorization
       fits in GPU memory, in particular to train a deep patch encoder, whose
       conductance surface can reach its floor. It has no tolerances or iteration
       limit, and its cost does not depend on conductance contrast.
+    - ``"cg"`` runs CG with no preconditioner on a CPU or a GPU, with no optional
+      dependency. Its iterations grow with both grid size and conductance contrast.
+    - ``"amg"`` runs CG preconditioned with algebraic multigrid (AMG) on a CPU or a
+      GPU, through the ``amg`` extra. Its hierarchy is prepared once on a uniform
+      conductance grid graph, and its iterations grow with conductance contrast.
 
-    ``"cg"`` and ``"amg"`` raise an error when they reach ``max_steps`` before either
-    tolerance.
+    ``"cg"``, ``"amg"`` and ``"multigrid"`` raise an error when they reach
+    ``max_steps`` before their tolerance.
 
     A conductance model carries its solver settings. Constructing, saving and
     loading them work on any backend. Preparing ``"cudss"`` raises an ``ImportError``
@@ -40,39 +43,49 @@ class ResistanceSolverConfig:
     GPU backend. No other resistance solver replaces it.
 
     Args:
-        solver: The resistance solver: ``"cg"`` (default), ``"amg"`` or ``"cudss"``.
-        rtol: Relative residual tolerance of ``"cg"`` and ``"amg"``, finite and
-            nonnegative; ``None`` (default) selects 1e-6.
+        solver: The resistance solver: ``"multigrid"`` (default), ``"cudss"``,
+            ``"cg"`` or ``"amg"``.
+        rtol: Relative residual tolerance of ``"cg"``, ``"amg"`` and ``"multigrid"``,
+            finite and nonnegative, and positive for ``"multigrid"``; ``None``
+            (default) selects 1e-6.
         atol: Absolute residual tolerance of ``"cg"`` and ``"amg"``, finite and
             nonnegative; ``None`` (default) selects 1e-6. At least one of ``rtol``
             and ``atol`` is positive.
-        max_steps: Maximum number of CG iterations of ``"cg"`` and ``"amg"``;
-            ``None`` (default) selects 1000.
+        max_steps: Maximum number of CG iterations of ``"cg"``, ``"amg"`` and
+            ``"multigrid"``; ``None`` (default) selects 1000.
 
     Raises:
-        ValueError: If a setting is invalid, ``solver`` is unknown, or ``"cudss"``
-            receives ``rtol``, ``atol`` or ``max_steps``.
+        ValueError: If a setting is invalid, ``solver`` is unknown, ``"multigrid"``
+            receives ``atol``, or ``"cudss"`` receives ``rtol``, ``atol`` or
+            ``max_steps``.
     """
 
-    solver: Literal["cg", "amg", "cudss"] = "cg"
+    solver: Literal["cg", "amg", "multigrid", "cudss"] = "multigrid"
     rtol: float | None = None
     atol: float | None = None
     max_steps: int | None = None
 
     def __post_init__(self):
-        if self.solver not in ("cg", "amg", "cudss"):
-            raise ValueError(f"solver must be one of 'cg', 'amg' or 'cudss', got {self.solver!r}")
+        if self.solver not in ("cg", "amg", "multigrid", "cudss"):
+            raise ValueError(
+                f"solver must be one of 'cg', 'amg', 'multigrid' or 'cudss', got {self.solver!r}"
+            )
+        unused = {"cudss": ("rtol", "atol", "max_steps"), "multigrid": ("atol",)}
+        for name in unused.get(self.solver, ()):
+            if getattr(self, name) is not None:
+                raise ValueError(
+                    f"{name} does not apply to solver {self.solver!r}; leave it as None"
+                )
         if self.solver == "cudss":
-            for name in ("rtol", "atol", "max_steps"):
-                if getattr(self, name) is not None:
-                    raise ValueError(f"{name} does not apply to solver 'cudss'; leave it as None")
             return
-        for name, value in (("rtol", self.rtol), ("atol", self.atol)):
+        tolerances = ("rtol",) if self.solver == "multigrid" else ("rtol", "atol")
+        for name in tolerances:
+            value = getattr(self, name)
             value = 1e-6 if value is None else value
             if not _is_finite_real(value) or value < 0:
                 raise ValueError(f"solver {name} must be finite and nonnegative")
             object.__setattr__(self, name, float(value))
-        if self.rtol == 0 and self.atol == 0:
+        if not any(getattr(self, name) for name in tolerances):
             raise ValueError("At least one solver tolerance must be positive")
         max_steps = 1000 if self.max_steps is None else self.max_steps
         object.__setattr__(self, "max_steps", _positive_integer("solver max_steps", max_steps))

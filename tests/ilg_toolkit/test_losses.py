@@ -127,7 +127,8 @@ def _assert_direct_summed_loss_matches_conjugate_gradient(training_problem, Poin
     )
     expected_value, expected_gradient = value_and_gradient(
         PointConductance(
-            jnp.asarray(0.2), solver_config=ResistanceSolverConfig(rtol=1e-11, atol=1e-11)
+            jnp.asarray(0.2),
+            solver_config=ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
         )
     )
     assert float(value) == pytest.approx(float(expected_value), rel=1e-8)

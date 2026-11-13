@@ -421,7 +421,7 @@ def test_mlpe_calibration_groups_share_a_solver_state(
         PointConductance(scales, species=species, solver_config=config)
         for config in (
             ResistanceSolverConfig(solver="cudss"),
-            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+            ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
         )
     )
     with cudss_double.one_analysis():

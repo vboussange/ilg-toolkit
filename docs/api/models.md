@@ -21,14 +21,16 @@
 The resistance solver is the numerical method behind the effective-resistance
 layer. A conductance model carries its choice in `solver_config`, and training,
 genetic prediction, calibration-head fitting and saved models all use that choice.
-The [overview](../index.md#resistance-solvers) gives the three choices and when to
+The [overview](../index.md#resistance-solvers) gives the four choices and when to
 choose each.
 
 ### Solver state
 
-`"amg"` and `"cudss"` prepare a solver state on a uniform conductance grid graph:
-the fixed hierarchy of `"amg"`, or the sparse analysis of `"cudss"`, which takes far
-longer than a refactorization with that analysis.
+`"amg"`, `"multigrid"` and `"cudss"` prepare a solver state on a uniform
+conductance grid graph: the fixed hierarchy of `"amg"`, the grid stencil of
+`"multigrid"`, whose coefficients each solve replaces before building its hierarchy,
+or the sparse analysis of `"cudss"`, which takes far longer than a refactorization
+with that analysis.
 
 Training a conductance model prepares one solver state per raster shape and carries
 the state of `"cudss"` from update to update. The regions, species, evaluations and

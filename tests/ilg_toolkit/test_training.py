@@ -101,7 +101,9 @@ def _two_species(regions, observations):
     )
 
 
-_EXHAUSTED_CONJUGATE_GRADIENT = ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1)
+_EXHAUSTED_CONJUGATE_GRADIENT = ResistanceSolverConfig(
+    solver="cg", rtol=1e-12, atol=1e-12, max_steps=1
+)
 _EXHAUSTED_MESSAGE = "The maximum number of solver steps was reached"
 
 
@@ -169,7 +171,7 @@ class _ContrastConductance(ConductanceModel):
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
     solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, default=ResistanceSolverConfig(max_steps=30)
+        static=True, default=ResistanceSolverConfig(solver="cg", max_steps=30)
     )
 
     def __init__(self, contrast: jax.Array, *, species: tuple[str, ...]):
@@ -185,7 +187,7 @@ class _ContrastConductance(ConductanceModel):
 
 @pytest.mark.parametrize("microbatch_size", [None, 1], ids=["one_microbatch", "two_microbatches"])
 def test_exhausted_gradient_solve_names_the_failing_species(microbatch_size, training_problem):
-    # On a 6 x 6 graph, 30 steps solve a uniform conductance surface. The first update
+    # On a 6 x 6 graph, 30 CG steps solve a uniform conductance surface. The first update
     # moves the contrast by the learning rate, and the second gradient exceeds the steps.
     species = ("frog", "newt")
     region, observations, _ = training_problem("conductance", shape=(6, 6), species=species)
@@ -543,7 +545,10 @@ def test_training_with_each_solver_choice_matches_conjugate_gradient(
 ):
     region, observations, _ = training_problem("conductance")
     config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optimizer)
-    tolerance = None if solver_choice == "cudss" else 1e-11
+    tolerances = {
+        "cudss": {},
+        "multigrid": {"rtol": 1e-11},
+    }.get(solver_choice, {"rtol": 1e-11, "atol": 1e-11})
     state, reference = (
         train(
             region,
@@ -552,8 +557,8 @@ def test_training_with_each_solver_choice_matches_conjugate_gradient(
             config=config,
         )
         for solver_config in (
-            ResistanceSolverConfig(solver=solver_choice, rtol=tolerance, atol=tolerance),
-            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+            ResistanceSolverConfig(solver=solver_choice, **tolerances),
+            ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
         )
     )
     np.testing.assert_allclose(
@@ -684,7 +689,7 @@ def _assert_no_rebuild_and_equal_to_conjugate_gradient(
     reference = scenario.run(
         training_problem,
         PointConductance,
-        ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+        ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
         optimizer,
     )
     for record, expected in zip(state.history, reference.history, strict=True):
@@ -2143,7 +2148,9 @@ def test_lbfgs_with_a_ridge_penalty_converges_to_finite_coefficients_on_a_separa
         distance_model=LogLinearConductance(
             2,
             patch_size=1,
-            solver_config=ResistanceSolverConfig(rtol=1e-10, atol=1e-10, max_steps=5000),
+            solver_config=ResistanceSolverConfig(
+                solver="cg", rtol=1e-10, atol=1e-10, max_steps=5000
+            ),
         ),
         config=TrainingConfig(
             loss=MLPELoss(),

@@ -174,15 +174,16 @@ _Avoid_: Distance solver; resistance calculation.
 **Resistance solver**:
 The numerical method that solves the linear systems of the effective-resistance
 layer, selected with `ResistanceSolverConfig`: conjugate gradient (CG), CG
-preconditioned with algebraic multigrid (AMG), or the NVIDIA CUDA Direct Sparse
-Solver (cuDSS), a sparse direct solver.
+preconditioned with algebraic multigrid (AMG), CG preconditioned with geometric
+multigrid, or the NVIDIA CUDA Direct Sparse Solver (cuDSS), a sparse direct solver.
 Identifiers such as the saved `distance_solver` setting keep their names.
 _Avoid_: Effective-resistance solver; distance solver; linear solver, in prose.
 
 **Solver state**:
 What a resistance solver prepares for one raster shape (the rows and columns of a
 region's landscape features) on a uniform conductance grid graph, and reuses for
-the conductance surfaces of that shape: the AMG hierarchy, or cuDSS's sparse
+the conductance surfaces of that shape: the AMG hierarchy, the grid stencil of
+geometric multigrid, whose coefficients each solve replaces, or cuDSS's sparse
 analysis and latest factorization. CG has no solver state. Training carries one
 cuDSS solver state per raster shape from update to update, shared by the regions,
 species and evaluations on that shape.

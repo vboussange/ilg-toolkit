@@ -105,7 +105,7 @@ def test_species_training_matches_dense_resistance_and_reloads(dense_resistance,
     result = train(
         region,
         observations,
-        distance_model=model(6, ResistanceSolverConfig(rtol=1e-9, atol=1e-10)),
+        distance_model=model(6, ResistanceSolverConfig(solver="cg", rtol=1e-9, atol=1e-10)),
         config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.01)),
     )
     assert np.isfinite(result.history[-1].training_loss)

@@ -97,7 +97,9 @@ observations = PairwiseObservations(
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
 loss = Log1pLoss()
-solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
+solver_config = ResistanceSolverConfig(
+    solver="cudss" if jax.default_backend() == "gpu" else "multigrid"
+)
 distance_model = initialize_uniform_conductance(
     LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver_config=solver_config),
     region,
