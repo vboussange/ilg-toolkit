@@ -31,7 +31,7 @@ dependencies = [
   "coordax>=0.2.9,<0.3",
   "equinox>=0.13.2,<0.14",
   "jax>=0.12,<0.13",
-  "jaxscape>=0.0.17,<0.0.19",
+  "jaxscape>=0.0.17,<0.1.0",
   "lineax>=0.1.0,<0.2",
   "numpy>=2.2.6,<3",
   "optax>=0.2.8,<0.3",
@@ -46,7 +46,7 @@ requires-python = ">=3.12"
 version = "0.0.3"
 
 [project.optional-dependencies]
-cudss = ["jaxscape[cudss]>=0.0.17,<0.0.19"]
+cudss = ["jaxscape[cudss]>=0.0.17,<0.1.0"]
 examples = ["matplotlib>=3.10,<4", "pandas>=2.2,<4", "rioxarray>=0.19,<1"]
 
 [tool.pyright]
