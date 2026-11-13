@@ -309,6 +309,28 @@ def test_loading_a_file_of_another_kind_names_its_kind(
         load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"solver": "cudss", "rtol": None, "atol": None, "max_steps": None},
+        {"rtol": 1e-6, "atol": 1e-6, "max_steps": 1000, "use_amg": True},
+    ],
+    ids=["solver", "use_amg"],
+)
+def test_a_file_recording_solver_settings_loads_with_the_template_solver(
+    PointConductance, training_problem, tmp_path, settings
+):
+    path = tmp_path / "conductance.eqx"
+    model, _ = _saved_conductance_model(PointConductance, training_problem, path)
+    line, arrays = path.read_bytes().split(b"\n", 1)
+    header = json.loads(line)
+    header["metadata"]["distance_solver"] = settings
+    path.write_bytes(json.dumps(header).encode() + b"\n" + arrays)
+    assert eqx.tree_equal(
+        load_model(path, distance_model=PointConductance(jnp.asarray(-1.0))), model
+    )
+
+
 def test_model_reload_uses_native_shape_and_dtype_compatibility(WeightedEmbedding, tmp_path):
     with jax.enable_x64():
         distance_model = WeightedEmbedding(jnp.asarray([0.2, -0.4], dtype=jnp.float32))

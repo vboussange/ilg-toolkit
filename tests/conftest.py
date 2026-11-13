@@ -215,7 +215,8 @@ class _DropoutConductance(ConductanceModel):
     conductance_dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver: lx.AbstractLinearSolver = eqx.field(static=True, default=_DEFAULT_SOLVER)
+    # `None` selects JAXScape's default solver.
+    solver: lx.AbstractLinearSolver | None = eqx.field(static=True, default=None)
 
     def backbone(self, features):
         return self.dropout(features)
