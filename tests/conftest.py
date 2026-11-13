@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import cast, final
+from typing import Any, cast, final
 
 import coordax as cx
 import equinox as eqx
@@ -34,7 +34,12 @@ from ilg_toolkit.models import (
 )
 from jax.experimental import io_callback
 from jaxscape import ResistanceDistance
-from jaxscape.solvers import AbstractSparseDirectSolver, CSRPattern, CuDSSSolver
+from jaxscape.solvers import (
+    AbstractReusableStateSolver,
+    AbstractSparseDirectSolver,
+    CSRPattern,
+    CuDSSSolver,
+)
 
 
 # The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
@@ -893,15 +898,57 @@ def cudss_gpu_fixture():
     return SimpleNamespace(solver=CuDSSSolver(), rebuild_count=cudss.rebuild_count)
 
 
-@pytest.fixture(name="solver_choice", params=["cg", "default", "cudss"])
+@final
+class _SizedState(eqx.Module):
+    cg_state: Any
+    size: int
+
+
+@final
+class _SizedConjugateGradient(AbstractReusableStateSolver):
+    """Lineax's conjugate gradient with a solver state that records the system size.
+
+    The size is a Python integer, a leaf of the solver state that is not an array.
+    ``reinit`` keeps it, and ``compute`` reads it as a Python integer.
+    """
+
+    cg: lx.CG
+
+    def init(self, operator, options):
+        return _SizedState(self.cg.init(operator, options), operator.in_size())
+
+    def reinit(self, operator, options, state):
+        return _SizedState(self.cg.init(operator, options), state.size)
+
+    def compute(self, state, vector, options):
+        if vector.size != state.size:
+            raise ValueError("The right-hand side does not match the recorded system size")
+        return self.cg.compute(state.cg_state, vector, options)
+
+    def transpose(self, state, options):
+        cg_state, options = self.cg.transpose(state.cg_state, options)
+        return _SizedState(cg_state, state.size), options
+
+    def conj(self, state, options):
+        cg_state, options = self.cg.conj(state.cg_state, options)
+        return _SizedState(cg_state, state.size), options
+
+    def assume_full_rank(self):
+        return self.cg.assume_full_rank()
+
+
+@pytest.fixture(name="solver_choice", params=["cg", "default", "cudss", "sized-cg"])
 def solver_choice_fixture(request) -> lx.AbstractLinearSolver:
-    """Returns Lineax's conjugate gradient, JAXScape's default solver or cuDSS.
+    """Returns conjugate gradient, JAXScape's default solver, cuDSS or sized conjugate gradient.
 
     Conjugate gradient and JAXScape's default solver run at tight tolerances; cuDSS
-    runs on its CPU double.
+    runs on its CPU double. Sized conjugate gradient runs conjugate gradient at the
+    same tolerances, with a solver state that holds a Python integer.
     """
     if request.param == "cudss":
         return request.getfixturevalue("cudss_double").solver
+    if request.param == "sized-cg":
+        return _SizedConjugateGradient(lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000))
     if request.param == "default":
         return eqx.tree_at(
             lambda solver: (solver.rtol, solver.max_steps), _DEFAULT_SOLVER, (1e-11, 1000)

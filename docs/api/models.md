@@ -37,10 +37,12 @@ before solving.
 
 Training a conductance model initializes one solver state per raster shape and
 carries it from update to update. The regions, species, evaluations and line
-searches on one raster shape share it. A distance model that composes a
-conductance model solves through `ecological_distances`, which initializes a
-solver state on every call. Genetic prediction, calibration-head fitting and
-`initialize_uniform_conductance` initialize a solver state per call.
+searches on one raster shape share it. A solver state may hold Python objects
+besides arrays; training carries its arrays and keeps its other leaves. A distance
+model that composes a conductance model solves through `ecological_distances`,
+which initializes a solver state on every call. Genetic prediction,
+calibration-head fitting and `initialize_uniform_conductance` initialize a solver
+state per call.
 
 ### Failures and saved models
 

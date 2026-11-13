@@ -147,6 +147,9 @@ def _effective_resistance(
     state = distance.reinit(graph, context.solver_state)
     resistances = distance.nodes_to_nodes_distance(graph, nodes, state=state)
     # Solver calls with side effects, such as cuDSS's, run unordered, and the next
-    # reinitialization can replace what this state holds, so it waits for these solves.
-    resistances, state = jax.lax.optimization_barrier((resistances, state))
+    # reinitialization can replace what this state holds, so its arrays wait for these
+    # solves. The barrier takes only arrays; the state's other leaves pass around it.
+    arrays, others = eqx.partition(state, eqx.is_array)
+    resistances, arrays = jax.lax.optimization_barrier((resistances, arrays))
+    state = eqx.combine(arrays, others)
     return resistances.at[jnp.diag_indices(nodes.size)].set(0), replace(context, solver_state=state)

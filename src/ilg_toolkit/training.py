@@ -38,6 +38,7 @@ from .resistance import _ResistanceSolverContext
 _Parameters = tuple[AbstractDistanceModel, Any]
 _RasterShape = tuple[int, int]
 _Contexts = dict[_RasterShape, _ResistanceSolverContext | None]
+# The carried solver state of each raster shape: the arrays of its solver state, or `None`.
 _SolverStates = dict[_RasterShape, Any]
 # What `eqx.error_if` raises from a compiled call and from a call under `jax.disable_jit()`, and
 # what a failed native call raises, such as one of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
@@ -384,6 +385,32 @@ def _penalty_term(distance_model, penalty, pair_count) -> jax.Array:
 _penalty_gradient = eqx.filter_jit(eqx.filter_grad(_penalty_term))
 
 
+def _carried_state(context: _ResistanceSolverContext | None) -> Any:
+    """Returns the arrays of a context's solver state, which training carries.
+
+    The solver state's other leaves stay in the context: ``lax.cond`` and references
+    take only arrays. A distance model that is not a conductance model has no
+    context and carries ``None``.
+    """
+    return None if context is None else eqx.filter(context.solver_state, eqx.is_array)
+
+
+def _with_carried_state(
+    context: _ResistanceSolverContext | None, state: Any
+) -> _ResistanceSolverContext | None:
+    """Returns the context whose solver state combines the carried arrays with its other leaves.
+
+    Args:
+        context: The context of a raster shape, or ``None``, which stays ``None``.
+        state: Arrays of a solver state of the context's solver, as ``_carried_state``
+            returns them.
+    """
+    if context is None:
+        return None
+    others = eqx.filter(context.solver_state, eqx.is_array, inverse=True)
+    return replace(context, solver_state=eqx.combine(state, others))
+
+
 def _when(
     condition: jax.Array,
     compute: Callable[[_SolverStates], tuple[jax.Array, _SolverStates]],
@@ -412,9 +439,10 @@ class _TrainingObjective(eqx.Module):
     structure and the compiled update stay fixed across updates. The penalty enters
     once, whichever groups the update samples.
 
-    A call takes the solver state of each raster shape, ``None`` for a distance model
-    that is not a conductance model, and returns them refreshed. Each region–species
-    group's solve takes the state the solve of the previous one returned.
+    A call takes the carried solver state of each raster shape, ``None`` for a
+    distance model that is not a conductance model, and returns them refreshed; the
+    contexts hold the other leaves of each solver state. Each region–species group's
+    solve takes the state the solve of the previous one returned.
     """
 
     regions: tuple[tuple[_Contribution, ...], ...]
@@ -433,19 +461,14 @@ class _TrainingObjective(eqx.Module):
 
         def group_value(index: int, item: _Contribution, group, latent, solver_states):
             shape = self.shapes[index]
-            context = self.contexts[shape]
-            if context is not None:
-                context = replace(context, solver_state=solver_states[shape])
             value, context = _microbatch_loss(
                 (model, latent, (self.loss._group_state(loss_state, group),)),
                 (item,),
                 self.loss,
-                context,
+                _with_carried_state(self.contexts[shape], solver_states[shape]),
                 self.keys[index],
             )
-            if context is not None:
-                solver_states = {**solver_states, shape: context.solver_state}
-            return cast(jax.Array, value), solver_states
+            return cast(jax.Array, value), {**solver_states, shape: _carried_state(context)}
 
         def region_value(index: int, solver_states):
             latent = _backbone(model, self.regions[index][0].payload.features, self.keys[index])
@@ -1033,15 +1056,10 @@ def train[DistanceModel: AbstractDistanceModel](
                     optimizer_state,
                     accumulated,
                     training_objective,
-                    {
-                        shape: None if context is None else context.solver_state
-                        for shape, context in contexts.items()
-                    },
+                    {shape: _carried_state(context) for shape, context in contexts.items()},
                 )
             contexts = {
-                shape: None
-                if context is None
-                else replace(context, solver_state=solver_states[shape])
+                shape: _with_carried_state(context, solver_states[shape])
                 for shape, context in contexts.items()
             }
         if step == 0 or step % config.eval_every == 0 or step == config.steps or converged:
