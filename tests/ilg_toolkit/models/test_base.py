@@ -7,6 +7,7 @@ from typing import cast, final
 import coordax as cx
 import equinox as eqx
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import optax
 import pytest
@@ -16,7 +17,6 @@ from ilg_toolkit import (
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     save_model,
     TargetSpec,
     train,
@@ -29,7 +29,6 @@ from ilg_toolkit.models import (
     LogLinearConductance,
 )
 from jaxscape import GridGraph, ResistanceDistance
-from jaxscape.solvers import GridMultigridSolver
 
 
 def test_distance_models_carry_unique_species_names(PointConductance):
@@ -229,9 +228,7 @@ def test_float32_patch_encoders_give_float64_resistances_matching_jaxscape(Featu
         if upstream:
             surface = distance_model.conductance_surface(region).data
             graph = GridGraph(surface.astype(jnp.float64), fun=lambda a, b: (a + b) / 2)
-            config = distance_model.solver_config
-            solver = GridMultigridSolver(rtol=config.rtol, max_steps=config.max_steps)
-            matrix = ResistanceDistance(solver=solver).nodes_to_nodes_distance(
+            matrix = ResistanceDistance(solver=distance_model.solver).nodes_to_nodes_distance(
                 graph, jnp.array([5, 0, 2, 2, 3])
             )
             values = matrix[jnp.array([4, 2, 2]), jnp.array([0, 1, 3])]
@@ -342,9 +339,7 @@ def _assert_composed_patch_encoder_computes_its_own_resistances(solver):
         ("a", "b", "c"),
         np.array([[0, 0], [2, 2], [0, 2]]),
     )
-    encoder = LogLinearConductance(
-        1, patch_size=1, solver_config=ResistanceSolverConfig(solver=solver)
-    )
+    encoder = LogLinearConductance(1, patch_size=1, solver=solver)
     encoder = eqx.tree_at(lambda model: model.coefficients, encoder, jnp.array([[0.3]]))
     ibd = IBDModel(patch_size=1)
     model = _ResistancePlusDistance(encoder=encoder, ibd=ibd)
@@ -370,7 +365,7 @@ def test_composed_patch_encoders_compute_their_own_resistances(solver_choice):
 
 
 def test_composed_patch_encoders_compute_their_own_resistances_with_cudss_on_a_gpu(cudss_gpu):
-    _assert_composed_patch_encoder_computes_its_own_resistances("cudss")
+    _assert_composed_patch_encoder_computes_its_own_resistances(cudss_gpu.solver)
 
 
 def test_species_of_one_prediction_share_a_solver_state(
@@ -380,10 +375,10 @@ def test_species_of_one_prediction_share_a_solver_state(
     region, _, _ = training_problem("conductance", species=species)
     scales = jnp.array([0.0, 0.5, 1.0])
     direct, iterative = (
-        PointConductance(scales, species=species, solver_config=config)
-        for config in (
-            ResistanceSolverConfig(solver="cudss"),
-            ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
+        PointConductance(scales, species=species, solver=solver)
+        for solver in (
+            cudss_double.solver,
+            lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000),
         )
     )
     with cudss_double.one_analysis():
@@ -391,14 +386,6 @@ def test_species_of_one_prediction_share_a_solver_state(
     expected = iterative.predict(region, dict.fromkeys(species))
     for name in species:
         np.testing.assert_allclose(predictions[name].values, expected[name].values, rtol=1e-8)
-
-
-def test_conductance_surfaces_need_no_solver_backend(training_problem, PointConductance):
-    region, _, _ = training_problem("conductance")
-    surface = PointConductance(
-        jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss")
-    ).conductance_surface(region)
-    np.testing.assert_allclose(surface.data, region.feature_array[..., 0])
 
 
 def test_custom_distance_model_trains_and_reloads_without_genetic_labels(CustomDistance, tmp_path):

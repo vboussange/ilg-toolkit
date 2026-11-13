@@ -19,37 +19,35 @@
 ## Resistance solvers
 
 The resistance solver is the numerical method behind the effective-resistance
-layer. A conductance model carries its choice in `solver_config`, and training,
-genetic prediction, calibration-head fitting and saved models all use that choice.
-The [overview](../index.md#resistance-solvers) gives the four choices and when to
+layer: a Lineax solver that a conductance model carries in `solver`. Training,
+genetic prediction and calibration-head fitting use it. The
+[overview](../index.md#resistance-solvers) gives JAXScape's solvers and when to
 choose each.
 
 ### Solver state
 
-`"amg"`, `"multigrid"` and `"cudss"` prepare a solver state on a uniform
-conductance grid graph: the fixed hierarchy of `"amg"`, the grid stencil of
-`"multigrid"`, whose coefficients each solve replaces before building its hierarchy,
-or the sparse analysis of `"cudss"`, which takes far longer than a refactorization
-with that analysis.
+A JAXScape `AbstractReusableStateSolver`, such as `GridMultigridSolver` or
+`CuDSSSolver`, prepares a solver state on a uniform conductance grid graph and
+reinitializes it for each conductance surface: the grid stencil of
+`GridMultigridSolver`, or the sparse analysis and factorization of `CuDSSSolver`,
+whose analysis takes far longer than a refactorization. Other Lineax solvers, such
+as `CG`, have no solver state.
 
 Training a conductance model prepares one solver state per raster shape and carries
-the state of `"cudss"` from update to update. The regions, species, evaluations and
-line searches on one raster shape share it, so the analysis runs once per raster
-shape. A distance model that composes a conductance model solves through
-`ecological_distances`, which prepares its solver state itself and repeats the
-analysis on every solve. Genetic prediction, calibration-head fitting and
-`initialize_uniform_conductance` prepare a solver state per call.
+it from update to update. The regions, species, evaluations and line searches on
+one raster shape share it, so cuDSS analyzes once per raster shape. A distance
+model that composes a conductance model solves through `ecological_distances`,
+which prepares its solver state itself on every solve. Genetic prediction,
+calibration-head fitting and `initialize_uniform_conductance` prepare a solver
+state per call.
 
 ### Failures and saved models
 
 A failed solve during training raises an error naming the region, species and
-training step, and the last model saved from `on_step` remains. Without the
-`cudss` extra or a CUDA-enabled GPU backend, preparing `"cudss"` raises an error
-naming the extra.
+training step, and the last model saved from `on_step` remains. Constructing
+`CuDSSSolver` without the `cudss` extra or a CUDA-enabled GPU backend raises
+JAXScape's error.
 
-Saved models record the solver settings, and loading restores them over the
-template's. A model saved with `"cudss"` computes ecological distances and
-genetic predictions on an NVIDIA GPU with the `cudss` extra; its conductance
-surfaces need neither.
-
-::: ilg_toolkit.ResistanceSolverConfig
+Saved models do not record the resistance solver: the template passed to
+`load_model` supplies it, so a model trained with `CuDSSSolver` on a GPU loads with
+`GridMultigridSolver` on a CPU.

@@ -12,7 +12,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from jaxscape.solvers import SparseDirectState
 
 from ._checks import _require_float64
 from ._training_utils import (
@@ -39,7 +38,7 @@ from .resistance import _carried_state, _ResistanceSolverContext, _with_carried_
 _Parameters = tuple[AbstractDistanceModel, Any]
 _RasterShape = tuple[int, int]
 _Contexts = dict[_RasterShape, _ResistanceSolverContext | None]
-_SolverStates = dict[_RasterShape, SparseDirectState | None]
+_SolverStates = dict[_RasterShape, Any]
 # What `eqx.error_if` raises from a compiled call and from a call under `jax.disable_jit()`, and
 # what a failed native call raises, such as one of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
 _COMPILED_CALL_ERRORS = (
@@ -730,11 +729,12 @@ def train[DistanceModel: AbstractDistanceModel](
     record's ``training_objective`` includes it.
 
     Training a conductance model prepares the resistance solver once for each raster
-    shape. With ``solver="cudss"``, every update, line-search evaluation, evaluation
-    and ``on_step`` evaluation on a raster shape carries that shape's solver state, so
-    the resistance solver repeats no analysis. A distance model that composes a
-    conductance model solves through ``ConductanceModel.ecological_distances``, which
-    prepares its solver state itself and repeats the analysis on every solve. A failed
+    shape. With a solver that reuses its state, a JAXScape
+    ``AbstractReusableStateSolver`` such as ``CuDSSSolver``, every update, line-search
+    evaluation, evaluation and ``on_step`` evaluation on a raster shape carries that
+    shape's solver state, so cuDSS repeats no analysis. A distance model that composes
+    a conductance model solves through ``ConductanceModel.ecological_distances``, which
+    prepares its solver state itself on every solve. A failed
     compiled step raises at once, so the last model saved from ``on_step`` stays as it
     is.
 
@@ -768,17 +768,14 @@ def train[DistanceModel: AbstractDistanceModel](
         TypeError: If the distance model has stateful layers.
         ValueError: If the inputs, settings or continuation state are invalid, or a
             raster is not a multiple of the distance model's patch size.
-        ImportError: If the distance model's ``solver_config`` selects ``"cudss"``
-            without spineax.
         FloatingPointError: If an evaluation produces a nonfinite loss or training
             objective. The message names the step, and the region and species of a
             nonfinite loss.
-        RuntimeError: If float64 is disabled, the distance model's ``solver_config``
-            selects ``"cudss"`` without a CUDA-enabled GPU backend, or a compiled step
-            fails, such as an effective-resistance solve that reaches ``max_steps`` or a
-            cuDSS factorization that fails. The message of a failed step names the
-            region, species and step, with every region–species group sampled for the
-            update when a line-search candidate fails.
+        RuntimeError: If float64 is disabled, or a compiled step fails, such as an
+            effective-resistance solve that reaches its iteration limit or a cuDSS
+            factorization that fails. The message of a failed step names the region,
+            species and step, with every region–species group sampled for the update
+            when a line-search candidate fails.
 
     Examples:
         >>> loss = MLPELoss()

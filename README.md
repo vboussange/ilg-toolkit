@@ -39,8 +39,8 @@ uv add "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit"
 ```
 
 The `examples` extra installs rioxarray, pandas and Matplotlib for the examples.
-The `amg` and `cudss` extras install optional
-[resistance solvers](#resistance-solvers).
+The `cudss` extra installs the NVIDIA CUDA Direct Sparse Solver (cuDSS), one of
+the [resistance solvers](#resistance-solvers).
 
 ILG Toolkit runs on the device JAX selects. To run it on an NVIDIA GPU, add the
 `cudss` extra, which installs cuDSS through [spineax](https://github.com/johnviljoen/spineax)
@@ -108,11 +108,9 @@ observations = PairwiseObservations(
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
 loss = Log1pLoss()
-solver_config = ResistanceSolverConfig(
-    solver="cudss" if jax.default_backend() == "gpu" else "multigrid"
-)
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else GridMultigridSolver()
 distance_model = initialize_uniform_conductance(
-    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver_config=solver_config),
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver=solver),
     region,
     observations,
     loss,
@@ -134,28 +132,27 @@ resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 The quickstart runs in about 30 seconds on an NVIDIA RTX 3090.
 
 Swap in `ResNet9Conductance` as a deep patch encoder that maps raw patches of
-landscape features to vertex conductances, with the same `solver_config`.
+landscape features to vertex conductances, with the same `solver`.
 
 ## Resistance solvers
 
 The resistance solver is the numerical method behind the effective-resistance
-layer. `ResistanceSolverConfig(solver=...)` selects it, and a conductance model
-carries it in `solver_config`:
+layer: a [Lineax](https://docs.kidger.site/lineax/) solver that a conductance model
+carries in `solver`. [JAXScape](https://github.com/vboussange/jaxscape) provides
+solvers for the grounded Laplacians of conductance grid graphs, in
+`jaxscape.solvers`:
 
-| `solver` | Method | Installation | Choose it for |
+| Solver | Method | Installation | Choose it for |
 | --- | --- | --- | --- |
-| `"multigrid"` (default) | CG preconditioned with geometric multigrid | Included | A CPU, or a GPU without the `cudss` extra or when the cuDSS factorization does not fit in GPU memory |
-| `"cudss"` | cuDSS, a sparse direct solver | `cudss` extra | An NVIDIA GPU, at any conductance contrast, when the factorization fits in GPU memory |
-| `"cg"` | Conjugate gradient (CG) | Included | Small conductance grid graphs with low conductance contrast |
-| `"amg"` | CG preconditioned with algebraic multigrid (AMG) | `amg` extra | Conductance grid graphs with conductance contrast below 4 orders of magnitude |
+| `GridMultigridSolver()` (default) | Conjugate gradient (CG) preconditioned with geometric multigrid | Included | A CPU, or a GPU without the `cudss` extra or when the cuDSS factorization does not fit in GPU memory |
+| `CuDSSSolver()` | cuDSS, a sparse direct solver | `cudss` extra | An NVIDIA GPU, at any conductance contrast, when the factorization fits in GPU memory |
 
-`"multigrid"`, `"cg"` and `"amg"` raise an error when they reach their iteration
-limit. The iterations of `"multigrid"` grow on conductance surfaces that vary by
-orders of magnitude from one vertex to the next, those of `"cg"` with grid size and
-conductance contrast, and those of `"amg"` with conductance contrast. `"cudss"` has
-no iteration limit, and its cost does not depend on conductance contrast. A deep
-patch encoder can drive conductance to its floor, so train one with `"cudss"` on an
-NVIDIA GPU. The
+Their settings are JAXScape's. Iterative solvers, such as `GridMultigridSolver` and
+Lineax's `CG`, raise an error when they reach their iteration limit. The iterations
+of `GridMultigridSolver` grow on conductance surfaces that vary by orders of
+magnitude from one vertex to the next. `CuDSSSolver` has no iteration limit, and its
+cost does not depend on conductance contrast. A deep patch encoder can drive
+conductance to its floor, so train one with `CuDSSSolver` on an NVIDIA GPU. The
 [API reference](https://vboussange.github.io/ilg-toolkit/api/models/#resistance-solvers)
 describes solver state, failures and saved models.
 

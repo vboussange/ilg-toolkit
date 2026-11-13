@@ -25,12 +25,12 @@ from ilg_toolkit import (
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     TargetSpec,
     train,
     TrainingConfig,
 )
 from ilg_toolkit.models import initialize_uniform_conductance, LogLinearConductance
+from jaxscape.solvers import CuDSSSolver, GridMultigridSolver
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 
@@ -92,11 +92,9 @@ observations = PairwiseObservations(
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
 loss = Log1pLoss()
-solver_config = ResistanceSolverConfig(
-    solver="cudss" if jax.default_backend() == "gpu" else "multigrid"
-)
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else GridMultigridSolver()
 distance_model = initialize_uniform_conductance(
-    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver_config=solver_config),
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver=solver),
     region,
     observations,
     loss,

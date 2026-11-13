@@ -5,6 +5,7 @@ from dataclasses import replace
 import coordax as cx
 import equinox as eqx
 import jax
+import lineax as lx
 import numpy as np
 import optax
 import pytest
@@ -13,7 +14,6 @@ from ilg_toolkit import (
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     save_model,
     TargetSpec,
     train,
@@ -90,7 +90,7 @@ def test_species_training_matches_dense_resistance_and_reloads(dense_resistance,
         for scale, name in ((1, "frog"), (0.5, "newt"))
     )
 
-    def model(seed, solver_config=None):
+    def model(seed, solver):
         return ResNet9Conductance(
             2,
             species=species,
@@ -98,14 +98,15 @@ def test_species_training_matches_dense_resistance_and_reloads(dense_resistance,
             channels=_TINY,
             min_conductance=0.02,
             patch_microbatch_size=3,
-            solver_config=solver_config,
+            solver=solver,
             key=jax.random.key(seed),
         )
 
+    solver = lx.CG(rtol=1e-9, atol=1e-10, max_steps=1000)
     result = train(
         region,
         observations,
-        distance_model=model(6, ResistanceSolverConfig(solver="cg", rtol=1e-9, atol=1e-10)),
+        distance_model=model(6, solver),
         config=TrainingConfig(loss=Log1pLoss(), steps=2, optimizer=optax.adam(0.01)),
     )
     assert np.isfinite(result.history[-1].training_loss)
@@ -132,7 +133,7 @@ def test_species_training_matches_dense_resistance_and_reloads(dense_resistance,
 
     path = tmp_path / "resnet.eqx"
     save_model(path, trained)
-    restored = load_model(path, distance_model=model(9))
+    restored = load_model(path, distance_model=model(9, solver))
     restored_model = restored.distance_model
     assert isinstance(restored_model, ResNet9Conductance)
     restored_surfaces = {
@@ -144,8 +145,7 @@ def test_species_training_matches_dense_resistance_and_reloads(dense_resistance,
             restored.predict(region, {name: None})[name].values,
             trained.predict(region, {name: None})[name].values,
         )
-    assert restored_model.solver_config == distance_model.solver_config
-    assert restored_model.solver_config != ResistanceSolverConfig()
+    assert restored_model.solver == solver
     assert restored_model.channels == _TINY
     assert restored_model.patch_microbatch_size == 3
     assert restored_model.min_conductance == 0.02

@@ -16,7 +16,7 @@ term and the public identifier that implements it.
 | Conductance grid graph | Conductance grid graph | `ConductanceModel.conductance_surface` |
 | Vertex | Vertex | One cell of `ConductanceModel.conductance_surface(...)` |
 | Conductance $C$ | Conductance surface | `ConductanceModel.conductance_surface` |
-| Effective-resistance layer | Effective-resistance layer | `ResistanceSolverConfig`, `ConductanceModel.ecological_distances` |
+| Effective-resistance layer | Effective-resistance layer | `ConductanceModel.solver`, `ConductanceModel.ecological_distances` |
 | Local resistance $Q$ | Resistance surface | `1 / ConductanceModel.conductance_surface(...)` |
 | Complete pooling | Complete pooling | `train` with a region collection |
 | No pooling | No pooling | One `train` call per region |
@@ -173,20 +173,20 @@ _Avoid_: Distance solver; resistance calculation.
 
 **Resistance solver**:
 The numerical method that solves the linear systems of the effective-resistance
-layer, selected with `ResistanceSolverConfig`: conjugate gradient (CG), CG
-preconditioned with algebraic multigrid (AMG), CG preconditioned with geometric
-multigrid, or the NVIDIA CUDA Direct Sparse Solver (cuDSS), a sparse direct solver.
-Identifiers such as the saved `distance_solver` setting keep their names.
+layer: a Lineax solver that a conductance model carries in `solver`, such as
+JAXScape's `GridMultigridSolver`, conjugate gradient (CG) preconditioned with
+geometric multigrid, or `CuDSSSolver`, the NVIDIA CUDA Direct Sparse Solver
+(cuDSS), a sparse direct solver.
 _Avoid_: Effective-resistance solver; distance solver; linear solver, in prose.
 
 **Solver state**:
-What a resistance solver prepares for one raster shape (the rows and columns of a
-region's landscape features) on a uniform conductance grid graph, and reuses for
-the conductance surfaces of that shape: the AMG hierarchy, the grid stencil of
-geometric multigrid, whose coefficients each solve replaces, or cuDSS's sparse
-analysis and latest factorization. CG has no solver state. Training carries one
-cuDSS solver state per raster shape from update to update, shared by the regions,
-species and evaluations on that shape.
+What a resistance solver that reuses its state, a JAXScape
+`AbstractReusableStateSolver`, prepares for one raster shape (the rows and columns
+of a region's landscape features) on a uniform conductance grid graph, and
+reinitializes for the conductance surfaces of that shape: the grid stencil of
+geometric multigrid, or cuDSS's sparse analysis and latest factorization. Lineax's
+CG has no solver state. Training carries one solver state per raster shape from
+update to update, shared by the regions, species and evaluations on that shape.
 _Avoid_: Token; solver context, when referring only to the prepared state.
 
 **Embedding**:

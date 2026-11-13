@@ -13,6 +13,7 @@ import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import pytest
 from ilg_toolkit import (
@@ -23,7 +24,6 @@ from ilg_toolkit import (
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     TargetSpec,
 )
 from ilg_toolkit.models import (
@@ -33,7 +33,12 @@ from ilg_toolkit.models import (
     LogLinearConductance,
 )
 from jax.experimental import io_callback
-from jaxscape.solvers import AbstractSparseDirectSolver, CSRPattern
+from jaxscape.solvers import (
+    AbstractSparseDirectSolver,
+    CSRPattern,
+    CuDSSSolver,
+    GridMultigridSolver,
+)
 
 
 # The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
@@ -171,14 +176,14 @@ class _PointConductance(ConductanceModel):
     log_scale: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, kw_only=True, default=ResistanceSolverConfig()
+    solver: lx.AbstractLinearSolver = eqx.field(
+        static=True, kw_only=True, default=GridMultigridSolver()
     )
 
-    def __init__(self, log_scale: jax.Array, *, solver_config=None, species=None):
+    def __init__(self, log_scale: jax.Array, *, solver=None, species=None):
         self.log_scale = log_scale
         self.species = species
-        self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
+        self.solver = GridMultigridSolver() if solver is None else solver
 
     def backbone(self, features):
         return features
@@ -209,7 +214,7 @@ class _DropoutConductance(ConductanceModel):
     conductance_dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, default=GridMultigridSolver())
 
     def backbone(self, features):
         return self.dropout(features)
@@ -231,7 +236,7 @@ class _BatchNormConductance(ConductanceModel):
     norm: eqx.nn.BatchNorm
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, default=GridMultigridSolver())
 
     def __init__(self):
         self.distance_model = _PointConductance(jnp.asarray(0.0))
@@ -482,13 +487,13 @@ class _FeatureConductance(ConductanceModel):
     weight: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, kw_only=True, default=ResistanceSolverConfig()
+    solver: lx.AbstractLinearSolver = eqx.field(
+        static=True, kw_only=True, default=GridMultigridSolver()
     )
 
-    def __init__(self, weight: jax.Array, *, solver_config=None):
+    def __init__(self, weight: jax.Array, *, solver=None):
         self.weight = weight
-        self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
+        self.solver = GridMultigridSolver() if solver is None else solver
 
     def backbone(self, features):
         return features
@@ -785,6 +790,11 @@ class _CuDSSTokens:
         self.failing = False
         self.raising = False
 
+    @property
+    def solver(self) -> "_CuDSSDouble":
+        """The double, to pass as a conductance model's resistance solver."""
+        return _CuDSSDouble()
+
     def rebuild_count(self) -> int:
         return self.rebuilds
 
@@ -864,14 +874,13 @@ class _CuDSSDouble(AbstractSparseDirectSolver[_DenseFactorization]):
 
 
 @pytest.fixture(name="cudss_double")
-def cudss_double_fixture(monkeypatch):
-    """Runs ``solver="cudss"`` on the CPU double and returns its tokens.
+def cudss_double_fixture():
+    """Returns the tokens of the CPU double of cuDSS, whose ``solver`` is the double.
 
-    The tokens' ``rebuild_count()`` matches that of the ``cudss_gpu`` fixture's
-    module. Setting ``failing`` makes factorizations fail, and setting ``raising``
+    The tokens' ``solver`` and ``rebuild_count()`` match those of the ``cudss_gpu``
+    fixture. Setting ``failing`` makes factorizations fail, and setting ``raising``
     makes refactorizations raise.
     """
-    monkeypatch.setattr("ilg_toolkit.resistance.CuDSSSolver", _CuDSSDouble)
     yield _CUDSS_TOKENS
     _CUDSS_TOKENS.failing = False
     _CUDSS_TOKENS.raising = False
@@ -879,21 +888,29 @@ def cudss_double_fixture(monkeypatch):
 
 @pytest.fixture(name="cudss_gpu")
 def cudss_gpu_fixture():
-    """Returns ``spineax.cudss``, skipping without spineax or a GPU backend."""
+    """Returns ``CuDSSSolver`` as ``solver`` and spineax's ``rebuild_count``.
+
+    Skips without spineax or a GPU backend.
+    """
     pytest.importorskip("spineax", exc_type=ImportError)
     if jax.default_backend() != "gpu":
         pytest.skip("cuDSS requires a GPU backend")
-    return importlib.import_module("spineax.cudss")
+    cudss = importlib.import_module("spineax.cudss")
+    return SimpleNamespace(solver=CuDSSSolver(), rebuild_count=cudss.rebuild_count)
 
 
-@pytest.fixture(name="solver_choice", params=["cg", "amg", "multigrid", "cudss"])
-def solver_choice_fixture(request) -> str:
-    """Returns each solver choice, with cuDSS on the CPU double."""
-    if request.param == "amg":
-        pytest.importorskip("amjax")
+@pytest.fixture(name="solver_choice", params=["cg", "multigrid", "cudss"])
+def solver_choice_fixture(request) -> lx.AbstractLinearSolver:
+    """Returns a resistance solver without state and two with reusable state.
+
+    Conjugate gradient and geometric multigrid run at tight tolerances; cuDSS runs on
+    its CPU double.
+    """
     if request.param == "cudss":
-        request.getfixturevalue("cudss_double")
-    return request.param
+        return request.getfixturevalue("cudss_double").solver
+    if request.param == "multigrid":
+        return GridMultigridSolver(rtol=1e-11, max_steps=1000)
+    return lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000)
 
 
 @pytest.fixture(name="dense_resistance", scope="session")

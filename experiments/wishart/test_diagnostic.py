@@ -6,10 +6,12 @@ import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import pytest
-from ilg_toolkit import PairwiseObservations, RegionBatch, ResistanceSolverConfig, TargetSpec
+from ilg_toolkit import PairwiseObservations, RegionBatch, TargetSpec
 from ilg_toolkit.models import ConductanceModel
+from jaxscape.solvers import GridMultigridSolver
 from scipy.linalg import helmert
 from scipy.stats import matrix_normal, wishart
 
@@ -139,8 +141,8 @@ class UniformConductance(ConductanceModel):
     scale: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, kw_only=True, default=ResistanceSolverConfig()
+    solver: lx.AbstractLinearSolver = eqx.field(
+        static=True, kw_only=True, default=GridMultigridSolver()
     )
 
     def __init__(self, scale: jax.Array):

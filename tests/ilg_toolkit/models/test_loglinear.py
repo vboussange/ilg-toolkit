@@ -7,6 +7,7 @@ import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import optax
 import pytest
@@ -15,12 +16,12 @@ from ilg_toolkit import (
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     TargetSpec,
     train,
     TrainingConfig,
 )
 from ilg_toolkit.models import initialize_uniform_conductance, LogLinearConductance
+from jaxscape.solvers import GridMultigridSolver
 
 
 @pytest.mark.parametrize("patch_microbatch_size", [None, 3])
@@ -145,7 +146,7 @@ def test_saturation_keeps_the_leading_dimensions(leading_shape):
         {"max_conductance": 0.001},
         {"max_conductance": float("inf")},
         {"max_conductance": float("nan")},
-        {"solver_config": "default"},
+        {"solver": "default"},
     ],
 )
 def test_invalid_model_configuration_is_rejected(settings):
@@ -198,7 +199,7 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
         )
     )
     model = LogLinearConductance(
-        2, patch_size=2, patch_microbatch_size=3, solver_config=ResistanceSolverConfig(rtol=1e-10)
+        2, patch_size=2, patch_microbatch_size=3, solver=GridMultigridSolver(rtol=1e-10)
     )
     initial = np.array([0.2, -0.1, 0.3])
 
@@ -523,10 +524,10 @@ def test_uniform_initialization_shares_one_solver_across_regions_of_one_shape(cu
         for values in ([3.0, 1.0, 2.0], [2.0, 1.0, 3.0])
     ]
     direct, iterative = (
-        LogLinearConductance(1, patch_size=1, solver_config=config)
-        for config in (
-            ResistanceSolverConfig(solver="cudss"),
-            ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
+        LogLinearConductance(1, patch_size=1, solver=solver)
+        for solver in (
+            cudss_double.solver,
+            lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000),
         )
     )
     with cudss_double.one_analysis():
