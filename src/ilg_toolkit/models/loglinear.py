@@ -61,9 +61,9 @@ class LogLinearConductance(ConductanceModel):
         min_conductance: Positive floor, default 0.01, added to the exponentiated linear
             predictor.
         max_conductance: Positive cap, default 1000.
-        solver: Resistance solver of the effective-resistance layer: a Lineax solver,
-            such as JAXScape's ``CuDSSSolver``, or ``None`` for the default solver of
-            JAXScape's ``ResistanceDistance``, with JAXScape's settings.
+        solver: Resistance solver of the effective-resistance layer: any Lineax
+            solver, with its own settings, or ``None`` (default) for JAXScape's default
+            solver, ``ResistanceDistance().solver``.
 
     Notes:
         Prepare feature scaling and categorical reference levels before building a
@@ -273,7 +273,7 @@ def initialize_uniform_conductance(
 
     Args:
         model: Log-linear patch encoder providing the conductance bounds, patch
-            size, solver settings, and species.
+            size, resistance solver, and species.
         region: One region batch, a sequence, or a mapping keyed by region name,
             as accepted by ``train``.
         observations: Pairwise genetic observations aligned with the regions, as

@@ -108,8 +108,8 @@ def _effective_resistance(
     between coincident vertices. Invalid inputs and failed solves raise errors.
 
     The returned context holds the solver state reinitialized for ``conductance``.
-    Passing it to the next call lets the solver reuse it, as cuDSS reuses its
-    analysis; passing an earlier state stays correct.
+    Passing it to the next call lets the solver reuse what it prepared; passing an
+    earlier state stays correct.
 
     Args:
         conductance: Positive conductance surface with shape ``(rows, columns)``.

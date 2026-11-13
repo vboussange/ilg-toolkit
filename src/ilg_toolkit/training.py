@@ -711,9 +711,9 @@ def train[DistanceModel: AbstractDistanceModel](
     ``state`` continues training within one process from its latest parameters,
     statistical parameter state, optimizer state and random key, and keeps its history
     and selected model. Continuing with the original inputs and validation arguments
-    reproduces the uninterrupted run, within rounding for conjugate gradient solves on a
-    GPU. Training from the distance model of a loaded model is a new run: its optimizer
-    state, statistical parameter state, history and selected model start anew.
+    reproduces the uninterrupted run, within rounding on a GPU. Training from the
+    distance model of a loaded model is a new run: its optimizer state, statistical
+    parameter state, history and selected model start anew.
 
     ``config.optimizer`` applies each update and receives the update's training
     objective value, gradient and a function evaluating the same training objective
@@ -731,10 +731,10 @@ def train[DistanceModel: AbstractDistanceModel](
     Training a conductance model prepares the resistance solver once for each raster
     shape. Every update, line-search evaluation, evaluation and ``on_step`` evaluation
     on a raster shape carries that shape's solver state, whatever the resistance
-    solver, so cuDSS repeats no analysis. A distance model that composes a conductance
-    model solves through ``ConductanceModel.ecological_distances``, which prepares its
-    solver state itself on every solve. A failed compiled step raises at once, so the
-    last model saved from ``on_step`` stays as it is.
+    solver. A distance model that composes a conductance model solves through
+    ``ConductanceModel.ecological_distances``, which prepares its solver state itself
+    on every solve. A failed compiled step raises at once, so the last model saved
+    from ``on_step`` stays as it is.
 
     Training compiles its update and evaluation steps; ``with jax.disable_jit():``
     runs them eagerly for debugging.
@@ -768,11 +768,10 @@ def train[DistanceModel: AbstractDistanceModel](
         FloatingPointError: If an evaluation produces a nonfinite loss or training
             objective. The message names the step, and the region and species of a
             nonfinite loss.
-        RuntimeError: If float64 is disabled, or a compiled step fails, such as an
-            effective-resistance solve that reaches its iteration limit or a cuDSS
-            factorization that fails. The message of a failed step names the region,
-            species and step, with every region–species group sampled for the update
-            when a line-search candidate fails.
+        RuntimeError: If float64 is disabled, or a compiled step fails, such as a
+            failed effective-resistance solve. The message of a failed step names the
+            region, species and step, with every region–species group sampled for the
+            update when a line-search candidate fails.
 
     Examples:
         >>> loss = MLPELoss()

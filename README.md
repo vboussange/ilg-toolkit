@@ -21,9 +21,8 @@ effective-resistance layer.
 </p>
 
 - Log-linear and ResNet9 patch encoders, and a U-Net embedding-distance model.
-- Effective resistance with gradients on a CPU or a GPU, through conjugate gradient
-  preconditioned by geometric multigrid, plain conjugate gradient, or the NVIDIA
-  CUDA Direct Sparse Solver (cuDSS).
+- Effective resistance with gradients on a CPU or a GPU, through JAXScape's linear
+  solvers or any other Lineax solver.
 - Training under complete pooling across regions, with a log1p loss or
   maximum-likelihood population effects (MLPE) for population dependence.
 - Genetic calibration, conditional prediction, and ensembles on the target's
@@ -55,8 +54,8 @@ or newer. Two environment variables configure it:
 
 - `XLA_PYTHON_CLIENT_PREALLOCATE=false` leaves GPU memory for cuDSS, which allocates
   its factorizations outside JAX's memory pool.
-- `SPINEAX_FACTOR_CACHE` sets how many factorizations spineax keeps on the GPU, by
-  default 8. With more than 8 raster shapes, set it to at least their number.
+- `SPINEAX_FACTOR_CACHE` sets how many factorizations spineax keeps on the GPU. Keep
+  it at least the number of distinct raster shapes among the regions.
 
 For CUDA 12, build spineax from source as in
 [these notes](https://github.com/vboussange/jaxscape/issues/49#issuecomment-6501729059).
@@ -136,23 +135,12 @@ landscape features to vertex conductances, with the same `solver`.
 
 ## Resistance solvers
 
-The resistance solver is the numerical method behind the effective-resistance
-layer: a [Lineax](https://docs.kidger.site/lineax/) solver that a conductance model
-carries in `solver`. [JAXScape](https://github.com/vboussange/jaxscape) provides
-solvers for the grounded Laplacians of conductance grid graphs, in
-`jaxscape.solvers`:
-
-| Solver | Method | Installation | Choose it for |
-| --- | --- | --- | --- |
-| JAXScape's default (`solver=None`) | Conjugate gradient (CG) preconditioned with geometric multigrid | Included | A CPU, or a GPU without the `cudss` extra or when the cuDSS factorization does not fit in GPU memory |
-| `CuDSSSolver()` | cuDSS, a sparse direct solver | `cudss` extra | An NVIDIA GPU, at any conductance contrast, when the factorization fits in GPU memory |
-
-Their settings are JAXScape's. Iterative solvers, such as JAXScape's default solver
-and Lineax's `CG`, raise an error when they reach their iteration limit. The
-iterations of the default solver grow on conductance surfaces that vary by orders of
-magnitude from one vertex to the next. `CuDSSSolver` has no iteration limit, and its
-cost does not depend on conductance contrast. A deep patch encoder can drive
-conductance to its floor, so train one with `CuDSSSolver` on an NVIDIA GPU. The
+The resistance solver solves the linear systems of the effective-resistance layer.
+A conductance model carries it in `solver`: any [Lineax](https://docs.kidger.site/lineax/)
+solver, with its own settings, or `None` for the default solver of
+[JAXScape](https://github.com/vboussange/jaxscape), `ResistanceDistance().solver`.
+JAXScape's [linear-solver documentation](https://vboussange.github.io/jaxscape/api/linear_solvers/)
+describes its solvers and when to choose each. The
 [API reference](https://vboussange.github.io/ilg-toolkit/api/models/#resistance-solvers)
 describes solver state, failures and saved models.
 

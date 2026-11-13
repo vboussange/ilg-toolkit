@@ -173,20 +173,16 @@ _Avoid_: Distance solver; resistance calculation.
 
 **Resistance solver**:
 The numerical method that solves the linear systems of the effective-resistance
-layer: a Lineax solver that a conductance model carries in `solver`, such as
-JAXScape's default solver, conjugate gradient (CG) preconditioned with geometric
-multigrid, or `CuDSSSolver`, the NVIDIA CUDA Direct Sparse Solver (cuDSS), a
-sparse direct solver.
+layer: a Lineax solver that a conductance model carries in `solver`, with its own
+settings. `solver=None` selects JAXScape's default solver.
 _Avoid_: Effective-resistance solver; distance solver; linear solver, in prose.
 
 **Solver state**:
-What a resistance solver prepares for one raster shape (the rows and columns of a
-region's landscape features) on a uniform conductance grid graph, and reinitializes
-for the conductance surfaces of that shape: for geometric multigrid, the position
-of each entry of the grounded Laplacian on the grid and the values of those
-entries; for cuDSS, the sparse analysis and latest factorization; for Lineax's CG,
-only the matrix. Training carries the solver state of every resistance solver, one
-per raster shape, from update to update, shared by the regions, species and
+What a resistance solver prepares for the conductance grid graphs of one raster
+shape (the rows and columns of a region's landscape features): initialized on a
+uniform conductance grid graph and reinitialized for each conductance surface of
+that shape. Training carries the solver state of every resistance solver, one per
+raster shape, from update to update, shared by the regions, species and
 evaluations on that shape.
 _Avoid_: Token; solver context, when referring only to the prepared state.
 

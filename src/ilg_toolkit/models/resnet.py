@@ -89,9 +89,9 @@ class ResNet9Conductance(ConductanceModel):
         patch_microbatch_size: Maximum patches encoded together; ``None`` encodes
             all patches at once. Lower values trade throughput for peak activation
             memory; predictions stay the same.
-        solver: Resistance solver of the effective-resistance layer: a Lineax solver,
-            such as JAXScape's ``CuDSSSolver``, or ``None`` for the default solver of
-            JAXScape's ``ResistanceDistance``, with JAXScape's settings.
+        solver: Resistance solver of the effective-resistance layer: any Lineax
+            solver, with its own settings, or ``None`` (default) for JAXScape's default
+            solver, ``ResistanceDistance().solver``.
         key: JAX random key for reproducible parameter initialization.
 
     Notes:

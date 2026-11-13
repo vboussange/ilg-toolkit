@@ -201,8 +201,8 @@ class ConductanceModel(AbstractDistanceModel):
     layer returns the effective resistance between sampling-unit vertices as
     ecological distance. Custom patch encoders implement ``backbone`` and
     ``conductance`` and declare a static ``solver`` alongside their other fields: the
-    resistance solver, a Lineax solver such as JAXScape's ``CuDSSSolver``, or ``None``
-    for the default solver of JAXScape's ``ResistanceDistance``.
+    resistance solver, any Lineax solver, or ``None`` for JAXScape's default solver,
+    ``ResistanceDistance().solver``.
     """
 
     solver: eqx.AbstractVar[lx.AbstractLinearSolver | None]
