@@ -21,8 +21,8 @@ effective-resistance layer.
 </p>
 
 - Log-linear and ResNet9 patch encoders, and a U-Net embedding-distance model.
-- Effective resistance with gradients on a CPU or a GPU, through JAXScape's linear
-  solvers or any other Lineax solver.
+- Effective resistance with gradients on a CPU or a GPU, with the resistance
+  solvers that JAXScape's `ResistanceDistance` accepts.
 - Training under complete pooling across regions, with a log1p loss or
   maximum-likelihood population effects (MLPE) for population dependence.
 - Genetic calibration, conditional prediction, and ensembles on the target's
@@ -136,10 +136,11 @@ landscape features to vertex conductances, with the same `solver`.
 ## Resistance solvers
 
 The resistance solver solves the linear systems of the effective-resistance layer.
-A conductance model carries it in `solver`: any [Lineax](https://docs.kidger.site/lineax/)
-solver, with its own settings, or `None` for the default solver of
-[JAXScape](https://github.com/vboussange/jaxscape), `ResistanceDistance().solver`.
-JAXScape's [linear-solver documentation](https://vboussange.github.io/jaxscape/api/linear_solvers/)
+A conductance model carries it in `solver`: a [Lineax](https://docs.kidger.site/lineax/)
+solver that [JAXScape](https://github.com/vboussange/jaxscape)'s
+`ResistanceDistance(solver=...)` accepts, with its own settings, or `None` for
+JAXScape's default solver, `ResistanceDistance().solver`.
+JAXScape's [solver documentation](https://vboussange.github.io/jaxscape/api/linear_solvers/)
 describes its solvers and when to choose each. The
 [API reference](https://vboussange.github.io/ilg-toolkit/api/models/#resistance-solvers)
 describes solver state, failures and saved models.

@@ -19,9 +19,10 @@ class _ResistanceSolverContext:
     Attributes:
         topology: The edges of the conductance grid graphs the context solves, built
             once for their shape, so that each solve computes only the edge weights.
-        solver: The resistance solver, a Lineax solver.
+        solver: The resistance solver, a Lineax solver that JAXScape's
+            ``ResistanceDistance`` accepts.
         solver_state: The solver state of the latest solve, which the next solve
-            reinitializes.
+            reinitializes: a pytree whose leaves may be arrays or other Python objects.
     """
 
     topology: GridTopology
@@ -43,8 +44,8 @@ def _resistance_solver(solver: lx.AbstractLinearSolver | None) -> lx.AbstractLin
     """Returns the resistance solver that ``solver`` selects.
 
     Args:
-        solver: A Lineax solver, or ``None`` for the default solver of JAXScape's
-            ``ResistanceDistance``.
+        solver: A Lineax solver that JAXScape's ``ResistanceDistance`` accepts, or
+            ``None`` for the default solver of ``ResistanceDistance``.
 
     Returns:
         ``solver``, or JAXScape's default solver for ``None``.
@@ -52,10 +53,13 @@ def _resistance_solver(solver: lx.AbstractLinearSolver | None) -> lx.AbstractLin
     Raises:
         TypeError: If ``solver`` is neither ``None`` nor a Lineax solver.
     """
-    solver = ResistanceDistance().solver if solver is None else solver
-    if not isinstance(solver, lx.AbstractLinearSolver):
-        raise TypeError("solver must be a Lineax solver")
-    return solver
+    resolved = ResistanceDistance().solver if solver is None else solver
+    if not isinstance(resolved, lx.AbstractLinearSolver):
+        raise TypeError(
+            "solver must be a Lineax solver that jaxscape.ResistanceDistance accepts, or None "
+            f"for JAXScape's default solver; got {type(solver).__name__}"
+        )
+    return resolved
 
 
 def _resistance_context(
@@ -69,8 +73,8 @@ def _resistance_context(
 
     Args:
         graph_shape: Shape of the conductance grid graphs, ``(rows, columns)``.
-        solver: The resistance solver, a Lineax solver, or ``None`` for the default
-            solver of JAXScape's ``ResistanceDistance``.
+        solver: The resistance solver, a Lineax solver that JAXScape's
+            ``ResistanceDistance`` accepts, or ``None`` for its default solver.
 
     Returns:
         The context to pass to ``_effective_resistance``.
@@ -82,9 +86,9 @@ def _resistance_context(
     if len(graph_shape) != 2 or math.prod(graph_shape) < 2:
         raise ValueError("Effective resistance requires a 2D surface with at least two vertices")
     solver = _resistance_solver(solver)
-    # Build the solver state from concrete arrays, whatever the JAXScape version: a state
-    # built inside a trace can lose what later solves reuse, as JAXScape's
-    # `CholmodSolver` drops its factor cache and refactorizes on every solve.
+    # Some solvers factorize or build a hierarchy on the host in `init`, and a state built
+    # inside a trace can lose what later solves reuse, so the state is built from concrete
+    # arrays, also inside a trace.
     with jax.ensure_compile_time_eval():
         topology = GridTopology(graph_shape)
         template = GridGraph(

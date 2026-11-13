@@ -19,12 +19,14 @@
 ## Resistance solvers
 
 The resistance solver solves the linear systems of the effective-resistance layer.
-A conductance model carries it in `solver`: any Lineax solver
-(`lineax.AbstractLinearSolver`), with its own settings, or `None` for JAXScape's
-default solver, `ResistanceDistance().solver`; any other value raises `TypeError`.
-Training, genetic prediction, calibration-head fitting and
-`initialize_uniform_conductance` solve with it. JAXScape's
-[linear-solver documentation](https://vboussange.github.io/jaxscape/api/linear_solvers/)
+A conductance model carries it in `solver`: a Lineax solver
+(`lineax.AbstractLinearSolver`) that JAXScape's `ResistanceDistance(solver=...)`
+accepts, with its own settings, or `None` for JAXScape's default solver,
+`ResistanceDistance().solver`. A value that is neither `None` nor a Lineax solver
+raises `TypeError`. The conductance model holds the solver in a static field, so
+the solver holds no JAX arrays. Training, genetic prediction, calibration-head
+fitting and `initialize_uniform_conductance` solve with it. JAXScape's
+[solver documentation](https://vboussange.github.io/jaxscape/api/linear_solvers/)
 describes its solvers, when to choose each, and what the solver state of each holds.
 
 ### Solver state

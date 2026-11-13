@@ -173,8 +173,9 @@ _Avoid_: Distance solver; resistance calculation.
 
 **Resistance solver**:
 The numerical method that solves the linear systems of the effective-resistance
-layer: a Lineax solver that a conductance model carries in `solver`, with its own
-settings. `solver=None` selects JAXScape's default solver.
+layer: a Lineax solver that JAXScape's `ResistanceDistance` accepts, which a
+conductance model carries in `solver` with its own settings. `solver=None` selects
+JAXScape's default solver.
 _Avoid_: Effective-resistance solver; distance solver; linear solver, in prose.
 
 **Solver state**:
