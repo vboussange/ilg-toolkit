@@ -13,12 +13,11 @@ import jax.numpy as jnp
 
 from ._checks import _require_float64
 from .calibration import DirectCalibrationHead, MLPECalibrationHead
-from .config import ResistanceSolverConfig
 from .data import TargetSpec
 from .losses import MLPELoss
 from .mlpe import MLPECalibration
 from .model import LandscapeGeneticsModel
-from .models import AbstractDistanceModel, ConductanceModel
+from .models import AbstractDistanceModel
 from .models.base import _species_names, _species_rows
 
 
@@ -132,11 +131,6 @@ def _model_metadata(model):
     return {
         "target": asdict(model.target),
         "feature_names": model.feature_names,
-        "distance_solver": (
-            asdict(model.distance_model.solver_config)
-            if isinstance(model.distance_model, ConductanceModel)
-            else None
-        ),
         "species": model.species,
         "calibration_head": calibration_head,
     }
@@ -180,23 +174,6 @@ def _model_template[DistanceModel: AbstractDistanceModel](
     if distance_model.species != species:
         distance_model = copy(distance_model)
         object.__setattr__(distance_model, "species", _species_names(species))
-    solver_settings = metadata["distance_solver"]
-    if isinstance(distance_model, ConductanceModel):
-        if solver_settings is None:
-            raise ArtifactError("Saved distance model requires a non-conductance template")
-        if "use_amg" in solver_settings:
-            raise ArtifactError(
-                "The saved solver settings hold use_amg, which the solver setting replaces: "
-                "use_amg=false is solver='cg' and use_amg=true is solver='amg'. Replace it in "
-                "the file's JSON header, or train and save the model again with "
-                "ResistanceSolverConfig(solver=...)"
-            )
-        distance_model = copy(distance_model)
-        object.__setattr__(
-            distance_model, "solver_config", ResistanceSolverConfig(**solver_settings)
-        )
-    elif solver_settings is not None:
-        raise ArtifactError("Saved conductance model requires a conductance template")
     saved_head = metadata["calibration_head"]
     if saved_head["kind"] == "direct":
         head = DirectCalibrationHead(target)
@@ -257,8 +234,9 @@ def load_model[DistanceModel: AbstractDistanceModel](
     The template supplies the distance model's class, static settings, array shapes
     and dtypes: build it with the original constructor settings (patch size, patch
     microbatch size, conductance bounds, dropout, species and activation
-    functions). Its parameter values may differ. The saved parameters, species names
-    and solver settings replace the template's.
+    functions). Its parameter values may differ, and so may its resistance solver,
+    which the loaded model keeps. The saved parameters and species names replace the
+    template's.
 
     Args:
         path: File written by [`save_model`][ilg_toolkit.save_model].
@@ -269,8 +247,7 @@ def load_model[DistanceModel: AbstractDistanceModel](
         The saved landscape genetics model.
 
     Raises:
-        ArtifactError: If the file or the template is incompatible, or the file holds
-            a ``use_amg`` solver setting.
+        ArtifactError: If the file or the template is incompatible.
         RuntimeError: If float64 is disabled.
     """
     _require_float64()

@@ -6,7 +6,7 @@ from .calibration import (
     fit_calibration_head,
     MLPECalibrationHead,
 )
-from .config import ResistanceSolverConfig, TrainingConfig
+from .config import TrainingConfig
 from .data import PairwiseObservations, RegionBatch, TargetSpec
 from .ensemble import Ensemble, EnsemblePrediction
 from .losses import AbstractLoss, Log1pLoss, MLPELoss
@@ -31,7 +31,6 @@ __all__ = [
     "PairwiseObservations",
     "Prediction",
     "RegionBatch",
-    "ResistanceSolverConfig",
     "RidgePenalty",
     "StepRecord",
     "TargetSpec",

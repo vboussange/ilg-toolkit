@@ -21,9 +21,8 @@ effective-resistance layer.
 </p>
 
 - Log-linear and ResNet9 patch encoders, and a U-Net embedding-distance model.
-- Effective resistance with gradients on the GPU, through conjugate gradient,
-  conjugate gradient preconditioned by algebraic multigrid, or the NVIDIA CUDA
-  Direct Sparse Solver (cuDSS).
+- Effective resistance with gradients on a CPU or a GPU, with the resistance
+  solvers that JAXScape's `ResistanceDistance` accepts.
 - Training under complete pooling across regions, with a log1p loss or
   maximum-likelihood population effects (MLPE) for population dependence.
 - Genetic calibration, conditional prediction, and ensembles on the target's
@@ -39,8 +38,8 @@ uv add "ilg-toolkit[examples] @ git+https://github.com/vboussange/ilg-toolkit"
 ```
 
 The `examples` extra installs rioxarray, pandas and Matplotlib for the examples.
-The `amg` and `cudss` extras install optional
-[resistance solvers](#resistance-solvers).
+The `cudss` extra installs the NVIDIA CUDA Direct Sparse Solver (cuDSS), one of
+the [resistance solvers](#resistance-solvers).
 
 ILG Toolkit runs on the device JAX selects. To run it on an NVIDIA GPU, add the
 `cudss` extra, which installs cuDSS through [spineax](https://github.com/johnviljoen/spineax)
@@ -55,8 +54,8 @@ or newer. Two environment variables configure it:
 
 - `XLA_PYTHON_CLIENT_PREALLOCATE=false` leaves GPU memory for cuDSS, which allocates
   its factorizations outside JAX's memory pool.
-- `SPINEAX_FACTOR_CACHE` sets how many factorizations spineax keeps on the GPU, by
-  default 8. With more than 8 raster shapes, set it to at least their number.
+- `SPINEAX_FACTOR_CACHE` sets how many factorizations spineax keeps on the GPU. Keep
+  it at least the number of distinct raster shapes among the regions.
 
 For CUDA 12, build spineax from source as in
 [these notes](https://github.com/vboussange/jaxscape/issues/49#issuecomment-6501729059).
@@ -92,7 +91,7 @@ it on the CPU.
 
 The script reads the land-cover GeoTIFF with rioxarray, turns it into land-cover
 fractions, places the sampling units by their coordinates, selects cuDSS on a GPU
-and conjugate gradient elsewhere, and trains the patch encoder from the best
+and JAXScape's default solver elsewhere, and trains the patch encoder from the best
 uniform conductance:
 
 ```python
@@ -108,9 +107,9 @@ observations = PairwiseObservations(
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
 loss = Log1pLoss()
-solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else None
 distance_model = initialize_uniform_conductance(
-    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver_config=solver_config),
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver=solver),
     region,
     observations,
     loss,
@@ -132,25 +131,17 @@ resistance = 1 / conductance  # Local resistance Q = 1/C of each vertex.
 The quickstart runs in about 30 seconds on an NVIDIA RTX 3090.
 
 Swap in `ResNet9Conductance` as a deep patch encoder that maps raw patches of
-landscape features to vertex conductances, with the same `solver_config`.
+landscape features to vertex conductances, with the same `solver`.
 
 ## Resistance solvers
 
-The resistance solver is the numerical method behind the effective-resistance
-layer. `ResistanceSolverConfig(solver=...)` selects it, and a conductance model
-carries it in `solver_config`:
-
-| `solver` | Method | Installation | Choose it for |
-| --- | --- | --- | --- |
-| `"cg"` (default) | Conjugate gradient (CG) | Included | A CPU or a GPU with no optional dependency, on small conductance grid graphs with low conductance contrast |
-| `"amg"` | CG preconditioned with algebraic multigrid (AMG) | `amg` extra | A CPU or a GPU, on larger conductance grid graphs with conductance contrast below 4 orders of magnitude |
-| `"cudss"` | cuDSS, a sparse direct solver | `cudss` extra | An NVIDIA GPU, at any conductance contrast, when the factorization fits in GPU memory |
-
-`"cg"` and `"amg"` raise an error when they reach their iteration limit. The
-iterations of `"cg"` grow with grid size and conductance contrast, and those of
-`"amg"` with conductance contrast. `"cudss"` has no iteration limit, and its cost
-does not depend on conductance contrast. A deep patch encoder can drive conductance
-to its floor, so train one with `"cudss"` on an NVIDIA GPU. The
+The resistance solver solves the linear systems of the effective-resistance layer.
+A conductance model carries it in `solver`: a [Lineax](https://docs.kidger.site/lineax/)
+solver that [JAXScape](https://github.com/vboussange/jaxscape)'s
+`ResistanceDistance(solver=...)` accepts, with its own settings, or `None` for
+JAXScape's default solver, `ResistanceDistance().solver`.
+JAXScape's [solver documentation](https://vboussange.github.io/jaxscape/api/linear_solvers/)
+describes its solvers and when to choose each. The
 [API reference](https://vboussange.github.io/ilg-toolkit/api/models/#resistance-solvers)
 describes solver state, failures and saved models.
 
@@ -175,3 +166,8 @@ or for decisions based on them.
 
 Developed by Victor Boussange and contributors. Licensed under the
 [Apache License 2.0](https://github.com/vboussange/ilg-toolkit/blob/main/LICENSE).
+
+## Acknowledgements
+
+Development of ILG Toolkit was supported by the Swiss National Science Foundation
+(SNSF), grant 237783.

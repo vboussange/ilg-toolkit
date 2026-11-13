@@ -7,12 +7,13 @@ import re
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import final
+from typing import Any, cast, final
 
 import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import pytest
 from ilg_toolkit import (
@@ -23,7 +24,6 @@ from ilg_toolkit import (
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     TargetSpec,
 )
 from ilg_toolkit.models import (
@@ -33,11 +33,19 @@ from ilg_toolkit.models import (
     LogLinearConductance,
 )
 from jax.experimental import io_callback
-from jaxscape.solvers import AbstractSparseDirectSolver, CSRPattern
+from jaxscape import ResistanceDistance
+from jaxscape.solvers import (
+    AbstractReusableStateSolver,
+    AbstractSparseDirectSolver,
+    CSRPattern,
+    CuDSSSolver,
+)
 
 
 # The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
 jax.config.update("jax_enable_x64", True)
+# JAXScape's default resistance solver, which JAXScape types as optional.
+_DEFAULT_SOLVER = cast(lx.AbstractLinearSolver, ResistanceDistance().solver)
 
 
 def _feature_field(values, names: tuple[str, ...]) -> cx.Field:
@@ -171,14 +179,12 @@ class _PointConductance(ConductanceModel):
     log_scale: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, kw_only=True, default=ResistanceSolverConfig()
-    )
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, kw_only=True, default=_DEFAULT_SOLVER)
 
-    def __init__(self, log_scale: jax.Array, *, solver_config=None, species=None):
+    def __init__(self, log_scale: jax.Array, *, solver=None, species=None):
         self.log_scale = log_scale
         self.species = species
-        self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
+        self.solver = _DEFAULT_SOLVER if solver is None else solver
 
     def backbone(self, features):
         return features
@@ -209,7 +215,8 @@ class _DropoutConductance(ConductanceModel):
     conductance_dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
+    # `None` selects JAXScape's default solver.
+    solver: lx.AbstractLinearSolver | None = eqx.field(static=True, default=None)
 
     def backbone(self, features):
         return self.dropout(features)
@@ -231,7 +238,7 @@ class _BatchNormConductance(ConductanceModel):
     norm: eqx.nn.BatchNorm
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(static=True, default=ResistanceSolverConfig())
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, default=_DEFAULT_SOLVER)
 
     def __init__(self):
         self.distance_model = _PointConductance(jnp.asarray(0.0))
@@ -482,13 +489,11 @@ class _FeatureConductance(ConductanceModel):
     weight: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, kw_only=True, default=ResistanceSolverConfig()
-    )
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, kw_only=True, default=_DEFAULT_SOLVER)
 
-    def __init__(self, weight: jax.Array, *, solver_config=None):
+    def __init__(self, weight: jax.Array, *, solver=None):
         self.weight = weight
-        self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
+        self.solver = _DEFAULT_SOLVER if solver is None else solver
 
     def backbone(self, features):
         return features
@@ -785,6 +790,11 @@ class _CuDSSTokens:
         self.failing = False
         self.raising = False
 
+    @property
+    def solver(self) -> "_CuDSSDouble":
+        """The double, to pass as a conductance model's resistance solver."""
+        return _CuDSSDouble()
+
     def rebuild_count(self) -> int:
         return self.rebuilds
 
@@ -842,10 +852,12 @@ class _CuDSSDouble(AbstractSparseDirectSolver[_DenseFactorization]):
 
     Its callbacks are unordered, as spineax's calls are, so a failed call leaves later
     calls unaffected on a GPU. The token passed between them orders refactorizations.
+    The analysis takes the matrix values, as spineax's does, so a compiled program
+    analyzes on each call.
     """
 
     def factorize(self, pattern: CSRPattern, values: jax.Array) -> _DenseFactorization:
-        token, failing = io_callback(_CUDSS_TOKENS.analyze, _TOKEN_RESULT)
+        token, failing = io_callback(lambda _: _CUDSS_TOKENS.analyze(), _TOKEN_RESULT, values)
         return _dense_factorization(token, failing, pattern, values)
 
     def refactorize(
@@ -862,14 +874,13 @@ class _CuDSSDouble(AbstractSparseDirectSolver[_DenseFactorization]):
 
 
 @pytest.fixture(name="cudss_double")
-def cudss_double_fixture(monkeypatch):
-    """Runs ``solver="cudss"`` on the CPU double and returns its tokens.
+def cudss_double_fixture():
+    """Returns the tokens of the CPU double of cuDSS, whose ``solver`` is the double.
 
-    The tokens' ``rebuild_count()`` matches that of the ``cudss_gpu`` fixture's
-    module. Setting ``failing`` makes factorizations fail, and setting ``raising``
+    The tokens' ``solver`` and ``rebuild_count()`` match those of the ``cudss_gpu``
+    fixture. Setting ``failing`` makes factorizations fail, and setting ``raising``
     makes refactorizations raise.
     """
-    monkeypatch.setattr("ilg_toolkit.resistance.CuDSSSolver", _CuDSSDouble)
     yield _CUDSS_TOKENS
     _CUDSS_TOKENS.failing = False
     _CUDSS_TOKENS.raising = False
@@ -877,21 +888,73 @@ def cudss_double_fixture(monkeypatch):
 
 @pytest.fixture(name="cudss_gpu")
 def cudss_gpu_fixture():
-    """Returns ``spineax.cudss``, skipping without spineax or a GPU backend."""
+    """Returns ``CuDSSSolver`` as ``solver`` and spineax's ``rebuild_count``.
+
+    Skips without spineax or a GPU backend.
+    """
     pytest.importorskip("spineax", exc_type=ImportError)
     if jax.default_backend() != "gpu":
         pytest.skip("cuDSS requires a GPU backend")
-    return importlib.import_module("spineax.cudss")
+    cudss = importlib.import_module("spineax.cudss")
+    return SimpleNamespace(solver=CuDSSSolver(), rebuild_count=cudss.rebuild_count)
 
 
-@pytest.fixture(name="solver_choice", params=["cg", "amg", "cudss"])
-def solver_choice_fixture(request) -> str:
-    """Returns each solver choice, with cuDSS on the CPU double."""
-    if request.param == "amg":
-        pytest.importorskip("amjax")
+@final
+class _SizedState(eqx.Module):
+    cg_state: Any
+    size: int
+
+
+@final
+class _SizedConjugateGradient(AbstractReusableStateSolver):
+    """Lineax's conjugate gradient with a solver state that records the system size.
+
+    The size is a Python integer, a leaf of the solver state that is not an array.
+    ``reinit`` keeps it, and ``compute`` reads it as a Python integer.
+    """
+
+    cg: lx.CG
+
+    def init(self, operator, options):
+        return _SizedState(self.cg.init(operator, options), operator.in_size())
+
+    def reinit(self, operator, options, state):
+        return _SizedState(self.cg.init(operator, options), state.size)
+
+    def compute(self, state, vector, options):
+        if vector.size != state.size:
+            raise ValueError("The right-hand side does not match the recorded system size")
+        return self.cg.compute(state.cg_state, vector, options)
+
+    def transpose(self, state, options):
+        cg_state, options = self.cg.transpose(state.cg_state, options)
+        return _SizedState(cg_state, state.size), options
+
+    def conj(self, state, options):
+        cg_state, options = self.cg.conj(state.cg_state, options)
+        return _SizedState(cg_state, state.size), options
+
+    def assume_full_rank(self):
+        return self.cg.assume_full_rank()
+
+
+@pytest.fixture(name="solver_choice", params=["cg", "default", "cudss", "sized-cg"])
+def solver_choice_fixture(request) -> lx.AbstractLinearSolver:
+    """Returns conjugate gradient, JAXScape's default solver, cuDSS or sized conjugate gradient.
+
+    Conjugate gradient and JAXScape's default solver run at tight tolerances; cuDSS
+    runs on its CPU double. Sized conjugate gradient runs conjugate gradient at the
+    same tolerances, with a solver state that holds a Python integer.
+    """
     if request.param == "cudss":
-        request.getfixturevalue("cudss_double")
-    return request.param
+        return request.getfixturevalue("cudss_double").solver
+    if request.param == "sized-cg":
+        return _SizedConjugateGradient(lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000))
+    if request.param == "default":
+        return eqx.tree_at(
+            lambda solver: (solver.rtol, solver.max_steps), _DEFAULT_SOLVER, (1e-11, 1000)
+        )
+    return lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000)
 
 
 @pytest.fixture(name="dense_resistance", scope="session")

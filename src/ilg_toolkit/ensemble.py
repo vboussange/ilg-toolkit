@@ -151,10 +151,7 @@ class Ensemble:
             ValueError: If the region's feature names differ from the members', the
                 query is invalid, a raster is not a multiple of a member's patch
                 size, or a member's predictions are not finite.
-            ImportError: If a member's ``solver_config`` selects ``"cudss"`` without
-                spineax.
-            RuntimeError: If float64 is disabled, or a member's ``solver_config`` selects
-                ``"cudss"`` without a CUDA-enabled GPU backend.
+            RuntimeError: If float64 is disabled.
         """
         _require_float64()
         first = self.members[0]

@@ -7,6 +7,7 @@ from types import MappingProxyType
 import coordax as cx
 import equinox as eqx
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import pytest
 from ilg_toolkit import (
@@ -17,7 +18,6 @@ from ilg_toolkit import (
     MLPECalibrationHead,
     MLPELoss,
     PairwiseObservations,
-    ResistanceSolverConfig,
     TargetSpec,
     train,
     TrainingConfig,
@@ -418,10 +418,10 @@ def test_mlpe_calibration_groups_share_a_solver_state(
     )
     scales = jnp.array([0.0, 0.5])
     direct, iterative = (
-        PointConductance(scales, species=species, solver_config=config)
-        for config in (
-            ResistanceSolverConfig(solver="cudss"),
-            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+        PointConductance(scales, species=species, solver=solver)
+        for solver in (
+            cudss_double.solver,
+            lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000),
         )
     )
     with cudss_double.one_analysis():

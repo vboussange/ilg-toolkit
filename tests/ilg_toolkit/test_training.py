@@ -9,6 +9,7 @@ import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import optax
 import pytest
@@ -21,7 +22,6 @@ from ilg_toolkit import (
     PairwiseObservations,
     Prediction,
     RegionBatch,
-    ResistanceSolverConfig,
     RidgePenalty,
     save_model,
     TargetSpec,
@@ -34,6 +34,7 @@ from ilg_toolkit.models import (
     EmbeddingDistanceModel,
     LogLinearConductance,
 )
+from jaxscape import ResistanceDistance
 
 
 def _single_species_prediction(
@@ -101,7 +102,7 @@ def _two_species(regions, observations):
     )
 
 
-_EXHAUSTED_CONJUGATE_GRADIENT = ResistanceSolverConfig(rtol=1e-12, atol=1e-12, max_steps=1)
+_EXHAUSTED_CONJUGATE_GRADIENT = lx.CG(rtol=1e-12, atol=1e-12, max_steps=1)
 _EXHAUSTED_MESSAGE = "The maximum number of solver steps was reached"
 
 
@@ -121,7 +122,7 @@ def _exhausted_conjugate_gradient_problem(PointConductance):
     observations = PairwiseObservations(
         region.sampling_unit_ids, [[0, 1], [1, 0]], target=TargetSpec("dissimilarity")
     )
-    model = PointConductance(jnp.array(0.0), solver_config=_EXHAUSTED_CONJUGATE_GRADIENT)
+    model = PointConductance(jnp.array(0.0), solver=_EXHAUSTED_CONJUGATE_GRADIENT)
     return region, observations, model
 
 
@@ -168,8 +169,8 @@ class _ContrastConductance(ConductanceModel):
     contrast: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver_config: ResistanceSolverConfig = eqx.field(
-        static=True, default=ResistanceSolverConfig(max_steps=30)
+    solver: lx.AbstractLinearSolver = eqx.field(
+        static=True, default=lx.CG(rtol=1e-6, atol=1e-6, max_steps=30)
     )
 
     def __init__(self, contrast: jax.Array, *, species: tuple[str, ...]):
@@ -185,7 +186,7 @@ class _ContrastConductance(ConductanceModel):
 
 @pytest.mark.parametrize("microbatch_size", [None, 1], ids=["one_microbatch", "two_microbatches"])
 def test_exhausted_gradient_solve_names_the_failing_species(microbatch_size, training_problem):
-    # On a 6 x 6 graph, 30 steps solve a uniform conductance surface. The first update
+    # On a 6 x 6 graph, 30 CG steps solve a uniform conductance surface. The first update
     # moves the contrast by the learning rate, and the second gradient exceeds the steps.
     species = ("frog", "newt")
     region, observations, _ = training_problem("conductance", shape=(6, 6), species=species)
@@ -243,7 +244,7 @@ def test_failed_factorization_of_a_composed_patch_encoder_is_named(
     cudss_double, PointConductance, training_problem
 ):
     region, observations, _ = training_problem("conductance")
-    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
+    model = PointConductance(jnp.asarray(0.0), solver=cudss_double.solver)
 
     def fail_after_initialization(state):
         cudss_double.failing = True
@@ -263,7 +264,7 @@ def test_composed_patch_encoder_trains_to_the_result_of_a_direct_one(
     optimizer, cudss_double, PointConductance, training_problem
 ):
     region, observations, _ = training_problem("conductance")
-    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
+    model = PointConductance(jnp.asarray(0.0), solver=cudss_double.solver)
     config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optimizer)
     direct = train(region, observations, distance_model=model, config=config)
     composed = train(
@@ -289,9 +290,7 @@ def test_failed_factorization_names_the_region_species_and_step(
 ):
     species = ("frog", "newt")
     region, observations, _ = training_problem("conductance", species=species)
-    model = PointConductance(
-        jnp.array([0.0, 0.2]), species=species, solver_config=ResistanceSolverConfig(solver="cudss")
-    )
+    model = PointConductance(jnp.array([0.0, 0.2]), species=species, solver=cudss_double.solver)
     cudss_double.failing = failing_step is None
 
     def fail_after_step(state):
@@ -319,9 +318,7 @@ def test_failed_native_call_names_the_region_species_step_and_reason(
 ):
     species = ("frog", "newt")
     region, observations, _ = training_problem("conductance", species=species)
-    model = PointConductance(
-        jnp.array([0.0, 0.2]), species=species, solver_config=ResistanceSolverConfig(solver="cudss")
-    )
+    model = PointConductance(jnp.array([0.0, 0.2]), species=species, solver=cudss_double.solver)
     cudss_double.raising = failing_step is None
 
     def fail_after_step(state):
@@ -395,7 +392,7 @@ def test_failed_native_call_reports_the_line_stating_its_reason(message, reason,
 
 
 def _assert_failed_line_search_candidate_names_the_sampled_groups(
-    settings, group_count, solver_config, PointConductance, training_problem
+    settings, group_count, solver, PointConductance, training_problem
 ):
     # The first candidate's scale is so large that the conductance is zero or infinite.
     species = ("frog", "newt")
@@ -407,9 +404,7 @@ def _assert_failed_line_search_candidate_names_the_sampled_groups(
         train(
             [problem[0] for problem in problems],
             [problem[1] for problem in problems],
-            distance_model=PointConductance(
-                jnp.array([0.0, 0.2]), species=species, solver_config=solver_config
-            ),
+            distance_model=PointConductance(jnp.array([0.0, 0.2]), species=species, solver=solver),
             config=TrainingConfig(
                 loss=Log1pLoss(),
                 steps=1,
@@ -436,7 +431,7 @@ def test_failed_line_search_candidate_names_the_sampled_groups(
     settings, group_count, PointConductance, training_problem
 ):
     _assert_failed_line_search_candidate_names_the_sampled_groups(
-        settings, group_count, ResistanceSolverConfig(), PointConductance, training_problem
+        settings, group_count, ResistanceDistance().solver, PointConductance, training_problem
     )
 
 
@@ -444,7 +439,7 @@ def test_failed_line_search_candidate_names_the_sampled_groups_on_a_gpu(
     cudss_gpu, PointConductance, training_problem
 ):
     _assert_failed_line_search_candidate_names_the_sampled_groups(
-        {}, 4, ResistanceSolverConfig(solver="cudss"), PointConductance, training_problem
+        {}, 4, cudss_gpu.solver, PointConductance, training_problem
     )
 
 
@@ -504,7 +499,7 @@ def test_failed_training_leaves_the_last_saved_model_intact(
 ):
     region, observations, _ = training_problem("conductance")
     path = tmp_path / "model.eqx"
-    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
+    model = PointConductance(jnp.asarray(0.0), solver=cudss_double.solver)
     config = TrainingConfig(loss=Log1pLoss(), steps=4, optimizer=optax.adam(0.05))
     states = []
 
@@ -543,18 +538,14 @@ def test_training_with_each_solver_choice_matches_conjugate_gradient(
 ):
     region, observations, _ = training_problem("conductance")
     config = TrainingConfig(loss=Log1pLoss(), steps=3, optimizer=optimizer)
-    tolerance = None if solver_choice == "cudss" else 1e-11
     state, reference = (
         train(
             region,
             observations,
-            distance_model=PointConductance(jnp.asarray(0.0), solver_config=solver_config),
+            distance_model=PointConductance(jnp.asarray(0.0), solver=solver),
             config=config,
         )
-        for solver_config in (
-            ResistanceSolverConfig(solver=solver_choice, rtol=tolerance, atol=tolerance),
-            ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
-        )
+        for solver in (solver_choice, lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000))
     )
     np.testing.assert_allclose(
         [record.training_loss for record in state.history],
@@ -562,29 +553,6 @@ def test_training_with_each_solver_choice_matches_conjugate_gradient(
         rtol=1e-8,
     )
     assert state.history[-1].training_loss < state.history[0].training_loss
-
-
-@pytest.mark.parametrize("error", [ImportError("no spineax"), RuntimeError("no GPU backend")])
-def test_training_with_an_unavailable_direct_solver_fails_before_initialization(
-    PointConductance, training_problem, monkeypatch, error
-):
-    def unavailable():
-        raise error
-
-    monkeypatch.setattr("ilg_toolkit.resistance.CuDSSSolver", unavailable)
-    region, observations, _ = training_problem("conductance")
-    completed = []
-    with pytest.raises(type(error), match=r"ilg-toolkit\[cudss\]"):
-        train(
-            region,
-            observations,
-            distance_model=PointConductance(
-                jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss")
-            ),
-            config=TrainingConfig(loss=Log1pLoss(), steps=1),
-            on_step=completed.append,
-        )
-    assert completed == []
 
 
 @dataclass(frozen=True)
@@ -609,14 +577,12 @@ class _CarryScenario:
     def shape_count(self) -> int:
         return len({shape for _, shape, _ in (*self.regions, *self.validation)})
 
-    def run(self, training_problem, PointConductance, solver_config, optimizer):
+    def run(self, training_problem, PointConductance, solver, optimizer):
         """Trains with the solver settings and returns the training state."""
         scales = jnp.asarray(0.0) if self.species is None else jnp.array([0.0, 0.2])
         return train(
             *self.problems(training_problem, self.regions),
-            distance_model=PointConductance(
-                scales, species=self.species, solver_config=solver_config
-            ),
+            distance_model=PointConductance(scales, species=self.species, solver=solver),
             config=TrainingConfig(
                 **{
                     "loss": Log1pLoss(),
@@ -673,18 +639,16 @@ _PENALIZED = _CarryScenario(
 
 
 def _assert_no_rebuild_and_equal_to_conjugate_gradient(
-    scenario, optimizer, rebuild_count, training_problem, PointConductance
+    scenario, optimizer, cudss, training_problem, PointConductance
 ):
-    """Checks that a direct-solver run repeats no analysis, and matches conjugate gradient."""
-    rebuilds = rebuild_count()
-    state = scenario.run(
-        training_problem, PointConductance, ResistanceSolverConfig(solver="cudss"), optimizer
-    )
-    assert rebuild_count() == rebuilds
+    """Checks that a cuDSS run repeats no analysis, and matches conjugate gradient."""
+    rebuilds = cudss.rebuild_count()
+    state = scenario.run(training_problem, PointConductance, cudss.solver, optimizer)
+    assert cudss.rebuild_count() == rebuilds
     reference = scenario.run(
         training_problem,
         PointConductance,
-        ResistanceSolverConfig(rtol=1e-11, atol=1e-11),
+        lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000),
         optimizer,
     )
     for record, expected in zip(state.history, reference.history, strict=True):
@@ -706,7 +670,7 @@ def _assert_carried_and_equal_to_conjugate_gradient(
     """Checks that a run on the double analyzes once per shape, and matches conjugate gradient."""
     analyses = tokens.analysis_count()
     state = _assert_no_rebuild_and_equal_to_conjugate_gradient(
-        scenario, optimizer, tokens.rebuild_count, training_problem, PointConductance
+        scenario, optimizer, tokens, training_problem, PointConductance
     )
     assert tokens.analysis_count() == analyses + scenario.shape_count
     return state
@@ -757,7 +721,7 @@ def test_eager_training_carries_the_solver_state(cudss_double, training_problem,
         state = _CarryScenario((("alpine", (2, 2), 1),), settings={"steps": 1}).run(
             training_problem,
             PointConductance,
-            ResistanceSolverConfig(solver="cudss"),
+            cudss_double.solver,
             optax.chain(
                 optax.sgd(50.0),
                 optax.scale_by_zoom_linesearch(
@@ -777,7 +741,7 @@ def test_training_repeats_no_analysis_and_matches_conjugate_gradient_on_a_gpu(
     optimizer, cudss_gpu, training_problem, PointConductance
 ):
     _assert_no_rebuild_and_equal_to_conjugate_gradient(
-        _EVERY_GEOMETRY, optimizer, cudss_gpu.rebuild_count, training_problem, PointConductance
+        _EVERY_GEOMETRY, optimizer, cudss_gpu, training_problem, PointConductance
     )
 
 
@@ -785,7 +749,7 @@ def test_penalized_lbfgs_repeats_no_analysis_and_matches_conjugate_gradient_on_a
     cudss_gpu, training_problem, PointConductance
 ):
     state = _assert_no_rebuild_and_equal_to_conjugate_gradient(
-        _PENALIZED, optax.lbfgs(), cudss_gpu.rebuild_count, training_problem, PointConductance
+        _PENALIZED, optax.lbfgs(), cudss_gpu, training_problem, PointConductance
     )
     assert state.history[-1].training_objective > state.history[-1].training_loss
 
@@ -820,9 +784,7 @@ def test_training_on_a_heterogeneous_problem_completes_on_a_gpu(
     state = train(
         region,
         observations,
-        distance_model=FeatureConductance(
-            jnp.asarray(1.0), solver_config=ResistanceSolverConfig(solver="cudss")
-        ),
+        distance_model=FeatureConductance(jnp.asarray(1.0), solver=cudss_gpu.solver),
         config=TrainingConfig(loss=Log1pLoss(), steps=5, optimizer=optax.adam(0.01)),
     )
     assert cudss_gpu.rebuild_count() == rebuilds
@@ -1236,8 +1198,7 @@ def test_continuing_with_each_solver_choice_reproduces_the_uninterrupted_run(
     solver_choice, PointConductance, training_problem
 ):
     region, observations, _ = training_problem("conductance")
-    solver_config = ResistanceSolverConfig(solver=solver_choice)
-    model = PointConductance(jnp.asarray(0.0), solver_config=solver_config)
+    model = PointConductance(jnp.asarray(0.0), solver=solver_choice)
     config = TrainingConfig(loss=Log1pLoss(), steps=1, optimizer=optax.sgd(1e-3))
     state = train(region, observations, distance_model=model, config=config)
     continued = train(region, observations, state=state, config=replace(state.config, steps=2))
@@ -1247,7 +1208,7 @@ def test_continuing_with_each_solver_choice_reproduces_the_uninterrupted_run(
     assert continued.step == uninterrupted.step == 2
     for trained in (continued.latest_model, continued.selected_model):
         assert isinstance(trained.distance_model, ConductanceModel)
-        assert trained.distance_model.solver_config == solver_config
+        assert trained.distance_model.solver == solver_choice
     # Repeated conjugate gradient solves on a GPU differ by rounding.
     np.testing.assert_allclose(
         cast(Any, continued.latest_model.distance_model).log_scale,
@@ -2143,7 +2104,7 @@ def test_lbfgs_with_a_ridge_penalty_converges_to_finite_coefficients_on_a_separa
         distance_model=LogLinearConductance(
             2,
             patch_size=1,
-            solver_config=ResistanceSolverConfig(rtol=1e-10, atol=1e-10, max_steps=5000),
+            solver=lx.CG(rtol=1e-10, atol=1e-10, max_steps=5000),
         ),
         config=TrainingConfig(
             loss=MLPELoss(),

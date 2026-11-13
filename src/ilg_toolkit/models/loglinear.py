@@ -9,14 +9,14 @@ from typing import final
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 
 from .._checks import _positive_integer, _require_float64
 from .._training_utils import _prepare_training_inputs
-from ..config import ResistanceSolverConfig
 from ..data import _feature_names, PairwiseObservations, RegionBatch
 from ..losses import AbstractLoss
-from ..resistance import _effective_resistance
+from ..resistance import _effective_resistance, _resistance_solver
 from .base import (
     _check_regions,
     _model_species,
@@ -61,8 +61,10 @@ class LogLinearConductance(ConductanceModel):
         min_conductance: Positive floor, default 0.01, added to the exponentiated linear
             predictor.
         max_conductance: Positive cap, default 1000.
-        solver_config: Resistance solver of the effective-resistance layer and its
-            settings; see ``ResistanceSolverConfig``.
+        solver: Resistance solver of the effective-resistance layer: a Lineax solver
+            that ``jaxscape.ResistanceDistance(solver=...)`` accepts, with its own
+            settings, which must hold no JAX arrays, or ``None`` (default) for JAXScape's
+            default solver, ``ResistanceDistance().solver``.
 
     Notes:
         Prepare feature scaling and categorical reference levels before building a
@@ -92,7 +94,7 @@ class LogLinearConductance(ConductanceModel):
     patch_microbatch_size: int | None = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
     max_conductance: float = eqx.field(static=True)
-    solver_config: ResistanceSolverConfig = eqx.field(static=True)
+    solver: lx.AbstractLinearSolver = eqx.field(static=True)
 
     def __init__(
         self,
@@ -103,7 +105,7 @@ class LogLinearConductance(ConductanceModel):
         patch_microbatch_size: int | None = None,
         min_conductance: float = 0.01,
         max_conductance: float = 1000.0,
-        solver_config: ResistanceSolverConfig | None = None,
+        solver: lx.AbstractLinearSolver | None = None,
     ):
         in_channels = _positive_integer("in_channels", in_channels)
         species = _species_names(species)
@@ -121,15 +123,14 @@ class LogLinearConductance(ConductanceModel):
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
-        if solver_config is not None and not isinstance(solver_config, ResistanceSolverConfig):
-            raise TypeError("solver_config must be a ResistanceSolverConfig")
+        solver = _resistance_solver(solver)
         self.species = species
         self.in_channels = in_channels
         self.patch_size = patch_size
         self.patch_microbatch_size = patch_microbatch_size
         self.min_conductance = float(min_conductance)
         self.max_conductance = float(max_conductance)
-        self.solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
+        self.solver = solver
         count = _species_rows(species)
         self.coefficients = jnp.zeros((count, in_channels))
         self.intercepts = jnp.zeros(count)
@@ -273,7 +274,7 @@ def initialize_uniform_conductance(
 
     Args:
         model: Log-linear patch encoder providing the conductance bounds, patch
-            size, solver settings, and species.
+            size, resistance solver, and species.
         region: One region batch, a sequence, or a mapping keyed by region name,
             as accepted by ``train``.
         observations: Pairwise genetic observations aligned with the regions, as
@@ -288,9 +289,7 @@ def initialize_uniform_conductance(
         TypeError: ``model`` is not a ``LogLinearConductance`` or ``loss`` is not
             an ``AbstractLoss``.
         ValueError: The inputs violate the contract that ``train`` enforces.
-        ImportError: ``model.solver_config`` selects ``"cudss"`` without spineax.
-        RuntimeError: float64 is disabled, or ``model.solver_config`` selects ``"cudss"``
-            without a CUDA-enabled GPU backend.
+        RuntimeError: float64 is disabled.
 
     Notes:
         Losses that identify an absolute conductance scale, such as ``Log1pLoss``,

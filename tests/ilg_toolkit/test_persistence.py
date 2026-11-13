@@ -8,6 +8,7 @@ import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import optax
 import pytest
@@ -21,13 +22,13 @@ from ilg_toolkit import (
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     save_model,
     TargetSpec,
     train,
     TrainingConfig,
 )
 from ilg_toolkit.models import ConductanceModel
+from jaxscape import ResistanceDistance
 
 
 # Direct and MLPE calibration heads, with unnamed and named species, save different trees.
@@ -242,7 +243,7 @@ def test_custom_mlpe_reload_preserves_mlpe_calibrations_and_support_conditioning
     )
 
 
-def test_conductance_reload_preserves_surface_distances_and_solver_settings(
+def test_conductance_reload_preserves_surface_and_distances_with_the_template_solver(
     PointConductance, tmp_path
 ):
     features = np.random.default_rng(1).uniform(0.5, 1.5, size=(8, 8, 2))
@@ -257,38 +258,37 @@ def test_conductance_reload_preserves_surface_distances_and_solver_settings(
         ("west", "north", "east"),
         np.array([[0, 0], [0, 7], [7, 7]]),
     )
-    solver_config = ResistanceSolverConfig(rtol=1e-9, atol=1e-10)
-    assert solver_config != ResistanceSolverConfig()
+    default = eqx.tree_at(lambda solver: solver.rtol, ResistanceDistance().solver, 1e-10)
     model = LandscapeGeneticsModel(
-        PointConductance(jnp.asarray(0.3), solver_config=solver_config),
+        PointConductance(jnp.asarray(0.3), solver=default),
         DirectCalibrationHead(TargetSpec("divergence")),
         region.feature_names,
     )
     path = tmp_path / "conductance.eqx"
     save_model(path, model)
-    restored = load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
+    solver = lx.CG(rtol=1e-10, atol=1e-10, max_steps=1000)
+    restored = load_model(path, distance_model=PointConductance(jnp.asarray(-1.0), solver=solver))
     restored_model = cast(ConductanceModel, restored.distance_model)
+    assert restored_model.solver == solver
     np.testing.assert_array_equal(
         restored_model.conductance_surface(region).data,
         cast(ConductanceModel, model.distance_model).conductance_surface(region).data,
     )
-    # Repeated conjugate gradient solves on a GPU differ by rounding.
     np.testing.assert_allclose(
         restored_model.predict(region).as_matrix(),
         model.distance_model.predict(region).as_matrix(),
-        rtol=1e-9,
+        rtol=1e-8,
     )
     np.testing.assert_allclose(
-        restored.predict(region).values, model.predict(region).values, rtol=1e-9
+        restored.predict(region).values, model.predict(region).values, rtol=1e-8
     )
-    assert restored_model.solver_config == solver_config
 
 
-def _saved_conductance_model(PointConductance, training_problem, solver_config, path):
+def _saved_conductance_model(PointConductance, training_problem, path):
     """Saves a conductance model with a direct calibration head, and returns it and its region."""
     region, _, _ = training_problem("conductance")
     model = LandscapeGeneticsModel(
-        PointConductance(jnp.asarray(0.3), solver_config=solver_config),
+        PointConductance(jnp.asarray(0.3)),
         DirectCalibrationHead(TargetSpec("divergence")),
         region.feature_names,
     )
@@ -296,46 +296,39 @@ def _saved_conductance_model(PointConductance, training_problem, solver_config, 
     return model, region
 
 
-def test_saved_models_record_each_solver_choice(
-    solver_choice, PointConductance, training_problem, tmp_path
-):
-    solver_config = ResistanceSolverConfig(solver=solver_choice)
-    path = tmp_path / "conductance.eqx"
-    model, region = _saved_conductance_model(
-        PointConductance, training_problem, solver_config, path
-    )
-    restored = load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
-    assert cast(ConductanceModel, restored.distance_model).solver_config == solver_config
-    np.testing.assert_array_equal(restored.predict(region).values, model.predict(region).values)
-
-
-@pytest.mark.parametrize("use_amg", [False, True])
-def test_loading_a_saved_use_amg_setting_names_its_replacement(
-    PointConductance, training_problem, tmp_path, use_amg
-):
-    path = tmp_path / "conductance.eqx"
-    _saved_conductance_model(PointConductance, training_problem, ResistanceSolverConfig(), path)
-    line, arrays = path.read_bytes().split(b"\n", 1)
-    header = json.loads(line)
-    header["metadata"]["distance_solver"] = dict(
-        rtol=1e-6, atol=1e-6, max_steps=1000, use_amg=use_amg
-    )
-    path.write_bytes(json.dumps(header).encode() + b"\n" + arrays)
-    with pytest.raises(ArtifactError, match=r"use_amg.*solver='cg'.*solver='amg'"):
-        load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
-
-
 def test_loading_a_file_of_another_kind_names_its_kind(
     PointConductance, training_problem, tmp_path
 ):
     path = tmp_path / "conductance.eqx"
-    _saved_conductance_model(PointConductance, training_problem, ResistanceSolverConfig(), path)
+    _saved_conductance_model(PointConductance, training_problem, path)
     line, arrays = path.read_bytes().split(b"\n", 1)
     header = json.loads(line)
     header["kind"] = "training_checkpoint"
     path.write_bytes(json.dumps(header).encode() + b"\n" + arrays)
     with pytest.raises(ArtifactError, match="saved model file, found kind 'training_checkpoint'"):
         load_model(path, distance_model=PointConductance(jnp.asarray(-1.0)))
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"solver": "cudss", "rtol": None, "atol": None, "max_steps": None},
+        {"rtol": 1e-6, "atol": 1e-6, "max_steps": 1000, "use_amg": True},
+    ],
+    ids=["solver", "use_amg"],
+)
+def test_a_file_recording_solver_settings_loads_with_the_template_solver(
+    PointConductance, training_problem, tmp_path, settings
+):
+    path = tmp_path / "conductance.eqx"
+    model, _ = _saved_conductance_model(PointConductance, training_problem, path)
+    line, arrays = path.read_bytes().split(b"\n", 1)
+    header = json.loads(line)
+    header["metadata"]["distance_solver"] = settings
+    path.write_bytes(json.dumps(header).encode() + b"\n" + arrays)
+    assert eqx.tree_equal(
+        load_model(path, distance_model=PointConductance(jnp.asarray(-1.0))), model
+    )
 
 
 def test_model_reload_uses_native_shape_and_dtype_compatibility(WeightedEmbedding, tmp_path):

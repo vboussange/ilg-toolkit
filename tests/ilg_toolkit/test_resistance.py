@@ -1,14 +1,13 @@
 """Tests of the effective-resistance layer."""
 
-import importlib.util
-
 import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 import pytest
-from ilg_toolkit import RegionBatch, ResistanceSolverConfig
+from ilg_toolkit import RegionBatch
 
 
 def _region(features, positions):
@@ -27,15 +26,13 @@ def _region(features, positions):
 
 
 @pytest.mark.filterwarnings("ignore:Sampling units share a vertex")
-def test_amg_resistances_and_gradients_match_dense_laplacian(FeatureConductance, dense_resistance):
-    pytest.importorskip("amjax")
-    pytest.importorskip("pyamg")
+def test_default_solver_resistances_and_gradients_match_dense_laplacian(
+    FeatureConductance, dense_resistance
+):
     log_surface = np.log([[1.0, 1.4], [0.8, 2.0]])
     nodes = np.array([3, 0, 1, 1])
     region = _region(np.ones((2, 2)), [[1, 1], [0, 0], [0, 1], [0, 1]])
-    model = FeatureConductance(
-        jnp.asarray(log_surface), solver_config=ResistanceSolverConfig(solver="amg")
-    )
+    model = FeatureConductance(jnp.asarray(log_surface))
     upper = np.triu_indices(nodes.size, 1)
     prediction = model.predict(region)
     np.testing.assert_allclose(
@@ -84,9 +81,9 @@ def _dense_resistance_sum(log_surface, nodes):
 
 
 @pytest.fixture(params=["cudss_double", "cudss_gpu"])
-def cudss_backend(request):
-    """Runs a test on the CPU double and, with spineax and a GPU backend, on cuDSS."""
-    return request.getfixturevalue(request.param)
+def cudss_solver(request):
+    """Returns the CPU double of cuDSS and, with spineax and a GPU backend, ``CuDSSSolver``."""
+    return request.getfixturevalue(request.param).solver
 
 
 @pytest.mark.parametrize(
@@ -100,14 +97,12 @@ def cudss_backend(request):
     ids=["well_conditioned", "six_orders_of_magnitude", "floor_patches", "floor_barrier"],
 )
 def test_cudss_resistances_and_gradients_match_dense_laplacian(
-    cudss_backend, surface, FeatureConductance, dense_resistance
+    cudss_solver, surface, FeatureConductance, dense_resistance
 ):
     log_surface = np.log(surface)
     nodes = np.array([0, 19, 4, 11])
     region = _region(np.ones(surface.shape), [[0, 0], [3, 4], [0, 4], [2, 1]])
-    model = FeatureConductance(
-        jnp.asarray(log_surface), solver_config=ResistanceSolverConfig(solver="cudss")
-    )
+    model = FeatureConductance(jnp.asarray(log_surface), solver=cudss_solver)
     left, right = np.triu_indices(nodes.size, 1)
     expected = dense_resistance(surface, nodes)[left, right]
     prediction = model.predict(region)
@@ -132,10 +127,10 @@ def test_cudss_matches_conjugate_gradient_on_a_well_conditioned_surface(
     log_surface = np.log(np.random.default_rng(3).uniform(0.5, 2.0, size=(4, 5)))
     region = _region(np.ones((4, 5)), [[0, 0], [3, 4], [0, 4], [2, 1]])
     direct, iterative = (
-        FeatureConductance(jnp.asarray(log_surface), solver_config=config).predict(region)
+        FeatureConductance(jnp.asarray(log_surface), solver=config).predict(region)
         for config in (
-            ResistanceSolverConfig(solver="cudss"),
-            ResistanceSolverConfig(solver="cg", rtol=1e-11, atol=1e-11),
+            cudss_double.solver,
+            lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000),
         )
     )
     np.testing.assert_allclose(direct.values, iterative.values, rtol=1e-8)
@@ -143,33 +138,10 @@ def test_cudss_matches_conjugate_gradient_on_a_well_conditioned_surface(
 
 def test_failed_cudss_factorization_raises(cudss_double, PointConductance):
     region = _region([[1.0, 1.0]], [[0, 0], [0, 1]])
-    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
+    model = PointConductance(jnp.asarray(0.0), solver=cudss_double.solver)
     cudss_double.failing = True
     with pytest.raises(RuntimeError):
         model.predict(region)
-
-
-def test_cudss_without_its_backend_fails_naming_the_extra(PointConductance):
-    if jax.default_backend() == "gpu" and importlib.util.find_spec("spineax") is not None:
-        pytest.skip("cuDSS has its backend")
-    region = _region([[1.0, 1.0]], [[0, 0], [0, 1]])
-    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
-    with pytest.raises((ImportError, RuntimeError), match=r"ilg-toolkit\[cudss\]") as caught:
-        model.predict(region)
-    assert caught.value.__cause__ is not None
-
-
-@pytest.mark.parametrize("error", [ImportError("no spineax"), RuntimeError("no GPU backend")])
-def test_cudss_backend_errors_keep_their_type_and_cause(PointConductance, monkeypatch, error):
-    def unavailable():
-        raise error
-
-    monkeypatch.setattr("ilg_toolkit.resistance.CuDSSSolver", unavailable)
-    region = _region([[1.0, 1.0]], [[0, 0], [0, 1]])
-    model = PointConductance(jnp.asarray(0.0), solver_config=ResistanceSolverConfig(solver="cudss"))
-    with pytest.raises(type(error), match=r"ilg-toolkit\[cudss\].*" + str(error)) as caught:
-        model.predict(region)
-    assert caught.value.__cause__ is error
 
 
 def test_effective_resistance_rejects_nonpositive_conductances(PointConductance):

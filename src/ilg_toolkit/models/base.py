@@ -12,11 +12,11 @@ import coordax as cx
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 import numpy as np
 from numpy.typing import ArrayLike
 
 from .._checks import _require_float64
-from ..config import ResistanceSolverConfig
 from ..data import _validate_pairs, RegionBatch
 from ..prediction import Prediction
 from ..resistance import _effective_resistance, _resistance_context, _ResistanceSolverContext
@@ -49,7 +49,7 @@ class AbstractDistanceModel(eqx.Module):
       distances aligned with ``pairs``.
 
     Declare static ``species`` and ``patch_size`` fields; conductance models
-    also declare a static ``solver_config`` holding a ``ResistanceSolverConfig``.
+    also declare a static ``solver`` holding their resistance solver.
     ``species`` is a tuple of unique species names, one per species-specific head
     in parameter order, or ``None`` for one unnamed species.
     Keep fields and initialization together in the concrete class, and compose
@@ -180,10 +180,7 @@ class AbstractDistanceModel(eqx.Module):
             ValueError: If a species is unknown, a multispecies model receives a
                 sequence or ``None``, the query pairs are empty or repeat a pair,
                 or a pair names an unknown sampling unit.
-            ImportError: If a conductance model's ``solver_config`` selects ``"cudss"``
-                without spineax.
-            RuntimeError: If float64 is disabled, or a conductance model's
-                ``solver_config`` selects ``"cudss"`` without a CUDA-enabled GPU backend.
+            RuntimeError: If float64 is disabled.
         """
         _require_float64()
         requests, by_species = _resolve_query(self.species, query)
@@ -203,11 +200,13 @@ class ConductanceModel(AbstractDistanceModel):
     neighboring vertices averages their conductances. The effective-resistance
     layer returns the effective resistance between sampling-unit vertices as
     ecological distance. Custom patch encoders implement ``backbone`` and
-    ``conductance`` and declare a static ``solver_config`` alongside their other
-    fields.
+    ``conductance`` and declare a static ``solver`` alongside their other fields: the
+    resistance solver, a Lineax solver that ``jaxscape.ResistanceDistance(solver=...)``
+    accepts, or ``None`` for JAXScape's default solver, ``ResistanceDistance().solver``.
+    The field is static: the solver must hold no JAX arrays.
     """
 
-    solver_config: eqx.AbstractVar[ResistanceSolverConfig]
+    solver: eqx.AbstractVar[lx.AbstractLinearSolver | None]
 
     @abstractmethod
     def conductance(self, latent: jax.Array, species_index: int | jax.Array) -> jax.Array:
@@ -242,11 +241,6 @@ class ConductanceModel(AbstractDistanceModel):
 
         Returns:
             Effective resistances aligned with ``left`` and ``right``.
-
-        Raises:
-            ImportError: If ``solver_config`` selects ``"cudss"`` without spineax.
-            RuntimeError: If ``solver_config`` selects ``"cudss"`` without a
-                CUDA-enabled GPU backend.
         """
         return _resistance_distances(self, latent, pairs, species_index, context=None)[0]
 
@@ -629,7 +623,7 @@ def _prepare_distance_context(
     if len(shape) != 3 or shape[0] % model.patch_size or shape[1] % model.patch_size:
         raise ValueError("Raster dimensions must be divisible by model patch_size")
     graph_shape = (shape[0] // model.patch_size, shape[1] // model.patch_size)
-    return _resistance_context(graph_shape, model.solver_config)
+    return _resistance_context(graph_shape, model.solver)
 
 
 def _resistance_distances(
@@ -648,7 +642,7 @@ def _resistance_distances(
     nodes, indices = pairs
     surface = model.conductance(latent, species_index)
     if context is None:
-        context = _resistance_context(surface.shape, model.solver_config)
+        context = _resistance_context(surface.shape, model.solver)
     resistances, context = _effective_resistance(surface, nodes, context=context)
     return resistances[indices], context
 

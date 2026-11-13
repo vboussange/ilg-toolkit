@@ -10,8 +10,8 @@ the Victorian Alps, kindly provided by Cesar Australia, is related to ESA WorldC
 2021 land cover (CC BY 4.0). A log-linear patch encoder maps land-cover fractions to
 the vertex conductances of a conductance grid graph, whose effective resistances
 predict the odds of Fst. Its resistance solver is the NVIDIA CUDA Direct Sparse
-Solver (cuDSS) on a GPU, through the ``cudss`` extra, and conjugate gradient
-elsewhere. Install the ``examples`` extra and run this script: it downloads 0.25 MB
+Solver (cuDSS) on a GPU, through the ``cudss`` extra, and JAXScape's default
+solver elsewhere. Install the ``examples`` extra and run this script: it downloads 0.25 MB
 of example data on first use and writes ``quickstart.png``.
 """
 
@@ -30,12 +30,12 @@ from ilg_toolkit import (
     Log1pLoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     TargetSpec,
     train,
     TrainingConfig,
 )
 from ilg_toolkit.models import initialize_uniform_conductance, LogLinearConductance
+from jaxscape.solvers import CuDSSSolver
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 
@@ -97,9 +97,9 @@ observations = PairwiseObservations(
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
 loss = Log1pLoss()
-solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else None
 distance_model = initialize_uniform_conductance(
-    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver_config=solver_config),
+    LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver=solver),
     region,
     observations,
     loss,

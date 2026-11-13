@@ -10,9 +10,10 @@ from typing import final
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import lineax as lx
 
 from .._checks import _positive_integer
-from ..config import ResistanceSolverConfig
+from ..resistance import _resistance_solver
 from .base import _species_names, _species_rows, ConductanceModel
 from .common import _encode_patches
 
@@ -88,8 +89,10 @@ class ResNet9Conductance(ConductanceModel):
         patch_microbatch_size: Maximum patches encoded together; ``None`` encodes
             all patches at once. Lower values trade throughput for peak activation
             memory; predictions stay the same.
-        solver_config: Resistance solver of the effective-resistance layer and its
-            settings; see ``ResistanceSolverConfig``.
+        solver: Resistance solver of the effective-resistance layer: a Lineax solver
+            that ``jaxscape.ResistanceDistance(solver=...)`` accepts, with its own
+            settings, which must hold no JAX arrays, or ``None`` (default) for JAXScape's
+            default solver, ``ResistanceDistance().solver``.
         key: JAX random key for reproducible parameter initialization.
 
     Notes:
@@ -112,7 +115,7 @@ class ResNet9Conductance(ConductanceModel):
     patch_size: int = eqx.field(static=True)
     min_conductance: float = eqx.field(static=True)
     patch_microbatch_size: int | None = eqx.field(static=True)
-    solver_config: ResistanceSolverConfig = eqx.field(static=True)
+    solver: lx.AbstractLinearSolver = eqx.field(static=True)
 
     def __init__(
         self,
@@ -123,7 +126,7 @@ class ResNet9Conductance(ConductanceModel):
         channels: tuple[int, int, int] = (64, 128, 256),
         min_conductance: float = 1e-6,
         patch_microbatch_size: int | None = None,
-        solver_config: ResistanceSolverConfig | None = None,
+        solver: lx.AbstractLinearSolver | None = None,
         key: jax.Array,
     ):
         species = _species_names(species)
@@ -144,9 +147,7 @@ class ResNet9Conductance(ConductanceModel):
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
-        solver_config = ResistanceSolverConfig() if solver_config is None else solver_config
-        if not isinstance(solver_config, ResistanceSolverConfig):
-            raise TypeError("solver_config must be a ResistanceSolverConfig")
+        solver = _resistance_solver(solver)
         first, second, third = widths
         (
             self.conv1,
@@ -164,7 +165,7 @@ class ResNet9Conductance(ConductanceModel):
         self.patch_size = patch_size
         self.min_conductance = float(min_conductance)
         self.patch_microbatch_size = patch_microbatch_size
-        self.solver_config = solver_config
+        self.solver = solver
 
     def _encode_patch(self, patch: jax.Array) -> jax.Array:
         """Encodes one channel-first raster patch."""

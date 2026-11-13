@@ -12,7 +12,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from jaxscape.solvers import SparseDirectState
 
 from ._checks import _require_float64
 from ._training_utils import (
@@ -33,13 +32,14 @@ from .models.base import (
     _prepare_distance_context,
 )
 from .models.common import _backbone, _inference_model, _reject_stateful_layers, _training_model
-from .resistance import _carried_state, _ResistanceSolverContext, _with_carried_state
+from .resistance import _ResistanceSolverContext
 
 
 _Parameters = tuple[AbstractDistanceModel, Any]
 _RasterShape = tuple[int, int]
 _Contexts = dict[_RasterShape, _ResistanceSolverContext | None]
-_SolverStates = dict[_RasterShape, SparseDirectState | None]
+# The carried solver state of each raster shape: the arrays of its solver state, or `None`.
+_SolverStates = dict[_RasterShape, Any]
 # What `eqx.error_if` raises from a compiled call and from a call under `jax.disable_jit()`, and
 # what a failed native call raises, such as one of the NVIDIA CUDA Direct Sparse Solver (cuDSS).
 _COMPILED_CALL_ERRORS = (
@@ -376,11 +376,6 @@ def _regional_gradient(parameters, contributions, groups, config, context, key, 
     return (model_gradient, state_gradient), context
 
 
-def _solver_states(contexts: _Contexts) -> _SolverStates:
-    """Returns the carried solver state of each raster shape, as arrays and static fields only."""
-    return {shape: _carried_state(context) for shape, context in contexts.items()}
-
-
 @eqx.filter_jit
 def _penalty_term(distance_model, penalty, pair_count) -> jax.Array:
     """Returns the penalty of a distance model divided by the number of training pairs."""
@@ -388,6 +383,36 @@ def _penalty_term(distance_model, penalty, pair_count) -> jax.Array:
 
 
 _penalty_gradient = eqx.filter_jit(eqx.filter_grad(_penalty_term))
+
+
+def _carried_state(context: _ResistanceSolverContext | None) -> Any:
+    """Returns the arrays of a context's solver state, which training carries.
+
+    The solver state's other leaves stay in the context: ``lax.cond`` and references
+    take only arrays. These leaves stay fixed during training at the values that
+    ``ResistanceDistance.init`` gives them on a uniform conductance grid graph:
+    ``reinit`` keeps them, as JAXScape's ``AbstractReusableStateSolver.reinit``
+    contract requires, and a solver whose ``reinit`` changes them falls outside that
+    contract. A distance model that is not a conductance model has no context and
+    carries ``None``.
+    """
+    return None if context is None else eqx.filter(context.solver_state, eqx.is_array)
+
+
+def _with_carried_state(
+    context: _ResistanceSolverContext | None, state: Any
+) -> _ResistanceSolverContext | None:
+    """Returns the context whose solver state combines the carried arrays with its other leaves.
+
+    Args:
+        context: The context of a raster shape, or ``None``, which stays ``None``.
+        state: Arrays of a solver state of the context's solver, as ``_carried_state``
+            returns them.
+    """
+    if context is None:
+        return None
+    others = eqx.filter(context.solver_state, eqx.is_array, inverse=True)
+    return replace(context, solver_state=eqx.combine(state, others))
 
 
 def _when(
@@ -418,9 +443,10 @@ class _TrainingObjective(eqx.Module):
     structure and the compiled update stay fixed across updates. The penalty enters
     once, whichever groups the update samples.
 
-    A call takes the carried solver state of each raster shape, ``None`` for a shape
-    without one, and returns them refreshed. Each region–species group's solve takes
-    the state the solve of the previous one returned.
+    A call takes the carried solver state of each raster shape, ``None`` for a
+    distance model that is not a conductance model, and returns them refreshed; the
+    contexts hold the other leaves of each solver state. Each region–species group's
+    solve takes the state the solve of the previous one returned.
     """
 
     regions: tuple[tuple[_Contribution, ...], ...]
@@ -557,9 +583,9 @@ def _apply_update(
 
     Optax calls the function inside a closed ``while_loop`` that takes a scalar back,
     so each evaluation reads the carried solver states from references and writes
-    them back. Without a carried solver state, XLA removes the value when the
-    optimizer ignores it. With one, every evaluation solves, because a solve is a
-    side effect.
+    them back. For a distance model that is not a conductance model, XLA removes the
+    value when the optimizer ignores it. For a conductance model, every evaluation
+    solves, because the solver state it writes back waits for its solves.
     """
     trainable, fixed = eqx.partition(parameters, eqx.is_inexact_array)
     references = jax.tree.map(jax.new_ref, solver_states)
@@ -712,9 +738,9 @@ def train[DistanceModel: AbstractDistanceModel](
     ``state`` continues training within one process from its latest parameters,
     statistical parameter state, optimizer state and random key, and keeps its history
     and selected model. Continuing with the original inputs and validation arguments
-    reproduces the uninterrupted run, within rounding for conjugate gradient solves on a
-    GPU. Training from the distance model of a loaded model is a new run: its optimizer
-    state, statistical parameter state, history and selected model start anew.
+    reproduces the uninterrupted run, within rounding on a GPU. Training from the
+    distance model of a loaded model is a new run: its optimizer state, statistical
+    parameter state, history and selected model start anew.
 
     ``config.optimizer`` applies each update and receives the update's training
     objective value, gradient and a function evaluating the same training objective
@@ -730,17 +756,15 @@ def train[DistanceModel: AbstractDistanceModel](
     record's ``training_objective`` includes it.
 
     Training a conductance model prepares the resistance solver once for each raster
-    shape. With ``solver="cudss"``, every update, line-search evaluation, evaluation
-    and ``on_step`` evaluation on a raster shape carries that shape's solver state, so
-    the resistance solver repeats no analysis. A distance model that composes a
-    conductance model solves through ``ConductanceModel.ecological_distances``, which
-    prepares its solver state itself and repeats the analysis on every solve. A failed
-    compiled step raises at once, so the last model saved from ``on_step`` stays as it
-    is.
+    shape. Every update, line-search evaluation, evaluation and ``on_step`` evaluation
+    on a raster shape carries that shape's solver state, whatever the resistance
+    solver. A distance model that composes a conductance model solves through
+    ``ConductanceModel.ecological_distances``, which prepares its solver state itself
+    on every solve. A failed compiled step raises at once, so the last model saved
+    from ``on_step`` stays as it is.
 
     Training compiles its update and evaluation steps; ``with jax.disable_jit():``
-    runs them eagerly for debugging with conjugate gradient and algebraic multigrid
-    (AMG).
+    runs them eagerly for debugging.
 
     Args:
         region: One region batch, a sequence of region batches, or a mapping keyed
@@ -768,15 +792,11 @@ def train[DistanceModel: AbstractDistanceModel](
         TypeError: If the distance model has stateful layers.
         ValueError: If the inputs, settings or continuation state are invalid, or a
             raster is not a multiple of the distance model's patch size.
-        ImportError: If the distance model's ``solver_config`` selects ``"cudss"``
-            without spineax.
         FloatingPointError: If an evaluation produces a nonfinite loss or training
             objective. The message names the step, and the region and species of a
             nonfinite loss.
-        RuntimeError: If float64 is disabled, the distance model's ``solver_config``
-            selects ``"cudss"`` without a CUDA-enabled GPU backend, or a compiled step
-            fails, such as an effective-resistance solve that reaches ``max_steps`` or a
-            cuDSS factorization that fails. The message of a failed step names the
+        RuntimeError: If float64 is disabled, or a compiled step fails, such as a
+            failed effective-resistance solve. The message of a failed step names the
             region, species and step, with every region–species group sampled for the
             update when a line-search candidate fails.
 
@@ -1040,7 +1060,7 @@ def train[DistanceModel: AbstractDistanceModel](
                     optimizer_state,
                     accumulated,
                     training_objective,
-                    _solver_states(contexts),
+                    {shape: _carried_state(context) for shape, context in contexts.items()},
                 )
             contexts = {
                 shape: _with_carried_state(context, solver_states[shape])

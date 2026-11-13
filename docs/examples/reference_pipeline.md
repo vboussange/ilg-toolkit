@@ -40,13 +40,13 @@ from ilg_toolkit import (
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     save_model,
     TargetSpec,
     train,
     TrainingConfig,
 )
 from ilg_toolkit.models import IBDModel, initialize_uniform_conductance, LogLinearConductance
+from jaxscape.solvers import CuDSSSolver
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 
@@ -54,7 +54,7 @@ from matplotlib.patches import Patch
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
 print(jax.devices())
-solver_config = ResistanceSolverConfig(solver="cudss" if jax.default_backend() == "gpu" else "cg")
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else None
 ```
 
     [CudaDevice(id=0)]
@@ -636,7 +636,7 @@ conductance $C_k = \min\{e^{\beta^\top x_k + \beta_0} + 10^{-2}, 10^3\}$ of vert
 fold, the patch encoder is initialized at the best uniform conductance and trained on the
 training pairs with the MLPE loss and AdamW (learning rate $10^{-2}$, weight decay $10^{-4}$)
 for 1,000 updates, with the NVIDIA CUDA Direct Sparse Solver (cuDSS) as resistance solver on a
-GPU and conjugate gradient elsewhere. Training evaluates the model every 10 updates and
+GPU and JAXScape's default solver elsewhere. Training evaluates the model every 10 updates and
 selects the update with the lowest validation loss. The selected patch encoder, frozen, receives an MLPE calibration
 head fitted on the calibration pairs.
 
@@ -650,7 +650,7 @@ for training, validation, calibration in zip(
     training_sets, validation_sets, calibration_sets, strict=True
 ):
     distance_model = initialize_uniform_conductance(
-        LogLinearConductance(3, patch_size=PATCH_SIZE, solver_config=solver_config),
+        LogLinearConductance(3, patch_size=PATCH_SIZE, solver=solver),
         region,
         training,
         loss,
@@ -1215,9 +1215,9 @@ effects.round(3)
 
 ## Saving and reloading the members
 
-`save_model` writes each member to one file, with its resistance solver. `load_model` reads it
-into a log-linear patch encoder built with the same patch size, and the reloaded members form
-the same ensemble.
+`save_model` writes each member to one file. `load_model` reads it into a log-linear patch
+encoder built with the same patch size, and the reloaded member keeps that encoder's
+resistance solver. The reloaded members form the same ensemble.
 
 
 ```python
@@ -1225,7 +1225,7 @@ with TemporaryDirectory() as directory:
     paths = [Path(directory) / f"member-{index}.eqx" for index in range(1, len(folds) + 1)]
     for path, member in zip(paths, ensemble.members, strict=True):
         save_model(path, member)
-    template = LogLinearConductance(3, patch_size=PATCH_SIZE)
+    template = LogLinearConductance(3, patch_size=PATCH_SIZE, solver=solver)
     reloaded = Ensemble([load_model(path, distance_model=template) for path in paths])
 
 print(
@@ -1243,7 +1243,5 @@ print(
 ```
 
     Members equal: True
-
-
     Predictions equal: True
 
