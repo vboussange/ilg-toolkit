@@ -389,8 +389,12 @@ def _carried_state(context: _ResistanceSolverContext | None) -> Any:
     """Returns the arrays of a context's solver state, which training carries.
 
     The solver state's other leaves stay in the context: ``lax.cond`` and references
-    take only arrays. A distance model that is not a conductance model has no
-    context and carries ``None``.
+    take only arrays. These leaves stay fixed during training at the values that
+    ``ResistanceDistance.init`` gives them on a uniform conductance grid graph:
+    ``reinit`` keeps them, as JAXScape's ``AbstractReusableStateSolver.reinit``
+    contract requires, and a solver whose ``reinit`` changes them falls outside that
+    contract. A distance model that is not a conductance model has no context and
+    carries ``None``.
     """
     return None if context is None else eqx.filter(context.solver_state, eqx.is_array)
 

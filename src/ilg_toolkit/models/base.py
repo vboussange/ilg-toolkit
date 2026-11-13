@@ -203,7 +203,7 @@ class ConductanceModel(AbstractDistanceModel):
     ``conductance`` and declare a static ``solver`` alongside their other fields: the
     resistance solver, a Lineax solver that ``jaxscape.ResistanceDistance(solver=...)``
     accepts, or ``None`` for JAXScape's default solver, ``ResistanceDistance().solver``.
-    The field is static, so the solver holds no JAX arrays.
+    The field is static: the solver must hold no JAX arrays.
     """
 
     solver: eqx.AbstractVar[lx.AbstractLinearSolver | None]

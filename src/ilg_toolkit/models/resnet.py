@@ -91,7 +91,7 @@ class ResNet9Conductance(ConductanceModel):
             memory; predictions stay the same.
         solver: Resistance solver of the effective-resistance layer: a Lineax solver
             that ``jaxscape.ResistanceDistance(solver=...)`` accepts, with its own
-            settings, which hold no JAX arrays, or ``None`` (default) for JAXScape's
+            settings, which must hold no JAX arrays, or ``None`` (default) for JAXScape's
             default solver, ``ResistanceDistance().solver``.
         key: JAX random key for reproducible parameter initialization.
 

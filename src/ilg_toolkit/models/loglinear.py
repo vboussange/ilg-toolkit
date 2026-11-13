@@ -63,7 +63,7 @@ class LogLinearConductance(ConductanceModel):
         max_conductance: Positive cap, default 1000.
         solver: Resistance solver of the effective-resistance layer: a Lineax solver
             that ``jaxscape.ResistanceDistance(solver=...)`` accepts, with its own
-            settings, which hold no JAX arrays, or ``None`` (default) for JAXScape's
+            settings, which must hold no JAX arrays, or ``None`` (default) for JAXScape's
             default solver, ``ResistanceDistance().solver``.
 
     Notes:
