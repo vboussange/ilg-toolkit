@@ -40,13 +40,13 @@ from ilg_toolkit import (
     MLPELoss,
     PairwiseObservations,
     RegionBatch,
-    ResistanceSolverConfig,
     save_model,
     TargetSpec,
     train,
     TrainingConfig,
 )
 from ilg_toolkit.models import IBDModel, initialize_uniform_conductance, LogLinearConductance
+from jaxscape.solvers import CuDSSSolver, GridMultigridSolver
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 
@@ -54,9 +54,7 @@ from matplotlib.patches import Patch
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
 print(jax.devices())
-solver_config = ResistanceSolverConfig(
-    solver="cudss" if jax.default_backend() == "gpu" else "multigrid"
-)
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else GridMultigridSolver()
 ```
 
     [CudaDevice(id=0)]
@@ -652,7 +650,7 @@ for training, validation, calibration in zip(
     training_sets, validation_sets, calibration_sets, strict=True
 ):
     distance_model = initialize_uniform_conductance(
-        LogLinearConductance(3, patch_size=PATCH_SIZE, solver_config=solver_config),
+        LogLinearConductance(3, patch_size=PATCH_SIZE, solver=solver),
         region,
         training,
         loss,
@@ -1227,7 +1225,7 @@ with TemporaryDirectory() as directory:
     paths = [Path(directory) / f"member-{index}.eqx" for index in range(1, len(folds) + 1)]
     for path, member in zip(paths, ensemble.members, strict=True):
         save_model(path, member)
-    template = LogLinearConductance(3, patch_size=PATCH_SIZE)
+    template = LogLinearConductance(3, patch_size=PATCH_SIZE, solver=solver)
     reloaded = Ensemble([load_model(path, distance_model=template) for path in paths])
 
 print(
