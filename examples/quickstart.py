@@ -5,8 +5,8 @@ the Victorian Alps, kindly provided by Cesar Australia, is related to ESA WorldC
 2021 land cover (CC BY 4.0). A log-linear patch encoder maps land-cover fractions to
 the vertex conductances of a conductance grid graph, whose effective resistances
 predict the odds of Fst. Its resistance solver is the NVIDIA CUDA Direct Sparse
-Solver (cuDSS) on a GPU, through the ``cudss`` extra, and conjugate gradient
-elsewhere. Install the ``examples`` extra and run this script: it downloads 0.25 MB
+Solver (cuDSS) on a GPU, through the ``cudss`` extra, and JAXScape's default
+solver elsewhere. Install the ``examples`` extra and run this script: it downloads 0.25 MB
 of example data on first use and writes ``quickstart.png``.
 """
 

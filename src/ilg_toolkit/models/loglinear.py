@@ -11,13 +11,12 @@ import jax
 import jax.numpy as jnp
 import lineax as lx
 import numpy as np
-from jaxscape import ResistanceDistance
 
 from .._checks import _positive_integer, _require_float64
 from .._training_utils import _prepare_training_inputs
 from ..data import _feature_names, PairwiseObservations, RegionBatch
 from ..losses import AbstractLoss
-from ..resistance import _effective_resistance
+from ..resistance import _effective_resistance, _resistance_solver
 from .base import (
     _check_regions,
     _model_species,
@@ -123,9 +122,7 @@ class LogLinearConductance(ConductanceModel):
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
-        solver = ResistanceDistance().solver if solver is None else solver
-        if not isinstance(solver, lx.AbstractLinearSolver):
-            raise TypeError("solver must be a Lineax solver")
+        solver = _resistance_solver(solver)
         self.species = species
         self.in_channels = in_channels
         self.patch_size = patch_size

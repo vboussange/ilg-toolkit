@@ -22,8 +22,8 @@ effective-resistance layer.
 
 - Log-linear and ResNet9 patch encoders, and a U-Net embedding-distance model.
 - Effective resistance with gradients on a CPU or a GPU, through conjugate gradient
-  preconditioned by geometric or algebraic multigrid, plain conjugate gradient, or
-  the NVIDIA CUDA Direct Sparse Solver (cuDSS).
+  preconditioned by geometric multigrid, plain conjugate gradient, or the NVIDIA
+  CUDA Direct Sparse Solver (cuDSS).
 - Training under complete pooling across regions, with a log1p loss or
   maximum-likelihood population effects (MLPE) for population dependence.
 - Genetic calibration, conditional prediction, and ensembles on the target's

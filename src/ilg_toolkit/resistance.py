@@ -39,8 +39,27 @@ def _mean_conductance(left, right):
     return 0.5 * (left + right)
 
 
+def _resistance_solver(solver: lx.AbstractLinearSolver | None) -> lx.AbstractLinearSolver:
+    """Returns the resistance solver that ``solver`` selects.
+
+    Args:
+        solver: A Lineax solver, or ``None`` for the default solver of JAXScape's
+            ``ResistanceDistance``.
+
+    Returns:
+        ``solver``, or JAXScape's default solver for ``None``.
+
+    Raises:
+        TypeError: If ``solver`` is neither ``None`` nor a Lineax solver.
+    """
+    solver = ResistanceDistance().solver if solver is None else solver
+    if not isinstance(solver, lx.AbstractLinearSolver):
+        raise TypeError("solver must be a Lineax solver")
+    return solver
+
+
 def _resistance_context(
-    graph_shape: tuple[int, ...], solver: lx.AbstractLinearSolver
+    graph_shape: tuple[int, ...], solver: lx.AbstractLinearSolver | None
 ) -> _ResistanceSolverContext:
     """Prepares a resistance solver for conductance grid graphs of one shape.
 
@@ -50,17 +69,22 @@ def _resistance_context(
 
     Args:
         graph_shape: Shape of the conductance grid graphs, ``(rows, columns)``.
-        solver: The resistance solver, a Lineax solver.
+        solver: The resistance solver, a Lineax solver, or ``None`` for the default
+            solver of JAXScape's ``ResistanceDistance``.
 
     Returns:
         The context to pass to ``_effective_resistance``.
 
     Raises:
         ValueError: If ``graph_shape`` is not a 2D shape with at least two vertices.
+        TypeError: If ``solver`` is neither ``None`` nor a Lineax solver.
     """
     if len(graph_shape) != 2 or math.prod(graph_shape) < 2:
         raise ValueError("Effective resistance requires a 2D surface with at least two vertices")
-    # JAXScape 0.0.17 builds the state of some solvers, such as cuDSS, only from concrete arrays.
+    solver = _resistance_solver(solver)
+    # Build the solver state from concrete arrays, whatever the JAXScape version: a state
+    # built inside a trace can lose what later solves reuse, as JAXScape's
+    # `CholmodSolver` drops its factor cache and refactorizes on every solve.
     with jax.ensure_compile_time_eval():
         topology = GridTopology(graph_shape)
         template = GridGraph(

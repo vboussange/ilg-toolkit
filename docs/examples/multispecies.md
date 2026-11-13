@@ -146,7 +146,7 @@ plt.show()
 stages and two residual blocks, shared by both species, and one species-specific head per
 species: a linear map with softplus to the conductance of each vertex. The channel widths
 `(8, 16, 32)` keep the patch encoder narrow. Its resistance solver, `solver`, is the
-NVIDIA CUDA Direct Sparse Solver (cuDSS) on a GPU and conjugate gradient elsewhere.
+NVIDIA CUDA Direct Sparse Solver (cuDSS) on a GPU and JAXScape's default solver elsewhere.
 
 `train` reads the species names from the distance model. Each species has equal influence,
 and each region has equal influence within a species. The maximum-likelihood population
@@ -285,8 +285,9 @@ plt.show()
 
 `save_model` writes the distance model with its species names and the calibration head to
 one file. `load_model` restores them into a template with the same architecture and
-species, replacing the template's parameter values and resistance solver. The reloaded
-model equals the trained model, and its predictions match to a relative tolerance of 1e-6.
+species, replacing the template's parameter values and keeping its resistance solver. The
+reloaded model equals the trained model, and its predictions match to a relative tolerance
+of 1e-6.
 
 
 ```python

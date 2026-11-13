@@ -636,7 +636,7 @@ conductance $C_k = \min\{e^{\beta^\top x_k + \beta_0} + 10^{-2}, 10^3\}$ of vert
 fold, the patch encoder is initialized at the best uniform conductance and trained on the
 training pairs with the MLPE loss and AdamW (learning rate $10^{-2}$, weight decay $10^{-4}$)
 for 1,000 updates, with the NVIDIA CUDA Direct Sparse Solver (cuDSS) as resistance solver on a
-GPU and conjugate gradient elsewhere. Training evaluates the model every 10 updates and
+GPU and JAXScape's default solver elsewhere. Training evaluates the model every 10 updates and
 selects the update with the lowest validation loss. The selected patch encoder, frozen, receives an MLPE calibration
 head fitted on the calibration pairs.
 
@@ -1215,9 +1215,9 @@ effects.round(3)
 
 ## Saving and reloading the members
 
-`save_model` writes each member to one file, with its resistance solver. `load_model` reads it
-into a log-linear patch encoder built with the same patch size, and the reloaded members form
-the same ensemble.
+`save_model` writes each member to one file. `load_model` reads it into a log-linear patch
+encoder built with the same patch size, and the reloaded member keeps that encoder's
+resistance solver. The reloaded members form the same ensemble.
 
 
 ```python

@@ -11,9 +11,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax as lx
-from jaxscape import ResistanceDistance
 
 from .._checks import _positive_integer
+from ..resistance import _resistance_solver
 from .base import _species_names, _species_rows, ConductanceModel
 from .common import _encode_patches
 
@@ -146,9 +146,7 @@ class ResNet9Conductance(ConductanceModel):
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
-        solver = ResistanceDistance().solver if solver is None else solver
-        if not isinstance(solver, lx.AbstractLinearSolver):
-            raise TypeError("solver must be a Lineax solver")
+        solver = _resistance_solver(solver)
         first, second, third = widths
         (
             self.conv1,
