@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import lineax as lx
 import numpy as np
-from jaxscape.solvers import GridMultigridSolver
+from jaxscape import ResistanceDistance
 
 from .._checks import _positive_integer, _require_float64
 from .._training_utils import _prepare_training_inputs
@@ -63,8 +63,8 @@ class LogLinearConductance(ConductanceModel):
             predictor.
         max_conductance: Positive cap, default 1000.
         solver: Resistance solver of the effective-resistance layer: a Lineax solver,
-            such as JAXScape's ``GridMultigridSolver`` (the default, with JAXScape's
-            settings) or ``CuDSSSolver``.
+            such as JAXScape's ``CuDSSSolver``, or ``None`` for the default solver of
+            JAXScape's ``ResistanceDistance``, with JAXScape's settings.
 
     Notes:
         Prepare feature scaling and categorical reference levels before building a
@@ -123,7 +123,8 @@ class LogLinearConductance(ConductanceModel):
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
-        if solver is not None and not isinstance(solver, lx.AbstractLinearSolver):
+        solver = ResistanceDistance().solver if solver is None else solver
+        if not isinstance(solver, lx.AbstractLinearSolver):
             raise TypeError("solver must be a Lineax solver")
         self.species = species
         self.in_channels = in_channels
@@ -131,7 +132,7 @@ class LogLinearConductance(ConductanceModel):
         self.patch_microbatch_size = patch_microbatch_size
         self.min_conductance = float(min_conductance)
         self.max_conductance = float(max_conductance)
-        self.solver = GridMultigridSolver() if solver is None else solver
+        self.solver = solver
         count = _species_rows(species)
         self.coefficients = jnp.zeros((count, in_channels))
         self.intercepts = jnp.zeros(count)

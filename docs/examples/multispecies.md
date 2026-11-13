@@ -30,7 +30,7 @@ from ilg_toolkit import (
 )
 from ilg_toolkit.models import LogLinearConductance, ResNet9Conductance
 from IPython.display import display, Markdown
-from jaxscape.solvers import CuDSSSolver, GridMultigridSolver
+from jaxscape.solvers import CuDSSSolver
 from scipy.ndimage import gaussian_filter
 
 
@@ -42,7 +42,7 @@ CELLS = 48  # Raster side length in cells.
 PATCH_SIZE = 8  # Groups 8x8 cells into one vertex: a 6x6 conductance grid graph.
 UNITS = 12  # Sampling units per species and region, each at its own vertex.
 target = TargetSpec("genetic dissimilarity", units="index")
-solver = CuDSSSolver() if jax.default_backend() == "gpu" else GridMultigridSolver()
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else None
 ```
 
 ## Simulate two regions

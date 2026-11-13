@@ -26,12 +26,13 @@ choose each.
 
 ### Solver state
 
-A JAXScape `AbstractReusableStateSolver`, such as `GridMultigridSolver` or
-`CuDSSSolver`, prepares a solver state on a uniform conductance grid graph and
-reinitializes it for each conductance surface: the grid stencil of
-`GridMultigridSolver`, or the sparse analysis and factorization of `CuDSSSolver`,
-whose analysis takes far longer than a refactorization. Other Lineax solvers, such
-as `CG`, have no solver state.
+JAXScape's `ResistanceDistance` prepares the solver state of every resistance
+solver on a uniform conductance grid graph and reinitializes it for each
+conductance surface. The solver state of JAXScape's default solver, conjugate
+gradient preconditioned with geometric multigrid, holds the position of each entry
+of the grounded Laplacian on the grid and the values of those entries. That of
+`CuDSSSolver` holds the sparse analysis and factorization, whose analysis takes far
+longer than a refactorization. That of Lineax's `CG` records only the matrix.
 
 Training a conductance model prepares one solver state per raster shape and carries
 it from update to update. The regions, species, evaluations and line searches on
@@ -50,4 +51,4 @@ JAXScape's error.
 
 Saved models do not record the resistance solver: the template passed to
 `load_model` supplies it, so a model trained with `CuDSSSolver` on a GPU loads with
-`GridMultigridSolver` on a CPU.
+JAXScape's default solver on a CPU.

@@ -11,7 +11,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import lineax as lx
-from jaxscape.solvers import GridMultigridSolver
+from jaxscape import ResistanceDistance
 
 from .._checks import _positive_integer
 from .base import _species_names, _species_rows, ConductanceModel
@@ -90,8 +90,8 @@ class ResNet9Conductance(ConductanceModel):
             all patches at once. Lower values trade throughput for peak activation
             memory; predictions stay the same.
         solver: Resistance solver of the effective-resistance layer: a Lineax solver,
-            such as JAXScape's ``GridMultigridSolver`` (the default, with JAXScape's
-            settings) or ``CuDSSSolver``.
+            such as JAXScape's ``CuDSSSolver``, or ``None`` for the default solver of
+            JAXScape's ``ResistanceDistance``, with JAXScape's settings.
         key: JAX random key for reproducible parameter initialization.
 
     Notes:
@@ -146,7 +146,7 @@ class ResNet9Conductance(ConductanceModel):
         patch_microbatch_size = _positive_integer(
             "patch_microbatch_size", patch_microbatch_size, optional=True
         )
-        solver = GridMultigridSolver() if solver is None else solver
+        solver = ResistanceDistance().solver if solver is None else solver
         if not isinstance(solver, lx.AbstractLinearSolver):
             raise TypeError("solver must be a Lineax solver")
         first, second, third = widths

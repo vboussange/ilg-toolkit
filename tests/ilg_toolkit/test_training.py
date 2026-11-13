@@ -34,7 +34,7 @@ from ilg_toolkit.models import (
     EmbeddingDistanceModel,
     LogLinearConductance,
 )
-from jaxscape.solvers import GridMultigridSolver
+from jaxscape import ResistanceDistance
 
 
 def _single_species_prediction(
@@ -431,7 +431,7 @@ def test_failed_line_search_candidate_names_the_sampled_groups(
     settings, group_count, PointConductance, training_problem
 ):
     _assert_failed_line_search_candidate_names_the_sampled_groups(
-        settings, group_count, GridMultigridSolver(), PointConductance, training_problem
+        settings, group_count, ResistanceDistance().solver, PointConductance, training_problem
     )
 
 

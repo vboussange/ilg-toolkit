@@ -28,7 +28,7 @@ from ilg_toolkit import (
     TrainingConfig,
 )
 from ilg_toolkit.models import ConductanceModel
-from jaxscape.solvers import GridMultigridSolver
+from jaxscape import ResistanceDistance
 
 
 # Direct and MLPE calibration heads, with unnamed and named species, save different trees.
@@ -258,8 +258,9 @@ def test_conductance_reload_preserves_surface_and_distances_with_the_template_so
         ("west", "north", "east"),
         np.array([[0, 0], [0, 7], [7, 7]]),
     )
+    default = eqx.tree_at(lambda solver: solver.rtol, ResistanceDistance().solver, 1e-10)
     model = LandscapeGeneticsModel(
-        PointConductance(jnp.asarray(0.3), solver=GridMultigridSolver(rtol=1e-10)),
+        PointConductance(jnp.asarray(0.3), solver=default),
         DirectCalibrationHead(TargetSpec("divergence")),
         region.feature_names,
     )

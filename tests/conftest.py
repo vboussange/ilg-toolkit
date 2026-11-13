@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import final
+from typing import cast, final
 
 import coordax as cx
 import equinox as eqx
@@ -33,16 +33,14 @@ from ilg_toolkit.models import (
     LogLinearConductance,
 )
 from jax.experimental import io_callback
-from jaxscape.solvers import (
-    AbstractSparseDirectSolver,
-    CSRPattern,
-    CuDSSSolver,
-    GridMultigridSolver,
-)
+from jaxscape import ResistanceDistance
+from jaxscape.solvers import AbstractSparseDirectSolver, CSRPattern, CuDSSSolver
 
 
 # The suite runs in float64; float32 behavior is tested inside `jax.enable_x64(False)`.
 jax.config.update("jax_enable_x64", True)
+# JAXScape's default resistance solver, which JAXScape types as optional.
+_DEFAULT_SOLVER = cast(lx.AbstractLinearSolver, ResistanceDistance().solver)
 
 
 def _feature_field(values, names: tuple[str, ...]) -> cx.Field:
@@ -176,14 +174,12 @@ class _PointConductance(ConductanceModel):
     log_scale: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver: lx.AbstractLinearSolver = eqx.field(
-        static=True, kw_only=True, default=GridMultigridSolver()
-    )
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, kw_only=True, default=_DEFAULT_SOLVER)
 
     def __init__(self, log_scale: jax.Array, *, solver=None, species=None):
         self.log_scale = log_scale
         self.species = species
-        self.solver = GridMultigridSolver() if solver is None else solver
+        self.solver = _DEFAULT_SOLVER if solver is None else solver
 
     def backbone(self, features):
         return features
@@ -214,7 +210,7 @@ class _DropoutConductance(ConductanceModel):
     conductance_dropout: eqx.nn.Dropout = eqx.field(default_factory=lambda: eqx.nn.Dropout(0.5))
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver: lx.AbstractLinearSolver = eqx.field(static=True, default=GridMultigridSolver())
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, default=_DEFAULT_SOLVER)
 
     def backbone(self, features):
         return self.dropout(features)
@@ -236,7 +232,7 @@ class _BatchNormConductance(ConductanceModel):
     norm: eqx.nn.BatchNorm
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver: lx.AbstractLinearSolver = eqx.field(static=True, default=GridMultigridSolver())
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, default=_DEFAULT_SOLVER)
 
     def __init__(self):
         self.distance_model = _PointConductance(jnp.asarray(0.0))
@@ -487,13 +483,11 @@ class _FeatureConductance(ConductanceModel):
     weight: jax.Array
     species: tuple[str, ...] | None = eqx.field(static=True, default=None)
     patch_size: int = eqx.field(static=True, default=1)
-    solver: lx.AbstractLinearSolver = eqx.field(
-        static=True, kw_only=True, default=GridMultigridSolver()
-    )
+    solver: lx.AbstractLinearSolver = eqx.field(static=True, kw_only=True, default=_DEFAULT_SOLVER)
 
     def __init__(self, weight: jax.Array, *, solver=None):
         self.weight = weight
-        self.solver = GridMultigridSolver() if solver is None else solver
+        self.solver = _DEFAULT_SOLVER if solver is None else solver
 
     def backbone(self, features):
         return features
@@ -899,17 +893,19 @@ def cudss_gpu_fixture():
     return SimpleNamespace(solver=CuDSSSolver(), rebuild_count=cudss.rebuild_count)
 
 
-@pytest.fixture(name="solver_choice", params=["cg", "multigrid", "cudss"])
+@pytest.fixture(name="solver_choice", params=["cg", "default", "cudss"])
 def solver_choice_fixture(request) -> lx.AbstractLinearSolver:
-    """Returns a resistance solver without state and two with reusable state.
+    """Returns Lineax's conjugate gradient, JAXScape's default solver or cuDSS.
 
-    Conjugate gradient and geometric multigrid run at tight tolerances; cuDSS runs on
-    its CPU double.
+    Conjugate gradient and JAXScape's default solver run at tight tolerances; cuDSS
+    runs on its CPU double.
     """
     if request.param == "cudss":
         return request.getfixturevalue("cudss_double").solver
-    if request.param == "multigrid":
-        return GridMultigridSolver(rtol=1e-11, max_steps=1000)
+    if request.param == "default":
+        return eqx.tree_at(
+            lambda solver: (solver.rtol, solver.max_steps), _DEFAULT_SOLVER, (1e-11, 1000)
+        )
     return lx.CG(rtol=1e-11, atol=1e-11, max_steps=1000)
 
 

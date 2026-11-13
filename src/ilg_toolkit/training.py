@@ -32,7 +32,7 @@ from .models.base import (
     _prepare_distance_context,
 )
 from .models.common import _backbone, _inference_model, _reject_stateful_layers, _training_model
-from .resistance import _carried_state, _ResistanceSolverContext, _with_carried_state
+from .resistance import _ResistanceSolverContext
 
 
 _Parameters = tuple[AbstractDistanceModel, Any]
@@ -375,11 +375,6 @@ def _regional_gradient(parameters, contributions, groups, config, context, key, 
     return (model_gradient, state_gradient), context
 
 
-def _solver_states(contexts: _Contexts) -> _SolverStates:
-    """Returns the carried solver state of each raster shape, as arrays and static fields only."""
-    return {shape: _carried_state(context) for shape, context in contexts.items()}
-
-
 @eqx.filter_jit
 def _penalty_term(distance_model, penalty, pair_count) -> jax.Array:
     """Returns the penalty of a distance model divided by the number of training pairs."""
@@ -417,9 +412,9 @@ class _TrainingObjective(eqx.Module):
     structure and the compiled update stay fixed across updates. The penalty enters
     once, whichever groups the update samples.
 
-    A call takes the carried solver state of each raster shape, ``None`` for a shape
-    without one, and returns them refreshed. Each region–species group's solve takes
-    the state the solve of the previous one returned.
+    A call takes the solver state of each raster shape, ``None`` for a distance model
+    that is not a conductance model, and returns them refreshed. Each region–species
+    group's solve takes the state the solve of the previous one returned.
     """
 
     regions: tuple[tuple[_Contribution, ...], ...]
@@ -438,14 +433,19 @@ class _TrainingObjective(eqx.Module):
 
         def group_value(index: int, item: _Contribution, group, latent, solver_states):
             shape = self.shapes[index]
+            context = self.contexts[shape]
+            if context is not None:
+                context = replace(context, solver_state=solver_states[shape])
             value, context = _microbatch_loss(
                 (model, latent, (self.loss._group_state(loss_state, group),)),
                 (item,),
                 self.loss,
-                _with_carried_state(self.contexts[shape], solver_states[shape]),
+                context,
                 self.keys[index],
             )
-            return cast(jax.Array, value), {**solver_states, shape: _carried_state(context)}
+            if context is not None:
+                solver_states = {**solver_states, shape: context.solver_state}
+            return cast(jax.Array, value), solver_states
 
         def region_value(index: int, solver_states):
             latent = _backbone(model, self.regions[index][0].payload.features, self.keys[index])
@@ -556,9 +556,9 @@ def _apply_update(
 
     Optax calls the function inside a closed ``while_loop`` that takes a scalar back,
     so each evaluation reads the carried solver states from references and writes
-    them back. Without a carried solver state, XLA removes the value when the
-    optimizer ignores it. With one, every evaluation solves, because a solve is a
-    side effect.
+    them back. For a distance model that is not a conductance model, XLA removes the
+    value when the optimizer ignores it. For a conductance model, every evaluation
+    solves, because the solver state it writes back waits for its solves.
     """
     trainable, fixed = eqx.partition(parameters, eqx.is_inexact_array)
     references = jax.tree.map(jax.new_ref, solver_states)
@@ -729,18 +729,15 @@ def train[DistanceModel: AbstractDistanceModel](
     record's ``training_objective`` includes it.
 
     Training a conductance model prepares the resistance solver once for each raster
-    shape. With a solver that reuses its state, a JAXScape
-    ``AbstractReusableStateSolver`` such as ``CuDSSSolver``, every update, line-search
-    evaluation, evaluation and ``on_step`` evaluation on a raster shape carries that
-    shape's solver state, so cuDSS repeats no analysis. A distance model that composes
-    a conductance model solves through ``ConductanceModel.ecological_distances``, which
-    prepares its solver state itself on every solve. A failed
-    compiled step raises at once, so the last model saved from ``on_step`` stays as it
-    is.
+    shape. Every update, line-search evaluation, evaluation and ``on_step`` evaluation
+    on a raster shape carries that shape's solver state, whatever the resistance
+    solver, so cuDSS repeats no analysis. A distance model that composes a conductance
+    model solves through ``ConductanceModel.ecological_distances``, which prepares its
+    solver state itself on every solve. A failed compiled step raises at once, so the
+    last model saved from ``on_step`` stays as it is.
 
     Training compiles its update and evaluation steps; ``with jax.disable_jit():``
-    runs them eagerly for debugging with conjugate gradient and algebraic multigrid
-    (AMG).
+    runs them eagerly for debugging.
 
     Args:
         region: One region batch, a sequence of region batches, or a mapping keyed
@@ -1037,10 +1034,15 @@ def train[DistanceModel: AbstractDistanceModel](
                     optimizer_state,
                     accumulated,
                     training_objective,
-                    _solver_states(contexts),
+                    {
+                        shape: None if context is None else context.solver_state
+                        for shape, context in contexts.items()
+                    },
                 )
             contexts = {
-                shape: _with_carried_state(context, solver_states[shape])
+                shape: None
+                if context is None
+                else replace(context, solver_state=solver_states[shape])
                 for shape, context in contexts.items()
             }
         if step == 0 or step % config.eval_every == 0 or step == config.steps or converged:

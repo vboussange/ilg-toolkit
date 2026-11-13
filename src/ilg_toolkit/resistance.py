@@ -9,7 +9,6 @@ import jax
 import jax.numpy as jnp
 import lineax as lx
 from jaxscape import GridGraph, GridTopology, ResistanceDistance
-from jaxscape.solvers import AbstractReusableStateSolver
 
 
 @jax.tree_util.register_dataclass
@@ -21,39 +20,18 @@ class _ResistanceSolverContext:
         topology: The edges of the conductance grid graphs the context solves, built
             once for their shape, so that each solve computes only the edge weights.
         solver: The resistance solver, a Lineax solver.
-        solver_state: For a JAXScape ``AbstractReusableStateSolver``, the state of the
-            latest solve, which the next solve reinitializes; ``None`` otherwise.
+        solver_state: The solver state of the latest solve, which the next solve
+            reinitializes.
     """
 
     topology: GridTopology
     solver: lx.AbstractLinearSolver
-    solver_state: Any = None
+    solver_state: Any
 
     @property
     def graph_shape(self) -> tuple[int, int]:
         """Shape of the conductance grid graphs the context solves."""
         return self.topology.shape
-
-    @property
-    def carries_state(self) -> bool:
-        """Whether a solve returns a refreshed ``solver_state``, which the next solve takes."""
-        return isinstance(self.solver, AbstractReusableStateSolver)
-
-
-def _carried_state(context: _ResistanceSolverContext | None) -> Any:
-    """Returns the solver state a solve refreshes, or ``None`` for a context without one."""
-    if context is None or not context.carries_state:
-        return None
-    return context.solver_state
-
-
-def _with_carried_state(
-    context: _ResistanceSolverContext | None, state: Any
-) -> _ResistanceSolverContext | None:
-    """Returns the context holding a carried solver state; other contexts stay as they are."""
-    if context is None or not context.carries_state:
-        return context
-    return replace(context, solver_state=state)
 
 
 def _mean_conductance(left, right):
@@ -66,9 +44,9 @@ def _resistance_context(
 ) -> _ResistanceSolverContext:
     """Prepares a resistance solver for conductance grid graphs of one shape.
 
-    Every context builds the edges of the grid graphs of its shape. A JAXScape
-    ``AbstractReusableStateSolver`` also prepares its solver state on a uniform
-    conductance grid graph. Preparation runs eagerly, also inside traced functions.
+    The context holds the edges of the grid graphs of its shape and the solver state
+    that ``ResistanceDistance.init`` prepares on a uniform conductance grid graph.
+    Preparation runs eagerly, also inside traced functions.
 
     Args:
         graph_shape: Shape of the conductance grid graphs, ``(rows, columns)``.
@@ -82,10 +60,9 @@ def _resistance_context(
     """
     if len(graph_shape) != 2 or math.prod(graph_shape) < 2:
         raise ValueError("Effective resistance requires a 2D surface with at least two vertices")
+    # JAXScape 0.0.17 builds the state of some solvers, such as cuDSS, only from concrete arrays.
     with jax.ensure_compile_time_eval():
         topology = GridTopology(graph_shape)
-        if not isinstance(solver, AbstractReusableStateSolver):
-            return _ResistanceSolverContext(topology, solver)
         template = GridGraph(
             jnp.ones(graph_shape, dtype=jnp.float64), fun=_mean_conductance, topology=topology
         )
@@ -106,9 +83,9 @@ def _effective_resistance(
     conductances. The solve runs and returns in float64, with zero resistance
     between coincident vertices. Invalid inputs and failed solves raise errors.
 
-    With a reusable-state solver, the returned context holds the solver state
-    reinitialized for ``conductance``. Passing it to the next call lets the solver
-    reuse it, as cuDSS reuses its analysis; passing an earlier state stays correct.
+    The returned context holds the solver state reinitialized for ``conductance``.
+    Passing it to the next call lets the solver reuse it, as cuDSS reuses its
+    analysis; passing an earlier state stays correct.
 
     Args:
         conductance: Positive conductance surface with shape ``(rows, columns)``.
@@ -143,13 +120,9 @@ def _effective_resistance(
         )
     graph = GridGraph(surface.astype(jnp.float64), fun=_mean_conductance, topology=context.topology)
     distance = ResistanceDistance(solver=context.solver)
-    if not context.carries_state:
-        resistances = distance.nodes_to_nodes_distance(graph, nodes)
-    else:
-        state = distance.reinit(graph, context.solver_state)
-        resistances = distance.nodes_to_nodes_distance(graph, nodes, state=state)
-        # Solver calls with side effects, such as cuDSS's, run unordered, and the next
-        # reinitialization can replace what this state holds, so it waits for these solves.
-        resistances, state = jax.lax.optimization_barrier((resistances, state))
-        context = replace(context, solver_state=state)
-    return resistances.at[jnp.diag_indices(nodes.size)].set(0), context
+    state = distance.reinit(graph, context.solver_state)
+    resistances = distance.nodes_to_nodes_distance(graph, nodes, state=state)
+    # Solver calls with side effects, such as cuDSS's, run unordered, and the next
+    # reinitialization can replace what this state holds, so it waits for these solves.
+    resistances, state = jax.lax.optimization_barrier((resistances, state))
+    return resistances.at[jnp.diag_indices(nodes.size)].set(0), replace(context, solver_state=state)

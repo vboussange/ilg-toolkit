@@ -21,7 +21,7 @@ from ilg_toolkit import (
     TrainingConfig,
 )
 from ilg_toolkit.models import initialize_uniform_conductance, LogLinearConductance
-from jaxscape.solvers import GridMultigridSolver
+from jaxscape import ResistanceDistance
 
 
 @pytest.mark.parametrize("patch_microbatch_size", [None, 3])
@@ -198,9 +198,8 @@ def test_training_gradients_and_predictions_match_dense_reference(dense_resistan
             regional_ids, ([0.4, 0.9, 1.4, 0.6, 1.1, 0.7], [0.5, 1.2, 0.8]), strict=True
         )
     )
-    model = LogLinearConductance(
-        2, patch_size=2, patch_microbatch_size=3, solver=GridMultigridSolver(rtol=1e-10)
-    )
+    solver = eqx.tree_at(lambda solver: solver.rtol, ResistanceDistance().solver, 1e-10)
+    model = LogLinearConductance(2, patch_size=2, patch_microbatch_size=3, solver=solver)
     initial = np.array([0.2, -0.1, 0.3])
 
     def with_parameters(parameters):

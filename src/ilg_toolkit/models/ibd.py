@@ -8,7 +8,6 @@ from typing import final
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxscape.euclidean_distance import euclidean_distance
 
 from .._checks import _positive_integer
 from .base import _species_names, _species_rows, AbstractDistanceModel
@@ -22,7 +21,7 @@ class IBDModel(AbstractDistanceModel):
 
     $$s_{ij} = a \, d_{ij} + b,$$
 
-    where $d_{ij}$ is JAXScape's Euclidean distance between the units' vertices
+    where $d_{ij}$ is the Euclidean distance between the units' vertices
     on the conductance grid graph's vertex layout, and $a$ and $b$ are the
     species' non-negative slope and intercept, each the softplus of a trainable
     parameter. Each sampling unit sits at the vertex of its containing
@@ -130,10 +129,9 @@ class IBDModel(AbstractDistanceModel):
             intercept, aligned with ``left`` and ``right``.
         """
         nodes, (left, right) = pairs
-        # 64-bit vertex coordinates give float64 coordinate differences and distances.
+        # 64-bit vertex coordinates give float64 distances.
         rows, columns = jnp.divmod(nodes.astype(jnp.int64), latent.shape[1])
-        coordinates = jnp.column_stack((rows, columns))
-        distances = euclidean_distance(coordinates, coordinates)[left, right]
+        distances = jnp.hypot(rows[left] - rows[right], columns[left] - columns[right])
         return self.slopes[species_index] * distances + self.intercepts[species_index]
 
 

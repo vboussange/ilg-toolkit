@@ -46,7 +46,7 @@ from ilg_toolkit import (
     TrainingConfig,
 )
 from ilg_toolkit.models import IBDModel, initialize_uniform_conductance, LogLinearConductance
-from jaxscape.solvers import CuDSSSolver, GridMultigridSolver
+from jaxscape.solvers import CuDSSSolver
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 
@@ -54,7 +54,7 @@ from matplotlib.patches import Patch
 # Effective resistance needs float64: enable x64 before creating any inputs.
 jax.config.update("jax_enable_x64", True)
 print(jax.devices())
-solver = CuDSSSolver() if jax.default_backend() == "gpu" else GridMultigridSolver()
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else None
 ```
 
     [CudaDevice(id=0)]

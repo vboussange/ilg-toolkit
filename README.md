@@ -92,7 +92,7 @@ it on the CPU.
 
 The script reads the land-cover GeoTIFF with rioxarray, turns it into land-cover
 fractions, places the sampling units by their coordinates, selects cuDSS on a GPU
-and geometric multigrid elsewhere, and trains the patch encoder from the best
+and JAXScape's default solver elsewhere, and trains the patch encoder from the best
 uniform conductance:
 
 ```python
@@ -108,7 +108,7 @@ observations = PairwiseObservations(
     target=TargetSpec("pairwise Fst", units="proportion", transform="odds"),
 )
 loss = Log1pLoss()
-solver = CuDSSSolver() if jax.default_backend() == "gpu" else GridMultigridSolver()
+solver = CuDSSSolver() if jax.default_backend() == "gpu" else None
 distance_model = initialize_uniform_conductance(
     LogLinearConductance(in_channels=3, patch_size=PATCH_SIZE, solver=solver),
     region,
@@ -144,12 +144,12 @@ solvers for the grounded Laplacians of conductance grid graphs, in
 
 | Solver | Method | Installation | Choose it for |
 | --- | --- | --- | --- |
-| `GridMultigridSolver()` (default) | Conjugate gradient (CG) preconditioned with geometric multigrid | Included | A CPU, or a GPU without the `cudss` extra or when the cuDSS factorization does not fit in GPU memory |
+| JAXScape's default (`solver=None`) | Conjugate gradient (CG) preconditioned with geometric multigrid | Included | A CPU, or a GPU without the `cudss` extra or when the cuDSS factorization does not fit in GPU memory |
 | `CuDSSSolver()` | cuDSS, a sparse direct solver | `cudss` extra | An NVIDIA GPU, at any conductance contrast, when the factorization fits in GPU memory |
 
-Their settings are JAXScape's. Iterative solvers, such as `GridMultigridSolver` and
-Lineax's `CG`, raise an error when they reach their iteration limit. The iterations
-of `GridMultigridSolver` grow on conductance surfaces that vary by orders of
+Their settings are JAXScape's. Iterative solvers, such as JAXScape's default solver
+and Lineax's `CG`, raise an error when they reach their iteration limit. The
+iterations of the default solver grow on conductance surfaces that vary by orders of
 magnitude from one vertex to the next. `CuDSSSolver` has no iteration limit, and its
 cost does not depend on conductance contrast. A deep patch encoder can drive
 conductance to its floor, so train one with `CuDSSSolver` on an NVIDIA GPU. The
@@ -177,3 +177,8 @@ or for decisions based on them.
 
 Developed by Victor Boussange and contributors. Licensed under the
 [Apache License 2.0](https://github.com/vboussange/ilg-toolkit/blob/main/LICENSE).
+
+## Acknowledgements
+
+Development of ILG Toolkit was supported by the Swiss National Science Foundation
+(SNSF), grant 237783.
